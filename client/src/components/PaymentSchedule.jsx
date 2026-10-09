@@ -28,13 +28,15 @@
 // paie pas cette séance se laisse simplement là. La section « Reportés » reste
 // affichée pour les factures déjà reportées — leur raison, leur date de retour
 // et leur reprise continuent de se piloter d'ici.
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Circle, CheckCircle2, AlertTriangle, CreditCard,
-  RotateCcw, ChevronRight, ReceiptText, Clock, EyeOff, ExternalLink, X,
+  RotateCcw, ChevronRight, ReceiptText, Clock, EyeOff, X,
 } from 'lucide-react'
 import api from '../lib/api.js'
+import { VendorHover } from './VendorProfileHint.jsx'
+import RecordPeekDrawer from './RecordPeekDrawer.jsx'
 import { payDateForDue } from '../lib/bankDays.js'
 // Le moyen de paiement nomme la référence à saisir (n° de chèque, n° de
 // confirmation Interac, code de paiement…).
@@ -44,42 +46,46 @@ import { fmtMoney } from '../utils/formatters.js'
 
 // Pas de garde null historique : un montant absent s'affiche « 0,00 $ ».
 const fmtCad = (n, currency = 'CAD') => fmtMoney(n, currency, { nullIsZero: true })
-const fmtDay = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' }) : '—')
-// « mardi 18 août » — le jour de la semaine porte la règle de la cédule, il doit
-// être écrit en toutes lettres.
-const fmtWeekday = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'long' }) : '—')
+const fmtDay = d => (d ? String(d).slice(0, 10) : '—')
+// « mardi 2026-08-18 » — le jour de la semaine porte la règle de la cédule, il
+// doit être écrit en toutes lettres.
+const fmtWeekday = d => (d ? `${new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { weekday: 'long' })} ${String(d).slice(0, 10)}` : '—')
 
 const inputXs = 'px-1.5 py-0.5 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 
-// N° de facture cliquable — deux destinations, une par affordance :
-//   - le NUMÉRO ouvre la facture dans QuickBooks (la pièce comptable de
-//     référence au moment de décider si on la paie) ;
-//   - l'icône ouvre la fiche DANS l'ERP (lignes, taxes, pièce jointe).
-// Tant que la facture n'est pas publiée à QB, le numéro reste du texte grisé
-// avec la raison : il n'y a rien à ouvrir, et le dire vaut mieux que de faire
-// croire à un lien mort.
-function BillLink({ item }) {
+// Formulaire de l'achat fournisseur (pas de route de fiche), chargé à la demande.
+const AchatPanel = lazy(() => import('../pages/AchatsFournisseurs.jsx').then(m => ({ default: m.AchatModal })))
+
+// N° de facture cliquable : ouvre la facture DANS l'ERP, en panneau latéral —
+// on reste sur la cédule (demande d'Antoine Lambert, 2026-10-06 : plus de
+// lien vers QuickBooks ici). Le lien garde son href pour le Ctrl+clic.
+function BillLink({ item, onChanged }) {
+  const [achat, setAchat] = useState(null)
   const num = item.invoice_number || 'sans n°'
-  const name = `Facture ${item.vendor}${item.invoice_number ? ` ${item.invoice_number}` : ''}`
+  const open = async (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return
+    e.preventDefault()
+    try { setAchat(await api.achatsFournisseurs.get(item.id)) } catch { /* lien mort */ }
+  }
   return (
-    <span className="min-w-0 inline-flex items-center gap-1">
-      <Link to={`/fournisseurs/achats?id=${item.id}`} data-testid={`schedule-bill-${item.id}`}
-        className="shrink-0 p-0.5 rounded-md text-slate-300 hover:text-brand-600 hover:bg-brand-50"
-        title={`${name} — ouvrir la fiche dans l'ERP`} aria-label={`${name} — ouvrir la fiche dans l'ERP`}>
-        <ReceiptText size={13} />
+    <>
+      <Link to={`/fournisseurs/achats?id=${item.id}`} onClick={open} data-testid={`schedule-qb-${item.id}`}
+        className="min-w-0 inline-flex items-center text-sm link-record"
+        title={`Facture ${item.vendor}${item.invoice_number ? ` ${item.invoice_number}` : ''}`}>
+        <span className="truncate">{num}</span>
       </Link>
-      {item.qb_url ? (
-        <a href={item.qb_url} target="_blank" rel="noreferrer" data-testid={`schedule-qb-${item.id}`}
-          className="min-w-0 inline-flex items-center gap-1 text-sm link-record"
-          title={`${name} — ouvrir dans QuickBooks`}>
-          <span className="truncate">{num}</span>
-          <ExternalLink size={12} className="shrink-0 opacity-60" />
-        </a>
-      ) : (
-        <span className="min-w-0 truncate text-sm text-slate-500" data-testid={`schedule-qb-${item.id}`}
-          title="Pas encore publiée dans QuickBooks — rien à ouvrir">{num}</span>
+      {achat && (
+        <RecordPeekDrawer open onClose={() => setAchat(null)} peekKey="achats" width={640}
+          title={achat.vendor || 'Facture fournisseur'}
+          subtitle={[achat.vendor_invoice_number, achat.invoice_date].filter(Boolean).join(' · ')}>
+          <div className="px-5 py-4">
+            <Suspense fallback={<div className="p-6 text-sm text-slate-400">Chargement…</div>}>
+              <AchatPanel achat={achat} onClose={() => setAchat(null)} onSaved={() => onChanged?.()} />
+            </Suspense>
+          </div>
+        </RecordPeekDrawer>
       )}
-    </span>
+    </>
   )
 }
 
@@ -252,7 +258,7 @@ function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onPaid, o
       )}
 
       <span className="min-w-0 flex-1 flex items-center gap-1.5">
-        <BillLink item={item} />
+        <BillLink item={item} onChanged={onChanged} />
         {item.no_due_date && <span className="shrink-0 text-[11px] text-slate-400">(échéance inconnue)</span>}
       </span>
 
@@ -377,9 +383,9 @@ function DeferredItem({ item, onChanged }) {
     <div className={`flex flex-wrap items-center gap-2 px-3 py-2 border-t border-slate-100 ${busy ? 'opacity-60' : ''}`}
       data-testid={`schedule-deferred-${item.id}`}>
       <span className="min-w-0 flex-1 flex items-center gap-1.5 text-sm text-slate-700 truncate">
-        <span className="font-medium truncate">{item.vendor}</span>
+        <span className="font-medium truncate"><VendorHover variant="payment" name={item.vendor}>{item.vendor}</VendorHover></span>
         <span className="text-slate-400">·</span>
-        <BillLink item={item} />
+        <BillLink item={item} onChanged={onChanged} />
         <span className="shrink-0 text-slate-400">· échéance {fmtDay(item.due_date)}</span>
       </span>
       <input defaultValue={item.defer_reason || ''}
@@ -696,7 +702,7 @@ export default function PaymentSchedule({ onChanged }) {
         {vendors.map(g => (
           <div key={g.key} data-testid={`schedule-vendor-${g.key}`}>
             <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50/50 border-t border-slate-100">
-              <span className="text-sm font-medium text-slate-700 truncate">{g.vendor}</span>
+              <span className="text-sm font-medium text-slate-700 truncate"><VendorHover variant="payment" name={g.vendor}>{g.vendor}</VendorHover></span>
               <span className="text-[11px] text-slate-400">{g.items.length} facture{g.items.length > 1 ? 's' : ''}</span>
               <span className="ml-auto text-sm tabular-nums text-slate-600">
                 {fmtCad(g.total_cad)}
@@ -746,7 +752,7 @@ export default function PaymentSchedule({ onChanged }) {
         {data.later.flatMap(g => g.items).map(it => (
           <div key={it.id} className="flex items-center gap-2 px-3 py-2 border-t border-slate-100 text-sm"
             data-testid={`schedule-later-${it.id}`}>
-            <span className="text-slate-700 truncate">{it.vendor}</span>
+            <span className="text-slate-700 truncate"><VendorHover variant="payment" name={it.vendor}>{it.vendor}</VendorHover></span>
             <BillLink item={it} />
             <span className="ml-auto text-xs text-slate-400">le {fmtDay(it.due_date)}</span>
             <span className="w-28 text-right tabular-nums text-slate-600">{fmtCad(it.amount, it.currency)}</span>
@@ -762,7 +768,7 @@ export default function PaymentSchedule({ onChanged }) {
           <div key={e.id} className="flex items-start gap-2 px-3 py-2 border-t border-slate-100 text-sm">
             <EyeOff size={13} className="text-slate-300 shrink-0 mt-0.5" />
             <span className="min-w-0">
-              <span className="text-slate-700">{e.vendor}</span>
+              <span className="text-slate-700"><VendorHover variant="payment" name={e.vendor}>{e.vendor}</VendorHover></span>
               <span className="text-slate-400"> — {e.detail}</span>
             </span>
             <span className="ml-auto w-28 text-right tabular-nums text-slate-500">{fmtCad(e.amount, e.currency)}</span>

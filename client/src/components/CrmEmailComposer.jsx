@@ -2,11 +2,14 @@ import { useState, useEffect } from 'react'
 import api from '../lib/api.js'
 import EmailComposerModal from './EmailComposerModal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
+import { templateValues, fillText, renderTemplateHtml, templateFallbacks } from '../lib/emailTemplateVars.js'
 
 // Courriel libre depuis une fiche entreprise ou contact : fenêtre ancrée en bas
 // à droite, contacts de la fiche en suggestions, compte Gmail expéditeur au
-// choix. L'envoi est consigné au fil de la fiche.
-export default function CrmEmailComposer({ isOpen, onClose, contacts = [], companyId, contactId, onSent, recipientSelect = false }) {
+// choix. L'envoi est consigné au fil de la fiche. Les variables des modèles
+// prennent les valeurs du contact destinataire (`contacts`, `company_name`
+// ou entreprise de la fiche `companyName`).
+export default function CrmEmailComposer({ isOpen, onClose, contacts = [], companyId, companyName = '', contactId, onSent, recipientSelect = false, withTemplates = false, wide = false }) {
   const [accounts, setAccounts] = useState([])
   const [from, setFrom] = useState('')
   useEffect(() => {
@@ -17,21 +20,37 @@ export default function CrmEmailComposer({ isOpen, onClose, contacts = [], compa
     }).catch(() => setAccounts([]))
   }, [isOpen])
 
+  const [templates, setTemplates] = useState(null)
+  useEffect(() => {
+    if (!isOpen || !withTemplates) return
+    api.emailTemplates.list().then(setTemplates).catch(() => setTemplates(null))
+  }, [isOpen, withTemplates])
+
   const recipients = contacts.filter(c => c.email).map(c => ({
     email: c.email,
     name: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
   }))
 
+  function fillTemplate(t, to) {
+    const contact = contacts.find(c => c.email && c.email.toLowerCase() === to.toLowerCase()) || null
+    const values = templateValues({ contact, company: contact?.company_name || companyName, email: to, fallbacks: templateFallbacks(t) })
+    return { subject: fillText(t.subject, values), html: renderTemplateHtml(t.body, values), contactId: contact?.id || '' }
+  }
+
   return (
     <EmailComposerModal
       docked
+      dockWide={wide}
       isOpen={isOpen}
       onClose={onClose}
       title="Nouveau courriel"
       draft={{ to: recipients[0]?.email || '', subject: '', bodyHtml: '', recipients }}
       allowBcc
       recipientSelect={recipientSelect}
+      templates={withTemplates ? templates : null}
+      fillTemplate={withTemplates ? fillTemplate : null}
       canSend={Boolean(from)}
+      fromAccount={from}
       headerExtra={
         <SearchableSelect
           testId="crm-email-from"

@@ -50,6 +50,7 @@ describe('publication QB — montant passé à la banque (frais de conversion)',
 
     browser = await chromium.launch()
     ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
   })
@@ -70,14 +71,14 @@ describe('publication QB — montant passé à la banque (frais de conversion)',
 
     // Le champ n'existe que pour le type « Dépense payée (Purchase) » — on le force
     // (état local du formulaire, rien n'est persisté).
-    const typePurchase = page.getByTestId('qb-type-purchase')
-    await typePurchase.waitFor({ state: 'visible', timeout: 30000 })
-    await typePurchase.click()
+    await page.getByTestId('qb-type-menu').waitFor({ state: 'visible', timeout: 30000 })
+    await page.getByTestId('qb-type-menu').click()
+    await page.getByTestId('qb-type-purchase').click()
 
     // Mode fournisseur « Nouveau » : l'aperçu d'écart n'est calculé que quand la devise
     // de la transaction est celle du reçu (un vendor QB présélectionné dans une autre
     // devise masquerait l'aperçu). État local uniquement.
-    await page.locator('label', { hasText: 'Nouveau' }).first().click()
+    await page.getByTestId('qb-vendor-mode-toggle').click()
 
     // Champ replié par défaut (rarement utilisé) — il faut l'ouvrir avant de le remplir.
     const toggle = page.getByTestId('qb-bank-charged-toggle')
@@ -105,9 +106,9 @@ describe('publication QB — montant passé à la banque (frais de conversion)',
   test('l\'écart persisté ajoute automatiquement l\'article « Frais de conversion »', async () => {
     await page.goto(`${URL}/sale-receipts/${receipt.id}`, { waitUntil: 'domcontentloaded' })
 
-    const typePurchase = page.getByTestId('qb-type-purchase')
-    await typePurchase.waitFor({ state: 'visible', timeout: 30000 })
-    await typePurchase.click()
+    await page.getByTestId('qb-type-menu').waitFor({ state: 'visible', timeout: 30000 })
+    await page.getByTestId('qb-type-menu').click()
+    await page.getByTestId('qb-type-purchase').click()
 
     const toggle = page.getByTestId('qb-bank-charged-toggle')
     await toggle.waitFor({ state: 'visible', timeout: 10000 })

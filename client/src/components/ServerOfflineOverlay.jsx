@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { ServerOff, RefreshCw, WifiOff } from 'lucide-react'
-import { subscribe, getIsOffline, getReason, getKnownBootId, markOnline, subscribeServerRestart, acceptBootId } from '../lib/serverStatus.js'
+import { subscribe, getIsOffline, getReason, getKnownBootId, markOnline, subscribeServerRestart, acceptBootId, isReloadHeld } from '../lib/serverStatus.js'
 import { sync } from '../lib/dataSync.js'
 import { connect as reconnectRealtime } from '../lib/realtime.js'
 import ThinkingOrb from './ThinkingOrb'
@@ -125,10 +125,12 @@ function describeReason(reason) {
 const PING_EVERY_S = 2
 
 // Nouvelle version prête : on ne recharge l'onglet que lorsqu'il est caché et
-// sans modale ouverte — personne ne le voit. Sinon, clic sur la pastille.
+// sans modale ouverte ni travail retenu (holdReload) — personne ne le voit.
+// Sinon, clic sur la pastille.
 function reloadWhenHidden() {
   if (document.visibilityState !== 'hidden') return
   if (document.querySelector('[role="dialog"]')) return
+  if (isReloadHeld()) return
   window.location.reload()
 }
 

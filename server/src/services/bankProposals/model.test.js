@@ -165,10 +165,11 @@ describe('confirmation en lot', () => {
   test('retient les natures qui publient dans QuickBooks', () => {
     assert.equal(isBatchAcceptable('vendor_expense'), false)
     assert.equal(isBatchAcceptable('aga_repartition'), false)
+    assert.equal(isBatchAcceptable('qb_habit'), false)
   })
 
   test('laisse passer tout le reste', () => {
-    for (const k of KINDS.filter((k) => k !== 'vendor_expense' && k !== 'aga_repartition')) {
+    for (const k of KINDS.filter((k) => !['vendor_expense', 'aga_repartition', 'qb_habit'].includes(k))) {
       assert.equal(isBatchAcceptable(k), true, k)
     }
   })

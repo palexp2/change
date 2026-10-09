@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Feuille de temps — RS&DE</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = { theme: { extend: { colors: { brand: {50:'#EEFAF1',100:'#D2F4DD',200:'#A2E8B6',300:'#6BD588',400:'#43CC6E',500:'#2BC25C',600:'#21B14B',700:'#1B8E3C',800:'#167030',900:'#115825'} } } } }
+</script>
+<style>
+body{background:#f7f6f2;font-family:Inter,system-ui,sans-serif}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem}
+.link{color:#1B8E3C;font-weight:500}
+.new{box-shadow:0 0 0 2px #43CC6E}
+.tag{font-size:10px;font-weight:600;color:#1B8E3C;background:#EEFAF1;border-radius:4px;padding:1px 5px;text-transform:uppercase;letter-spacing:.03em}
+.inp{border:1px solid #e2e8f0;border-radius:.5rem;padding:.25rem .5rem;font-size:.875rem;background:#fff;width:100%}
+td,th{white-space:nowrap}
+.cellin{width:100%;text-align:right;border:1px solid transparent;border-radius:6px;padding:2px 6px;background:transparent}
+.cellin:hover{border-color:#e2e8f0}.cellin:focus{outline:2px solid #43CC6E;background:#fff}
+</style>
+</head>
+<body class="text-slate-900">
+<div class="max-w-7xl mx-auto px-6 pt-3 flex justify-end gap-1 text-[11px] text-slate-400">
+  Connecté en :
+  <button data-r="adm" class="who px-1.5 rounded bg-slate-200 text-slate-700">admin</button>
+  <button data-r="emp" class="who px-1.5 rounded">employé</button>
+</div>
+<div class="p-6 max-w-7xl mx-auto">
+  <div class="flex items-center gap-3 mb-6 flex-wrap">
+    <h1 class="text-xl font-semibold">Feuille de temps</h1>
+    <span class="text-sm text-slate-400">— Guillaume Lambert</span>
+    <div id="sw" class="flex rounded-lg border border-slate-200 overflow-hidden text-sm ml-2 new">
+      <button data-v="emp" class="tab px-3 py-1.5 bg-brand-600 text-white">Ma feuille</button>
+      <button data-v="adm" class="tab px-3 py-1.5 border-l border-slate-200 bg-white text-slate-600">Équipe</button>
+    </div>
+  </div>
+
+  <!-- ===== EMPLOYÉ ===== -->
+  <div id="emp" class="flex flex-col lg:flex-row gap-6">
+    <aside class="lg:w-72 lg:flex-shrink-0 order-2 lg:order-1">
+      <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">Périodes de paie</h2>
+      <div class="card overflow-hidden">
+        <div class="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100">
+          <div class="text-xs font-semibold text-slate-600">27 septembre — 10 octobre 2026</div>
+          <div class="text-xs tabular-nums font-semibold">40,00 h</div>
+        </div>
+        <table class="w-full text-sm" id="hist"></table>
+      </div>
+    </aside>
+
+    <main class="flex-1 min-w-0 order-1 lg:order-2">
+      <div class="card p-4 mb-4 flex items-center justify-between gap-4 flex-wrap">
+        <div class="flex items-center gap-2">
+          <button class="p-1.5 text-slate-400">‹</button>
+          <div id="lbl" class="text-sm font-medium text-slate-700 min-w-[14rem] text-center">vendredi 2 octobre 2026</div>
+          <button class="p-1.5 text-slate-400">›</button>
+          <button class="ml-1 text-xs link">Aujourd'hui</button>
+          <div class="flex rounded-lg border border-slate-200 overflow-hidden text-xs ml-3 new">
+            <button id="bJ" class="px-2.5 py-1 bg-brand-600 text-white">Jour</button>
+            <button id="bS" class="px-2.5 py-1 border-l border-slate-200 bg-white text-slate-600">Semaine</button>
+          </div>
+        </div>
+        <div class="text-right">
+          <div id="tl" class="text-xs text-slate-400 uppercase tracking-wide">Total payable du jour</div>
+          <div id="tv" class="text-xl font-semibold tabular-nums">8:00</div>
+        </div>
+      </div>
+
+      <div id="dayC" class="card p-4 new">
+        <div class="flex items-end gap-4 flex-wrap pb-4 border-b border-slate-100">
+          <label class="text-xs text-slate-500">Arrivée<input class="inp mt-1 w-24 block" value="08:30"></label>
+          <label class="text-xs text-slate-500">Départ<input class="inp mt-1 w-24 block" value="17:30"></label>
+          <label class="text-xs text-slate-500">Pause<input class="inp mt-1 w-20 block" value="1:00"></label>
+          <span class="flex-1"></span>
+          <button class="text-sm text-slate-500">Copier hier</button>
+        </div>
+        <table class="w-full text-sm mt-2">
+          <thead><tr class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            <th class="px-2 py-2 w-64">Activité</th><th class="px-2 py-2">Description</th><th class="px-2 py-2 w-24 text-right">Durée</th><th class="w-6"></th></tr></thead>
+          <tbody id="entries"></tbody>
+          <tfoot><tr class="border-t border-slate-100 text-slate-400"><td class="px-2 py-1.5 italic">Non ventilé</td><td></td><td class="px-2 py-1.5 text-right tabular-nums">0:00</td><td></td></tr></tfoot>
+        </table>
+        <div class="mt-2"><button class="text-sm link">+ Ajouter une activité</button></div>
+      </div>
+
+      <div id="weekC" class="card p-4 new hidden">
+        <div class="flex items-end gap-4 pb-4 border-b border-slate-100">
+          <label class="text-xs text-slate-500">Heures de la semaine<input class="inp mt-1 w-28 block text-right tabular-nums" value="40:00"></label>
+        </div>
+        <table class="w-full text-sm mt-2">
+          <thead><tr class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            <th class="px-2 py-2 w-64">Activité</th><th class="px-2 py-2">Description</th><th class="px-2 py-2 w-24 text-right">Durée</th><th class="w-6"></th></tr></thead>
+          <tbody>
+            <tr class="border-t border-slate-100"><td class="px-2 py-1.5"><div class="inp flex justify-between items-center"><span class="flex items-center gap-1.5"><i class="w-2 h-2 rounded-full bg-sky-500"></i>R&amp;D · Fiabilité</span><span class="text-slate-300 text-xs">▾</span></div></td><td class="px-2 py-1.5"><input class="inp" value="Firmware OTA, tests 48 h"></td><td class="px-2 py-1.5"><input class="inp text-right tabular-nums" value="18:00"></td><td class="px-1 text-slate-300">🗑</td></tr>
+            <tr class="border-t border-slate-100"><td class="px-2 py-1.5"><div class="inp flex justify-between items-center"><span class="flex items-center gap-1.5"><i class="w-2 h-2 rounded-full bg-violet-500"></i>R&amp;D · Intelligence de contrôle</span><span class="text-slate-300 text-xs">▾</span></div></td><td class="px-2 py-1.5"><input class="inp" value="Prédiction ouverture des toits"></td><td class="px-2 py-1.5"><input class="inp text-right tabular-nums" value="12:00"></td><td class="px-1 text-slate-300">🗑</td></tr>
+          </tbody>
+          <tfoot><tr class="border-t border-slate-100 text-slate-400"><td class="px-2 py-1.5 italic">Non ventilé</td><td></td><td class="px-2 py-1.5 text-right tabular-nums">10:00</td><td></td></tr></tfoot>
+        </table>
+        <div class="mt-2"><button class="text-sm link">+ Ajouter une activité</button></div>
+      </div>
+
+      <div class="card p-4 mt-4 flex items-center gap-6 flex-wrap new">
+        <h2 class="text-sm font-semibold text-slate-500 uppercase tracking-wide">R&amp;D · octobre</h2>
+        <span class="flex items-center gap-1.5 text-sm"><i class="w-2 h-2 rounded-full bg-sky-500"></i>Fiabilité <b class="tabular-nums">7,0 h</b></span>
+        <span class="flex items-center gap-1.5 text-sm"><i class="w-2 h-2 rounded-full bg-violet-500"></i>Intelligence de contrôle <b class="tabular-nums">4,0 h</b></span>
+        <span class="flex-1"></span>
+        <span class="text-sm text-slate-500">Total <b class="text-slate-900 tabular-nums">11,0 h</b></span>
+      </div>
+    </main>
+  </div>
+
+  <!-- ===== ADMIN ===== -->
+  <div id="adm" class="hidden">
+    <div class="card overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="bg-slate-50 text-xs text-slate-500">
+          <th class="text-left px-3 py-2 font-semibold">Heures par période</th>
+          <th class="text-right px-3 py-2 font-semibold">2 août — 15 août</th><th class="text-right px-3 py-2 font-semibold">16 août — 29 août</th>
+          <th class="text-right px-3 py-2 font-semibold">30 août — 12 sept.</th><th class="text-right px-3 py-2 font-semibold">13 sept. — 26 sept.</th>
+          <th class="text-right px-3 py-2 font-semibold">27 sept. — 10 oct.</th></tr></thead>
+        <tbody id="pp"></tbody>
+      </table>
+    </div>
+
+    <div class="card mt-6 new">
+      <div class="flex items-center gap-3 px-3 py-2.5 border-b border-slate-100 flex-wrap">
+        <span class="tag">nouveau</span>
+        <h2 class="text-sm font-semibold text-slate-700">Heures R&amp;D</h2>
+        <div class="flex items-center gap-1 text-sm">
+          <button class="p-1 text-slate-400">‹</button><span class="font-medium text-slate-700">2026-2027</span><button class="p-1 text-slate-400">›</button>
+        </div>
+        <div class="flex rounded-lg border border-slate-200 overflow-hidden text-xs ml-2">
+          <button class="px-2.5 py-1 bg-brand-600 text-white">Tous</button>
+          <button class="px-2.5 py-1 border-l border-slate-200">Fiabilité</button>
+          <button class="px-2.5 py-1 border-l border-slate-200">Intelligence de contrôle</button>
+        </div>
+        <span class="flex-1"></span>
+        <button class="text-xs px-2 py-1 border border-slate-200 rounded-lg text-slate-600">Copier</button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm" id="rd"></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const show = v => {
+  document.querySelectorAll('.tab').forEach(x => x.className = 'tab px-3 py-1.5 ' + (x.dataset.v === 'adm' ? 'border-l border-slate-200 ' : '') + (x.dataset.v === v ? 'bg-brand-600 text-white' : 'bg-white text-slate-600'))
+  emp.classList.toggle('hidden', v !== 'emp'); adm.classList.toggle('hidden', v !== 'adm')
+}
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => show(b.dataset.v))
+document.querySelectorAll('.who').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.who').forEach(x => x.className = 'who px-1.5 rounded' + (x === b ? ' bg-slate-200 text-slate-700' : ''))
+  const admin = b.dataset.r === 'adm'
+  sw.classList.toggle('hidden', !admin); if (!admin) show('emp')
+})
+const f2 = v => v ? v.toFixed(2).replace('.', ',') : '—'
+const f1 = v => v ? v.toFixed(1).replace('.', ',') : ''
+const setV = w => {
+  dayC.classList.toggle('hidden', w); weekC.classList.toggle('hidden', !w)
+  bJ.className = 'px-2.5 py-1 ' + (w ? 'bg-white text-slate-600' : 'bg-brand-600 text-white')
+  bS.className = 'px-2.5 py-1 border-l border-slate-200 ' + (w ? 'bg-brand-600 text-white' : 'bg-white text-slate-600')
+  lbl.textContent = w ? '27 septembre — 3 octobre 2026' : 'vendredi 2 octobre 2026'
+  tl.textContent = w ? 'Total payable de la semaine' : 'Total payable du jour'
+  tv.textContent = w ? '40:00' : '8:00'
+}
+bJ.onclick = () => setV(false); bS.onclick = () => setV(true)
+// historique
+const H = [['ven','2026-10-02','D','8:00',1],['jeu','2026-10-01','D','8:00'],['mer','2026-09-30','D','8:00'],['mar','2026-09-29','D','8:00'],['lun','2026-09-28','D','8:00']]
+hist.innerHTML = H.map(([j,d,m,t,a]) => `<tr class="border-t border-slate-100 ${a?'bg-brand-50 border-l-2 border-l-brand-500':''}"><td class="pl-2.5 pr-2 py-1.5 tabular-nums ${a?'text-brand-700 font-semibold':'text-brand-600 font-medium'}"><span class="text-slate-500 font-normal mr-1.5">${j}</span>${d}</td><td class="px-2 py-1.5 text-right tabular-nums text-slate-700">${t}</td></tr>`).join('')
+// entrées
+const E = [['R&D · Fiabilité','Tests de dérive capteur CO₂','2:00','f'],['R&D · Intelligence de contrôle','Modèle de ventilation — calibration','1:30','i'],['R&D · Fiabilité','Analyse redémarrages Wi-Fi','2:00','f'],['R&D · Intelligence de contrôle','Simulation hiver — ouverture des toits','1:30','i'],['Support client','Ferme Lufa — appel','1:00','']]
+entries.innerHTML = E.map(([c,d,du,p]) => `<tr class="border-t border-slate-100">
+  <td class="px-2 py-1.5"><div class="inp flex justify-between items-center"><span class="flex items-center gap-1.5">${p?`<i class="w-2 h-2 rounded-full ${p==='f'?'bg-sky-500':'bg-violet-500'}"></i>`:''}${c}</span><span class="text-slate-300 text-xs">▾</span></div></td>
+  <td class="px-2 py-1.5"><input class="inp" value="${d}"></td>
+  <td class="px-2 py-1.5"><input class="inp text-right tabular-nums" value="${du}"></td>
+  <td class="px-1 text-slate-300">🗑</td></tr>`).join('')
+// périodes de paie
+const PP = [['Alicia',[80,80,80,72,64]],['Antoine Lambert',[12,16,18,22,8]],['Charles',[80,80,80,80,72]],['Guillaume',[80,80,80,80,40]],['Marc-Antoine',[70,64,72,56,48]],['Martin',[16,0,8,0,0]],['PA',[60,56,48,52,32]]]
+pp.innerHTML = PP.map(([n,v]) => `<tr class="border-t border-slate-100"><td class="px-3 py-1.5"><span class="link">${n}</span></td>${v.map(x=>`<td class="px-3 py-1.5 text-right tabular-nums text-slate-700">${f2(x)}</td>`).join('')}</tr>`).join('')
+// Heures R&D — comme le Sheet
+const M = ['avr','mai','juin','juil','août','sept','oct','nov','déc','janv','févr','mars']
+const EMP = [['Alicia',[136,110,132,144,40,128]],['Charles',[164,168,128,176,104,152]],['Martin',[]],['Guillaume',[80,168,176,184,168,144]],['PA',[116,90.8,50.8,46.3,53.3,61]],['Marc-Antoine',[127,142,105,72.5,126,98]],['Antoine Lambert',[4,9.5,19.3,51.9,0,22]]]
+const th = c => `<th class="text-right px-2.5 py-2 font-semibold">${c}</th>`
+let h = `<thead><tr class="bg-slate-50 text-xs text-slate-500"><th class="text-left px-3 py-2 font-semibold">Employés</th>${M.map(th).join('')}${th('Total')}</tr></thead><tbody>`
+const tot = Array(12).fill(0)
+EMP.forEach(([n,v]) => { let s = 0
+  h += `<tr class="border-t border-slate-100"><td class="px-3 py-1.5"><span class="link">${n}</span></td>${M.map((_,i)=>{const x=v[i]; if(x){tot[i]+=x;s+=x} return `<td class="px-2.5 py-1.5 text-right tabular-nums text-slate-700">${f1(x)}</td>`}).join('')}<td class="px-2.5 py-1.5 text-right tabular-nums font-semibold">${s?f1(s):'—'}</td></tr>` })
+const gt = tot.reduce((a,b)=>a+b,0)
+h += `<tr class="border-t-2 border-slate-200 bg-slate-50 font-semibold"><td class="px-3 py-1.5">Total</td>${tot.map(x=>`<td class="px-2.5 py-1.5 text-right tabular-nums">${f1(x)}</td>`).join('')}<td class="px-2.5 py-1.5 text-right tabular-nums">${f1(gt)}</td></tr>`
+// sous-traitants
+const AR = [35,28,28,35,null,32]
+const arT = AR.reduce((a,b)=>a+(b||0),0)
+h += `<tr><td colspan="14" class="px-3 pt-4 pb-1 text-xs font-semibold text-slate-500 uppercase tracking-wide">Sous-traitants (lien de dépendance)</td></tr>`
+h += `<tr class="border-t border-slate-100"><td class="px-3 py-1.5">Antoine Ratheau</td>${M.map((_,i)=>`<td class="px-1 py-1"><input class="cellin tabular-nums" value="${AR[i]?f1(AR[i]):''}"></td>`).join('')}<td class="px-2.5 py-1.5 text-right tabular-nums font-semibold">${f1(arT)}</td></tr>`
+h += `<tr class="border-t border-slate-100 text-slate-600"><td class="px-3 py-1.5">Taux horaire</td><td class="px-1 py-1"><input class="cellin tabular-nums" value="50 $"></td><td colspan="11"></td><td class="px-2.5 py-1.5 text-right tabular-nums font-semibold text-slate-900">${(arT*50).toLocaleString('fr-CA')} $</td></tr>`
+h += `<tr class="border-t-2 border-slate-200 bg-slate-50 font-semibold"><td class="px-3 py-1.5">Total des heures R&amp;D</td><td colspan="12"></td><td class="px-2.5 py-1.5 text-right tabular-nums">${f1(gt+arT)}</td></tr></tbody>`
+rd.innerHTML = h
+</script>
+</body>
+</html>

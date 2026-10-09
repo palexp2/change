@@ -118,7 +118,27 @@ async function applyVendorExpense(p) {
   return { achat_id: achatId, quickbooks_id: quickbooksId }
 }
 
+// Refaire ce que QuickBooks a toujours fait de ce libellé : virement vers le
+// même compte, ou dépôt dans le même compte. PUBLIE dans QuickBooks.
+async function applyQbHabit(p) {
+  const { entity, account_id: acct, memo } = p.payload || {}
+  if (!acct) throw new ProposalError('Proposition sans compte')
+  const txn = db.prepare('SELECT * FROM bank_transactions WHERE id=? AND deleted_at IS NULL').get(p.bank_txn_id)
+  if (!txn) throw new ProposalError('Transaction introuvable', 404)
+  const account = db.prepare('SELECT * FROM bank_accounts WHERE id=?').get(txn.account_id)
+  const { pushQbAccountTransfer, addDepositFromTxn } = await import('../bankActions.js')
+  try {
+    const res = entity === 'deposit'
+      ? await addDepositFromTxn(txn, account, { account_id: acct, memo })
+      : await pushQbAccountTransfer(txn, account, acct, { memo })
+    return { quickbooks_id: res.qb_txn_id, entity }
+  } catch (e) {
+    throw new ProposalError(e.message, e.status || 400)
+  }
+}
+
 const APPLIERS = {
+  qb_habit: applyQbHabit,
   qb_link: applyQbLink,
   payment_clear: applyPaymentClear,
   paie_debit: applyPaieDebit,

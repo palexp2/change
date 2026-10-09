@@ -9,9 +9,10 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { broadcastAll } from './realtime.js'
 import { localDay, dayDiff as daysBetween } from '../utils/datetime.js'
+import { detectPayCycle, payPeriodOnOrAfter, payCalendar, parsePayKey, describePay, holidaysBetween } from './payrollCycle.js'
 export { localDay, daysBetween }
 
-export const CADENCES = ['bihebdo', 'hebdo', 'mensuel', 'trimestriel', 'annuel', 'adhoc']
+export const CADENCES = ['paie', 'bihebdo', 'hebdo', 'mensuel', 'trimestriel', 'annuel', 'adhoc']
 // Propriétaires possibles d'un travail = les deux sections de la page (AL, ML).
 // Un travail se réassigne d'une section à l'autre ; toute autre valeur le rendrait
 // invisible (aucune section ne l'afficherait).
@@ -88,6 +89,12 @@ export function periodKeyFor(cadence, date = new Date()) {
       const { year, week } = isoWeek(day)
       return `${year}-W${String(week).padStart(2, '0')}-${slotForDay(day).slot}`
     }
+    // Paie : clé = fin de période + étape (1 préparer, 2 Nethris), d'après le cycle détecté.
+    case 'paie': {
+      const pay = payPeriodOnOrAfter(detectPayCycle(), day)
+      if (!pay) return 'adhoc'
+      return (pay.steps.find(s => s.date >= day) || pay.steps.at(-1)).period_key
+    }
     case 'mensuel':     return `${y}-${String(m).padStart(2, '0')}`
     case 'trimestriel': return `${y}-Q${Math.floor((m - 1) / 3) + 1}`
     case 'annuel':      return String(y)
@@ -131,22 +138,19 @@ export function weekKeyToDay(key) {
   return periodKeyFor('hebdo', day) === `${year}-W${String(week).padStart(2, '0')}` ? day : null
 }
 
-const dayMonth = new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'short', timeZone: 'UTC' })
-
 /** Une semaine décrite pour le sélecteur : clé, bornes, libellé lisible. */
 export function describeWeek(dayIso, today = localDay()) {
   const start = weekStart(dayIso)
   const end = addDays(start, 6)
   const key = periodKeyFor('hebdo', start)
   const { week } = isoWeek(start)
-  const fmt = d => dayMonth.format(new Date(`${d}T00:00:00Z`)).replace('.', '')
   return {
     key,
     week,
     start,
     end,
     year: Number(end.slice(0, 4)),
-    label: `Semaine ${week} · ${fmt(start)} au ${fmt(end)} ${end.slice(0, 4)}`,
+    label: `Semaine ${week} · ${start} au ${end}`,
     short_label: `Semaine ${week}`,
     is_current: key === periodKeyFor('hebdo', today),
   }
@@ -217,6 +221,13 @@ export function periodRange(cadence, periodKey) {
   if (cadence === 'hebdo') {
     const start = weekKeyToDay(key)
     return start ? { start, end: addDays(start, 6) } : null
+  }
+  if (cadence === 'paie') {
+    const p = parsePayKey(key)
+    const cycle = p && detectPayCycle()
+    if (!p) return null
+    const d = cycle ? describePay(cycle, p.end).steps[p.step.step - 1].date : addDays(p.end, p.step.offset)
+    return { start: d, end: d }
   }
   if (cadence === 'bihebdo') {
     const slot = slotFromKey(key)
@@ -382,7 +393,7 @@ export function listRecurringTasks({ owner = null, includeInactive = false, date
   if (!includeInactive) where.push('active=1')
   const rows = db.prepare(`
     SELECT * FROM recurring_tasks WHERE ${where.join(' AND ')}
-    ORDER BY CASE cadence WHEN 'bihebdo' THEN 0 WHEN 'hebdo' THEN 1 WHEN 'mensuel' THEN 2
+    ORDER BY CASE cadence WHEN 'paie' THEN -1 WHEN 'bihebdo' THEN 0 WHEN 'hebdo' THEN 1 WHEN 'mensuel' THEN 2
                           WHEN 'trimestriel' THEN 3 WHEN 'annuel' THEN 4 ELSE 5 END, priority DESC, position, created_at
   `).all(...params)
 
@@ -395,6 +406,7 @@ export function listRecurringTasks({ owner = null, includeInactive = false, date
   const today = localDay()
   return rows.map(t => {
     if (t.cadence === 'bihebdo') return biweeklyTask(t, { date, today, completion })
+    if (t.cadence === 'paie') return payrollTask(t, { date, today, completion })
     // period_offset décale la période « courante » en arrière (travaux qui ne se
     // font qu'une fois le mois terminé) : la ligne affiche alors directement la
     // période décalée, plus besoin d'un rattrapage pour dire la même chose.
@@ -455,6 +467,57 @@ function biweeklyTask(t, { date, today, completion }) {
     done_source: null,
     due_date: null, days_until_due: null, due_status: null,
     catch_up: [],
+  }
+}
+
+// Dates en YYYY-MM-DD comme partout dans l'app ; le jour de la semaine reste en tête.
+const fmtWeekday = d => `${new Intl.DateTimeFormat('fr-CA', { weekday: 'short', timeZone: 'UTC' })
+  .format(new Date(`${d}T00:00:00Z`)).replace('.', '')} ${d}`
+
+/**
+ * Ligne « Paie » pour la semaine ancrée : la prochaine paie dont la soumission
+ * (mardi) tombe dans cette semaine ou après. Deux cases — préparer (lundi),
+ * soumettre à Nethris (mardi) — et le calendrier des paies autour.
+ */
+function payrollTask(t, { date, today, completion }) {
+  const cycle = detectPayCycle()
+  const monday = weekStart(typeof date === 'string' ? date : localDay(date))
+  // Semaine sans paie : la ligne annonce déjà la suivante.
+  const pay = payPeriodOnOrAfter(cycle, monday)
+  const base = { ...t, occurrences: [], catch_up: [], done_note: null, done_source: null, pay_calendar: [] }
+  if (!pay) return { ...base, period_key: 'adhoc', period_label: 'aucune paie connue', done: false, due_date: null, days_until_due: null, due_status: null }
+  const occurrences = pay.steps.map(s => {
+    const c = completion.get(t.id, s.period_key)
+    return {
+      period_key: s.period_key, slot: s.step,
+      label: `${fmtWeekday(s.date)} · ${s.label}`,
+      holiday: s.holiday, moved_from: s.moved_from,
+      start: s.date, end: s.date, due_date: s.date,
+      done: !!c, done_at: c?.done_at || null, done_by_name: doneByName(t, c),
+      is_current: s.date === today, is_past: s.date < today,
+    }
+  })
+  const done = occurrences.every(o => o.done)
+  const submit = pay.steps.at(-1).date
+  const days_until_due = daysBetween(today, submit)
+  const lastDone = [...occurrences].reverse().find(o => o.done)
+  return {
+    ...base,
+    period_key: (occurrences.find(o => !o.done) || occurrences[0]).period_key,
+    period_label: `${pay.start} – ${pay.end}`,
+    occurrences,
+    done,
+    done_at: lastDone?.done_at || null,
+    done_by_name: lastDone?.done_by_name || null,
+    due_date: submit,
+    days_until_due,
+    due_status: done ? null : days_until_due < 0 ? 'overdue' : days_until_due <= 1 ? 'due_soon' : 'upcoming',
+    pay_cycle: cycle,
+    pay_holidays: holidaysBetween(addDays(monday, -40), addDays(monday, 70)),
+    pay_calendar: payCalendar(cycle, addDays(monday, -14), addDays(monday, 70)).map(p => ({
+      start: p.start, end: p.end,
+      steps: p.steps.map(s => ({ date: s.date, step: s.step, done: !!completion.get(t.id, s.period_key) })),
+    })),
   }
 }
 
@@ -539,12 +602,17 @@ const SEED = [
   // Antoine Lambert
   // Ces trois-là se font le mardi ET le samedi — d'où la cadence bi-hebdomadaire
   // (deux cases par semaine). Pas de day_hint : les créneaux le disent déjà.
+  // Cycle lu dans les paies (payrollCycle.js) : lundi préparer, mardi Nethris.
+  { owner: 'AL', cadence: 'paie', slug: 'paie-nethris', label: 'Faire la paie' },
   { owner: 'AL', cadence: 'bihebdo', slug: 'ctb-transactions', label: 'CTB les transactions + concilier les comptes bancaires et de cartes de crédit' },
   { owner: 'AL', cadence: 'bihebdo', slug: 'payer-fournisseurs', label: 'Payer les comptes fournisseurs',
     notes: 'Mastercard : paiement pré-programmé le 4-5 du mois. Garder le solde sous 10 000 $ (limite de crédit 15 000 $).' },
   { owner: 'AL', cadence: 'bihebdo', slug: 'maintien-solde-disponible', label: 'Mettre à jour le fichier « Maintien du solde disponible »' },
   { owner: 'AL', cadence: 'hebdo', slug: 'depenses-emilie', label: "Compiler les dépenses pour le suivi budgétaire d'Émilie", day_hint: 'mardi' },
   { owner: 'AL', cadence: 'hebdo', slug: 'remettre-20k-epargne', label: 'Remettre 20 k$ dans le compte Épargne' },
+  // Se coche seule quand la liste de la semaine part à Phil (instagramProspects.js).
+  { owner: 'AL', cadence: 'hebdo', slug: 'liste-instagram-phil', label: 'Ouvrir Instagram dans Edge pour envoyer la liste de la semaine à Phil', day_hint: 'samedi',
+    notes: 'Laisser instagram.com ouvert : le module lit les commentaires et la liste part seule à Phil.' },
   { owner: 'AL', cadence: 'mensuel', slug: 'payer-visa', label: 'Payer Visa CAD et Visa USD', day_hint: 'le 25', due_day: 25,
     notes: 'Un rappel Slack automatique existe déjà (automation « Rappel de paiement des cartes »).' },
   // Ces trois-là se font APRÈS la fin du mois qu'elles décrivent (déboursés,
@@ -676,10 +744,10 @@ export function isValidPeriodKey(cadence, periodKey) {
 // Deux garde-fous : on ne touche jamais une période déjà cochée (un cochage
 // humain garde son auteur), et un travail supprimé ou désactivé ne ressuscite
 // pas. Le cochage reste décochable comme n'importe quel autre.
-export function completeFromAutomation(taskId, { note = null, date = new Date() } = {}) {
+export function completeFromAutomation(taskId, { note = null, date = new Date(), periodKey = null } = {}) {
   const task = db.prepare('SELECT * FROM recurring_tasks WHERE id=? AND deleted_at IS NULL AND active=1').get(taskId)
   if (!task) return null
-  const period_key = shiftPeriodKey(task.cadence, periodKeyFor(task.cadence, date), task.period_offset || 0)
+  const period_key = periodKey || shiftPeriodKey(task.cadence, periodKeyFor(task.cadence, date), task.period_offset || 0)
   if (!period_key || !isValidPeriodKey(task.cadence, period_key)) return null
   const info = db.prepare(`
     INSERT INTO recurring_task_completions (id, task_id, period_key, done_by, note, source)

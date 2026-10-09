@@ -60,6 +60,7 @@ describe('détection fiscale', () => {
 
     browser = await chromium.launch()
     ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
   })
@@ -93,10 +94,11 @@ describe('détection fiscale', () => {
 
     const panel = page.getByTestId('fiscal-detection')
     await panel.waitFor({ state: 'visible', timeout: 10000 })
+    // Ligne courte (source seule), détail complet au survol.
     const text = await panel.textContent()
-    assert.match(text, /Achat local taxable/, 'type détecté absent du panneau')
     assert.match(text, /règles internes/, 'source absente du panneau')
-    assert.match(text, /confiance/, 'badge de confiance absent')
+    const detail = await panel.getAttribute('title')
+    assert.match(detail, /Achat local taxable/, 'type détecté absent du détail')
 
     // Le type détecté est présélectionné dans le sélecteur.
     const selText = await txtype.textContent()
@@ -128,7 +130,7 @@ describe('détection fiscale', () => {
     assert.match(text, /TPS/, 'le conflit doit citer les taxes facturées')
 
     // Le panneau de détection retombe sur les règles, pas sur le profil contredit.
-    const panelText = await page.getByTestId('fiscal-detection').textContent()
+    const panelText = await page.getByTestId('fiscal-detection').getAttribute('title')
     assert.match(panelText, /Achat local taxable/)
   })
 })

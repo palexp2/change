@@ -61,7 +61,7 @@ router.get('/opportunity/:txnId', (req, res) => {
   const txn = db.prepare('SELECT * FROM bank_transactions WHERE id=? AND deleted_at IS NULL').get(req.params.txnId)
   if (!txn) return res.status(404).json({ error: 'Not found' })
   const key = stripBankNoise([txn.details, txn.description].filter(Boolean).join(' '))
-  const hit = habitsFromStatement({ limit: 400 }).find((h) => h.label_pattern === key)
+  const hit = (key ? habitsFromStatement({ pattern: key }) : []).find((h) => h.label_pattern === key)
   res.json(hit || null)
 })
 
@@ -94,14 +94,33 @@ router.get('/:id/verify', (req, res) => {
 // achat, ce sont SES valeurs qui font foi ; sinon celles que le dossier a
 // préparées. Un champ sans source reste vide.
 function bookingFromTxn(txn) {
+  // Ce que la ligne a reçu comme geste : un virement vers un autre compte, ou
+  // l'exclusion — la règle refera la même chose.
+  if (txn.transfer_txn_id) {
+    const other = db.prepare('SELECT account_id FROM bank_transactions WHERE id=?').get(txn.transfer_txn_id)
+    if (other) return { action: 'virement', transfer_account_id: other.account_id }
+  }
+  if (txn.status === 'ignore') return { action: 'exclure' }
   if (txn.matched_type === 'achat' && txn.matched_id) {
     const a = db.prepare(`
-      SELECT vendor, expense_account_id, tax_code_id, qb_memo, type FROM achats_fournisseurs WHERE id=?
+      SELECT vendor, expense_account_id, tax_code_id, qb_memo, type, lines FROM achats_fournisseurs WHERE id=?
     `).get(String(txn.matched_id))
+    // Un achat coupé en plusieurs comptes devient une répartition en %.
+    let lines = []
+    try { lines = JSON.parse(a?.lines || '[]') } catch { /* lignes illisibles */ }
+    lines = lines.filter((l) => l?.account_id && Number(l.amount) > 0)
+    const sum = lines.reduce((n, l) => n + Number(l.amount), 0)
+    const splits = lines.length >= 2 && sum > 0 ? (() => {
+      const pct = lines.map((l) => Math.round((Number(l.amount) / sum) * 1000) / 10)
+      pct[pct.length - 1] = Math.round((100 - pct.slice(0, -1).reduce((n, v) => n + v, 0)) * 10) / 10
+      return { mode: 'pct', lines: lines.map((l, i) => ({ account_id: String(l.account_id), value: pct[i] })) }
+    })() : null
     if (a?.expense_account_id || a?.vendor) {
       return {
+        action: 'depense',
+        splits,
         vendor_name: a.vendor || null,
-        expense_account_id: a.expense_account_id || null,
+        expense_account_id: a.expense_account_id || (lines.length === 1 ? String(lines[0].account_id) : null),
         tax_code_id: a.tax_code_id || null,
         memo: a.qb_memo || null,
         qb_type: ['purchase', 'bill', 'cc_credit'].includes(a.type) ? a.type : null,

@@ -67,7 +67,7 @@ test('buildReminderMessage : date cible et délai', () => {
   const msg = buildReminderMessage({ dayIso: '2026-09-22', cards: 'Visa CAD, Visa USD', ...OPTS })
   assert.match(msg, /Visa CAD, Visa USD/)
   assert.match(msg, /dans 2 j/)
-  assert.match(msg, /jeudi 24 septembre/)
+  assert.match(msg, /jeudi 2026-09-24/)
   const sameDay = buildReminderMessage({ dayIso: '2026-10-24', cards: 'Visa', ...OPTS })
   assert.match(sameDay, /aujourd'hui/)
 })

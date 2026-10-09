@@ -36,13 +36,12 @@ export function fmtDate(d) {
 // NE PAS utiliser `new Date().toISOString().slice(0, 10)` pour ça : ça renvoie l'UTC,
 // donc à 23:00 EST le jour J, on obtient J+1 — les défauts de formulaires (date
 // d'écriture comptable, date de paiement, etc.) partent au lendemain.
-// Jour court en français (« 2 sept. ») — pour les mentions au fil du texte, où
-// une date complète prend toute la place pour rien. Midi local en interne : une
-// date métier « YYYY-MM-DD » ne doit jamais reculer d'un jour selon le fuseau.
+// Jour d'une date métier pour les mentions au fil du texte. Toute date affichée
+// est en YYYY-MM-DD (demande de Pierre-Alexandre Papillon, 2026-10-05) : on ne
+// rend plus « 2 sept. ».
 export function fmtDayShort(d) {
   const s = String(d || '').slice(0, 10)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '—'
-  return new Date(`${s}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : '—'
 }
 
 export function localISODate(d = new Date()) {
@@ -78,15 +77,16 @@ export function fmtTime(d) {
 // Formats de date proposés à l'utilisateur pour l'affichage d'un champ date
 // (cf. « Champs personnalisés » du CLAUDE.md). Stockés dans `options.format`
 // d'un champ custom, au même titre que le format d'un champ duration.
+// Toujours YYYY-MM-DD [HH:MM] : les anciens formats (« 20 août 2026 »,
+// « 2:05 PM ») encore stockés retombent sur leur équivalent ISO 24 h.
 export const DATE_DISPLAY_FORMATS = [
   { value: 'iso_date',      label: 'ISO — date seule',      hint: '2026-08-20' },
   { value: 'iso_24h',       label: 'ISO + heure 24 h',       hint: '2026-08-20 14:05' },
-  { value: 'iso_12h',       label: 'ISO + heure 12 h',       hint: '2026-08-20 2:05 PM' },
-  { value: 'local_date',    label: 'Locale — date seule',    hint: '20 août 2026' },
-  { value: 'local_datetime', label: 'Locale + heure',         hint: '20 août 2026, 14 h 05' },
 ]
+const LEGACY_DATE_FORMATS = { local_date: 'iso_date', local_datetime: 'iso_24h', iso_12h: 'iso_24h' }
 
 export function normalizeDateFormat(fmt) {
+  if (LEGACY_DATE_FORMATS[fmt]) return LEGACY_DATE_FORMATS[fmt]
   return DATE_DISPLAY_FORMATS.some(f => f.value === fmt) ? fmt : 'iso_date'
 }
 
@@ -94,7 +94,7 @@ export function normalizeDateFormat(fmt) {
 // aussi l'heure (sinon le format « + heure » n'aurait rien à afficher).
 export function dateFormatHasTime(fmt) {
   const f = normalizeDateFormat(fmt)
-  return f === 'iso_24h' || f === 'iso_12h' || f === 'local_datetime'
+  return f === 'iso_24h'
 }
 
 // Valeur stockée → valeur d'un <input type="datetime-local"> (YYYY-MM-DDTHH:MM,
@@ -122,8 +122,6 @@ export function fromDateTimeLocalInput(s) {
   return `${ymdLocal(dt)}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:00${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
 }
 
-const MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
-
 // Rendu d'une date selon le format choisi par l'utilisateur. Une valeur
 // « date métier » sans composante horaire (YYYY-MM-DD, ou minuit UTC encodé
 // par Airtable) n'a pas d'heure à afficher : les variantes avec heure
@@ -143,20 +141,9 @@ export function fmtDateWithFormat(d, format, { dateOnlyAsMidnight = false } = {}
     const [, y, m, day] = dateOnlyMatch
     if (dateOnlyAsMidnight && dateFormatHasTime(fmt)) {
       dt = new Date(Number(y), Number(m) - 1, Number(day))
-    } else {
-      if (fmt !== 'local_date' && fmt !== 'local_datetime') return fmtDate(d)
-      return `${parseInt(day, 10)} ${MONTHS_FR[parseInt(m, 10) - 1]} ${y}`
-    }
+    } else return fmtDate(d)
   } else dt = new Date(d)
   if (isNaN(dt)) return '—'
   if (fmt === 'iso_24h') return `${ymdLocal(dt)} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`
-  if (fmt === 'iso_12h') {
-    let h = dt.getHours()
-    const ampm = h >= 12 ? 'PM' : 'AM'
-    h = h % 12 || 12
-    return `${ymdLocal(dt)} ${h}:${pad(dt.getMinutes())} ${ampm}`
-  }
-  if (fmt === 'local_date') return dt.toLocaleDateString('fr-CA', { year: 'numeric', month: 'long', day: 'numeric' })
-  if (fmt === 'local_datetime') return dt.toLocaleString('fr-CA', { year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' })
   return fmtDate(d)
 }

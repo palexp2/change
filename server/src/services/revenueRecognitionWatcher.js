@@ -346,6 +346,7 @@ const watcher = createChangeLogWatcher({
   name: 'revRecWatcher',
   intervalMs: POLL_MS,
   isEnabled: () => isSystemAutomationActive('sys_revenue_recognition'),
+  automationId: 'sys_revenue_recognition',
   onPoll: async () => {
     await tailShipmentsOnce()
     await retryQueueOnce()

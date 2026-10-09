@@ -23,7 +23,7 @@ test('buildWeeklyMessage : ventile par origine dès qu’un prospect ne vient pa
     [{ capture_kind: 'comment' }, { capture_kind: 'comment' }], { dayIso: day }
   )
   // Une seule origine = une seule puce, et le total vit dans le titre.
-  assert.ok(commentOnly.includes('*2 prospects · '), commentOnly)
+  assert.ok(commentOnly.includes('*2 personnes · '), commentOnly)
   assert.ok(commentOnly.includes('\n• 2 commentaires'), commentOnly)
 
   const mixed = buildWeeklyMessage(
@@ -34,7 +34,7 @@ test('buildWeeklyMessage : ventile par origine dès qu’un prospect ne vient pa
     { dayIso: day }
   )
   assert.ok(mixed.includes('\n• 2 commentaires'), mixed)
-  assert.ok(mixed.includes('\n• 1 abonné'), mixed)
+  assert.ok(mixed.includes('\n• 1 nouvel abonné'), mixed)
   assert.ok(mixed.includes('\n• 1 message privé'), mixed)
   assert.ok(mixed.includes('\n• 1 réaction de story'), mixed)
 
@@ -80,8 +80,8 @@ test('coveredWeek : le message du lundi annonce la semaine qui vient de finir', 
 })
 
 test('weekRangeLabel : dates en clair, y compris à cheval sur deux mois', () => {
-  assert.equal(weekRangeLabel('2026-W34'), 'du 17 au 23 août')
-  assert.equal(weekRangeLabel('2026-W40'), 'du 28 septembre au 4 octobre')
+  assert.equal(weekRangeLabel('2026-W34'), 'du 2026-08-17 au 2026-08-23')
+  assert.equal(weekRangeLabel('2026-W40'), 'du 2026-09-28 au 2026-10-04')
   assert.equal(weekRangeLabel('pas-une-semaine'), 'pas-une-semaine')
 })
 
@@ -89,7 +89,7 @@ test('buildWeeklyMessage : liste vide → message explicite (un silence = panne)
   const msg = buildWeeklyMessage([], { dayIso: '2026-08-24' })
   assert.match(msg, /Personne de nouveau cette semaine/)
   // Le numéro ISO ne parle à personne : l'en-tête doit porter les dates.
-  assert.match(msg, /17 au 23 août/)
+  assert.match(msg, /2026-08-17 au 2026-08-23/)
   assert.equal(msg.includes('2026-W'), false)
 })
 
@@ -108,14 +108,14 @@ test('buildWeeklyMessage : résumé chiffré seulement, jamais la liste des pros
     erpUrl: 'https://customer.orisha.io/erp/prospects-instagram',
   })
 
-  assert.match(msg, /3 prospects ·/)
+  assert.match(msg, /3 personnes ·/)
   // Le détail vit dans l'ERP et Airtable : aucun nom d'usager ni commentaire
   // ne doit se retrouver dans Slack.
   assert.equal(msg.includes('@jardin.serre'), false)
   assert.equal(msg.includes('beau produit'), false)
   assert.equal(msg.includes('Mot-clé'), false)
-  assert.match(msg, /<https:\/\/customer\.orisha\.io\/erp\/prospects-instagram\|ERP>/)
-  assert.match(msg, /<https:\/\/airtable\.com\/appX\/tblY\|Airtable>/)
+  assert.match(msg, /<https:\/\/customer\.orisha\.io\/erp\/prospects-instagram\|Ouvrir dans Boréal>/)
+  assert.doesNotMatch(msg, /Airtable>/)
 })
 
 test('buildWeeklyMessage : « dont N avec le mot-clé » disparaît quand tous en ont un', () => {
@@ -143,7 +143,7 @@ test('splitByWeek : sépare la semaine couverte de l’arriéré', () => {
 test('buildWeeklyMessage : mentionne l’arriéré sans le compter dans le portrait de la semaine', () => {
   const prospects = [{ ig_username: 'a', has_keyword: 0, dm_sent: 1, replied: 0 }]
   const msg = buildWeeklyMessage(prospects, { dayIso: '2026-08-24', backlogCount: 3 })
-  assert.match(msg, /^:camera_with_flash: \*1 prospect ·/)
+  assert.match(msg, /^:camera_with_flash: \*1 personne ·/)
   assert.match(msg, /• \+3 des semaines passées/)
 })
 

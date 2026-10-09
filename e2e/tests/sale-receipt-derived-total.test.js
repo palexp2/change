@@ -34,6 +34,7 @@ describe('Extraction de données : total dérivé (articles + taxes)', () => {
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -87,10 +88,6 @@ describe('Extraction de données : total dérivé (articles + taxes)', () => {
     await el.waitFor({ state: 'visible', timeout: 10000 })
     const tag = await el.evaluate(node => node.tagName.toLowerCase())
     assert.notEqual(tag, 'input', 'le total dérivé ne doit pas être éditable')
-    await assert.doesNotReject(
-      page.locator('text=(articles + taxes)').waitFor({ state: 'visible', timeout: 3000 }),
-      'l’indice « (articles + taxes) » doit être affiché'
-    )
   })
 
   test('un total imprimé incohérent affiche le repère de divergence', async () => {

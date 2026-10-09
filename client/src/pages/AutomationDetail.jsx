@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
@@ -37,7 +37,8 @@ const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set([
   'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder',
   'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push', 'sys_ticket_survey_slack',
   'sys_order_item_shipped_cost', 'sys_facture_paid_slack', 'sys_soumission_late_click_task',
-  'sys_project_auto_close',
+  'sys_project_auto_close', 'sys_partnership_hubspot', 'sys_return_item_received',
+  'sys_payment_failed_task',
 ])
 
 // Champs de config des automations à éditeur générique clé-valeur.
@@ -121,6 +122,13 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'delay_hours', label: 'Délai après l\'envoi (heures)', def: '24' },
     ],
   },
+  sys_payment_failed_task: {
+    title: 'Paiement refusé → tâche',
+    intro: 'Vider un champ revient au défaut.',
+    fields: [
+      { key: 'assignee_email', label: 'Tâche pour (courriel)', def: 'philippe@orisha.io' },
+    ],
+  },
   sys_project_auto_close: {
     title: 'Fermeture automatique des projets',
     intro: 'Vider un champ revient au défaut.',
@@ -129,14 +137,34 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'reason', label: 'Raison du refus', def: 'Fermeture automatique' },
     ],
   },
+  sys_partnership_hubspot: {
+    title: 'Programme partenaire → HubSpot',
+    intro: 'Vider un champ revient au défaut.',
+    fields: [
+      { key: 'product_name', label: 'Produit (nom)', def: 'Orisha partnership program' },
+      { key: 'product_stripe_id', label: 'Produit (id Stripe)', def: 'prod_VJBPMtzzB2oUxF' },
+      { key: 'hubspot_property', label: 'Champ HubSpot du contact', def: 'subscribed_to_partnership_at' },
+    ],
+  },
   sys_facture_paid_slack: {
     title: 'Facture payée → Slack',
     intro: 'Vider un champ revient au défaut.',
     fields: [
       { key: 'slack_channel', label: 'Canal Slack', def: '#paiements' },
       { key: 'message', label: 'Message', def: '(texte par défaut)', hint: '{lien} = lien vers la facture, {numero} = son numéro.', multiline: true },
+      { key: 'upgrade_prefix', label: 'Ligne ajoutée — ajout à un abonnement', def: "Ajout à l'abonnement." },
+      { key: 'excluded_products', label: 'Produits exclus', type: 'products', hint: 'Facture entièrement composée de ces produits : aucun message.' },
       { key: 'paid_statuses', label: 'Statuts « payée »', def: 'Payé, Payée' },
       { key: 'skip_zero_amount', label: 'Ignorer les factures à 0 $ (0 / 1)', def: '1' },
+      { key: 'slack_webhook_url', label: 'Webhook Slack — URL', def: '(aucune)', hint: 'Secours si le bot n\'est pas utilisé.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — variable d\'environnement', def: '(aucune)' },
+    ],
+  },
+  sys_return_item_received: {
+    title: 'Retour reçu → Slack',
+    intro: 'Vider un champ revient au défaut.',
+    fields: [
+      { key: 'slack_channel', label: 'Canal ou personne Slack', def: 'pap@orisha.io', hint: '« #canal », « @personne » ou un courriel.' },
       { key: 'slack_webhook_url', label: 'Webhook Slack — URL', def: '(aucune)', hint: 'Secours si le bot n\'est pas utilisé.' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — variable d\'environnement', def: '(aucune)' },
     ],
@@ -211,8 +239,11 @@ const DEFAULT_ACTION_CONFIG = {
   script: { script: '', allow_trigger_write: false },
 }
 
-export default function AutomationDetail() {
-  const { id } = useParams()
+// embedded : affichée dans le panneau de droite de la page Automatisations.
+// block : { trigger, keys } = n'afficher que les réglages d'un bloc du schéma.
+export default function AutomationDetail({ recordId, embedded = false, block = null } = {}) {
+  const params = useParams()
+  const id = recordId ?? params.id
   const isNew = id === 'new'
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -580,11 +611,48 @@ export default function AutomationDetail() {
     navigate('/automations')
   }
 
+  // Réglages d'un seul bloc (déclencheur ou action) du schéma en blocs.
+  if (embedded && block) {
+    const keys = new Set(block.keys || [])
+    const spec = GENERIC_CONFIG_FIELDS[id]
+    const fields = spec ? spec.fields.filter(f => keys.has(f.key)) : []
+    const has = list => list.some(k => keys.has(k))
+    const nothing = !(block.trigger && CONFIGURABLE_TRIGGER_AUTOMATIONS.has(id)) && !fields.length && !keys.has('from')
+      && !(id === 'sys_revenue_recognition' && has(REVREC_ACCOUNT_FIELDS.map(f => f.key)))
+      && !(id === CTB_AUTOMATION_ID && has(Object.keys(CTB_DEFAULTS)))
+    return (
+      <div className="space-y-3">
+        {block.trigger && isConfigurableSystem && CONFIGURABLE_TRIGGER_AUTOMATIONS.has(id) && (
+          <ConfigurableSystemTriggerEditor triggerConfig={triggerConfig} onChange={setTriggerConfig} tables={CONFIGURABLE_TRIGGER_TABLES[id]} />
+        )}
+        {id === 'sys_revenue_recognition' && has(REVREC_ACCOUNT_FIELDS.map(f => f.key)) && (
+          <RevRecAccountsEditor actionConfig={actionConfig} onChange={setActionConfig} />
+        )}
+        {id === CTB_AUTOMATION_ID && has(Object.keys(CTB_DEFAULTS)) && (
+          <CtbSheetConfigEditor actionConfig={actionConfig} onChange={setActionConfig} />
+        )}
+        {fields.length > 0 && (
+          <GenericConfigEditor spec={{ ...spec, title: '', intro: '', fields }} actionConfig={actionConfig} onChange={setActionConfig} compact />
+        )}
+        {keys.has('from') && SYSTEM_EMAIL_AUTOMATIONS.has(id) && (
+          <div>
+            <label className="label">Expéditeur</label>
+            <SearchableSelect className="input" size="sm" value={systemFrom} options={postmarkInfo?.addresses || []}
+              getOptionValue={a => a} getOptionLabel={a => a} getOptionKey={a => a} onChange={setSystemFrom} emptyOption="— Défaut —" />
+          </div>
+        )}
+        {nothing && <div className="flex items-center gap-1.5 text-xs text-slate-400"><Lock size={12} /> Géré par Boréal</div>}
+        <div className="text-[11px] text-slate-400">{saving ? 'Sauvegarde…' : ''}</div>
+      </div>
+    )
+  }
+
+  const Shell = embedded ? Fragment : Layout
   return (
-    <Layout>
-      <div className="p-6 max-w-4xl mx-auto space-y-6">
+    <Shell>
+      <div className={embedded ? 'p-4 space-y-4' : 'p-6 max-w-4xl mx-auto space-y-6'}>
         {/* Header */}
-        <div className="flex items-center justify-between">
+        {!embedded && <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button onClick={() => navigate('/automations')} className="text-gray-400 hover:text-gray-600">
               <ArrowLeft size={20} />
@@ -614,9 +682,9 @@ export default function AutomationDetail() {
               <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Sauvegardé'}</span>
             )}
           </div>
-        </div>
+        </div>}
 
-        {isSystem && (
+        {isSystem && !embedded && (
           <div className="bg-brand-50 border border-brand-200 rounded-lg px-4 py-3 text-sm text-brand-900">
             {id === CTB_AUTOMATION_ID
               ? <>Cette automation est intégrée au code de l'application, mais la <strong>connexion au fichier Google Sheets</strong> (fichier, onglet, compte Google) est configurable ci-dessous. Le déclencheur vit dans le code.</>
@@ -981,7 +1049,7 @@ export default function AutomationDetail() {
       {showTestModal && (
         <FieldRuleTestModal automationId={id} onClose={() => setShowTestModal(false)} />
       )}
-    </Layout>
+    </Shell>
   )
 }
 
@@ -2051,19 +2119,53 @@ function CtbSheetConfigEditor({ actionConfig, onChange }) {
   )
 }
 
+// Liste de produits du catalogue de vente (ids, en JSON) : pastilles + ajout recherchable.
+function ProductListPicker({ value, onChange, testId }) {
+  const [offers, setOffers] = useState([])
+  useEffect(() => { api.stripeCatalog.list().then(r => setOffers(r.offers || [])).catch(() => {}) }, [])
+  const ids = (() => { try { const v = JSON.parse(value || '[]'); return Array.isArray(v) ? v : [] } catch { return [] } })()
+  const nameOf = o => [o.sku, o.name_fr || o.name_en].filter(Boolean).join(' — ')
+  const byId = new Map(offers.map(o => [o.id, o]))
+  const save = next => onChange(JSON.stringify(next))
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" data-testid={testId}>
+      {ids.map(id => (
+        <span key={id} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs">
+          {byId.has(id) ? nameOf(byId.get(id)) : id}
+          <button type="button" onClick={() => save(ids.filter(x => x !== id))} className="text-gray-400 hover:text-gray-700"><X size={12} /></button>
+        </span>
+      ))}
+      <div className="w-64">
+        <SearchableSelect
+          value=""
+          options={offers.filter(o => !ids.includes(o.id))}
+          getOptionValue={o => o.id}
+          getOptionLabel={nameOf}
+          onChange={v => v && save([...ids, v])}
+          placeholder="+ Produit"
+          size="sm"
+          className="input"
+        />
+      </div>
+    </div>
+  )
+}
+
 // Éditeur générique clé-valeur pour les automations système à config plate
 // (spec = { title, intro, fields: [{key, label, def, hint?}] }).
-function GenericConfigEditor({ spec, actionConfig, onChange }) {
+function GenericConfigEditor({ spec, actionConfig, onChange, compact = false }) {
   const set = (key, value) => onChange({ ...actionConfig, [key]: value })
   return (
-    <div className="bg-white rounded-lg border p-5" data-testid="generic-config">
-      <h2 className="text-sm font-semibold mb-1">{spec.title}</h2>
-      <p className="text-xs text-gray-500 mb-4">{spec.intro}</p>
-      <div className="grid grid-cols-2 gap-4">
+    <div className={compact ? '' : 'bg-white rounded-lg border p-5'} data-testid="generic-config">
+      {spec.title && <h2 className="text-sm font-semibold mb-1">{spec.title}</h2>}
+      {spec.intro && <p className="text-xs text-gray-500 mb-4">{spec.intro}</p>}
+      <div className={compact ? 'space-y-3' : 'grid grid-cols-2 gap-4'}>
         {spec.fields.map(f => (
-          <div key={f.key} className={f.multiline || f.key === 'splits' || f.key === 'aga_splits' ? 'col-span-2' : ''}>
+          <div key={f.key} className={!compact && (f.multiline || f.type === 'products' || f.key === 'splits' || f.key === 'aga_splits') ? 'col-span-2' : ''}>
             <label className="label">{f.label}</label>
-            {f.multiline ? (
+            {f.type === 'products' ? (
+              <ProductListPicker value={actionConfig?.[f.key]} onChange={v => set(f.key, v)} testId={`generic-config-${f.key}`} />
+            ) : f.multiline ? (
               <textarea
                 rows={5}
                 value={actionConfig?.[f.key] ?? ''}

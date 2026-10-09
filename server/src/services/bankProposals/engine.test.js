@@ -36,6 +36,12 @@ describe('isSolidEnoughToPublish', () => {
     assert.equal(isSolidEnoughToPublish({ value: '70', source: 'habitude (2 fois sur 2)' }, hist(2, 2)), false)
   })
 
+  it('ce qui a été fait pour le libellé : trois fois, et nettement', () => {
+    assert.equal(isSolidEnoughToPublish({ value: '70', source: 'déjà fait 5 fois pour ce libellé' }, null), true)
+    assert.equal(isSolidEnoughToPublish({ value: '70', source: 'déjà fait 2 fois pour ce libellé' }, null), false)
+    assert.equal(isSolidEnoughToPublish({ value: '70', source: 'déjà fait 3 fois sur 6 pour ce libellé' }, null), false)
+  })
+
   it('un champ vide ne suffit jamais', () => {
     assert.equal(isSolidEnoughToPublish({ value: null, source: null }, hist(9, 9)), false)
   })

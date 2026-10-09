@@ -28,7 +28,7 @@ import { pendingInvoiceTotals } from '../services/invoiceDiscount.js'
 import { uploadsPath } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
-import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
+import { getWritableCustomColumns, refusedAirtablePullKeys, isColumnWritable, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { writeBackRecord } from '../services/airtableWriteback.js'
 
 // Filet pour un write-back ERP → Airtable lancé en fire-and-forget : writeBackRecord
@@ -303,13 +303,38 @@ router.put('/adresses/:id', (req, res) => {
   res.json(adr)
 })
 
+// Une adresse encore portée par des commandes (orders.address_id, sans
+// ON DELETE) faisait échouer le DELETE en silence. Si l'entreprise a une
+// jumelle (même ligne d'adresse), les commandes y sont reportées — c'est le
+// cas d'un doublon ; sinon on refuse en nommant les commandes.
 router.delete('/adresses/:id', (req, res) => {
+  const adr = db.prepare('SELECT id, company_id, line1, address_type FROM adresses WHERE id = ?').get(req.params.id)
+  if (!adr) return res.status(404).json({ error: 'Not found' })
+  const orders = db.prepare('SELECT id, order_number FROM orders WHERE address_id = ?').all(adr.id)
+  if (orders.length) {
+    const twin = adr.company_id && adr.line1 ? db.prepare(`SELECT id FROM adresses
+      WHERE company_id = ? AND id != ? AND lower(trim(line1)) = lower(trim(?))
+      ORDER BY (address_type = ?) DESC, (address_type = 'Livraison') DESC, created_at LIMIT 1`)
+      .get(adr.company_id, adr.id, adr.line1, adr.address_type || '') : null
+    if (!twin) {
+      const nums = orders.map(o => `#${o.order_number ?? o.id}`).join(', ')
+      return res.status(409).json({ error: `Adresse utilisée par les commandes ${nums} — changez-leur d'adresse d'abord.` })
+    }
+    db.prepare('UPDATE orders SET address_id = ? WHERE address_id = ?').run(twin.id, adr.id)
+  }
   db.prepare('DELETE FROM adresses WHERE id = ?').run(req.params.id)
   emitEntity('adresse', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })
 
 // ── BOM Items ────────────────────────────────────────────────────────────────
+
+// Lecture via la VUE `bom_items_v` si elle existe : elle porte les champs perso
+// virtuels (lookup « Image » du composant…), absents de la table physique.
+function bomReadRelation() {
+  const hasView = db.prepare("SELECT 1 FROM sqlite_master WHERE type='view' AND name='bom_items_v'").get()
+  return hasView ? 'bom_items_v' : 'bom_items'
+}
 
 router.get('/bom', (req, res) => {
   const { product_id, component_id } = req.query
@@ -326,7 +351,7 @@ router.get('/bom', (req, res) => {
       c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url,
       c.stock_qty as component_stock_qty, c.min_stock as component_min_stock,
       c.procurement_type as component_procurement_type
-    FROM bom_items b
+    FROM ${bomReadRelation()} b
     LEFT JOIN products p ON b.product_id = p.id
     LEFT JOIN products c ON b.component_id = c.id
     ${where}
@@ -344,7 +369,7 @@ router.get('/bom/:id', (req, res) => {
       c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url,
       c.stock_qty as component_stock_qty, c.min_stock as component_min_stock,
       c.procurement_type as component_procurement_type
-    FROM bom_items b
+    FROM ${bomReadRelation()} b
     LEFT JOIN products p ON b.product_id = p.id
     LEFT JOIN products c ON b.component_id = c.id
     WHERE b.id = ?
@@ -435,11 +460,12 @@ router.post('/assemblages', (req, res) => {
 // ── Factures ─────────────────────────────────────────────────────────────────
 
 router.get('/factures', (req, res) => {
-  const { company_id, project_id, status } = req.query
+  const { company_id, contact_id, project_id, status } = req.query
   const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (company_id) { where += ' AND f.company_id = ?'; params.push(company_id) }
+  if (contact_id) { where += ' AND f.contact_id = ?'; params.push(contact_id) }
   if (project_id) {
     where += ' AND (f.project_id = ? OR f.order_id IN (SELECT id FROM orders WHERE project_id = ?))'
     params.push(project_id, project_id)
@@ -448,6 +474,7 @@ router.get('/factures', (req, res) => {
 
   const facturesRows = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name, o.order_number,
+           TRIM(COALESCE(ct.first_name,'') || ' ' || COALESCE(ct.last_name,'')) AS contact_name,
            'stripe' AS source,
            -- Date de paiement effective : paid_at (posé par Stripe à
            -- l'encaissement, couvre la majorité des factures) ; à défaut, dernier
@@ -489,24 +516,28 @@ router.get('/factures', (req, res) => {
            ), 0) AS refund_amount
     FROM factures_v f
     LEFT JOIN companies co ON f.company_id = co.id
+    LEFT JOIN contacts ct ON f.contact_id = ct.id
     LEFT JOIN projects p ON f.project_id = p.id
     LEFT JOIN orders o ON f.order_id = o.id
     ${where}
   `).all(...params)
 
-  // Pending invoices (drafts + sent but not yet paid). Use the same filters where applicable.
-  let pwhere = "WHERE pi.status IN ('draft','sent')"
+  // Pending invoices (drafts + sent but not yet paid, + annulées → « Void »
+  // comme celles de Stripe). Use the same filters where applicable.
+  let pwhere = "WHERE pi.status IN ('draft','sent','cancelled')"
   const pparams = []
   if (company_id) { pwhere += ' AND pi.company_id = ?'; pparams.push(company_id) }
+  if (contact_id) pwhere += ' AND 1=0' // une facture en attente n'a pas de contact
   // Une facture en attente n'a pas de projet propre : elle ne rejoint un projet
   // que par la soumission dont elle est issue.
   if (project_id) {
     pwhere += ' AND pi.soumission_id IN (SELECT id FROM soumissions WHERE project_id = ?)'
     pparams.push(project_id)
   }
-  // Status filter mapping: 'Draft' → status='draft', 'En attente' → status='sent'.
+  // Status filter mapping: 'Draft' → status='draft', 'En attente' → status='sent', 'Void' → 'cancelled'.
   if (status === 'Draft') { pwhere += " AND pi.status='draft'" }
   else if (status === 'En attente') { pwhere += " AND pi.status='sent'" }
+  else if (status === 'Void') { pwhere += " AND pi.status='cancelled'" }
   else if (status) { pwhere += " AND 1=0" } // any other status filter excludes pending
 
   const pendingRows = db.prepare(`
@@ -514,7 +545,8 @@ router.get('/factures', (req, res) => {
            NULL AS document_number,
            COALESCE(pi.sent_at, pi.created_at) AS document_date,
            NULL AS due_date,
-           CASE pi.status WHEN 'draft' THEN 'Draft' WHEN 'sent' THEN 'En attente' END AS status,
+           CASE pi.status WHEN 'draft' THEN 'Draft' WHEN 'sent' THEN 'En attente' WHEN 'cancelled' THEN 'Void' END AS status,
+           pi.status AS pending_status,
            pi.currency,
            NULL AS amount_before_tax_cad,
            NULL AS total_amount,
@@ -535,6 +567,7 @@ router.get('/factures', (req, res) => {
   for (const r of pendingRows) {
     const { net } = pendingInvoiceTotals(r)
     r.amount_before_tax_cad = r.total_amount = r.balance_due = net
+    if (r.pending_status === 'cancelled') r.balance_due = 0
     delete r.items_json
     delete r.discount_json
   }
@@ -594,6 +627,7 @@ router.get('/factures/reconciliation-audit', (req, res) => {
 router.get('/factures/:id', async (req, res) => {
   const row = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name,
+      TRIM(COALESCE(ct.first_name,'') || ' ' || COALESCE(ct.last_name,'')) AS contact_name,
       o.order_number, o.id as order_id_resolved,
       s.id as subscription_local_id,
       s.stripe_id as subscription_stripe_id,
@@ -613,6 +647,7 @@ router.get('/factures/:id', async (req, res) => {
       ) AS first_shipped_at
     FROM factures_v f
     LEFT JOIN companies co ON f.company_id = co.id
+    LEFT JOIN contacts ct ON f.contact_id = ct.id
     LEFT JOIN projects p ON f.project_id = p.id
     LEFT JOIN orders o ON f.order_id = o.id
     LEFT JOIN subscriptions s ON (f.subscription_id = s.stripe_id OR f.subscription_id = s.id)
@@ -763,11 +798,11 @@ router.get('/factures/:id', async (req, res) => {
     company_name: pending.company_name,
     document_number: null,
     document_date: pending.sent_at || pending.created_at,
-    status: pending.status === 'draft' ? 'Draft' : pending.status === 'sent' ? 'En attente' : pending.status === 'cancelled' ? 'Annulée' : pending.status,
+    status: pending.status === 'draft' ? 'Draft' : pending.status === 'sent' ? 'En attente' : pending.status === 'cancelled' ? 'Void' : pending.status,
     currency: pending.currency || 'CAD',
     amount_before_tax_cad: subtotal,
     total_amount: subtotal,
-    balance_due: subtotal,
+    balance_due: pending.status === 'cancelled' ? 0 : subtotal,
     items,
     discount,
     discounts,
@@ -910,6 +945,14 @@ router.patch('/factures/:id', (req, res) => {
       params.push(null)
     }
   }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'contact_id')) {
+    const contactId = req.body.contact_id || null
+    if (contactId && !db.prepare('SELECT 1 FROM contacts WHERE id=? AND deleted_at IS NULL').get(contactId)) {
+      return res.status(400).json({ error: 'Contact introuvable' })
+    }
+    updates.push('contact_id=?')
+    params.push(contactId)
+  }
   const wantsForceSent = Object.prototype.hasOwnProperty.call(req.body, 'is_sent_manual')
     && !!req.body.is_sent_manual
   if (Object.prototype.hasOwnProperty.call(req.body, 'is_sent_manual')) {
@@ -999,9 +1042,10 @@ router.patch('/factures/:id', (req, res) => {
 
   const row = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name,
-      o.order_number
+      o.order_number, TRIM(COALESCE(ct.first_name,'') || ' ' || COALESCE(ct.last_name,'')) AS contact_name
     FROM factures f
     LEFT JOIN companies co ON f.company_id = co.id
+    LEFT JOIN contacts ct ON f.contact_id = ct.id
     LEFT JOIN projects p ON f.project_id = p.id
     LEFT JOIN orders o ON f.order_id = o.id
     WHERE f.id = ?
@@ -1038,8 +1082,8 @@ router.post('/factures/:id/void', async (req, res) => {
       }
     }
     db.prepare(`UPDATE pending_invoices SET status='cancelled', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(p.id)
-    emitEntity('facture', 'updated', p.id, { id: p.id, company_id: p.company_id, status: 'Annulée', pending_status: 'cancelled' }, req.user?.id)
-    return res.json({ ok: true, status: 'Annulée' })
+    emitEntity('facture', 'updated', p.id, { id: p.id, company_id: p.company_id, status: 'Void', balance_due: 0, pending_status: 'cancelled' }, req.user?.id)
+    return res.json({ ok: true, status: 'Void' })
   }
 
   if (!String(f.invoice_id || '').startsWith('in_')) {
@@ -1109,6 +1153,22 @@ router.get('/retours', (req, res) => {
   res.json({ data: rows, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
+// Article de retour + libellés joints (n° de série, produit) : lecture de la
+// fiche ET réponse du PATCH, pour qu'un lien changé s'affiche aussitôt.
+const RETURN_ITEM_SELECT = `
+  SELECT ri.*, sn.serial as serial_number, sn.address as lora_address, sn.status as serial_status,
+         COALESCE(pr.name_fr, psn.name_fr) as product_name,
+         COALESCE(pr.sku, psn.sku) as sku,
+         pr.name_fr as product_to_receive
+  FROM return_items ri
+  LEFT JOIN serial_numbers sn ON ri.serial_id = sn.id
+  LEFT JOIN products psn ON sn.product_id = psn.id
+  LEFT JOIN products pr ON ri.product_id = pr.id`
+
+// Liens d'un article éditables depuis sa fiche (colonne FK → table visée).
+// Pas des champs custom : même règle d'éditabilité, appliquée à leur mapping.
+const RETURN_ITEM_LINKS = { serial_id: 'serial_numbers', product_id: 'products' }
+
 router.get('/retours/:id', (req, res) => {
   const row = db.prepare(`
     SELECT r.*
@@ -1117,18 +1177,7 @@ router.get('/retours/:id', (req, res) => {
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const items = db.prepare(`
-    SELECT ri.*, sn.serial as serial_number,
-           COALESCE(pr.name_fr, psn.name_fr) as product_name,
-           COALESCE(pr.sku, psn.sku) as sku,
-           pr.name_fr as product_to_receive
-    FROM return_items ri
-    LEFT JOIN serial_numbers sn ON ri.serial_id = sn.id
-    LEFT JOIN products psn ON sn.product_id = psn.id
-    LEFT JOIN products pr ON ri.product_id = pr.id
-    WHERE ri.return_id = ?
-    ORDER BY ri.created_at
-  `).all(req.params.id)
+  const items = db.prepare(`${RETURN_ITEM_SELECT} WHERE ri.return_id = ? ORDER BY ri.created_at`).all(req.params.id)
 
   // `received_by` / `analyzed_by` sont du texte libre venu d'Airtable (prénom,
   // surnom ou valeur non-personne comme « Legacy » / « PA »), pas un FK employé.
@@ -1177,8 +1226,23 @@ router.patch('/retours/items/:itemId', (req, res) => {
   if (refusedAirtablePullKeys('return_items', req.body).length > 0) {
     return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
   }
+  const linkCols = []
+  for (const [col, target] of Object.entries(RETURN_ITEM_LINKS)) {
+    if (!Object.prototype.hasOwnProperty.call(req.body || {}, col)) continue
+    const mapping = db.prepare(
+      "SELECT id, import_disabled FROM airtable_field_mappings WHERE erp_table='return_items' AND column_name=?"
+    ).get(col)
+    if (!isColumnWritable('return_items', { column_name: col, mapping_id: mapping?.id ?? null, import_disabled: mapping?.import_disabled })) {
+      return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+    }
+    const v = req.body[col]
+    if (v != null && v !== '' && !db.prepare(`SELECT 1 FROM ${target} WHERE id = ?`).get(v)) {
+      return res.status(400).json({ error: 'Enregistrement lié introuvable' })
+    }
+    linkCols.push(col)
+  }
   const customCols = getWritableCustomColumns('return_items').map(c => c.column_name)
-  const { setClause, values, error } = buildPartialUpdate(req.body, { allowed: customCols })
+  const { setClause, values, error } = buildPartialUpdate(req.body, { allowed: [...customCols, ...linkCols] })
   if (error) return res.status(400).json({ error })
   // `return_items` n'a pas de colonne updated_at (table importée d'Airtable).
   if (setClause) {
@@ -1186,7 +1250,10 @@ router.patch('/retours/items/:itemId', (req, res) => {
     traceRetourPush(writeBackRecord('retour_items', req.params.itemId, Object.keys(req.body)), req.params.itemId)
   }
 
-  const updated = db.prepare(`SELECT * FROM ${readRelation('return_items')} WHERE id = ?`).get(req.params.itemId)
+  const updated = {
+    ...db.prepare(`${RETURN_ITEM_SELECT} WHERE ri.id = ?`).get(req.params.itemId),
+    ...db.prepare(`SELECT * FROM ${readRelation('return_items')} WHERE id = ?`).get(req.params.itemId),
+  }
   emitEntity('return_item', 'updated', req.params.itemId, updated, req.user?.id)
   res.json(updated)
 })
@@ -1399,11 +1466,12 @@ router.post('/abonnement-events/:id/detect-rachat', (req, res) => {
 })
 
 router.get('/abonnements', (req, res) => {
-  const { company_id, status } = req.query
+  const { company_id, contact_id, status } = req.query
   const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (company_id) { where += ' AND s.company_id = ?'; params.push(company_id) }
+  if (contact_id) { where += ' AND s.contact_id = ?'; params.push(contact_id) }
   if (status) { where += ' AND s.status = ?'; params.push(status) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM subscriptions s ${where}`).get(...params).c
@@ -1415,9 +1483,11 @@ router.get('/abonnements', (req, res) => {
       s.amount_monthly as amount_raw,
       s.cancel_date as end_date,
       co.name as company_name,
+      TRIM(COALESCE(ct.first_name,'') || ' ' || COALESCE(ct.last_name,'')) AS contact_name,
       substr(s.start_date, 1, 7) as start_month
     FROM subscriptions s
     LEFT JOIN companies co ON s.company_id = co.id
+    LEFT JOIN contacts ct ON s.contact_id = ct.id
     ${where}
     ORDER BY s.created_at DESC
     LIMIT ? OFFSET ?
@@ -1454,9 +1524,10 @@ router.get('/abonnements/:id', (req, res) => {
   // Accepte l'id local OU le stripe_id (sub_xxx) : factures.subscription_id
   // mélange les deux formats selon la source de sync.
   const row = db.prepare(`
-    SELECT s.*, co.name as company_name
+    SELECT s.*, co.name as company_name, TRIM(COALESCE(ct.first_name,'') || ' ' || COALESCE(ct.last_name,'')) AS contact_name
     FROM subscriptions s
     LEFT JOIN companies co ON s.company_id = co.id
+    LEFT JOIN contacts ct ON s.contact_id = ct.id
     WHERE s.id = ? OR s.stripe_id = ?
   `).get(req.params.id, req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
@@ -1585,9 +1656,20 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
       }
     }
   }
+  // Métadonnées Stripe (infobulle du produit sur la fiche) : celles de la ligne,
+  // puis celles de l'abonnement ; erp_contact_id est traduit en nom du contact.
+  const contactName = id => db.prepare(`SELECT TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS n, email
+    FROM contacts WHERE id = ?`).get(id)
+  const readable = md => Object.entries(md || {}).map(([k, v]) => {
+    if (k === 'erp_contact_id') { const c = contactName(v); if (c) return [k, `${c.n || c.email || v}`] }
+    return [k, v]
+  })
+  const subMeta = readable(sub.metadata)
   const items = sub.items.data.map(si => {
     const htCents = htUnitBySubItem.get(si.id) ?? si.price.unit_amount ?? null
     return {
+      metadata: readable(si.metadata),
+      subscription_metadata: subMeta,
       id: si.id,
       product_name: si.price.product?.name || si.price.nickname || si.price.id,
       description: si.price.product?.description || null,
@@ -1650,6 +1732,14 @@ router.patch('/abonnements/:id', (req, res) => {
     updates.push('company_id=?')
     params.push(companyId)
   }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'contact_id')) {
+    const contactId = req.body.contact_id || null
+    if (contactId && !db.prepare('SELECT 1 FROM contacts WHERE id=? AND deleted_at IS NULL').get(contactId)) {
+      return res.status(400).json({ error: 'Contact introuvable' })
+    }
+    updates.push('contact_id=?')
+    params.push(contactId)
+  }
   if (updates.length) {
     params.push(req.params.id)
     db.transaction(() => {
@@ -1663,6 +1753,23 @@ router.patch('/abonnements/:id', (req, res) => {
     emitSubscription('updated', req.params.id, req.user?.id)
     if (companyChanged) emitSubscriptionEventsOf(req.params.id, req.user?.id)
   }
+  res.json({ ok: true })
+})
+
+// Suppression d'un abonnement local, inconnu de Stripe (restes de tests ;
+// Charles, 2026-10-09). Un abonnement Stripe ne se supprime pas ici.
+router.delete('/abonnements/:id', requireAdmin, (req, res) => {
+  const sub = db.prepare('SELECT id, stripe_id FROM subscriptions WHERE id=?').get(req.params.id)
+  if (!sub) return res.status(404).json({ error: 'Not found' })
+  if (sub.stripe_id) return res.status(409).json({ error: 'Abonnement Stripe : à annuler dans Stripe' })
+  db.transaction(() => {
+    for (const t of ['subscription_events', 'subscription_current_items', 'subscription_partnership_marks']) {
+      db.prepare(`DELETE FROM ${t} WHERE subscription_id=?`).run(sub.id)
+    }
+    db.prepare('UPDATE factures SET subscription_id=NULL WHERE subscription_id=?').run(sub.id)
+    db.prepare('DELETE FROM subscriptions WHERE id=?').run(sub.id)
+  })()
+  emitSubscription('deleted', sub.id, req.user?.id)
   res.json({ ok: true })
 })
 

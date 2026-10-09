@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rapprocher — face à face</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f5f6f7; --surface: #fff; --soft: #f8f9fa; --line: #eceef0; --line2: #dfe2e5;
+  --ink: #1f2328; --ink2: #4a5058; --ink3: #7a8089; --ink4: #a6abb2;
+  --qb: #2ca01c; --qb-d: #1d7f12; --qb-soft: #eef7ec; --blue: #0a6fbf; --blue-soft: #eaf3fb;
+  --amber: #c27a00; --amber-soft: #fdf5e6; --red: #d1362a; --red-soft: #fcefee;
+  --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 12px 32px rgb(0 0 0 / .06);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111315; --surface: #181b1e; --soft: #1d2024; --line: #262a2f; --line2: #30353b;
+  --ink: #eceef0; --ink2: #c3c8ce; --ink3: #8e959d; --ink4: #646b73;
+  --qb: #45b934; --qb-d: #6ccf5c; --qb-soft: #1a2a18; --blue: #5cb0ef; --blue-soft: #16222d;
+  --amber: #f0b04a; --amber-soft: #2e2617; --red: #ff7a6e; --red-soft: #33201e;
+}}
+:root[data-theme="dark"] {
+  --bg: #111315; --surface: #181b1e; --soft: #1d2024; --line: #262a2f; --line2: #30353b;
+  --ink: #eceef0; --ink2: #c3c8ce; --ink3: #8e959d; --ink4: #646b73;
+  --qb: #45b934; --qb-d: #6ccf5c; --qb-soft: #1a2a18; --blue: #5cb0ef; --blue-soft: #16222d;
+  --amber: #f0b04a; --amber-soft: #2e2617; --red: #ff7a6e; --red-soft: #33201e;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13.5px/1.45 Inter, system-ui, sans-serif; padding: 24px 16px 60px; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+.wrap { max-width: 1280px; margin: 0 auto; }
+h1.page { font-size: 20px; margin: 0 0 4px; }
+.sec { margin: 30px 0 10px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.sec h2 { margin: 0; font-size: 16px; }
+.sec p { margin: 0; color: var(--ink3); }
+.pick { display: inline-flex; gap: 4px; background: var(--surface); border: 1px solid var(--line2); border-radius: 999px; padding: 3px; flex-wrap: wrap; }
+.pick button { padding: 4px 12px; border-radius: 999px; color: var(--ink3); font-weight: 500; }
+.pick button.on { background: var(--ink); color: var(--surface); }
+.picks { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+.theme { position: fixed; top: 12px; right: 14px; color: var(--ink3); border: 1px solid var(--line2); border-radius: 999px; padding: 4px 10px; background: var(--surface); font-size: 12px; z-index: 50; }
+.screen { background: var(--surface); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+.sp { flex: 1; }
+.btn { height: 34px; padding: 0 16px; border-radius: 999px; font-weight: 500; border: 1px solid var(--line2); background: var(--surface); color: var(--ink2); display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.btn.g { background: var(--qb); border-color: var(--qb); color: #fff; }
+.btn.sm { height: 26px; padding: 0 11px; font-size: 12px; }
+.btn[disabled] { opacity: .4; pointer-events: none; }
+
+/* B2 */
+.hd { display: flex; align-items: flex-end; gap: 28px; padding: 20px 28px 16px; flex-wrap: wrap; }
+.hd small.t { display: block; font-size: 12px; color: var(--ink3); }
+.hd .acct { font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
+.kpi { display: flex; gap: 26px; }
+.kpi div { display: flex; flex-direction: column; }
+.kpi small { font-size: 11.5px; color: var(--ink3); }
+.kpi b { font-size: 15px; font-weight: 500; }
+.ecart { color: var(--red); border-bottom: 1.5px dashed currentColor; cursor: pointer; }
+.ecart:hover { background: var(--red-soft); }
+
+/* layout */
+.app { display: grid; grid-template-columns: 210px 1fr; min-height: 640px; }
+.rail { border-right: 1px solid var(--line); padding: 10px 0; background: var(--soft); }
+.rail .acc { display: flex; width: 100%; align-items: center; gap: 8px; padding: 9px 18px; text-align: left; color: var(--ink2); }
+.rail .acc.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 var(--qb); }
+.dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; flex: none; }
+.rail .mlist { padding: 2px 0 8px 30px; }
+.rail .mlist button { display: flex; gap: 8px; width: 100%; padding: 4px 18px 4px 0; color: var(--ink3); font-size: 12.5px; }
+.rail .mlist button.on { color: var(--ink); font-weight: 600; }
+.rail .mlist .v { margin-left: auto; }
+.main { min-width: 0; display: flex; flex-direction: column; }
+
+.mhd { display: flex; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.mhd .ttl { font-size: 18px; font-weight: 600; }
+.months { display: flex; gap: 6px; }
+.m { border: 1px solid var(--line); border-radius: 10px; padding: 5px 12px; text-align: center; color: var(--ink3); font-size: 12.5px; }
+.m.closed { background: var(--qb-soft); border-color: transparent; color: var(--qb-d); }
+.m.ready { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); font-weight: 600; }
+.m.open { border-style: dashed; color: var(--ink4); }
+
+.sum { display: flex; align-items: center; gap: 22px; padding: 14px 24px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.sum .f small { display: block; font-size: 11px; color: var(--ink3); }
+.sum .f b { font-weight: 500; font-size: 16px; }
+.sum .op { color: var(--ink4); }
+.pill { padding: 6px 14px; border-radius: 10px; background: var(--red-soft); color: var(--red); transition: all .3s; }
+.pill.ok { background: var(--qb-soft); color: var(--qb-d); }
+.pill b { font-size: 18px !important; font-weight: 600 !important; }
+.prog { display: flex; align-items: center; gap: 8px; color: var(--ink3); font-size: 12.5px; }
+.bar { width: 120px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--qb); transition: width .3s; }
+
+/* face à face */
+.ff { flex: 1; }
+.ffh, .fr { display: grid; grid-template-columns: 62px minmax(0,1fr) 104px 120px 62px minmax(0,1fr) 104px; align-items: center; }
+.ffh { font-size: 11.5px; font-weight: 600; color: var(--ink3); background: var(--soft); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 1; }
+.ffh > span { padding: 8px 10px; }
+.ffh .side { grid-column: span 3; }
+.ffh .mid { text-align: center; }
+.fr { border-bottom: 1px solid var(--line); min-height: 40px; transition: background .25s, opacity .25s; }
+.fr > span { padding: 7px 10px; min-width: 0; }
+.fr .d { color: var(--ink3); font-size: 12.5px; }
+.fr .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fr .bk { border-right: 0; }
+.fr .mid { display: flex; justify-content: center; align-items: center; gap: 4px; border-left: 1px solid var(--line); border-right: 1px solid var(--line); align-self: stretch; }
+.lk { width: 22px; height: 22px; border-radius: 50%; background: var(--qb-soft); color: var(--qb-d); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.fr.done { color: var(--ink3); }
+.fr.done .l { color: var(--ink2); }
+.fr.gap { background: var(--blue-soft); }
+.fr.qbo { background: var(--amber-soft); }
+.fr.wait { color: var(--ink4); }
+.empty { color: var(--ink4); font-style: italic; }
+.datefix { color: var(--amber); font-size: 11.5px; }
+.fr.fresh { animation: fresh 1.2s ease; }
+@keyframes fresh { from { background: var(--qb-soft); } to { background: transparent; } }
+.grp { padding: 8px 24px; font-size: 12px; font-weight: 600; color: var(--ink3); background: var(--soft); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.grp .n { color: var(--ink4); font-weight: 400; }
+.fr.mini { min-height: 28px; font-size: 12px; }
+.fr.mini > span { padding: 3px 10px; }
+.fr.mini .lk { width: 16px; height: 16px; font-size: 10px; }
+
+.foot { display: flex; align-items: center; gap: 12px; padding: 12px 24px; border-top: 1px solid var(--line2); background: var(--surface); position: sticky; bottom: 0; }
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; }
+  .rail { display: flex; overflow: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 0; }
+  .rail .acc { white-space: nowrap; width: auto; }
+  .rail .mlist { display: none; }
+  .ff { overflow-x: auto; }
+  .ffh, .fr { min-width: 820px; }
+}
+</style>
+</head>
+<body>
+<button class="theme" onclick="toggleTheme()">◐</button>
+<div class="wrap">
+  <h1 class="page">Rapprocher — face à face</h1>
+
+  <div class="sec"><h2>B2 · l'écart ouvre le rapprochement</h2></div>
+  <div class="screen">
+    <div class="hd">
+      <div><small class="t">Opérations bancaires</small><div class="acct">BNC CAD</div></div>
+      <div class="kpi">
+        <div><small>Banque</small><b class="num">58 484,91 $</b></div>
+        <div><small>QuickBooks</small><b class="num">56 713,18 $</b></div>
+        <div><small>Écart</small><b class="num ecart" onclick="document.getElementById('rc').scrollIntoView({behavior:'smooth'})">1 771,73 $ ›</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Le rapprochement</h2>
+    <div class="picks">
+      <div class="pick" data-g="lay">
+        <button class="on" data-v="L1">L1 · mois en haut</button>
+        <button data-v="L2">L2 · mois sous le compte</button>
+      </div>
+      <div class="pick" data-g="ff">
+        <button class="on" data-v="F1">F1 · par date</button>
+        <button data-v="F2">F2 · à régler en haut</button>
+        <button data-v="F3">F3 · faits compressés</button>
+      </div>
+    </div>
+  </div>
+  <div class="screen" id="rc"></div>
+</div>
+
+<script>
+const fmt = (v) => v == null ? '' : (v < 0 ? '−' : '') + Math.abs(v).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $'
+const FIN = 58484.91
+// k: ok (apparié), gap (banque seule), qbo (date QB différente), wait (QB seule, reporté)
+const ROWS = [
+  { id: 'a', k: 'gap', bd: '30 sept.', bl: 'STRIPE TRANSFER ST-K2Q9', a: 2184.50, act: 'Créer le dépôt', alt: 'Apparier' },
+  { k: 'ok', bd: '30 sept.', bl: 'FRAIS MENSUELS', a: -18.95, qd: '30 sept.', ql: 'Frais bancaires' },
+  { k: 'ok', bd: '29 sept.', bl: 'PAIEMENT MASTERCARD', a: -6210.33, qd: '29 sept.', ql: 'Virement · MasterCard BNC' },
+  { k: 'ok', bd: '29 sept.', bl: "DEPOT MOBILE 4471", a: 4890.00, qd: '29 sept.', ql: "Dépôt · Ferme L'Apogée" },
+  { id: 'b', k: 'qbo', bd: '28 sept.', bl: 'HYDRO-QUEBEC', a: -412.77, qd: '1 oct.', ql: 'Hydro-Québec · facture', act: 'Inclure', alt: 'Laisser' },
+  { k: 'ok', bd: '27 sept.', bl: 'PAYROLL DEPOSIT NETHRIS', a: -14822.16, qd: '27 sept.', ql: 'Paie · 27 sept.' },
+  { k: 'wait', bd: '', bl: '', a: -1250.00, qd: '27 sept.', ql: 'Chèque 1043 · Groupe Horticole' },
+  { k: 'ok', bd: '26 sept.', bl: 'STRIPE TRANSFER ST-J8P1', a: 3402.18, qd: '26 sept.', ql: 'Dépôt Stripe · 26 sept.' },
+  { k: 'ok', bd: '25 sept.', bl: 'DIGIKEY ELECTRONICS', a: -1873.40, qd: '25 sept.', ql: 'DigiKey · 132580242' },
+  { k: 'ok', bd: '24 sept.', bl: 'BELL CANADA', a: -142.31, qd: '24 sept.', ql: 'Bell · téléphonie' },
+  { k: 'ok', bd: '23 sept.', bl: 'VIR INTERAC GROUPE SERRES', a: 7250.00, qd: '23 sept.', ql: 'Paiement · Serres Lefort' },
+  { k: 'ok', bd: '22 sept.', bl: 'AMAZON WEB SERVICES', a: -311.86, qd: '22 sept.', ql: 'AWS · septembre' },
+  { k: 'ok', bd: '20 sept.', bl: 'TRANSFERT A 0807914', a: -5000.00, qd: '20 sept.', ql: 'Virement · Desjardins USD' },
+  { k: 'ok', bd: '19 sept.', bl: 'PCBWAY', a: -2640.12, qd: '19 sept.', ql: 'PCBWay · commande 8812' },
+]
+const TOTAL_OK = 131
+let done = new Set()
+let lay = 'L1', ff = 'F1', fresh = null
+const isOpen = (r) => r.id && !done.has(r.id)
+const diff = () => ROWS.filter(isOpen).reduce((s, r) => s + r.a, 0)
+
+function toggleTheme() {
+  const r = document.documentElement
+  const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
+  r.dataset.theme = dark ? 'light' : 'dark'
+}
+function resolve(id) { done.add(id); fresh = id; render() }
+function reset() { done = new Set(); render() }
+
+function rowHTML(r, mini) {
+  const open = isOpen(r)
+  const k = r.id && !open ? 'ok' : r.k
+  const cls = k === 'ok' ? 'done' : k
+  let bank, qb, mid
+  if (k === 'gap') {
+    bank = `<span class="d">${r.bd}</span><span class="l">${r.bl}</span><span class="num">${fmt(r.a)}</span>`
+    qb = `<span></span><span class="empty">—</span><span></span>`
+  } else if (k === 'wait') {
+    bank = `<span></span><span class="empty">pas encore passé</span><span></span>`
+    qb = `<span class="d">${r.qd}</span><span class="l">${r.ql}</span><span class="num">${fmt(r.a)}</span>`
+  } else {
+    const qdate = k === 'qbo' ? `<span class="d datefix">${r.qd}</span>` : `<span class="d">${r.id && !open && r.k === 'qbo' ? r.bd : r.qd || r.bd}</span>`
+    bank = `<span class="d">${r.bd}</span><span class="l">${r.bl}</span><span class="num">${fmt(r.a)}</span>`
+    qb = `${qdate}<span class="l">${r.ql || (r.k === 'gap' ? 'Dépôt Stripe · 30 sept.' : '')}</span><span class="num">${fmt(r.a)}</span>`
+  }
+  if (open) mid = `<button class="btn sm g" onclick="resolve('${r.id}')">${r.act}</button>`
+  else if (k === 'wait') mid = `<span style="color:var(--ink4)">⏸</span>`
+  else mid = `<span class="lk">✓</span>`
+  return `<div class="fr ${cls} ${mini ? 'mini' : ''} ${r.id === fresh ? 'fresh' : ''}">${bank}<span class="mid">${mid}</span>${qb}</div>`
+}
+
+function tableHTML() {
+  const head = `<div class="ffh"><span class="side">Relevé BNC</span><span class="mid"></span><span class="side">QuickBooks</span></div>`
+  if (ff === 'F1') return head + ROWS.map(r => rowHTML(r)).join('') + `<div class="grp">▸ ${TOTAL_OK - 11} autres lignes appariées</div>`
+  const todo = ROWS.filter(r => isOpen(r))
+  const wait = ROWS.filter(r => r.k === 'wait')
+  const ok = ROWS.filter(r => !isOpen(r) && r.k !== 'wait')
+  if (ff === 'F2') return head +
+    (todo.length ? `<div class="grp">À régler <span class="n">${todo.length}</span><span class="sp"></span>${done.size ? '<span onclick="reset()">↺</span>' : ''}</div>` + todo.map(r => rowHTML(r)).join('') : '') +
+    `<div class="grp">Reporté <span class="n">${wait.length}</span></div>` + wait.map(r => rowHTML(r)).join('') +
+    `<div class="grp">Fait <span class="n">${TOTAL_OK + done.size}</span></div>` + ok.map(r => rowHTML(r)).join('')
+  // F3 : par date, faits en lignes fines
+  return head + ROWS.map(r => rowHTML(r, !isOpen(r) && r.k !== 'wait')).join('') + `<div class="grp">▸ ${TOTAL_OK - 11} autres lignes appariées</div>`
+}
+
+function render() {
+  const d = diff(), ok = Math.abs(d) < .005
+  const pct = Math.round(100 * (TOTAL_OK + done.size) / (TOTAL_OK + 2))
+  const ACCTS = [['BNC CAD', 'var(--amber)'], ['BNC USD', 'var(--qb)'], ['Desjardins CAD', 'var(--qb)'], ['Desjardins USD', 'var(--amber)'], ['MasterCard', 'var(--ink4)'], ['Visa', 'var(--qb)'], ['Marge Desjardins', 'var(--qb)']]
+  const MS = [['Juin', 'closed', '✓'], ['Juil.', 'closed', '✓'], ['Août', 'closed', '✓'], ['Sept.', 'ready', ok ? 'prêt' : '2'], ['Oct.', 'open', '']]
+  const rail = ACCTS.map(([n, c], i) => `<button class="acc ${i === 0 ? 'on' : ''}">${n}<span class="dot" style="background:${c}"></span></button>` +
+    (lay === 'L2' && i === 0 ? `<div class="mlist">${MS.slice().reverse().map(([m, cl, v]) => `<button class="${cl === 'ready' ? 'on' : ''}">${m}<span class="v" style="color:${cl === 'closed' ? 'var(--qb-d)' : cl === 'ready' ? 'var(--amber)' : 'var(--ink4)'}">${v}</span></button>`).join('')}</div>` : '')).join('')
+  const months = lay === 'L1' ? `<div class="months">${MS.map(([m, c, v]) => `<span class="m ${c}">${m} ${v}</span>`).join('')}</div>` : ''
+  document.getElementById('rc').innerHTML = `
+  <div class="app">
+    <div class="rail">${rail}</div>
+    <div class="main">
+      <div class="mhd"><span class="ttl">BNC CAD · 30 sept.</span><span class="sp"></span>${months}</div>
+      <div class="sum">
+        <div class="f"><small>Relevé</small><b class="num">${fmt(FIN)}</b></div><span class="op">−</span>
+        <div class="f"><small>QuickBooks coché</small><b class="num">${fmt(FIN - d)}</b></div><span class="op">=</span>
+        <div class="f pill ${ok ? 'ok' : ''}"><small>Différence</small><b class="num">${ok ? '0,00 $ ✓' : fmt(d)}</b></div>
+        <span class="sp"></span>
+        <div class="prog"><span class="bar"><i style="width:${pct}%"></i></span>${TOTAL_OK + done.size} / ${TOTAL_OK + 2}</div>
+      </div>
+      <div class="ff">${tableHTML()}</div>
+      <div class="foot"><span class="sp"></span><button class="btn">Enregistrer pour plus tard</button><button class="btn g" ${ok ? '' : 'disabled'}>Terminer dans QuickBooks</button></div>
+    </div>
+  </div>`
+  fresh = null
+}
+
+document.querySelectorAll('.pick').forEach(p => p.addEventListener('click', (ev) => {
+  const b = ev.target.closest('button'); if (!b) return
+  p.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b))
+  if (p.dataset.g === 'lay') lay = b.dataset.v; else ff = b.dataset.v
+  render()
+}))
+render()
+</script>
+</body>
+</html>

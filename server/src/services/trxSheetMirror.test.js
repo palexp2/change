@@ -4,7 +4,7 @@
 // lit tous les jours.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { rowForTab, planTab, placeMissing, growthDescending, readsBack, monthFirstOf, blankRowFill, rowHeightFill, resolveComment, dataRowHeight, paintRuns, cellsToWrite, resolveReview, dataWidth, balanceCells, detectTabDirection, rowsForBalancePass, STATUS_FILL, dateShape, formatDateLike } from './trxSheetMirror.js'
+import { rowForTab, planTab, placeMissing, growthDescending, readsBack, monthFirstOf, blankRowFill, rowHeightFill, resolveComment, dataRowHeight, paintRuns, cellsToWrite, resolveReview, dataWidth, balanceCells, detectTabDirection, rowsForBalancePass, STATUS_FILL, dateShape, formatDateLike, anchorYears, datedRows, textAmount, financeFixes, financeFormatRuns, statementStateCells, paintsToApply, FINANCE_PATTERN } from './trxSheetMirror.js'
 
 // Onglet BNC : Date | Description | Référence | Autres détails | … | Débit | Crédit | Solde
 const BNC = { date: 0, description: 1, reference: 2, details: 3, debit: 5, credit: 6, balance: 7 }
@@ -519,4 +519,64 @@ test('changé des deux côtés : les deux textes sont gardés', () => {
   assert.deepEqual(resolveComment('A', 'B', 'X'), { value: 'B · A', toErp: true, toFile: true })
   assert.deepEqual(resolveComment('ok', 'ok, vu', 'X'), { value: 'ok, vu', toErp: true })
   assert.deepEqual(resolveComment(' ok ', 'ok', null), { value: 'ok' })
+})
+
+test('un ancien bloc « Retraits / Dépôts » garde ses colonnes : ses dépôts sont datés', () => {
+  const grid = [
+    ['Date', 'Description', 'Référence', 'Montant', 'Solde'],
+    ['2026-01-30', 'FRAIS', '', '(8.00)', '100.00'],
+    [''],
+    ['Date', 'Description', 'Référence', 'Retraits', 'Dépôts', 'Solde'],
+    ['3/11/2025', 'COMPTE DIVERS', 'STRIPE', '', '1,393.37', '30,888.07'],
+  ]
+  const cols = { date: 0, description: 1, reference: 2, amount: 3, balance: 4 }
+  const rows = datedRows(grid, 0, cols, { todayIso: '2026-10-06' })
+  assert.deepEqual(rows.map((r) => [r.rowIndex, r.txn_date]), [[1, '2026-01-30'], [4, '2025-11-03']])
+  assert.equal(rows[1].cols.credit, 4)
+  assert.equal(rows[1].cols.balance, 5)
+})
+
+test('un montant resté en texte redevient un nombre, sans deviner le reste', () => {
+  assert.equal(textAmount('4 133,76'), 4133.76)
+  assert.equal(textAmount('-2 004,12'), -2004.12)
+  assert.equal(textAmount('(2,004,12)'), -2004.12)
+  assert.equal(textAmount('$4,00'), 4)
+  assert.equal(textAmount('‑3 271,67 $'), -3271.67)
+  assert.equal(textAmount('1,234.56'), 1234.56)
+  assert.equal(textAmount('C43920000000040'), null)
+  assert.equal(textAmount('1,234'), null)
+  assert.equal(textAmount('12,3456'), null)
+})
+
+test('format Finance : seules les cellules de montant des lignes datées, groupées par plage', () => {
+  const cols = { date: 0, reference: 1, amount: 2, balance: 3 }
+  const dated = [{ rowIndex: 5, cols }, { rowIndex: 6, cols }]
+  const cells = (r, c) => (c === 3 && r === 5 ? { text: null, pattern: FINANCE_PATTERN } : c === 2 && r === 6 ? { text: '4 133,76', pattern: null } : { text: null, pattern: null })
+  const { formats, numbers } = financeFixes(dated, cells)
+  assert.deepEqual(formats, [{ row: 5, col: 2 }, { row: 6, col: 2 }, { row: 6, col: 3 }])
+  assert.deepEqual(numbers, [{ row: 6, col: 2, value: 4133.76 }])
+  const runs = financeFormatRuns(formats, 9)
+  assert.equal(runs.length, 2)
+  assert.deepEqual(runs[0].repeatCell.range, { sheetId: 9, startRowIndex: 5, endRowIndex: 7, startColumnIndex: 2, endColumnIndex: 3 })
+})
+
+test('carte : une ligne au plus tard du dernier relevé, sans statut, devient « Autorisée »', () => {
+  const cols = { date: 0, status: 2, amount: 3 }
+  const grid = [[], ['2026-09-10', '', '', '-5'], ['2026-09-10', '', 'En attente', '-6'], ['2026-09-20', '', '', '-7'], ['2026-09-01', '', '', '-8']]
+  const dated = [1, 2, 3, 4].map((r) => ({ rowIndex: r, txn_date: grid[r][0], cols }))
+  const cells = statementStateCells(dated, grid, '2026-09-15', 'MC', new Set([4]))
+  assert.deepEqual(cells, [{ range: 'MC!C2', values: [['Autorisée']] }])
+})
+
+test('la couleur comparée est celle d’AVANT les insertions', () => {
+  const fills = new Map([[10, STATUS_FILL.rapproche]])
+  assert.equal(paintsToApply([{ rowIndex: 11, orig: 10, status: 'rapproche' }], fills).length, 0)
+  assert.equal(paintsToApply([{ rowIndex: 10, orig: -1, status: 'rapproche' }], fills).length, 1)
+})
+
+test('une date sans année qui sort de l’ordre de l’onglet recule d’un an', () => {
+  const grid = [['31 AOÛ31 Août'], ['31 OCT31 Octobre'], ['30 SEP30 Septembre']]
+  const list = [{ rowIndex: 0, txn_date: '2026-08-31' }, { rowIndex: 1, txn_date: '2025-10-31' }, { rowIndex: 2, txn_date: '2026-09-30' }]
+  anchorYears(list, (x) => grid[x.rowIndex][0])
+  assert.deepEqual(list.map((x) => x.txn_date), ['2026-08-31', '2025-10-31', '2025-09-30'])
 })

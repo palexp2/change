@@ -31,13 +31,16 @@ test('les deltas des retours suivent les réceptions sans modification du parent
     return table ? table.upsert.map(row => Object.fromEntries(table.columns.map((c, i) => [c, row[i]]))) : []
   }
   const status = rows => Object.fromEntries(rows.map(row => [row.id, row.cf_statut]))
-  const clearLog = () => db.prepare('DELETE FROM change_log').run()
+  // Les parents de rollup passent aussi par change_log_rollup (triggers chr_*).
+  const clearLog = () => db.exec('DELETE FROM change_log; DELETE FROM change_log_rollup')
 
-  await t.test('reproduit le statut figé avant la correction', async () => {
+  // Avant 079, ce delta était vide (statut figé) ; les triggers de rollup
+  // (chr_*, changeLog.js) renvoient désormais le retour d'eux-mêmes.
+  await t.test('une réception renvoie le retour même sans la migration 079', async () => {
     clearLog()
     db.prepare("UPDATE return_items SET received_at='2026-09-21' WHERE id='item-desert'").run()
     assert.equal(db.prepare("SELECT cf_statut FROM returns_v WHERE id='rma-desert'").get().cf_statut, 'Analyse complétée')
-    assert.deepEqual(await delta(), [])
+    assert.deepEqual(status(await delta()), { 'rma-desert': 'Analyse complétée' })
   })
 
   await t.test('rattrape les retours déjà en cache', async () => {

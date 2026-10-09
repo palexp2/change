@@ -68,7 +68,8 @@ test('échec Slack : aucune tâche cochée', async () => {
 test('aperçu et automation désactivée : aucun envoi ni cochage', async () => {
   previewWeeklyMarketingSlack()
   db.exec('UPDATE automations SET active=0')
-  assert.equal((await send()).skipped, 'inactive')
+  // L'envoi manuel (force) passe outre l'interrupteur ; seul le passage planifié est bloqué.
+  assert.equal((await checkWeeklyMarketingSlack({ today: '2026-09-15' })).skipped, 'inactive')
   assert.equal(sends, 0)
   assert.equal(completions().length, 0)
 })

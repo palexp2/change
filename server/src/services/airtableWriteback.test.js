@@ -81,7 +81,7 @@ const {
   airtableFieldValue, WRITEBACK_MODULES, buildColumnMap, pushableLinkColumn, airtableLinkIds,
   pushOnlyColumns, isAirtableComputedKey, isDirectionConfigurable,
   coreDirectionLockReason, resetComputedKeyCache, importSkippedCoreKeys, isImportRequiredColumn,
-  stockMovementSignedChange, stockMovementLabel,
+  stockMovementSignedChange, stockMovementLabel, stockMovementAirtableChange,
 } = await import('./airtableWriteback.js')
 const { rememberAirtableFieldTypes } = await import('./airtableFieldTypes.js')
 
@@ -638,6 +638,10 @@ test('mouvements d’inventaire : variation signée et libellé Airtable', () =>
   assert.equal(stockMovementSignedChange({ type: 'adjustment', qty: 3, reason: 'Ajustement (diminution)' }), -3)
   // Ajustement saisi dans Boréal : `qty` est le niveau cible, la variation vient de l'appelant.
   assert.equal(stockMovementSignedChange({ type: 'adjustment', qty: 40, signed_change: -2 }), -2)
+  // « Changement » d'un ajustement : valeur absolue, le Type porte le sens.
+  assert.equal(stockMovementAirtableChange({ type: 'adjustment', qty: 3, signed_change: -3, reason: 'Ajustement (diminution)' }), 3)
+  assert.equal(stockMovementAirtableChange({ type: 'adjustment', qty: 3, reason: 'Ajustement (diminution)' }), 3)
+  assert.equal(stockMovementAirtableChange({ type: 'out', qty: 5 }), -5)
   assert.equal(stockMovementLabel({ type: 'out', qty: 1, reason: 'Commande envoyée' }), 'Commande envoyée')
   assert.equal(stockMovementLabel({ type: 'adjustment', qty: 40, signed_change: -2, reason: 'Inventaire' }), 'Ajustement (diminution)')
   assert.equal(stockMovementLabel({ type: 'adjustment', qty: 40, signed_change: 2 }), 'Ajustement (augmentation)')

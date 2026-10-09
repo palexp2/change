@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-10-02T13:05:32.786Z",
+  "generatedAt": "2026-10-09T23:38:05.257Z",
   "stats": {
-    "routes": 97,
-    "pages": 83,
+    "routes": 105,
+    "pages": 91,
     "groups": 7,
-    "api": 115,
-    "tables": 191,
+    "api": 121,
+    "tables": 208,
     "connectors": 11
   },
   "groups": [
@@ -80,12 +80,28 @@ export const architectureManifest = {
           "api": null
         },
         {
+          "to": "/modeles-courriel",
+          "label": "Modèles de courriel",
+          "component": "EmailTemplates",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
           "to": "/discovery-forms",
           "label": "System builder",
           "component": "DiscoveryForms",
           "adminOnly": false,
           "hrOnly": false,
           "api": "/api/discovery-forms"
+        },
+        {
+          "to": "/catalogue-vente",
+          "label": "Catalogue de vente",
+          "component": "StripeCatalog",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
         },
         {
           "to": "/instagram",
@@ -104,6 +120,14 @@ export const architectureManifest = {
           "to": "/formulaires",
           "label": "Formulaires",
           "component": "MarketingForms",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
+          "to": "/rendez-vous",
+          "label": "Rendez-vous",
+          "component": "Meetings",
           "adminOnly": false,
           "hrOnly": false,
           "api": null
@@ -209,9 +233,9 @@ export const architectureManifest = {
           "api": null
         },
         {
-          "to": "/codes-activite",
-          "label": "/codes-activite",
-          "component": "CodesActivite",
+          "to": "/heures-rsde",
+          "label": "Heures RSDE",
+          "component": "HeuresRsde",
           "adminOnly": false,
           "hrOnly": true,
           "api": null
@@ -260,6 +284,14 @@ export const architectureManifest = {
           "adminOnly": false,
           "hrOnly": false,
           "api": "/api/public-files"
+        },
+        {
+          "to": "/acceptations",
+          "label": "Acceptations",
+          "component": "Acceptations",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
         },
         {
           "to": "/problemes-operations",
@@ -349,6 +381,30 @@ export const architectureManifest = {
       "to": "/s/:token",
       "label": "TicketSurvey",
       "component": "TicketSurvey",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/rdv/gestion/:token",
+      "label": "MeetingBooking",
+      "component": "MeetingBooking",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/rdv/:slug",
+      "label": "MeetingBooking",
+      "component": "MeetingBooking",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/contrat/:token",
+      "label": "ContractSign",
+      "component": "ContractSign",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -634,6 +690,14 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/codes-activite",
+      "label": "CodesActivite",
+      "component": "CodesActivite",
+      "adminOnly": false,
+      "hrOnly": true,
+      "api": null
+    },
+    {
       "to": "/contacts/:id",
       "label": "ContactDetailPage",
       "component": "ContactDetailPage",
@@ -760,6 +824,7 @@ export const architectureManifest = {
     "/api/documents",
     "/api/drive-inventory",
     "/api/email-relance",
+    "/api/email-templates",
     "/api/email-tracking",
     "/api/employees",
     "/api/field-visibility-rules",
@@ -779,6 +844,7 @@ export const architectureManifest = {
     "/api/mapaq",
     "/api/marketing-budget",
     "/api/marketing-forms",
+    "/api/meetings",
     "/api/month-end",
     "/api/notifications",
     "/api/novoxpress",
@@ -799,6 +865,8 @@ export const architectureManifest = {
     "/api/projets",
     "/api/public-files",
     "/api/public/installation-feedback",
+    "/api/public/meetings",
+    "/api/public/pages",
     "/api/public/ticket-survey",
     "/api/purchases",
     "/api/qualification-calls",
@@ -811,12 +879,14 @@ export const architectureManifest = {
     "/api/retours",
     "/api/sale-receipts",
     "/api/scrapers",
+    "/api/scrapers/session-bridge/document",
     "/api/search",
     "/api/serials",
     "/api/shipments",
     "/api/side-effects",
     "/api/soumission-assets",
     "/api/stock-movements",
+    "/api/stripe-catalog",
     "/api/stripe-invoice-items",
     "/api/stripe-invoices",
     "/api/stripe-payouts",
@@ -894,6 +964,9 @@ export const architectureManifest = {
     "connector_sessions",
     "contact_companies",
     "contacts",
+    "contract_acceptances",
+    "contract_events",
+    "contracts",
     "custom_field_links",
     "custom_fields",
     "customer_onboarding_responses",
@@ -910,6 +983,7 @@ export const architectureManifest = {
     "email_attachments",
     "email_opens",
     "email_relance_overrides",
+    "email_templates",
     "emails",
     "employees",
     "factures",
@@ -935,6 +1009,8 @@ export const architectureManifest = {
     "marketing_form_script_runs",
     "marketing_form_submissions",
     "marketing_forms",
+    "meeting_bookings",
+    "meeting_types",
     "meetings",
     "missing_invoice_requests",
     "month_end_provision_months",
@@ -942,7 +1018,10 @@ export const architectureManifest = {
     "notifications",
     "order_items",
     "orders",
+    "page_acceptances",
+    "page_events",
     "paie_items",
+    "paie_timesheet_sync_state",
     "paies",
     "password_resets",
     "payment_cards",
@@ -957,6 +1036,8 @@ export const architectureManifest = {
     "prepaid_ledger_entries",
     "product_fifo",
     "product_opening_costs",
+    "product_stripe_aliases",
+    "product_stripe_products",
     "products",
     "projects",
     "public_files",
@@ -969,6 +1050,7 @@ export const architectureManifest = {
     "qualification_calls",
     "rachat_detect_failures",
     "rd_month_hours",
+    "rd_sheet_sync_state",
     "record_comments",
     "record_revision_state",
     "record_revisions",
@@ -992,14 +1074,18 @@ export const architectureManifest = {
     "slow_page_loads",
     "soumission_sends",
     "soumissions",
+    "standing_doc_choices",
     "stock_movements",
     "stripe_balance_transactions",
     "stripe_invoice_items",
     "stripe_invoice_queue",
     "stripe_payouts",
+    "stripe_prices",
+    "stripe_products",
     "stripe_qb_tax_mapping",
     "subscription_current_items",
     "subscription_events",
+    "subscription_upgrade_invoices",
     "subscriptions",
     "sync_log",
     "table_form_configs",
@@ -1011,6 +1097,7 @@ export const architectureManifest = {
     "tickets",
     "timesheet_days",
     "timesheet_entries",
+    "timesheet_week_entries",
     "transaction_anomalies",
     "transcription_jobs",
     "treasury_balances",

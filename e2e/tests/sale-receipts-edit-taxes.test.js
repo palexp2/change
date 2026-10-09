@@ -18,6 +18,7 @@ describe('Extraction de données : édition manuelle des taxes et montants', () 
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -78,15 +79,16 @@ describe('Extraction de données : édition manuelle des taxes et montants', () 
   })
 
   test('vider un champ remet la valeur à null', async () => {
-    const otherInput = page.getByTestId('receipt-amount-other_taxes')
-    await otherInput.fill('')
-    await otherInput.blur()
+    // « Autres taxes » est masquée quand vide : on vide la TVQ, toujours affichée.
+    const tvqInput = page.getByTestId('receipt-amount-tvq')
+    await tvqInput.fill('')
+    await tvqInput.blur()
     await page.waitForTimeout(500)
 
     const resp = await page.request.get(URL + '/api/sale-receipts/' + receiptId, {
       headers: { Authorization: 'Bearer ' + token },
     })
     const body = await resp.json()
-    assert.equal(body.other_taxes, null, 'other_taxes doit être null après vidage')
+    assert.equal(body.tvq, null, 'tvq doit être null après vidage')
   })
 })

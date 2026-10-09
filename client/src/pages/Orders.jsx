@@ -130,6 +130,7 @@ export default function Orders() {
         <DataTable
           table="orders"
           manageViews
+          defaultFieldNames
           columns={COLUMNS}
           data={displayedOrders}
           loading={loading}

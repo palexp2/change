@@ -4,6 +4,7 @@ import { Trash2, RotateCcw, ChevronDown, ChevronRight, Clock, Settings2 } from '
 import { useToast } from '../components/ui/ToastProvider.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { formatRelativeTime } from '../utils/formatters.js'
+import { fmtDateTime } from '../lib/formatDate.js'
 import api from '../lib/api.js'
 import ThinkingOrb from '../components/ThinkingOrb'
 
@@ -169,8 +170,9 @@ export function CorbeilleContent() {
                       <div key={item.id} className="flex items-center justify-between px-4 py-2.5 hover:bg-slate-50">
                         <div>
                           <p className="text-sm text-slate-800">{item.label || item.id}</p>
+                          {item.info && <p className="text-xs text-slate-500">{item.info}</p>}
                           <p className="text-xs text-slate-400">
-                            Supprimé {formatRelativeTime(item.deleted_at)}{' '}
+                            Supprimé <span title={formatRelativeTime(item.deleted_at)}>{fmtDateTime(item.deleted_at)}</span>{' '}
                             {section.auto_purge
                               ? <CountdownLabel deletedAt={item.deleted_at} retentionDays={retentionDays} active={autoActive} />
                               : <span className="text-slate-400">· conservé jusqu'à un vidage manuel</span>}

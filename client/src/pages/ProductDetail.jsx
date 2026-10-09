@@ -37,7 +37,8 @@ import { useToast } from '../contexts/ToastContext.jsx'
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
 
 const PRODUCT_FIELDS = [
-  { key: 'sku',                label: 'SKU',                type: 'text' },
+  // SKU : fixé à la création, plus modifiable (Charles, 2026-10-09).
+  { key: 'sku',                label: 'SKU',                type: 'readonly' },
   // Sélection : les choix ne sont pas codés ici, ils viennent du registre des
   // champs (/champs/products) — ajouter un type là-bas suffit.
   { key: 'type',               label: 'Type',               type: 'select' },
@@ -59,7 +60,10 @@ const PRODUCT_FIELDS = [
   { key: 'order_email',        label: 'Courriel pour commande', type: 'text', span2: true },
   { key: 'procurement_type',   label: 'Approvisionnement',  type: 'select', options: PROCUREMENT_TYPES },
   { key: 'weight_lbs',         label: 'Poids (lbs)',        type: 'number', step: '0.01', defaultVisible: false },
-  { key: 'notes',              label: 'Notes',              type: 'textarea', span2: true, defaultVisible: false },
+  // « Notes » d'Airtable (colonne miroir notes_2, modifiable des deux côtés) —
+  // demande M. Audesse, 2026-10-05. L'ancienne colonne `notes`, vide partout,
+  // sort de la carte (voir TAKEN_ELSEWHERE).
+  { key: 'notes_2',            label: 'Notes',              type: 'textarea', span2: true },
   { key: 'is_sellable',        label: 'Vendable',           type: 'checkbox' },
   { key: 'active',             label: 'Produit actif',      type: 'checkbox' },
 ]
@@ -78,6 +82,8 @@ const TAKEN_ELSEWHERE = [
   // Section « Ajustement d'inventaire » retirée (demande P.-A. Papillon,
   // 2026-10-02) : sa raison ne revient pas par la carte de champs.
   'raison_de_l_ajustement_manuel',
+  // Doublon vide des « Notes » d'Airtable (notes_2), affichées à sa place.
+  'notes',
 ]
 
 
@@ -124,6 +130,10 @@ const BOM_RENDERS = {
   product_sku: row => <span className="text-xs text-slate-500 font-mono">{row.product_sku || '—'}</span>,
 }
 const BOM_COLUMNS = TABLE_COLUMN_META.bom_items.map(meta => ({ ...meta, render: BOM_RENDERS[meta.id] }))
+// Champ perso « Image » (lookup de l'image du composant) : vignette, pas l'URL.
+const BOM_COLUMN_PATCHES = {
+  cf_image: { render: row => BOM_RENDERS.component_image({ ...row, component_image_url: row.cf_image || row.component_image_url }) },
+}
 // « Utilisé dans » : mêmes lignes de BOM, vues depuis le produit parent.
 const USED_IN_RENDERS = {
   ...BOM_RENDERS,
@@ -514,6 +524,7 @@ export default function ProductDetail({ recordId, onClose }) {
         procurement_type: data.procurement_type || '',
         weight_lbs: data.weight_lbs ?? 0,
         notes: data.notes || '',
+        notes_2: data.notes_2 || '',
         active: data.active === 1,
       })
       return data
@@ -708,7 +719,7 @@ export default function ProductDetail({ recordId, onClose }) {
   function fieldEditor(field) {
     if (field.type === 'readonly') {
       // Non modifiable : texte nu, sans le cadre blanc d'un champ de saisie.
-      return <div className="text-sm text-slate-900 py-1.5 tabular-nums">{product[field.key] ?? 0}</div>
+      return <div className="text-sm text-slate-900 py-1.5 tabular-nums">{product[field.key] ?? (field.key === 'sku' ? '—' : 0)}</div>
     }
     if (field.type === 'checkbox') {
       return (
@@ -876,6 +887,7 @@ export default function ProductDetail({ recordId, onClose }) {
         <DataTable
           table="bom_items"
           columns={BOM_COLUMNS}
+          columnPatches={BOM_COLUMN_PATCHES}
           data={bomSummary.rows}
           searchFields={['component_name', 'component_sku', 'ref_des']}
           height={tableHeight('bom', bomSummary.rows.length)}

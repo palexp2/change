@@ -126,7 +126,30 @@ const BALANCE_MIN_AGE_MIN = 6 * 60
 // suivait le fichier « Maintien du solde disponible BNC », et c'est lui que la
 // projection attend : prendre `current` ferait crier le découvert tous les
 // jours. `current` ne sert que de repli pour un compte sans disponible.
-export function recordPlaidBalance(balances, { minAgeMinutes = BALANCE_MIN_AGE_MIN } = {}) {
+// Plaid renvoie TOUJOURS un solde, même quand la banque ne lui livre plus rien :
+// c'est son dernier montant en cache. Constaté le 2026-10-03 — BNC muette
+// depuis le 28 sept., 131 472 $ « confirmés » toutes les 10 min alors que le
+// vrai solde était 17 934 $, et la saisie à la main de Charles allait être
+// écrasée au passage suivant. La date qui compte est donc celle de la dernière
+// livraison réussie de la banque (`bankUpdatedAt`, itemGet), pas l'heure de
+// l'appel.
+export const BANK_STALE_HOURS = 24
+
+export function plaidBalanceSkipReason(bankUpdatedAt, { now = Date.now(), staleHours = BANK_STALE_HOURS } = {}) {
+  if (!bankUpdatedAt) return null
+  const t = new Date(bankUpdatedAt).getTime()
+  if (!Number.isFinite(t)) return null
+  if ((now - t) / 3600e3 >= staleHours) return 'stale'
+  // Un solde saisi à la main APRÈS la dernière livraison de la banque est plus
+  // frais que tout ce que Plaid peut redire.
+  const manual = db.prepare(
+    "SELECT noted_at FROM treasury_balances WHERE COALESCE(source,'') <> 'plaid' ORDER BY noted_at DESC LIMIT 1"
+  ).get()
+  if (manual && new Date(manual.noted_at).getTime() > t) return 'manual_newer'
+  return null
+}
+
+export function recordPlaidBalance(balances, { minAgeMinutes = BALANCE_MIN_AGE_MIN, bankUpdatedAt = null } = {}) {
   const account = db.prepare(
     'SELECT id, plaid_account_id FROM bank_accounts WHERE name=? AND deleted_at IS NULL'
   ).get(TREASURY_BANK_ACCOUNT)
@@ -136,6 +159,8 @@ export function recordPlaidBalance(balances, { minAgeMinutes = BALANCE_MIN_AGE_M
   // retombe sur `current` quand la banque ne le donne pas.
   const balance = row?.available ?? row?.current
   if (balance == null) return null
+  const skipReason = plaidBalanceSkipReason(bankUpdatedAt)
+  if (skipReason) return { balance, skipped: true, skip_reason: skipReason, bank_updated_at: bankUpdatedAt }
   const { entry, skipped } = recordBalance({ balance, source: 'plaid', minAgeMinutes })
   if (!skipped) checkBalanceVariance(entry.id, { trigger: 'solde Plaid' }).catch(() => {})
   return { balance, skipped, entry_id: entry.id }
@@ -160,6 +185,16 @@ export function plaidImportsTransactions() {
   return String(cfg.import_transactions ?? '0').trim() === '1'
 }
 
+// Dernière livraison réussie de la banque chez Plaid ; null si illisible (on
+// garde alors l'ancien comportement plutôt que de tout bloquer).
+async function bankLastDelivery(itemId) {
+  try { return (await itemHealth(itemId)).last_successful_update || null }
+  catch (e) {
+    console.error('plaidSync.bankLastDelivery:', e?.response?.data?.error_message || e.message)
+    return null
+  }
+}
+
 // Point d'entrée appelé par le webhook Plaid et par la sync manuelle : sync
 // l'item auprès de Plaid, mappe vers bank_transactions, journalise.
 export async function syncPlaidItem(itemId, trigger = 'webhook', { balanceMinAgeMinutes } = {}) {
@@ -172,7 +207,8 @@ export async function syncPlaidItem(itemId, trigger = 'webhook', { balanceMinAge
       const { balances } = await fetchItemBalances(itemId)
       const result = { inserted: 0, touchedAccounts: [], transactions_disabled: true }
       try {
-        result.balance = recordPlaidBalance(balances, balanceMinAgeMinutes == null ? {} : { minAgeMinutes: balanceMinAgeMinutes })
+        const bankUpdatedAt = await bankLastDelivery(itemId)
+        result.balance = recordPlaidBalance(balances, { ...(balanceMinAgeMinutes == null ? {} : { minAgeMinutes: balanceMinAgeMinutes }), bankUpdatedAt })
       } catch (e) {
         console.error('plaidSync.recordPlaidBalance:', e.message)
       }
@@ -187,7 +223,8 @@ export async function syncPlaidItem(itemId, trigger = 'webhook', { balanceMinAge
     }
     const result = importPlaidTransactions(accountsByPlaidId, { added, modified, removed })
     try {
-      result.balance = recordPlaidBalance(balances, balanceMinAgeMinutes == null ? {} : { minAgeMinutes: balanceMinAgeMinutes })
+      const bankUpdatedAt = await bankLastDelivery(itemId)
+      result.balance = recordPlaidBalance(balances, { ...(balanceMinAgeMinutes == null ? {} : { minAgeMinutes: balanceMinAgeMinutes }), bankUpdatedAt })
     } catch (e) {
       // Le solde ne doit jamais faire échouer la sync des transactions.
       console.error('plaidSync.recordPlaidBalance:', e.message)
@@ -224,6 +261,10 @@ export async function refreshTreasuryBalance() {
   }
   const result = await syncPlaidItem(account.plaid_item_id, 'manual', { balanceMinAgeMinutes: 0 })
   if (!result.balance) throw new Error("La banque n'a pas donné de solde")
+  if (result.balance.skip_reason === 'stale') {
+    const d = String(result.balance.bank_updated_at).slice(0, 10)
+    throw new Error(`La banque ne livre plus rien depuis le ${d} — refaire la connexion sur la page Connecteurs`)
+  }
   return { woke, balance: result.balance.balance, entry_id: result.balance.entry_id, inserted: result.inserted }
 }
 

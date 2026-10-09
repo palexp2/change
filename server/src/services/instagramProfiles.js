@@ -247,6 +247,73 @@ export async function readProfiles({ limit = 25, refreshDays = 30, model = 'gpt-
   return out
 }
 
+// ── Lecture depuis le navigateur (module Orisha) ────────────────────────────
+//
+// Depuis le serveur, Instagram refuse la lecture des profils au bout de
+// quelques appels. Depuis un onglet instagram.com ouvert chez Charles, la même
+// lecture passe comme une visite ordinaire : le module demande la liste, lit
+// chaque profil dans l'onglet et renvoie ici le résultat brut.
+
+/** Les noms d'usager à lire, ceux de la liste à traiter d'abord. */
+export function dueForBrowser(limit = 10, refreshDays = 30) {
+  return dueProfiles(limit, refreshDays).map(p => p.ig_username)
+}
+
+/** Forme `web_profile_info` → forme interne de `fetchProfile`. */
+function fromWebProfile(u) {
+  const edges = u?.edge_owner_to_timeline_media?.edges || []
+  return {
+    pk: u?.id || null,
+    bio: u?.biography || '',
+    category: u?.category_name || null,
+    external_url: u?.external_url || null,
+    followers: u?.edge_followed_by?.count ?? null,
+    media_count: u?.edge_owner_to_timeline_media?.count ?? null,
+    is_business: !!u?.is_business_account,
+    is_private: !!u?.is_private,
+    posts: edges.map(e => e?.node).filter(Boolean).slice(0, 12).map(n => ({
+      code: n.shortcode || null,
+      taken_at: n.taken_at_timestamp || null,
+      caption: String(n.edge_media_to_caption?.edges?.[0]?.node?.text || '').slice(0, 400),
+      alt: String(n.accessibility_caption || '').slice(0, 200),
+      thumb: n.thumbnail_src || n.display_url || null,
+    })),
+  }
+}
+
+/**
+ * Range les profils lus par le navigateur : analyse, enregistrement, re-tri.
+ * `items` = [{ username, missing?, user? }].
+ */
+export async function ingestBrowserProfiles(items, { model = 'gpt-4o-mini' } = {}) {
+  const out = { read: 0, private: 0, missing: 0, problems: [], ids: [] }
+  const find = db.prepare(`
+    SELECT id, ig_username, full_name FROM instagram_prospects
+    WHERE lower(ig_username) = lower(?) AND deleted_at IS NULL
+  `)
+  for (const it of (items || []).slice(0, 50)) {
+    const rows = find.all(String(it?.username || ''))
+    if (!rows.length) continue
+    if (it.missing) {
+      for (const p of rows) { save(p.id, { status: 'missing', who: null }); requeueSegment(p.id); out.ids.push(p.id) }
+      out.missing++
+      continue
+    }
+    if (!it.user) continue
+    const profile = fromWebProfile(it.user)
+    const status = profile.is_private ? 'private' : 'ok'
+    let a = null
+    try { a = await analyzeProfile(rows[0], profile, { model }) } catch (e) { out.problems.push(`@${rows[0].ig_username} : ${e.message}`) }
+    for (const p of rows) {
+      save(p.id, { status, json: JSON.stringify({ ...profile, ai: a, via: 'navigateur' }), who: a?.who, activity: a?.activity, level: a?.level })
+      requeueSegment(p.id)
+      out.ids.push(p.id)
+    }
+    if (status === 'private') out.private++; else out.read++
+  }
+  return out
+}
+
 // ── « Comment elle est arrivée » ─────────────────────────────────────────────
 
 const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.']

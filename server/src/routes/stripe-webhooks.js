@@ -1,22 +1,22 @@
 import { decryptCredentials } from '../utils/encryption.js'
-import { companyIdForStripeCustomer } from '../services/stripeCustomerCompany.js'
+import { companyIdForStripeCustomer, linkStripeCustomerByEmail } from '../services/stripeCustomerCompany.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
 import db from '../db/database.js'
-import { logSystemRun } from '../services/systemAutomations.js'
+import { logSystemRun, isSystemAutomationActive } from '../services/systemAutomations.js'
 import { ensureSoumissionSystemBuilder, AUTOMATION_ID as SOUMISSION_BUILDER_ID } from '../services/soumissionSystemBuilder.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
-import { autoLinkStripeFacture } from '../services/stripeProjectLink.js'
+import { autoLinkStripeFacture, linkSubscriptionContact } from '../services/stripeProjectLink.js'
 import {
   extractItemsFromStripeSub,
   getCurrentItemsSnapshot,
   setCurrentItemsSnapshot,
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
-import { recomputeFactureBalance, openFactureStatus } from '../services/factureBalance.js'
+import { recomputeFactureBalance, openFactureStatus, isStripeInvoiceRetrying } from '../services/factureBalance.js'
 import { emitFacture, emitFacturePaymentsChanged, emitSubscription } from '../services/realtimeEmitters.js'
 import { resolveStripeInvoiceFields, applyStripeCustomFieldColumns } from '../services/stripeFactureFieldMap.js'
 import { resolveStripeSubscriptionFields } from '../services/stripeSubscriptionFieldMap.js'
@@ -136,6 +136,12 @@ async function handleSubscriptionWebhook(event) {
       intervalType,
     )
   }
+  // Abonnement né d'un contrat : le signataire en est le contact.
+  if (sub.metadata?.erp_contact_id) {
+    db.prepare(`UPDATE subscriptions SET contact_id=? WHERE id=? AND (contact_id IS NULL OR contact_id='')
+      AND EXISTS (SELECT 1 FROM contacts WHERE id=?)`).run(sub.metadata.erp_contact_id, subRowId, sub.metadata.erp_contact_id)
+  }
+  linkSubscriptionContact(subRowId)
   emitSubscription(existing ? 'updated' : 'created', subRowId)
 
   // Classification de l'événement. category=null → pas un mouvement à
@@ -194,8 +200,8 @@ async function handleSubscriptionWebhook(event) {
   }
 }
 
-function mapStripeInvoiceStatus(s, dueDate) {
-  if (s === 'open') return openFactureStatus(dueDate)
+function mapStripeInvoiceStatus(s, dueDate, paymentFailed) {
+  if (s === 'open') return openFactureStatus(dueDate, paymentFailed)
   const m = { paid: 'Payé', void: 'Void', uncollectible: 'Uncollectible', draft: 'Draft' }
   return m[s] || s
 }
@@ -215,7 +221,8 @@ async function upsertFactureFromStripeInvoice(invoice) {
   const currency = (invoice.currency || 'cad').toUpperCase()
   const invoiceDate = resolved.document_date
   const dueDate = resolved.due_date
-  const status = mapStripeInvoiceStatus(invoice.status, dueDate)
+  const paymentFailed = isStripeInvoiceRetrying(invoice) ? 1 : 0
+  const status = mapStripeInvoiceStatus(invoice.status, dueDate, paymentFailed)
 
   // Encaissement : on capture date / charge / payment_intent / montant du Stripe
   // invoice si celui-ci est marqué payé. Si le statut bascule autre que 'paid'
@@ -276,13 +283,14 @@ async function upsertFactureFromStripeInvoice(invoice) {
         montant_avant_taxes=?,
         customer_email=COALESCE(?, customer_email),
         paid_at=?, paid_amount=?, paid_charge_id=?, paid_payment_intent=?,
+        stripe_payment_failed=?,
         lien_stripe=?,
         sync_source='Factures Stripe',
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=?
     `).run(status, total, subtotal, balanceDue, currency, invoiceDate, resolved.document_number,
       dueDate, subscriptionId, companyId, kind, String(subtotal), resolved.customer_email,
-      paidAt, paidAmount, paidChargeId, paidPaymentIntent,
+      paidAt, paidAmount, paidChargeId, paidPaymentIntent, paymentFailed,
       `https://dashboard.stripe.com/invoices/${invoice.id}`, existing.id)
     factureId = existing.id
     pdfAlreadyDownloaded = !!existing.airtable_pdf_path
@@ -293,12 +301,12 @@ async function upsertFactureFromStripeInvoice(invoice) {
       INSERT INTO factures (id, invoice_id, company_id, document_number, document_date, due_date,
         status, currency, amount_before_tax_cad, total_amount, balance_due,
         subscription_id, kind, sync_source, montant_avant_taxes, customer_email,
-        paid_at, paid_amount, paid_charge_id, paid_payment_intent, lien_stripe,
+        paid_at, paid_amount, paid_charge_id, paid_payment_intent, stripe_payment_failed, lien_stripe,
         created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     `).run(factureId, invoice.id, companyId, resolved.document_number, invoiceDate, dueDate,
       status, currency, subtotal, total, balanceDue, subscriptionId, kind, String(subtotal),
-      resolved.customer_email, paidAt, paidAmount, paidChargeId, paidPaymentIntent,
+      resolved.customer_email, paidAt, paidAmount, paidChargeId, paidPaymentIntent, paymentFailed,
       `https://dashboard.stripe.com/invoices/${invoice.id}`)
     pdfAlreadyDownloaded = false
     action = 'created'
@@ -511,6 +519,37 @@ async function handleChargeRefunded({ req: _req, res, event, secretKey: _secretK
   }
 }
 
+// Client Stripe inconnu de Boréal (paiement fait sur le site web) : on le
+// rattache par courriel AVANT de traiter l'événement, pour que la facture ou
+// l'abonnement qui suit trouve directement son entreprise.
+const LINK_KEY = 'sys_stripe_customer_link_by_email'
+async function linkUnknownStripeCustomer(secretKey, event) {
+  const obj = event.data?.object || {}
+  const customerId = obj.object === 'customer'
+    ? obj.id
+    : (typeof obj.customer === 'string' ? obj.customer : obj.customer?.id)
+  if (!customerId || companyIdForStripeCustomer(customerId)) return
+  if (!isSystemAutomationActive(LINK_KEY)) return
+  const started = Date.now()
+  try {
+    const customer = obj.object === 'customer' ? obj : await new Stripe(secretKey).customers.retrieve(customerId)
+    const r = linkStripeCustomerByEmail(customer)
+    logSystemRun(LINK_KEY, {
+      status: r ? 'success' : 'skipped',
+      result: r
+        ? `${customerId} (${customer.email}) → entreprise ${r.companyId}${r.created ? ' (créée)' : ''} via ${r.via}`
+        : `${customerId} : client sans courriel, non rattaché`,
+      duration_ms: Date.now() - started,
+      triggerData: { event: event.type, customer_id: customerId, email: customer.email || null },
+    })
+  } catch (err) {
+    logSystemRun(LINK_KEY, {
+      status: 'error', error: err.message, duration_ms: Date.now() - started,
+      triggerData: { event: event.type, customer_id: customerId },
+    })
+  }
+}
+
 // POST /api/stripe-webhooks and POST /api/stripe-webhooks/:legacy (backward compat with Stripe dashboard)
 async function handleWebhook(req, res) {
   const started = Date.now()
@@ -542,6 +581,8 @@ async function handleWebhook(req, res) {
     })
     return res.status(400).json({ error: 'Signature invalide' })
   }
+
+  await linkUnknownStripeCustomer(secretKey, event)
 
   if (event.type === 'charge.refunded') {
     return handleChargeRefunded({ req, res, event, secretKey, started })

@@ -29,6 +29,9 @@ export function FieldGuard({
   context: contextProp,
   record: recordProp,
   fields: fieldsProp,
+  // Option : champ masqué = rien du tout, même pour un admin (pas de témoin
+  // « Champ masqué »). La règle se gère depuis une fiche où le champ est visible.
+  silentWhenHidden = false,
   children,
 }) {
   const ctx = useFieldGuardContext()
@@ -67,7 +70,7 @@ export function FieldGuard({
   // admin où on garde un indicateur très discret pour pouvoir y revenir.
   // (Sinon on ne pourrait jamais retirer la règle via clic droit.)
   if (hidden) {
-    if (!hasRole(user, 'admin')) return null
+    if (silentWhenHidden || !hasRole(user, 'admin')) return null
     return (
       <>
         <div

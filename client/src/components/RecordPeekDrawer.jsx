@@ -152,7 +152,7 @@ function clampWidth(w, min = MIN_WIDTH) {
   return Math.min(Math.max(w, floor), max)
 }
 
-export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, syncUrl = true, width = 560, minWidth = MIN_WIDTH, peekKey, onPrev, onNext, children }) {
+export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, syncUrl = true, width = 560, minWidth = MIN_WIDTH, peekKey, onPrev, onNext, revision, children }) {
   const wKey = widthKey(peekKey, to)
   // `to` est une route du routeur (« /projects/:id ») ; l'app est servie sous
   // le basename /erp. window.history ne connaît pas ce basename : sans cette
@@ -445,7 +445,9 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
     document.addEventListener('touchend', onUp)
   }, [persistWidth, minWidth])
 
-  const revTarget = useMemo(() => revisionTarget(to), [to])
+  // `revision` : { table, id } d'une fiche sans route propre (ex. Achats fournisseurs).
+  const revTarget = useMemo(() => revision || revisionTarget(to), [revision, to])
+  const historySource = !!PEEK_ROUTES[matchPeekRoute(to)?.resource]?.historySource
 
   if (!open) return null
 
@@ -560,7 +562,7 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
             donc toujours visible en bas du panneau. Vide, elle ne prend rien. */}
         <div ref={setFooterEl} className="flex-shrink-0 empty:hidden" data-testid="record-peek-footer" />
         {/* Historique des révisions : barre au bas du panneau, se déplie vers le haut. */}
-        {revTarget && <RecordRevisionHistory table={revTarget.table} id={revTarget.id} />}
+        {revTarget && <RecordRevisionHistory table={revTarget.table} id={revTarget.id} showSource={historySource} />}
       </div>
       {/* Panneaux ouverts depuis celui-ci. Rendus hors du corps : leurs propres
           liens sont interceptés par LEUR panneau, pas par celui-ci (les events

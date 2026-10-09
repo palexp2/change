@@ -1,7 +1,7 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { Children, Fragment, isValidElement, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { GripVertical, ChevronUp, ChevronDown, X, SlidersHorizontal, Plus, Check, Edit2, Trash2, FolderPlus } from 'lucide-react'
+import { GripVertical, X, SlidersHorizontal, Plus, Check, Edit2, Trash2, FolderPlus } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import api from '../lib/api.js'
 import { useReorderDnd } from '../lib/useReorderDnd.js'
@@ -450,15 +450,8 @@ export function DetailFieldGrid({
     [wrapField],
   )
 
-  const moveControls = (key, label) => (
+  const moveControls = key => (
     <div className="flex flex-col items-center shrink-0 pt-0.5">
-      <button
-        type="button"
-        className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-        title="Monter d'un cran" aria-label={`Monter ${label}`}
-        data-testid={`detail-field-up-${key}`}
-        disabled={dnd.isFirst(key)} onClick={() => dnd.move(key, -1)}
-      ><ChevronUp size={13} /></button>
       <span
         draggable
         onDragStart={e => dnd.dragStart(e, key)}
@@ -467,13 +460,6 @@ export function DetailFieldGrid({
         title="Glisser pour déplacer"
         data-testid={`detail-field-handle-${key}`}
       ><GripVertical size={13} /></span>
-      <button
-        type="button"
-        className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-        title="Descendre d'un cran" aria-label={`Descendre ${label}`}
-        data-testid={`detail-field-down-${key}`}
-        disabled={dnd.isLast(key)} onClick={() => dnd.move(key, 1)}
-      ><ChevronDown size={13} /></button>
     </div>
   )
   const dropLine = key => dnd.dragOverId === key && (
@@ -498,7 +484,7 @@ export function DetailFieldGrid({
           }`}
         >
           {dropLine(f.key)}
-          {!bareReorder && moveControls(f.key, f.label || 'le groupe')}
+          {!bareReorder && moveControls(f.key)}
           <GroupNameInput group={f} autoFocus={f.key === newGroupKey} onRename={renameGroup} />
           <button
             type="button"
@@ -522,7 +508,7 @@ export function DetailFieldGrid({
           }`}
         >
           {dropLine(f.key)}
-          {!bareReorder && moveControls(f.key, f.label)}
+          {!bareReorder && moveControls(f.key)}
           <div className="flex-1 min-w-0">
             {renamingKey === f.key ? (
               <FieldLabelInput

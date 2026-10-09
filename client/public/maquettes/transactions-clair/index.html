@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Transactions claires</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f7;--s:#fff;--soft:#f7f8fa;--line:#eceef0;--line2:#d9dde2;--ink:#1f2328;--ink2:#4a5058;--ink3:#767d86;--ink4:#a6abb2;--g:#2ca01c;--gd:#1d7f12;--gs:#eef7ec;--b:#0a6fbf;--bs:#eaf3fb;--a:#b86e00;--as:#fdf5e6;--r:#d1362a;--rs:#fcefee;--p:#7b4fd6;--ps:#f3eefd;--sh:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.08)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#343a41;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#343a41;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--b)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer;z-index:9}
+.scr{background:var(--s);border-radius:14px;box-shadow:var(--sh);overflow:hidden;display:grid;grid-template-columns:1fr 400px;min-height:540px}
+@media (max-width:980px){.scr{grid-template-columns:1fr}}
+.list{border-right:1px solid var(--line2);min-width:0;overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{font-size:11.5px;font-weight:500;color:var(--ink3);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line2);white-space:nowrap}
+td{padding:9px 9px;border-bottom:1px solid var(--line);vertical-align:middle;height:54px}
+tr{cursor:pointer}
+tr.t-a td{background:var(--rs)}
+tr td:first-child{border-left:4px solid transparent}
+tr.t-a td:first-child{border-left-color:var(--r)}
+tr.sel td{box-shadow:inset 0 0 0 9999px color-mix(in srgb,var(--b) 12%,transparent)}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pos{color:var(--gd)}
+.m{color:var(--ink3);font-size:12px;white-space:nowrap}
+.v{font-weight:500;white-space:nowrap;max-width:165px;overflow:hidden;text-overflow:ellipsis}.v small{display:block;font-weight:400;color:var(--ink3);font-size:11px}
+.btn{height:30px;padding:0 14px;border-radius:999px;border:0;background:var(--g);color:#fff;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn.big{height:44px;width:100%;font-size:14px}
+.btn.warn{background:var(--a)}
+.btn.red{background:none;border:1px solid var(--a);color:var(--a)}
+.btn.ghost{background:none;border:1px solid var(--line2);color:var(--ink2);font-weight:500}
+.link{color:var(--b);cursor:pointer;font-size:12px}
+.links{display:flex;justify-content:center;gap:16px;flex-wrap:wrap;margin-top:12px}
+.links .muted{color:var(--ink3)}
+.pane{padding:20px 22px;display:flex;flex-direction:column;gap:16px;min-width:0}
+.hd{text-align:center;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.hd .who{font-size:15px;font-weight:600}
+.hd .amt{font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;margin:2px 0}
+.hd .sub{color:var(--ink3);font-size:12px}
+/* types */
+.ty{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:6px;font-size:12px;font-weight:600;white-space:nowrap}
+.ty i{font-style:normal;display:inline-flex}
+.ty-exp{background:var(--rs);color:var(--r)}
+.ty-xfer{background:var(--bs);color:var(--b)}
+.ty-dep{background:var(--gs);color:var(--gd)}
+.ty-qb{background:var(--ps);color:var(--p)}
+.ty-miss{background:var(--as);color:var(--a)}
+/* état */
+.st{display:inline-flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap}
+.st:before{content:"";width:8px;height:8px;border-radius:50%;background:currentColor}
+.st-ok{color:var(--gd)}.st-warn{color:var(--a)}.st-miss{color:var(--r)}
+.chk{display:flex;gap:9px;align-items:flex-start;padding:4px 0}
+.chk b{width:16px;flex:none;display:inline-flex;justify-content:center;padding-top:2px}
+.chk.ok b{color:var(--gd)}.chk.warn b{color:var(--a)}.chk.miss b{color:var(--r)}
+.chk.warn span,.chk.miss span{font-weight:500}
+.box{border:1px solid var(--line2);border-radius:10px;padding:12px 14px}
+.box.ok{border-color:color-mix(in srgb,var(--g) 40%,var(--line2))}
+.box.warn{border-color:var(--a);background:var(--as)}
+.box.miss{border-color:var(--r);background:var(--rs)}
+.cap{font-size:11px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+.say{font-size:16px;font-weight:600;line-height:1.3}
+.kv{display:grid;grid-template-columns:90px 1fr;gap:6px 10px}
+.kv span:nth-child(odd){color:var(--ink3);font-size:12px}
+.kv span:nth-child(even){font-weight:500;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kv .w{color:var(--a)}
+.sent{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+.sent small{display:block;font-weight:400;font-size:11.5px;white-space:nowrap}
+.why-ok{color:var(--ink3)}.why-warn{color:var(--a)}.why-miss{color:var(--r)}
+/* T2 */
+.steps{display:flex;flex-direction:column;gap:14px}
+.step{display:grid;grid-template-columns:22px 1fr;gap:10px}
+.step .n{width:22px;height:22px;border-radius:50%;background:var(--soft);border:1px solid var(--line2);font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;color:var(--ink3)}
+.step.ok .n{background:var(--g);border-color:var(--g);color:#fff}
+.step.warn .n{background:var(--a);border-color:var(--a);color:#fff}
+.step.miss .n{background:var(--r);border-color:var(--r);color:#fff}
+.step .q{font-size:12px;color:var(--ink3);margin-bottom:5px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{height:28px;padding:0 10px;border-radius:999px;border:1px solid var(--line2);background:var(--s);font:inherit;font-size:12px;color:var(--ink2);cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+.chip.on{border-color:var(--ink);background:var(--ink);color:var(--s);font-weight:600}
+.field{border:1px solid var(--line2);border-radius:8px;height:34px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;font-weight:500}
+.field.warn{border-color:var(--a);background:var(--as)}
+.field.miss{border-color:var(--r);background:var(--rs);color:var(--r)}
+.field small{color:var(--ink4);font-weight:400}
+/* T3 */
+.flow{display:grid;grid-template-columns:1fr;gap:0}
+.flow .arrow{display:flex;justify-content:center;color:var(--ink4);padding:4px 0;transform:rotate(90deg)}
+.side{border:1px solid var(--line2);border-radius:10px;padding:10px 12px;min-width:0}
+.side.qb{border-color:color-mix(in srgb,var(--g) 45%,var(--line2));background:color-mix(in srgb,var(--g) 4%,var(--s))}
+.side.qb.warn{border-color:var(--a);background:var(--as)}
+.side.qb.miss{border-color:var(--r);background:var(--rs)}
+.side .kv{grid-template-columns:80px 1fr}
+.mini{display:flex;align-items:center;gap:6px;white-space:nowrap;min-width:0}
+.mini .to{color:var(--ink4)}
+.mini .acct{font-weight:500;overflow:hidden;text-overflow:ellipsis;max-width:150px}
+
+.diff{color:var(--a);display:inline-flex}
+.mini .diff{color:var(--a)}
+</style></head>
+<body><button class="theme" onclick="tg()">◐</button>
+<div class="wrap">
+<h1>Transactions — À faire + panneau</h1>
+
+<h2><b>T1</b> La phrase <span>Une phrase dit ce que c'est, le bouton dit ce qui arrive.</span></h2>
+<div class="scr" id="t1"></div>
+
+<h2><b>T2</b> Trois questions <span>C'est quoi ? Où ça va ? La preuve ?</span></h2>
+<div class="scr" id="t2"></div>
+
+<h2><b>T3</b> Banque → QuickBooks <span>On voit ce qui sera écrit, les écarts en orange.</span></h2>
+<div class="scr" id="t3"></div>
+</div>
+
+<script>
+const I = {
+  ok: '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>',
+  warn: '<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><rect x="7" y="2.5" width="2.2" height="7.5" rx="1.1"/><circle cx="8.1" cy="13" r="1.3"/></svg>',
+  to: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8h11M9.5 4l4 4-4 4"/></svg>',
+  out: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12L12 4M6 4h6v6"/></svg>',
+  in: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 4L4 12M10 12H4V6"/></svg>',
+  xfer: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5h11M10 2.5l3 3-3 3M14 10.5H3M6 7.5l-3 3 3 3"/></svg>',
+  qb: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3 4h10M3 8h10M3 12h6"/></svg>',
+  q: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 11.5v.1M6.3 6.3a1.8 1.8 0 113 1.4c-.8.5-1.3.9-1.3 1.8"/></svg>',
+  car: '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>',
+}
+const T = {
+  exp: ['ty-exp', I.out, 'Dépense'], xfer: ['ty-xfer', I.xfer, 'Virement'], dep: ['ty-dep', I.in, 'Dépôt'],
+  qb: ['ty-qb', I.qb, 'Déjà dans QB'], emis: ['ty-qb', I.qb, 'Paiement émis'], miss: ['ty-miss', I.q, 'Dépense'],
+}
+const C = [
+  { id: 'mc', who: 'M/CARD AFFAIRES', raw: 'COMPTE A PAYER', date: '6 oct.', amt: -5238.25, ty: 'xfer', st: 'ok',
+    say: 'Paiement de la MasterCard', target: 'MasterCard BNC', verb: 'Lier le virement',
+    why: [['ok', 'Même montant que le relevé MasterCard'], ['ok', 'Payée le 6, comme chaque mois']],
+    qb: [['Type', 'Virement'], ['De', 'BNC CAD'], ['Vers', 'MasterCard BNC'], ['Montant', '5 238,25 $']],
+    q: { type: 'Virement', where: 'MasterCard BNC', proof: ['ok', 'Pas besoin de facture'] } },
+  { id: 'qbg', who: 'Société Immobilière Québourg', raw: 'SOCIETE IMMOBILIERE', date: '5 oct.', amt: -6115.89, ty: 'emis', st: 'warn',
+    say: "Peut-être le paiement émis à Les Jardins d'Inverness", short: "6,53 $ d'écart · autre nom", target: "Les Jardins d'Inverness", verb: 'Vérifier',
+    why: [['warn', '6,53 $ de différence'], ['warn', 'Nom différent : Québourg ≠ Inverness'], ['ok', '2 jours d\'écart']],
+    qb: [['Type', 'Paiement émis'], ['À', "Les Jardins d'Inverness", 'w'], ['Montant', '6 122,42 $', 'w'], ['Date', '3 oct.']],
+    q: { type: 'Paiement émis', where: "Les Jardins d'Inverness", whereSt: 'warn', proof: ['warn', '6,53 $ de différence'] } },
+  { id: 'dec', who: 'DECEMBRE', raw: 'COMPTE DIVERS', date: '5 oct.', amt: 7335.81, ty: 'qb', st: 'warn',
+    say: 'Déjà inscrit dans QuickBooks : paiement de carte du 1 oct.', short: 'inscrit sur MasterCard BNC', target: 'Paiement de carte du 1 oct.', verb: 'Vérifier',
+    why: [['ok', 'Même montant'], ['warn', 'Inscrit sur MasterCard BNC, pas sur BNC CAD'], ['warn', '4 jours d\'écart']],
+    qb: [['Type', 'Paiement de carte'], ['Compte', 'MasterCard BNC', 'w'], ['Montant', '7 335,81 $'], ['Date', '1 oct.', 'w']],
+    q: { type: 'Déjà dans QB', where: 'MasterCard BNC', whereSt: 'warn', proof: ['ok', 'Même montant'] } },
+  { id: 'edi', who: 'FACTURATION EDI', raw: 'COMPTE A PAYER', date: '5 oct.', amt: -13.5, ty: 'exp', st: 'ok',
+    say: 'Frais de la banque', target: 'Frais bancaires', verb: 'Ajouter la dépense',
+    why: [['ok', 'Pareil chaque mois'], ['ok', 'Pas de taxe, pas de facture']],
+    qb: [['Type', 'Dépense'], ['À', 'Banque Nationale'], ['Compte', 'Frais bancaires'], ['Taxe', 'Hors taxes'], ['Montant', '13,50 $']],
+    q: { type: 'Dépense', where: 'Frais bancaires', proof: ['ok', 'Pas besoin de facture'] } },
+  { id: 'mcr', who: 'DEBOURSE MCR', raw: 'DEBOURSE MCR', date: '5 oct.', amt: 1204, ty: 'xfer', st: 'ok',
+    say: 'Avance de la marge de crédit', target: 'Marge de crédit', verb: 'Lier le virement',
+    why: [['ok', 'Balayage automatique de la marge'], ['ok', 'Même montant à la marge']],
+    qb: [['Type', 'Virement'], ['De', 'Marge de crédit'], ['Vers', 'BNC CAD'], ['Montant', '1 204,00 $']],
+    q: { type: 'Virement', where: 'Marge de crédit', proof: ['ok', 'Pas besoin de facture'] } },
+  { id: 'amz', who: 'Amazon.ca', raw: 'AMZN MKTP CA', date: '4 oct.', amt: -84.27, ty: 'miss', st: 'miss',
+    say: 'Achat Amazon — facture introuvable', short: 'facture manquante', target: 'Fournitures de bureau', verb: 'Demander la facture',
+    why: [['ok', 'Compte habituel : Fournitures de bureau'], ['miss', 'Aucune facture reçue']],
+    qb: [['Type', 'Dépense'], ['À', 'Amazon'], ['Compte', 'Fournitures de bureau'], ['Taxe', 'TPS/TVQ'], ['Facture', 'manquante', 'w']],
+    q: { type: 'Dépense', where: 'Fournitures de bureau', proof: ['miss', 'Aucune facture reçue'] } },
+]
+const money = (n) => (n < 0 ? '−' : '+') + Math.abs(n).toLocaleString('fr-CA', { minimumFractionDigits: 2 }) + ' $'
+const amt = (n) => (n < 0 ? '' : '+ ') + Math.abs(n).toLocaleString('fr-CA', { minimumFractionDigits: 2 }) + ' $'
+const ty = (k) => `<span class="ty ${T[k][0]}"><i>${T[k][1]}</i>${T[k][2]}</span>`
+const btnCls = (c) => c.st === 'ok' ? 'btn' : c.st === 'warn' ? 'btn warn' : 'btn red'
+const head = (c) => `<div class="hd"><div class="who">${c.who}</div><div class="amt ${c.amt > 0 ? 'pos' : ''}">${money(c.amt)}</div><div class="sub">${c.date} · BNC CAD</div></div>`
+const checks = (w) => w.map(([s, t]) => `<div class="chk ${s}"><b>${s === 'ok' ? I.ok : I.warn}</b><span>${t}</span></div>`).join('')
+const kv = (rows) => `<div class="kv">${rows.map(([k, v, w]) => `<span>${k}</span><span class="${w ? 'w' : ''}">${v}</span>`).join('')}</div>`
+const other = `<div class="links"><span class="link">Non, c'est autre chose</span><span class="link muted">Exclure</span><span class="link muted">+ Note</span></div>`
+const big = (c) => `<button class="${btnCls(c)} big">${c.st === 'warn' ? 'Oui, apparier' : c.verb}</button>`
+
+const V = {
+  t1: {
+    cols: ['', 'Date', 'Fournisseur', 'C\'est quoi', '', 'Montant'],
+    row: (c) => `<td></td><td class="m">${c.date}</td><td class="v">${c.who}<small>${c.raw}</small></td>
+      <td><div class="sent">${c.say}<small class="why-${c.st}">${c.st === 'ok' ? c.why[0][1] : c.short}</small></div></td>
+      <td><button class="${btnCls(c)}">${c.verb}</button></td><td class="r ${c.amt > 0 ? 'pos' : ''}">${amt(c.amt)}</td>`,
+    pane: (c) => `${head(c)}
+      <div class="box ${c.st}"><div class="cap">${c.st === 'ok' ? 'Boréal est sûr' : c.st === 'warn' ? 'À vérifier' : 'Il manque quelque chose'}</div>
+        <div class="say">${c.say}</div><div style="margin-top:8px">${checks(c.why)}</div></div>
+      <div><div class="cap">Ce qui sera écrit dans QuickBooks</div>${kv(c.qb)}</div>
+      <div style="margin-top:auto">${big(c)}${other}</div>`,
+  },
+  t2: {
+    cols: ['', 'Date', 'Fournisseur', 'Type', 'Vers', 'État', 'Montant'],
+    row: (c) => `<td></td><td class="m">${c.date}</td><td class="v">${c.who}<small>${c.raw}</small></td>
+      <td>${ty(c.ty)}</td><td class="v" style="font-weight:400">${c.target}</td>
+      <td><span class="st st-${c.st}">${c.st === 'ok' ? 'Prêt' : c.st === 'warn' ? 'À vérifier' : 'Facture ?'}</span></td>
+      <td class="r ${c.amt > 0 ? 'pos' : ''}">${amt(c.amt)}</td>`,
+    pane: (c) => {
+      const types = c.amt < 0 ? ['Dépense', 'Virement', 'Paiement émis', 'Déjà dans QB'] : ['Dépôt', 'Virement', 'Déjà dans QB']
+      const ws = c.q.whereSt || 'ok'
+      return `${head(c)}
+      <div class="steps">
+        <div class="step ok"><div class="n">1</div><div><div class="q">C'est quoi ?</div><div class="chips">${types.map((t) => `<span class="chip ${t === c.q.type ? 'on' : ''}">${t}</span>`).join('')}</div></div></div>
+        <div class="step ${ws}"><div class="n">2</div><div><div class="q">Où ça va ?</div><div class="field ${ws}">${c.q.where}<small>${I.car}</small></div></div></div>
+        <div class="step ${c.q.proof[0]}"><div class="n">3</div><div><div class="q">La preuve</div>${checks([c.q.proof])}</div></div>
+      </div>
+      <div style="margin-top:auto">${big(c)}${other}</div>`
+    },
+  },
+  t3: {
+    cols: ['', 'Date', 'Fournisseur', 'Devient dans QuickBooks', '', 'Montant'],
+    row: (c) => `<td></td><td class="m">${c.date}</td><td class="v">${c.who}<small>${c.raw}</small></td>
+      <td><div class="mini">${ty(c.ty)}<span class="to">${I.to}</span><span class="acct">${c.target}</span>${c.st !== 'ok' ? `<span class="diff" title="${c.short}">${I.warn}</span>` : ''}</div></td>
+      <td><button class="${btnCls(c)}">${c.verb}</button></td><td class="r ${c.amt > 0 ? 'pos' : ''}">${amt(c.amt)}</td>`,
+    pane: (c) => `${head(c)}
+      <div class="flow">
+        <div class="side"><div class="cap">Banque</div>${kv([['Nom', c.who], ['Libellé', c.raw], ['Montant', money(c.amt).replace('−', '').replace('+', '')], ['Date', c.date]])}</div>
+        <div class="arrow">${I.to}</div>
+        <div class="side qb ${c.st === 'ok' ? '' : c.st}"><div class="cap">QuickBooks</div>${kv(c.qb)}</div>
+      </div>
+      ${c.st !== 'ok' ? `<div>${checks(c.why.filter((w) => w[0] !== 'ok'))}</div>` : ''}
+      <div style="margin-top:auto">${big(c)}${other}</div>`,
+  },
+}
+
+function render(id, sel) {
+  const v = V[id]; const el = document.getElementById(id)
+  const c = C.find((x) => x.id === sel)
+  el.innerHTML = `<div class="list"><table><thead><tr>${v.cols.map((h, i) => `<th class="${i === v.cols.length - 1 ? 'r' : ''}">${h}</th>`).join('')}</tr></thead><tbody>
+    ${C.map((x) => `<tr class="t-a ${x.id === sel ? 'sel' : ''}" data-id="${x.id}">${v.row(x)}</tr>`).join('')}</tbody></table></div>
+    <div class="pane">${v.pane(c)}</div>`
+  el.querySelectorAll('tr[data-id]').forEach((tr) => tr.onclick = () => render(id, tr.dataset.id))
+}
+render('t1', 'mc'); render('t2', 'qbg'); render('t3', 'dec')
+function tg() { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark' }
+</script>
+</body></html>

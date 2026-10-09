@@ -279,7 +279,7 @@ function nameSourceColumn() {
 
 // PUT /api/products/:id — partial update
 router.put('/:id', async (req, res) => {
-  const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id, notes_2 FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
 
   if ('ajustement_manuel' in req.body) {
@@ -292,10 +292,11 @@ router.put('/:id', async (req, res) => {
   const docCols = docUrlColumns();
   const docCoerce = Object.fromEntries(docCols.map(c => [c, v => (v ? String(v).trim() || null : null)]));
   const { setClause, values, error } = buildPartialUpdate(req.body, {
-    allowed: ['sku', 'name_fr', 'name_en', 'type', 'unit_cost', 'price_cad', 'price_usd',
+    // SKU : pas modifiable une fois le produit créé (Charles, 2026-10-09).
+    allowed: ['name_fr', 'name_en', 'type', 'unit_cost', 'price_cad', 'price_usd',
       'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'quote_farm_wide', 'min_stock', 'order_qty',
       'location', 'supplier', 'supplier_company_id', 'buy_via_po', 'procurement_type',
-      'weight_lbs', 'notes', 'active', 'manufacturier', 'order_email',
+      'weight_lbs', 'notes', 'notes_2', 'active', 'manufacturier', 'order_email',
       'role', 'purchase_snooze_until', ...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols],
     nonNullable: new Set(['name_fr']),
     coerce: {
@@ -306,6 +307,7 @@ router.put('/:id', async (req, res) => {
       order_email: v => v ? String(v).trim() : null,
       ajustement_manuel: v => (v === null || v === '' ? null : parseFiniteInt(v)),
       raison_de_l_ajustement_manuel: v => (v ? String(v) : null),
+      notes_2: v => (v ? String(v) : null),
       ...docCoerce,
     },
   });
@@ -323,6 +325,9 @@ router.put('/:id', async (req, res) => {
   // fiche, sinon l'ajustement resterait local et serait écrasé au prochain sync.
   const pushCols = [...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols].filter(c => c in req.body);
   if (nameSource) pushCols.push(nameSource);
+  // « Notes » (champ Airtable) : la fiche renvoie tout son formulaire à chaque
+  // saisie, on ne pousse donc que si le texte a vraiment changé.
+  if ('notes_2' in req.body && (req.body.notes_2 || null) !== (existing.notes_2 || null)) pushCols.push('notes_2');
   const airtable = pushCols.length ? await writeBackRecord('pieces', req.params.id, pushCols) : undefined;
 
   const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);

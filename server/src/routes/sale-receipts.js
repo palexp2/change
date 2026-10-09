@@ -6,13 +6,15 @@ import { existsSync, unlinkSync } from 'fs'
 import db from '../db/database.js'
 import { mainQbAccount } from '../utils/qbBankAccount.js'
 import { requireAuth } from '../middleware/auth.js'
-import { pushSaleReceiptToQB } from '../services/quickbooks.js'
+import { pushSaleReceiptToQB, cachedAccountIdByAcctNum } from '../services/quickbooks.js'
+import { isLiaLine, applyPartsAccount, resolvePartsAccountId, PARTS_ACCTNUM } from '../services/liaPartsAccount.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
-import { emitEntity } from '../services/realtimeEmitters.js'
+import { emitEntity, touchBankTxns } from '../services/realtimeEmitters.js'
 import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
 import { checkReceiptAmount } from '../services/saleReceiptAmountCheck.js'
 import { readTransportInvoiceSummary } from '../services/transportInvoiceDocSummary.js'
-import { bankTxnForDocument } from '../services/bankReconciliation.js'
+import { bankTxnForDocument, moveBankLinkOffArchived, autoMatchReceipt, refreshStatuses, RECEIPT_BANK_MATCH_AUTOMATION_ID } from '../services/bankReconciliation.js'
+import { isSystemAutomationActive } from '../services/systemAutomations.js'
 import { syncReceiptAnomalies, receiptObsolescence } from '../services/transactionAnomalies.js'
 import { normalizeUploadName } from '../utils/uploadFileName.js'
 import { listTransactionTypes } from '../services/fiscalStatus.js'
@@ -20,11 +22,13 @@ import { resolveFiscalDetection } from '../services/fiscalDetection.js'
 import { findVendorProfile, serializeProfile, profileDefaultsForCurrency } from '../services/vendorProfiles.js'
 import { matchCardForReceipt } from '../services/paymentCards.js'
 import { matchReceiptItems, completeLiaDescription } from '../services/purchaseLiaMatch.js'
+import { aiLiaPicks } from '../services/purchaseLiaAi.js'
 import { describeLinkedPurchases } from '../services/purchaseLinkAudit.js'
 import { detectPrepaidStatement, attachStatementToMonthQb, monthLabel } from '../services/prepaidStatementAttach.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
+import { serviceAccrualDate } from '../services/servicePeriod.js'
 
 // Construit l'URL QB d'un reçu poussé. Les rangées antérieures au toggle
 // Purchase/Bill n'ont pas de quickbooks_type ; on les traite comme 'purchase'.
@@ -108,6 +112,11 @@ function serializeRow(row) {
     pages,
     prepaid_statement,
     bank_txn,
+    // Mois du service : la date à laquelle la publication comptabilisera le
+    // document quand sa période est déjà écoulée (fin de période), sinon null.
+    service_accrual_date: row.quickbooks_id
+      ? row.service_accrual_date || null
+      : serviceAccrualDate(row.service_period, bank_txn?.txn_date || row.receipt_date),
     page_count: pages.length,
     fiscal_detection,
     suggested_transaction_type: fiscal_detection?.transaction_type || null,
@@ -319,7 +328,14 @@ router.patch('/:id', (req, res) => {
             return res.status(400).json({ error: e.message })
           }
         }
-        v = JSON.stringify(normalized)
+        // Ligne LIA → compte 14000 Stock de Pièces, d'office (cf. liaPartsAccount.js).
+        // Plan comptable pas encore en mémoire : la publication réapplique la règle.
+        let withParts = normalized
+        if (normalized.some(isLiaLine)) {
+          withParts = applyPartsAccount(normalized, cachedAccountIdByAcctNum(PARTS_ACCTNUM))
+          resolvePartsAccountId()
+        }
+        v = JSON.stringify(withParts)
       }
       sets.push(`${key}=?`)
       values.push(v)
@@ -340,6 +356,15 @@ router.patch('/:id', (req, res) => {
 
   // Corriger un montant/fournisseur/numéro peut créer ou résoudre une anomalie.
   try { syncReceiptAnomalies(req.params.id) } catch (e) { console.warn(`Anomaly re-scan ${req.params.id}: ${e.message}`) }
+  // Pièce corrigée (montant, date, fournisseur) : elle cherche son débit tout de suite.
+  if (['total', 'receipt_date', 'company', 'currency', 'vendor_profile_id'].some((k) => k in req.body)) {
+    try {
+      if (isSystemAutomationActive(RECEIPT_BANK_MATCH_AUTOMATION_ID)) {
+        const hit = autoMatchReceipt(req.params.id)
+        if (hit?.matched) { refreshStatuses(hit.accountId); touchBankTxns([hit.txnId]) }
+      }
+    } catch (e) { console.warn(`Bank match ${req.params.id}: ${e.message}`) }
+  }
 
   const updated = fetchSaleReceiptRow(req.params.id)
   if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
@@ -538,40 +563,47 @@ router.get('/:id/vendor-history', (req, res) => {
 // Codes LIA rattachables à ce reçu : la liste des achats du même fournisseur, avec la
 // suggestion par ligne calculée par le moteur de score (purchaseLiaMatch.js). Route en
 // lecture seule : l'opérateur confirme la suggestion (ou choisit un autre code) via PATCH.
-router.get('/:id/lia-matches', (req, res) => {
-  const rec = db.prepare('SELECT id, company, receipt_date, order_date, vendor_profile_id, items, quickbooks_id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
-  if (!rec) return res.status(404).json({ error: 'Not found' })
-  let items = []
-  try { items = JSON.parse(rec.items || '[]') } catch {}
-  const { lines, candidates } = matchReceiptItems({
-    items,
-    company: rec.company,
-    vendorProfileId: rec.vendor_profile_id,
-    receiptDate: rec.receipt_date,
-    orderDate: rec.order_date,
-    excludeReceiptId: rec.id,
-  })
-  // Achat déjà relié à chaque ligne : date de commande et « À recevoir » ou non, lus en base
-  // (l'achat relié n'est pas forcément parmi les candidats « à recevoir »).
-  const linked = describeLinkedPurchases({
-    ids: items.map(it => it?.purchase_id).filter(Boolean),
-    expenseDate: rec.receipt_date,
-    excludeTxnKey: `erp:${rec.id}`,
-  })
-  const linkedFor = it => {
-    const info = it?.purchase_id ? linked[it.purchase_id] : null
-    if (!info) return null
-    // La transaction QuickBooks de CE reçu n'est pas « une autre dépense ».
-    const own = o => o.source === 'qb' && rec.quickbooks_id && String(o.quickbooks_id) === String(rec.quickbooks_id)
-    return { ...info, other_links: info.other_links.filter(o => !own(o)) }
-  }
-  res.json({
-    lines: lines.map(l => ({
-      index: l.index, locked: !!l.locked, match: l.match || null, blocked_by: l.blocked_by || null,
-      link_check: l.link_check || null, review: l.review || null, linked: linkedFor(items[l.index]),
-    })),
-    candidates,
-  })
+router.get('/:id/lia-matches', async (req, res, next) => {
+  try {
+    const rec = db.prepare('SELECT id, company, receipt_date, order_date, receipt_number, general_description, raw_data, vendor_profile_id, items, quickbooks_id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+    if (!rec) return res.status(404).json({ error: 'Not found' })
+    let items = []
+    try { items = JSON.parse(rec.items || '[]') } catch {}
+    // Lecture IA de la facture entière (mémorisée : un seul appel par état de la facture).
+    let notes = null
+    try { notes = JSON.parse(rec.raw_data || '{}')?.notes || null } catch {}
+    const aiPicks = await aiLiaPicks({ receipt: { ...rec, notes }, items })
+    const { lines, candidates } = matchReceiptItems({
+      aiPicks,
+      items,
+      company: rec.company,
+      vendorProfileId: rec.vendor_profile_id,
+      receiptDate: rec.receipt_date,
+      orderDate: rec.order_date,
+      excludeReceiptId: rec.id,
+    })
+    // Achat déjà relié à chaque ligne : date de commande et « À recevoir » ou non, lus en base
+    // (l'achat relié n'est pas forcément parmi les candidats « à recevoir »).
+    const linked = describeLinkedPurchases({
+      ids: items.map(it => it?.purchase_id).filter(Boolean),
+      expenseDate: rec.receipt_date,
+      excludeTxnKey: `erp:${rec.id}`,
+    })
+    const linkedFor = it => {
+      const info = it?.purchase_id ? linked[it.purchase_id] : null
+      if (!info) return null
+      // La transaction QuickBooks de CE reçu n'est pas « une autre dépense ».
+      const own = o => o.source === 'qb' && rec.quickbooks_id && String(o.quickbooks_id) === String(rec.quickbooks_id)
+      return { ...info, other_links: info.other_links.filter(o => !own(o)) }
+    }
+    res.json({
+      lines: lines.map(l => ({
+        index: l.index, locked: !!l.locked, match: l.match || null, blocked_by: l.blocked_by || null,
+        link_check: l.link_check || null, review: l.review || null, linked: linkedFor(items[l.index]),
+      })),
+      candidates,
+    })
+  } catch (e) { next(e) }
 })
 
 router.post('/:id/push-to-qb', async (req, res) => {
@@ -620,12 +652,29 @@ router.post('/:id/attach-to-month-qb', async (req, res) => {
   }
 })
 
+// Dépense d'un service du mois passé → facture datée de la fin du mois, payée
+// au jour du débit (annule au besoin la correspondance du flux QuickBooks).
+router.post('/:id/republish-service-month', async (req, res) => {
+  try {
+    const { republishForServiceMonth } = await import('../services/receiptServiceMonthRepublish.js')
+    const r = await republishForServiceMonth(req.params.id)
+    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${r.quickbooks_id} (facture du ${r.bill_date}, refaite au mois du service)`)
+    const updated = fetchSaleReceiptRow(req.params.id)
+    if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+    res.json({ ok: true, ...r })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // Délie le pointeur QB d'un reçu (sans toucher à QB) — utile après suppression
-// manuelle de la transaction dans QB pour permettre un re-push.
+// manuelle de la transaction dans QB pour permettre un re-push. La facture à
+// payer du mois du service et son paiement partent avec : sinon le re-push
+// croirait la facture déjà réglée.
 router.delete('/:id/quickbooks-link', (req, res) => {
   const r = db.prepare(`
     UPDATE sale_receipts
-    SET quickbooks_id=NULL, quickbooks_type=NULL,
+    SET quickbooks_id=NULL, quickbooks_type=NULL, service_accrual_date=NULL, accrual_payment_qb_id=NULL,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id=?
   `).run(req.params.id)
@@ -642,6 +691,8 @@ router.post('/:id/archive', (req, res) => {
   db.prepare("UPDATE sale_receipts SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
     .run(req.params.id)
   logReceiptEvent(req.params.id, req.user?.id, 'archived')
+  // Le débit bancaire rattaché à cette pièce passe à sa jumelle active.
+  try { moveBankLinkOffArchived(req.params.id) } catch (e) { console.warn(`Bank relink ${req.params.id}: ${e.message}`) }
   // Copie archivée sans publication = doublon classé : ses anomalies ouvertes
   // (zero_total, doublons) se résolvent immédiatement, sans attendre le scan.
   try { syncReceiptAnomalies(req.params.id) } catch (e) { console.warn(`Anomaly re-scan ${req.params.id}: ${e.message}`) }

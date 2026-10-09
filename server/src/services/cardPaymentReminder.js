@@ -117,11 +117,11 @@ function dueDateOf(dayIso, dueDay) {
 
 const daysBetween = (a, b) => Math.round((dayToDate(b) - dayToDate(a)) / 86400000)
 
-// « 2026-08-25 » → « mardi 25 août »
+// « 2026-08-25 » → « mardi 2026-08-25 ». Dates en YYYY-MM-DD dans Slack comme dans l'app (Charles, 2026-10-08).
 function fmtDateFr(dayIso) {
   const d = dayToDate(dayIso)
   if (!d) return String(dayIso)
-  return new Intl.DateTimeFormat('fr-CA', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(d)
+  return `${new Intl.DateTimeFormat('fr-CA', { weekday: 'long', timeZone: 'UTC' }).format(d)} ${dayIso}`
 }
 
 // ── Envoi ────────────────────────────────────────────────────────────────────

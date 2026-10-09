@@ -1,4 +1,4 @@
-import { greenhouseSideVentsOnly } from './discoveryEquipment.js'
+import { greenhouseSideVentsOnly, hasChiefGrower } from './discoveryEquipment.js'
 import { greenhouseLimits } from './discoveryFormOptions.js'
 import { roofVentAnswers, thermalScreen } from '../../../client/src/lib/discoveryRoofs.js'
 
@@ -11,6 +11,9 @@ export function discoveryAnswerErrors(response, { hasMobileController = false } 
   const mobileController = hasMobileController || response.form_options?.mobile_controller === true
   if (response.is_new_site === 'add_to_existing' && !mobileController && typeof response.within_central_controller_range !== 'boolean') {
     errors.push('Indiquez si les serres seront situées à 250 pi ou moins du contrôleur central.')
+  }
+  if (response.is_new_site === 'add_to_existing' && hasChiefGrower(response) && typeof response.needs_wind_sensor !== 'boolean') {
+    errors.push('Indiquez si vous avez besoin d’un capteur de vent.')
   }
   for (const [i, g] of (response.greenhouses || []).entries()) {
     const name = `Serre #${i + 1}`

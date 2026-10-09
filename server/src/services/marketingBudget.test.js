@@ -78,7 +78,7 @@ test('message hebdo : une puce par dépense, devise étrangère affichée, total
     { txn_date: '2026-07-21', vendor: 'HubSpot - USD', memo: 'Subscription', amount: 1204.77, amount_foreign: 854.75, currency: 'USD', account_name: 'Publicité et promotion' },
     { txn_date: '2026-07-29', vendor: "Les Jardins D'Inverness", memo: null, amount: 5000, amount_foreign: null, currency: 'CAD', account_name: 'Consultants' },
   ], { dayIso: '2026-08-11' })
-  assert.match(msg, /semaine du 3 au 9 août/)
+  assert.match(msg, /semaine du 2026-08-03 au 2026-08-09/)
   assert.match(msg, /HubSpot - USD — Subscription/)
   assert.match(msg, /854,75.*US/) // montant d'origine USD affiché
   assert.match(msg, /Publicité et promotion/)
@@ -114,11 +114,11 @@ test('envoi fait : semaine réellement vide (rien en attente, rien de pertinent)
 // ── Calendrier ───────────────────────────────────────────────────────────────
 
 test('previousWeekRangeFr : semaine précédente, même mois', () => {
-  assert.equal(previousWeekRangeFr('2026-08-11'), '3 au 9 août') // mardi 11 août → semaine du 3-9 août
+  assert.equal(previousWeekRangeFr('2026-08-11'), '2026-08-03 au 2026-08-09') // mardi 11 août → semaine du 3-9 août
 })
 
 test('previousWeekRangeFr : semaine précédente à cheval sur deux mois', () => {
-  assert.equal(previousWeekRangeFr('2026-08-04'), '27 juillet au 2 août') // mardi 4 août → semaine du 27 juillet au 2 août
+  assert.equal(previousWeekRangeFr('2026-08-04'), '2026-07-27 au 2026-08-02') // mardi 4 août → semaine du 27 juillet au 2 août
 })
 
 test('isoWeekday et isoWeekKey', () => {

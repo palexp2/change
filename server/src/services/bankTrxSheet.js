@@ -173,8 +173,9 @@ export function parseTrxDate(raw, { todayIso, monthFirst = false } = {}) {
     return `${y}-${pad2(month)}-${pad2(day)}`
   }
   // « 3 aou… » / « 29 apr, 2025 » — le mot de mois s'arrête au premier chiffre
-  // (« 3 aou3 aout » → « aou »).
-  m = /^(\d{1,2})(?:er)?\s*([a-z]{3,10})/.exec(s)
+  // (« 3 aou3 aout » → « aou »). « 29-Aug » / « 31-juil, » : la date de
+  // tableur des vieux blocs Desjardins, sans année.
+  m = /^(\d{1,2})(?:er)?[\s-]*([a-z]{3,10})/.exec(s)
   let day = null; let month = null
   if (m) { day = Number(m[1]); month = monthFromWord(m[2]) }
   if (!month) {
@@ -292,7 +293,7 @@ function rowColor(colorAt, rowIdx, cols) {
 // restantes du 22 août 2026. Un relevé est trié chronologiquement : dès que la
 // date sort de l'ordre du tableau, elle appartient à l'année précédente (ou
 // suivante si l'onglet monte).
-function anchorYear(iso, prev, descending) {
+export function anchorYear(iso, prev, descending) {
   if (!prev) return iso
   let out = iso
   for (let i = 0; i < 3; i++) {

@@ -50,6 +50,7 @@ describe('document obsolète (0 $) — bandeau + archivage en un clic', () => {
 
     browser = await chromium.launch()
     ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
   })
@@ -84,8 +85,9 @@ describe('document obsolète (0 $) — bandeau + archivage en un clic', () => {
     const banner = page.getByTestId('receipt-obsolete-banner')
     await banner.waitFor({ state: 'visible', timeout: 30000 })
     await assert.doesNotReject(
-      banner.getByText('rien à payer ni à comptabiliser', { exact: false }).first().waitFor({ timeout: 5000 }),
-      'le bandeau explique qu’il n’y a rien à comptabiliser')
+      banner.getByText('rien à comptabiliser', { exact: false }).first().waitFor({ timeout: 5000 }),
+      'l’alerte explique qu’il n’y a rien à comptabiliser')
+    await page.getByTestId('receipt-obsolete-chip').click()
 
     // Archivage en un clic depuis le bandeau → retour à la liste.
     await page.getByTestId('receipt-obsolete-archive').click()

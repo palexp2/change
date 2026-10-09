@@ -12,6 +12,7 @@ import {
   parseStatementResponse, isolateAccountChain, accountMismatch, ACCOUNT_MISMATCH, accountHintText,
 } from './bankStatementImport.js'
 import { planImportFromCounts } from './bankTrxSheet.js'
+import { parseStatementTable } from './bankReconciliation.js'
 
 test('réponse de capture : texte libre, refus et JSON tronqué ne deviennent pas des transactions', () => {
   const response = (content, extra = {}) => ({ choices: [{ message: { content }, ...extra }] })
@@ -491,4 +492,34 @@ test('le compte visé est dit au modèle, et une section étrangère ne relance 
   assert.equal(out.check.ok, true)
   assert.ok(seen[1].content.some((c) => c.type === 'text' && c.text === accountHintText(account)))
   assert.match(accountHintText(account), /« Desjardins CAD » \(compte bancaire, CAD\)/)
+})
+
+test('detectAccount : un solde qui enchaîne avec un seul compte suffit', () => {
+  const det = detectAccount({}, [], ACCOUNTS, new Map(), 'transactions.csv', new Map([['a1', 1]]))
+  assert.equal(det.account_id, 'a1')
+  assert.equal(det.confidence, 1)
+  assert.ok(det.evidence.some((e) => e.label === 'Solde'))
+})
+
+test('detectAccount : deux comptes qui enchaînent → rien de pré-sélectionné par le solde seul', () => {
+  const det = detectAccount({}, [], ACCOUNTS, new Map(), '', new Map([['a1', 1], ['a2', 1]]))
+  assert.notEqual(det.confidence, 1)
+})
+
+test('export BNC anglais : la date de transaction, pas la date d’inscription au relevé', () => {
+  const table = [
+    ['5258 81** **** 4807'],
+    ['Transaction date', 'Card number', 'Date carried to statement', 'Reference', 'Status', 'Description', 'Amount'],
+    ['2026-09-25', '525881******4815', '2026-10-01', 'U618161134', 'Authorized', 'PREMIER FARNELL        MISSISSAUGA   ON  CAN ON', '-1273.64'],
+  ]
+  const { rows } = parseStatementTable(table)
+  assert.equal(rows[0].txn_date, '2026-09-25')
+  assert.equal(rows[0].bank_state, 'autorise')
+  const fr = parseStatementTable([
+    ['Date de la transaction', 'Numéro de carte', 'Date associée au relevé', 'Référence', 'Statut', 'Description', 'Montant'],
+    ['2026-09-23', 'x', '2026-09-24', 'U1', 'Autorisée', 'PREMIER FARNELL', '-298.02'],
+  ])
+  assert.equal(fr.rows[0].txn_date, '2026-09-23')
+  const postedOnly = parseStatementTable([['Posting date', 'Description', 'Amount'], ['2026-09-24', 'X', '-1']])
+  assert.equal(postedOnly.rows[0].txn_date, '2026-09-24')
 })

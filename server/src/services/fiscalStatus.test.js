@@ -79,6 +79,8 @@ test('suggestTransactionType : fournisseur canadien taxé → achat local', () =
   assert.equal(suggestTransactionType({ company: 'Energitech', currency: 'CAD', tps: 10.5, tvq: 20.95 }), 'achat_local_taxable')
 })
 
-test('suggestTransactionType : étranger sans taxe = trop ambigu → null', () => {
-  assert.equal(suggestTransactionType({ company: 'Acme Parts Co', currency: 'USD', tps: 0, tvq: 0 }), null)
+test('suggestTransactionType : étranger sans taxe → hors champ (pièces ou numérique)', () => {
+  assert.equal(suggestTransactionType({ company: 'Acme Parts Co', currency: 'USD', tps: 0, tvq: 0 }), 'achat_pieces_etranger_fournisseur')
+  assert.equal(suggestTransactionType({ company: 'Acme Cloud', currency: 'USD', tps: 0, tvq: 0, generalDescription: 'Monthly subscription' }), 'achat_num_etranger_non_inscrit')
+  assert.equal(suggestTransactionType({ company: 'Acme Parts Co', currency: 'CAD', tps: 0, tvq: 0 }), null)
 })

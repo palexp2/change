@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { fmtDate } from '../lib/formatDate.js'
-import { ChevronRight, CheckCircle, Download, RefreshCw, Stethoscope, Mail, FileText, Sparkles } from 'lucide-react'
+import { trackingUrl } from '../lib/trackingUrl.js'
+import { ChevronRight, CheckCircle, RefreshCw, Stethoscope, FileText } from 'lucide-react'
 import api from '../lib/api.js'
 import EmailComposerModal from './EmailComposerModal.jsx'
+import { SearchableSelect } from './SearchableSelect.jsx'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails, addressOptionLabel, UpsRateComparison } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
@@ -23,6 +25,20 @@ function reasonLabel(reason) {
   const m = /^cheaper_by_(.+)$/.exec(reason)
   if (m) return `moins cher de ${m[1]} $ que le transporteur préféré`
   return reason
+}
+
+// Étiquette achetée : vignette cliquable (agrandir / télécharger), comme l'aide-mémoire.
+function LabelThumb({ url, retourId, onMissing }) {
+  return (
+    <AttachmentPreview
+      url={url}
+      fileName={url.split('?')[0].split('/').pop()}
+      downloadName={`etiquette-retour-${retourId}.pdf`}
+      title="Étiquette de retour"
+      testId="retour-label-attachment"
+      onUnavailable={reason => { if (reason === 'missing') onMissing() }}
+    />
+  )
 }
 
 // Actions d'un retour (RMA) : achat d'étiquette de retour Novoxpress
@@ -48,6 +64,7 @@ export default function RetourActionsSection({ retour, onDone }) {
   const [errorDetails, setErrorDetails] = useState(null)
   const [result, setResult] = useState(null)
   const [retrying, setRetrying] = useState(false)
+  const [labelMissing, setLabelMissing] = useState(false)
   const [diagnostic, setDiagnostic] = useState(null)
   const [diagLoading, setDiagLoading] = useState(false)
   // Comparaison avec les tarifs UPS directs (hors Novoxpress), même principe que
@@ -63,6 +80,15 @@ export default function RetourActionsSection({ retour, onDone }) {
   const [memoUrl, setMemoUrl] = useState(retour.memo_pdf_path ? withToken(`/erp/api/retours/memos/${retour.memo_pdf_path.split('/').pop()}`) : null)
   const [memoMissing, setMemoMissing] = useState(false)
   const [composerOpen, setComposerOpen] = useState(false)
+  const [gmailAccounts, setGmailAccounts] = useState([])
+  const [fromAccount, setFromAccount] = useState('')
+  useEffect(() => {
+    if (!composerOpen) return
+    api.connectors.gmailAccounts().then(list => {
+      setGmailAccounts(list)
+      setFromAccount(list.find(a => a.is_current_user)?.account_email || '')
+    }).catch(() => setGmailAccounts([]))
+  }, [composerOpen])
 
   // Aide-mémoire venu d'Airtable : les retours nés là-bas portent déjà leur PDF
   // dans le champ « Aide mémoire » (miroir local des pièces jointes), sans que
@@ -164,6 +190,7 @@ export default function RetourActionsSection({ retour, onDone }) {
     try {
       const res = await api.retours.retryLabelPdf(retour.id)
       setResult(r => ({ ...r, label_url: res.label_url, tracking_id: r?.tracking_id || res.tracking_id }))
+      setLabelMissing(false)
       onDone?.()
     } catch (e) { setError(e.message) } finally { setRetrying(false) }
   }
@@ -172,7 +199,7 @@ export default function RetourActionsSection({ retour, onDone }) {
     setMemoStatus('loading')
     try {
       const res = await api.retours.generateMemo(retour.id)
-      setMemoMissing(false); setMemoUrl(withToken(res.memo_url)); setMemoStatus('done'); onDone?.()
+      setMemoMissing(false); setMemoUrl(`${withToken(res.memo_url)}&v=${Date.now()}`); setMemoStatus('done'); onDone?.()
     } catch (e) { setMemoStatus('error'); setError(e.message) }
   }
 
@@ -181,17 +208,15 @@ export default function RetourActionsSection({ retour, onDone }) {
       {/* ── Étiquette de retour ── */}
       <section className="space-y-4">
         <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
-          <Sparkles size={14} className="text-brand-500" /> Instructions de retour
+          Instructions de retour
         </h3>
 
         {result?.tracking_id ? (
           <div className="rounded-xl bg-green-50 border border-green-200 px-4 py-3 text-sm space-y-2">
             <p className="flex items-center gap-1.5 font-medium text-green-800"><CheckCircle size={15} /> Étiquette achetée</p>
             <p className="text-slate-600">N° de suivi : <span className="font-mono font-semibold text-slate-900">{result.tracking_id}</span></p>
-            {result.label_url ? (
-              <a href={result.label_url} target="_blank" rel="noopener noreferrer" className="btn-secondary inline-flex items-center gap-2 text-sm">
-                <Download size={14} /> Télécharger l'étiquette
-              </a>
+            {result.label_url && !labelMissing ? (
+              <LabelThumb url={result.label_url} retourId={retour.id} onMissing={() => setLabelMissing(true)} />
             ) : (
               <button onClick={handleRetryPdf} disabled={retrying} className="btn-secondary inline-flex items-center gap-2 text-sm">
                 {retrying ? 'Téléchargement…' : <><RefreshCw size={14} /> Réessayer le téléchargement</>}
@@ -199,8 +224,20 @@ export default function RetourActionsSection({ retour, onDone }) {
             )}
           </div>
         ) : retour.return_label_tracking_number ? (
-          <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-sm text-slate-600">
-            Étiquette déjà achetée — suivi <span className="font-mono">{retour.return_label_tracking_number}</span>
+          <div className="text-sm text-slate-600 space-y-2">
+            <p>{(() => {
+              const url = trackingUrl(retour.return_carrier, retour.return_label_tracking_number)
+              return url
+                ? <a href={url} target="_blank" rel="noreferrer" className="link-record font-mono">{retour.return_label_tracking_number}</a>
+                : <span className="font-mono">{retour.return_label_tracking_number}</span>
+            })()}</p>
+            {retour.return_label_pdf_path && !labelMissing ? (
+              <LabelThumb url={`/erp/api/novoxpress/labels/${retour.return_label_pdf_path.split('/').pop()}`} retourId={retour.id} onMissing={() => setLabelMissing(true)} />
+            ) : (
+              <button onClick={handleRetryPdf} disabled={retrying} className="btn-secondary inline-flex items-center gap-2 text-sm">
+                {retrying ? 'Téléchargement…' : <><RefreshCw size={14} /> Réessayer le téléchargement</>}
+              </button>
+            )}
           </div>
         ) : loadingContext ? (
           <p className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></p>
@@ -377,6 +414,9 @@ export default function RetourActionsSection({ retour, onDone }) {
                 testId="retour-memo-airtable"
               />
             ))}
+            <button onClick={handleGenerateMemo} disabled={memoStatus === 'loading'} className="btn-secondary text-sm self-end inline-flex items-center gap-1.5" data-testid="retour-memo-regenerate">
+              <RefreshCw size={14} className={memoStatus === 'loading' ? 'animate-spin' : ''} /> Régénérer
+            </button>
           </div>
         ) : (
           <button onClick={handleGenerateMemo} disabled={memoStatus === 'loading'} className="btn-secondary text-sm">
@@ -388,9 +428,6 @@ export default function RetourActionsSection({ retour, onDone }) {
 
       {/* ── Instructions au client ── */}
       <section className="space-y-2 border-t border-slate-100 pt-4">
-        <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
-          <Mail size={14} className="text-brand-500" /> Instructions au client
-        </h3>
         {retour.instructions_sent_at ? (
           <p className="text-sm text-slate-500">Envoyées le {fmtDate(retour.instructions_sent_at)}.</p>
         ) : (
@@ -402,11 +439,27 @@ export default function RetourActionsSection({ retour, onDone }) {
       <EmailComposerModal
         isOpen={composerOpen}
         onClose={() => setComposerOpen(false)}
-        title="Aperçu du courriel"
-        reviewBeforeSend
+        title="Instructions de retour"
+        allowBcc
         sendLabel="Envoyer le courriel"
+        canSend={Boolean(fromAccount)}
+        fromAccount={fromAccount}
+        headerExtra={
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">De</label>
+            <SearchableSelect
+              testId="retour-from-account"
+              size="sm"
+              value={fromAccount}
+              onChange={setFromAccount}
+              options={gmailAccounts}
+              getOptionValue={a => a.account_email}
+              getOptionLabel={a => `${a.account_email}${a.is_current_user ? ' (vous)' : ''}`}
+            />
+          </div>
+        }
         load={() => api.retours.instructionsEmail(retour.id)}
-        onSend={({ to, cc, subject, bodyHtml }) => api.retours.sendInstructions(retour.id, { to, cc, subject, body_html: bodyHtml })}
+        onSend={({ to, cc, bcc, subject, bodyHtml }) => api.retours.sendInstructions(retour.id, { to, cc, bcc, subject, body_html: bodyHtml, from_account: fromAccount || undefined })}
         onSent={onDone}
       />
     </div>

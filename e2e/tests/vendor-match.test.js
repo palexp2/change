@@ -50,6 +50,14 @@ describe('findBestVendorMatch', () => {
     assert.equal(normalizeVendor('Hydro-Québec Inc.'), 'hydro quebec inc')
   })
 
+  test('marque courte + qualificatif — « DHL (Douanes) » retrouve « DHL »', () => {
+    const m = findBestVendorMatch('DHL (Douanes)', V('DHL Express Canada', 'DHL', 'Purolator'))
+    assert.equal(m?.DisplayName, 'DHL')
+    assert.equal(findBestVendorMatch('UPS (Douanes)', V('UPS', 'Groups Inc'))?.DisplayName, 'UPS')
+    // Containment en MOTS ENTIERS seulement : « ups » n'est pas dans « groups ».
+    assert.equal(findBestVendorMatch('UPS Douanes', V('Groups Inc')), null)
+  })
+
   test('liste vide / nom vide — null', () => {
     assert.equal(findBestVendorMatch('Amazon', []), null)
     assert.equal(findBestVendorMatch('', V('Amazon')), null)

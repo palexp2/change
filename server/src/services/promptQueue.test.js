@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildFollowUpPrompt, resolveReply, futureStart, briefFor, REQUESTER_MARKER, pickNextImplementations } from './promptQueue.js'
-import { detectSessionLimit, detectRateLimitEvent, extractPendingQuestion, QUESTION_MARKER } from './taskRunner.js'
+import { detectSessionLimit, detectRateLimitEvent, extractPendingQuestion, QUESTION_MARKER, extractModificationTask, MODIFICATION_MARKER } from './taskRunner.js'
 
 // ── Continuité d'un fil ───────────────────────────────────────────────────────
 // Le prompt de relance doit être AUTOPORTANT : c'est la garantie que la
@@ -219,4 +219,31 @@ test('« même contexte » attend son prédécesseur sans bloquer les suivants',
   const running = { ...q('p'), status: 'running' }
   assert.deepEqual(ids(pickNextImplementations([running, q('s', { same_context: 1 }), q('b')], { free: 1 })), ['b'])
   assert.deepEqual(ids(pickNextImplementations([q('s', { same_context: 1 }), q('b')], { free: 2 })), ['s', 'b'])
+})
+
+// ── Question → tâche de modification ─────────────────────────────────────────
+
+test('section modification : titre et brief détachés du rapport', () => {
+  const raw = `Réponse.\n\n${MODIFICATION_MARKER}\n{"title":"Trier par date","brief":"Trie la liste X par date."}`
+  const { text, task } = extractModificationTask(raw)
+  assert.equal(text, 'Réponse.')
+  assert.deepEqual(task, { title: 'Trier par date', brief: 'Trie la liste X par date.' })
+})
+
+test('section modification suivie d\'une question : la question reste en place', () => {
+  const raw = `Réponse.\n\n${MODIFICATION_MARKER}\n{"title":"T","brief":"B"}\n\n${QUESTION_MARKER}\n{"question":"A ou B ?","options":["A","B"]}`
+  const { text, task } = extractModificationTask(raw)
+  assert.equal(task.brief, 'B')
+  assert.equal(extractPendingQuestion(text).question.question, 'A ou B ?')
+  assert.equal(extractPendingQuestion(text).text, 'Réponse.')
+})
+
+test('section modification sans JSON : le texte brut devient le brief', () => {
+  const { task } = extractModificationTask(`R.\n${MODIFICATION_MARKER}\nAjoute un bouton.`)
+  assert.deepEqual(task, { title: '', brief: 'Ajoute un bouton.' })
+})
+
+test('pas de section ou brief vide : aucune tâche', () => {
+  assert.equal(extractModificationTask('Juste une réponse.').task, null)
+  assert.equal(extractModificationTask(`R.\n${MODIFICATION_MARKER}\n{"title":"T","brief":""}`).task, null)
 })

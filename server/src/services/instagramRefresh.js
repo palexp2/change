@@ -33,7 +33,9 @@ async function readRemainingProfiles({ trigger, first }) {
   }
 }
 
-export function refreshAfterReconnect({ trigger = 'reconnexion', sendDigest = false } = {}) {
+// `scraped` : la lecture des commentaires vient d'être faite ailleurs (par le
+// navigateur) — on ne la refait pas depuis le serveur, on prend son résultat.
+export function refreshAfterReconnect({ trigger = 'reconnexion', sendDigest = false, scraped = null } = {}) {
   if (running) return running
   running = (async () => {
     const steps = []
@@ -51,7 +53,8 @@ export function refreshAfterReconnect({ trigger = 'reconnexion', sendDigest = fa
     if (mc?.status === 'ok') {
       await step('manychat', async () => (await import('./manychatSync.js')).runManychatSync({ force: true, trigger }))
     }
-    await step('commentaires', async () => (await import('./instagramCommentScrape.js')).runCommentScrape({ force: true, trigger }))
+    if (scraped) steps.push({ name: 'commentaires', result: scraped })
+    else await step('commentaires', async () => (await import('./instagramCommentScrape.js')).runCommentScrape({ force: true, trigger }))
     const scrape = steps.find(s => s.name === 'commentaires')
     const scrapeOk = !scrape?.error && !scrape?.result?.error && !scrape?.result?.skipped
     await step('tri', async () => (await import('./instagramSegments.js')).runSegmentation({ force: true, trigger }))

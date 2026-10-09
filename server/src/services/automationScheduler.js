@@ -2,6 +2,9 @@ import cron from 'node-cron'
 import { runAutomation } from './automationEngine.js'
 import { evaluateDateOffsetRules, drainDeferredCandidates } from './fieldRuleEngine.js'
 import db from '../db/database.js'
+import { runSteps, stepsLog } from './ruleActions/steps.js'
+import { logRuleRun } from './systemAutomations.js'
+import { APP_URL } from '../config/appUrl.js'
 
 const scheduledJobs = new Map()
 
@@ -59,9 +62,12 @@ export function scheduleAutomation(automation) {
   const cronExpr = config.cron
   if (!cronExpr || !cron.validate(cronExpr)) return
 
-  const job = cron.schedule(cronExpr, () => {
-    runAutomation(automation, { trigger: 'schedule' })
-  })
+  // Automatisation en blocs planifiée : ses actions, sans enregistrement déclencheur.
+  const job = automation.action_type === 'steps'
+    ? cron.schedule(cronExpr, () => { runFlowNow(automation.id).catch(() => {}) }, { timezone: 'America/Toronto' })
+    : cron.schedule(cronExpr, () => {
+      runAutomation(automation, { trigger: 'schedule' })
+    })
 
   scheduledJobs.set(automation.id, job)
 }
@@ -70,5 +76,21 @@ export function unscheduleAutomation(automationId) {
   if (scheduledJobs.has(automationId)) {
     scheduledJobs.get(automationId).stop()
     scheduledJobs.delete(automationId)
+  }
+}
+
+/** Exécute maintenant une automatisation en blocs planifiée (cron ou « Tester »). */
+export async function runFlowNow(automationId, { trigger = 'schedule' } = {}) {
+  const a = db.prepare("SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL").get(automationId)
+  if (!a || a.action_type !== 'steps') throw new Error('Automatisation introuvable')
+  const rule = { id: a.id, name: a.name, trigger_config: JSON.parse(a.trigger_config || '{}'), action_config: JSON.parse(a.action_config || '{}') }
+  const started = Date.now()
+  try {
+    const outputs = await runSteps({ rule, row: { app_url: APP_URL } })
+    logRuleRun(a.id, { status: 'success', result: stepsLog(outputs), duration_ms: Date.now() - started, triggerData: { trigger } })
+    return { ok: true, outputs }
+  } catch (e) {
+    logRuleRun(a.id, { status: 'error', error: e.message, duration_ms: Date.now() - started, triggerData: { trigger } })
+    throw e
   }
 }

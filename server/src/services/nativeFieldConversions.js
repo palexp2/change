@@ -80,6 +80,16 @@ const CONVERSIONS = [
     kind: 'data', type: 'checkbox', source: 'airtable', config: {},
   },
 
+  // ── companies ──────────────────────────────────────────────────────────────
+  // « Pays de livraison » : pays des adresses de livraison de l'entreprise
+  // (colonne générée de la migration 126). Nom ≠ `pays_de_livraison`, colonne
+  // physique héritée d'Airtable, figée et purgée.
+  {
+    table: 'companies', column: 'shipping_country', name: 'Pays de livraison',
+    kind: 'rollup', type: 'text',
+    config: { rollup_target_table: 'adresses', rollup_target_fk: 'company_id', rollup_target_column: 'shipping_country', rollup_agg: 'ARRAYUNIQUE', result_type: 'text' },
+  },
+
   // ── tasks ──────────────────────────────────────────────────────────────────
   // contact_name (prénom + nom concaténés) reste en route : un lookup ne lit
   // qu'une colonne — candidat à une conversion « formule » plus tard.

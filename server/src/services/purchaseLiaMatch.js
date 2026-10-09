@@ -368,8 +368,12 @@ function refsFromUrl(url) {
  */
 export function partRefs(purchase = {}) {
   const out = new Set()
-  for (const v of [purchase.part_mpn, purchase.part_mpn_alt]) if (isPartRef(v)) out.add(compact(v))
-  for (const url of [purchase.part_url, purchase.part_url_alt]) for (const r of refsFromUrl(url)) out.add(compact(r))
+  // Référence propre à l'ACHAT (Airtable « Distributeur » = n° de pièce du distributeur,
+  // « 2648-SC0193(9)-ND ») : c'est exactement ce que la facture Digikey imprime.
+  for (const v of [purchase.part_mpn, purchase.part_mpn_alt, purchase.po_part_ref]) if (isPartRef(v)) out.add(compact(v))
+  // URL de la pièce, de l'achat (« Lien web »), et celles collées dans ses notes.
+  const noteUrls = String(purchase.notes || '').match(/https?:\/\/\S+/g) || []
+  for (const url of [purchase.part_url, purchase.part_url_alt, purchase.po_url, ...noteUrls]) for (const r of refsFromUrl(url)) out.add(compact(r))
   return [...out]
 }
 
@@ -668,7 +672,8 @@ export function listCandidatePurchases({ company, vendorProfileId = null, exclud
                     NULLIF(CAST(pr.prix_moyen_500_derniers_jours AS REAL), 0),
                     NULLIF(CAST(pr.unit_cost AS REAL), 0)) AS part_unit_value,
            pr.fabricant AS part_mpn, pr.manufacturier AS part_mpn_alt,
-           pr.lien_fournisseur AS part_url, pr.lien_fournisseur_alternatif AS part_url_alt
+           pr.lien_fournisseur AS part_url, pr.lien_fournisseur_alternatif AS part_url_alt,
+           p.distributeur AS po_part_ref, p.lien_web AS po_url
     FROM purchases p
     LEFT JOIN products pr ON pr.airtable_id = ${PRODUCT_LINK_SQL}
     WHERE p.at_id IS NOT NULL AND p.at_id <> ''
@@ -692,7 +697,11 @@ export function listCandidatePurchases({ company, vendorProfileId = null, exclud
     part_sku: r.part_sku,
     part_mpn: r.part_mpn || r.part_mpn_alt || null,
     // Références qui identifient la pièce sur une facture (fabricant + URL fournisseur).
-    part_refs: partRefs({ part_mpn: r.part_mpn, part_mpn_alt: r.part_mpn_alt, part_url: r.part_url, part_url_alt: r.part_url_alt }),
+    part_refs: partRefs({ part_mpn: r.part_mpn, part_mpn_alt: r.part_mpn_alt, part_url: r.part_url, part_url_alt: r.part_url_alt, po_part_ref: r.po_part_ref, po_url: r.po_url, notes: r.notes }),
+    // Matière brute pour la lecture IA de la facture entière (purchaseLiaAi.js).
+    po_part_ref: r.po_part_ref || null,
+    po_url: r.po_url || null,
+    notes: r.notes || null,
     qty_ordered: r.qty_ordered,
     unit_cost: r.unit_cost,
     part_unit_value: r.part_unit_value,
@@ -850,13 +859,13 @@ export function learnLineAliases({ candidates = [], excludeReceiptId = null } = 
  *
  * @returns {{ lines: Array<{index, match, candidates}>, candidates: Array }}
  */
-export function matchReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, orderDate = null, excludeReceiptId = null }) {
+export function matchReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, orderDate = null, excludeReceiptId = null, aiPicks = null }) {
   const candidates = listCandidatePurchases({ company, vendorProfileId, receiptDate, excludeReceiptId })
   // Vocabulaire appris du fournisseur (best effort : sans historique, on retombe
   // simplement sur la comparaison au nom de la pièce).
   let aliasesByPart = new Map()
   try { aliasesByPart = learnLineAliases({ candidates, excludeReceiptId }) } catch { /* pas bloquant */ }
-  return matchLines({ items, candidates, receiptDate, orderDate, aliasesByPart })
+  return matchLines({ items, candidates, receiptDate, orderDate, aliasesByPart, aiPicks })
 }
 
 /**
@@ -864,7 +873,7 @@ export function matchReceiptItems({ items, company, vendorProfileId = null, rece
  * sont fournis par l'appelant. Séparé de matchReceiptItems pour que la logique de
  * sélection soit testable sur des jeux de candidats construits à la main.
  */
-export function matchLines({ items, candidates = [], receiptDate = null, orderDate = null, aliasesByPart = new Map() }) {
+export function matchLines({ items, candidates = [], receiptDate = null, orderDate = null, aliasesByPart = new Map(), aiPicks = null }) {
   const list = Array.isArray(items) ? items : []
   const lines = list.map((_, index) => ({ index, match: null, candidates: [] }))
   if (!candidates.length) return { lines, candidates }
@@ -984,6 +993,45 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
     for (const s of ranked) pairs.push({ index, runnerUp, ...s })
   })
 
+  // LECTURE DE LA FACTURE ENTIÈRE (purchaseLiaAi.js) : l'IA recoupe les indices — marque,
+  // modèle, capacité, tension, n° distributeur, quantité, ce que les autres lignes ont
+  // pris — là où le score ci-dessus compare des libellés mot pour mot. Sa proposition :
+  //   - confirme le meilleur achat du score → il garde sa place, avec les indices ;
+  //   - remplace une proposition fondée sur le seul libellé (jamais une référence
+  //     fabricant ou un SKU identifiés, qui restent prioritaires) ;
+  //   - comble une ligne sans proposition, ou départage des jumeaux « à vérifier ».
+  // Toujours parmi les achats libres à recevoir de CE fournisseur.
+  if (aiPicks?.size) {
+    for (const [index, pick] of aiPicks) {
+      const line = list[index]
+      if (!line || lines[index].locked || lines[index].blocked_by) continue
+      const purchase = openCandidates.find(c => c.lia_ref === pick.lia_ref)
+      if (!purchase) continue
+      const own = pairs.filter(p => p.index === index)
+      const top = own.reduce((a, b) => (!a || b.score > a.score ? b : a), null)
+      if (top?.detail?.ident === 1 && top.purchase.id !== purchase.id) continue
+      const s = scoreLine(line, purchase, ctx)
+      const agrees = top?.purchase.id === purchase.id
+      const q = num(line?.quantity), qo = num(purchase.qty_ordered)
+      for (let k = pairs.length - 1; k >= 0; k--) if (pairs[k].index === index) pairs.splice(k, 1)
+      delete lines[index].review
+      pairs.push({
+        index,
+        runnerUp: agrees ? top.runnerUp : 0,
+        purchase,
+        score: Math.max(s.score, pick.confidence),
+        detail: { ...s.detail, ai: pick.confidence },
+        identity: s.identity?.kind === 'ref' || s.identity?.kind === 'sku'
+          ? s.identity
+          : { kind: 'ai', label: pick.clues || null, score: pick.confidence },
+        reasons: [...(pick.clues ? [`indices : ${pick.clues}`] : []), ...(s.reasons || [])],
+        // Écriture d'office : l'IA très sûre ET la quantité identique, sans qu'un autre
+        // achat ait été préféré par le score (jumeaux = toujours l'œil de l'opérateur).
+        aiAuto: pick.confidence >= 0.9 && q != null && q === qo && (agrees || !top),
+      })
+    }
+  }
+
   // DERNIER RECOURS — LA QUANTITÉ EXACTE DÉSIGNE UN SEUL ACHAT EN ATTENTE. Le vocabulaire
   // du fournisseur peut n'avoir AUCUN mot commun avec le nom Orisha de la pièce
   // (« Official Raspberry Pi microSD Card 64GB » contre « SDCIT2 - 16 GB - microSDHC »,
@@ -1023,7 +1071,7 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
       part_name: p.purchase.part_name,
       description: buildLiaLabel(p.purchase.lia_ref, p.purchase.part_name),
       score: Math.round(p.score * 100) / 100,
-      auto: isConfidentMatch(p, p.runnerUp),
+      auto: !!p.aiAuto || isConfidentMatch(p, p.runnerUp),
       detail: p.detail,
       identity: p.identity || null,
       reasons: p.reasons,
@@ -1222,9 +1270,9 @@ export function applyAutoMatches(items, lines) {
  * Point d'entrée de l'extraction : apparie puis applique les certitudes. Best effort —
  * toute erreur (achats indisponibles, données partielles) laisse les lignes intactes.
  */
-export function autoLinkReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, orderDate = null, excludeReceiptId = null }) {
+export function autoLinkReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, orderDate = null, excludeReceiptId = null, aiPicks = null }) {
   try {
-    const { lines, candidates } = matchReceiptItems({ items, company, vendorProfileId, receiptDate, orderDate, excludeReceiptId })
+    const { lines, candidates } = matchReceiptItems({ items, company, vendorProfileId, receiptDate, orderDate, excludeReceiptId, aiPicks })
     const applied = applyAutoMatches(items, lines)
     // Une ligne peut facturer PLUSIEURS achats (moteur gauche + droit, pièce « incluse ») :
     // elle est alors découpée, chaque achat recevant sa part du montant.

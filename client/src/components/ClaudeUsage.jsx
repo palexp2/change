@@ -24,6 +24,7 @@
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import { Sparkles, Gauge, CalendarDays, AlertTriangle, Bot, ChevronDown, Check, UserRound, PauseCircle } from 'lucide-react'
 import api from '../lib/api.js'
+import { fmtDateTime } from '../lib/formatDate.js'
 import { useToast } from './ui/ToastProvider.jsx'
 import ThinkingOrb from './ThinkingOrb'
 
@@ -91,7 +92,7 @@ export function formatResetFull(iso) {
   if (!iso) return null
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
-  return d.toLocaleString('fr-CA', { dateStyle: 'full', timeStyle: 'short' })
+  return `${d.toLocaleDateString('fr-CA', { weekday: 'long' })} ${fmtDateTime(d)}`
 }
 
 // ─── Modèle de travail de l'agent ─────────────────────────────────────────────
@@ -197,6 +198,9 @@ export function ClaudeModelControl({ className = '' }) {
 // des jours (on veut y garder plus de marge). Monter un seuil garde plus de marge pour
 // le travail à la main, le baisser laisse la file consommer davantage ; « jamais »
 // désarme le garde-fou pour ce plafond-là.
+//
+// Et un réglage PAR COMPTE Claude (demande de P.-A. Papillon) : le sélecteur vit sur
+// la ligne de chaque compte ; la file ne s'arrête que quand tous sont sous le leur.
 const DEFAULT_FLOOR_CHOICES = [0, 5, 10, 20, 30, 40, 50, 60]
 const DEFAULT_FLOOR_KEYS = { session: 'quotaFloorSessionPct', week: 'quotaFloorWeekPct' }
 const FLOOR_SCOPES = [
@@ -207,7 +211,7 @@ const FLOOR_SCOPES = [
 // jauges d'à côté (marge 5 % → « au-delà de 95 % »).
 const floorLabel = (pct) => (pct > 0 ? `${100 - pct} %` : 'jamais')
 
-function QuotaFloorControl() {
+function QuotaFloorControl({ accountId = null, suffix = '' }) {
   const { usage } = useClaudeUsage()
   const toast = useToast()
   const [open, setOpen] = useState(false)
@@ -218,8 +222,10 @@ function QuotaFloorControl() {
   const floor = usage?.quotaFloor
   // Repli sur `pct` : une lecture gardée dans le navigateur avant ce changement ne
   // porte que l'ancien seuil unique — mieux vaut l'afficher pour les deux que rien.
+  const own = accountId ? floor?.byAccount?.[accountId] : null
   const served = (scope) => {
-    const v = Number.isFinite(floor?.[scope]) ? floor[scope] : floor?.pct
+    const v = Number.isFinite(own?.[scope]) ? own[scope]
+      : Number.isFinite(floor?.[scope]) ? floor[scope] : floor?.pct
     return Number.isFinite(v) ? v : null
   }
   const sessionPct = served('session')
@@ -248,7 +254,10 @@ function QuotaFloorControl() {
     if (v === shown[scope]) return
     setPending(p => ({ ...p, [scope]: v }))
     try {
-      await api.agent.saveSettings({ [keys[scope] || DEFAULT_FLOOR_KEYS[scope]]: v })
+      await api.agent.saveSettings({
+        [keys[scope] || DEFAULT_FLOOR_KEYS[scope]]: v,
+        ...(accountId ? { quotaFloorAccountId: accountId } : {}),
+      })
       fetchUsage()
     } catch {
       setPending(p => { const n = { ...p }; delete n[scope]; return n })
@@ -262,12 +271,12 @@ function QuotaFloorControl() {
     + '. La file repart dès que le quota remonte. Cliquer pour changer.'
 
   return (
-    <div className="relative shrink-0" data-testid="usage-strip-floor" ref={ref}>
+    <div className="relative shrink-0" data-testid={`usage-strip-floor${suffix}`} ref={ref}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-700"
-        data-testid="usage-strip-floor-value"
+        data-testid={`usage-strip-floor-value${suffix}`}
         title={title}
       >
         <PauseCircle size={13} className="text-slate-400 shrink-0" />
@@ -284,7 +293,7 @@ function QuotaFloorControl() {
       {open && (
         <div
           className="absolute left-0 top-full mt-1.5 z-30 flex rounded-lg border border-slate-200 bg-white shadow-lg py-1"
-          data-testid="usage-strip-floor-menu"
+          data-testid={`usage-strip-floor-menu${suffix}`}
         >
           {/* Une colonne par plafond : les deux réglages se lisent et se comparent
               d'un coup d'œil, au lieu d'un menu qu'il faut rouvrir. */}
@@ -297,7 +306,7 @@ function QuotaFloorControl() {
                   type="button"
                   onClick={() => choose(scope, v)}
                   className={`w-full flex items-center justify-between gap-1 px-3 py-1.5 text-xs text-left hover:bg-slate-50 ${v === shown[scope] ? 'text-brand-600 font-semibold' : 'text-slate-700'}`}
-                  data-testid={`usage-strip-floor-option-${scope}-${v}`}
+                  data-testid={`usage-strip-floor-option-${scope}-${v}${suffix}`}
                 >
                   {floorLabel(v)}{v === dflt ? ' (déf.)' : ''}
                   {v === shown[scope] && <Check size={12} className="shrink-0" />}
@@ -556,14 +565,16 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
           </div>
           {!multi && <AccountLimits u={usage} />}
           {/* Seule commande admise dans le bandeau : elle porte sur les pourcentages
-              affichés juste à côté (à partir de quelle marge on s'arrête). */}
-          <QuotaFloorControl />
+              affichés juste à côté (à partir de quelle marge on s'arrête). Un compte
+              seul : ici ; plusieurs : sur la ligne de chacun. */}
+          {!multi && <QuotaFloorControl accountId={usage?.accountId || null} />}
         </div>
         {/* Plusieurs licences : une ligne par compte, la file part sur celui qui a le
             plus de marge (point vert). */}
         {multi && usage.accounts.map((a, i) => (
           <div key={a.id} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-1.5" data-testid={`usage-strip-row-${a.id}`}>
             <AccountLimits u={a} active={a.id === usage.activeAccountId} suffix={i ? `-${a.id}` : ''} />
+            <QuotaFloorControl accountId={a.id} suffix={i ? `-${a.id}` : ''} />
           </div>
         ))}
 

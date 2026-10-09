@@ -1303,12 +1303,9 @@ function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
 }
 
-// « 2026-08-08 » → « 8 août » (date-only, sans conversion de fuseau)
+// Dates en YYYY-MM-DD dans Slack comme dans l'app (Charles, 2026-10-08).
 function fmtDateFr(isoDate) {
-  const [y, m, d] = String(isoDate).split('-').map(Number)
-  if (!y || !m || !d) return String(isoDate)
-  return new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'long', timeZone: 'UTC' })
-    .format(new Date(Date.UTC(y, m - 1, d)))
+  return String(isoDate).slice(0, 10)
 }
 
 // Décide si la situation mérite un envoi Slack — fonction pure (testable), la

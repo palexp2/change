@@ -24,6 +24,14 @@ const SOURCE_LABEL = {
 
 // Le contrôle d'équilibre est ce qui distingue une lecture fiable d'une lecture
 // inventée : il ne se cache jamais derrière un dépliant.
+// Relevé mensuel rangé au Drive par Boréal (ou déjà présent).
+const DRIVE_FILING = {
+  depose: { color: 'green', label: 'Rangé au Drive' },
+  deja: { color: 'gray', label: 'Déjà au Drive' },
+  erreur: { color: 'red', label: 'Drive : échec' },
+  autre_compte: { color: 'red', label: 'Autre compte' },
+}
+
 function BalanceBadge({ up }) {
   if (up.balance_ok == null) return <Badge color="gray">Équilibre non vérifiable</Badge>
   if (up.balance_ok) return <Badge color="green">{up.balance_method === 'chaine' ? 'Soldes enchaînés' : 'Équilibré'}</Badge>
@@ -83,6 +91,11 @@ function UploadCard({ up, accounts, onChange, onRemove, onReanalyze, onToExtract
             {!up.account_id && <Badge color="red">Compte à choisir</Badge>}
             {up.account_id && up.detect_confidence < 0.6 && <Badge color="yellow">À confirmer</Badge>}
             <BalanceBadge up={up} />
+            {up.drive_filing && (
+              <span title={up.drive_file_name || ''} data-testid="statement-drive-filing">
+                <Badge color={DRIVE_FILING[up.drive_filing].color}>{DRIVE_FILING[up.drive_filing].label}</Badge>
+              </span>
+            )}
           </div>
 
           {up.detect_evidence?.length > 0 && (

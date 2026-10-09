@@ -28,7 +28,8 @@ export const PLAID_BALANCE_DEFAULT_CONFIG = {
   // Qui est prévenu dans Boréal : rôles, séparés par des virgules.
   notify_roles: 'admin',
   // Canal Slack (nom de la variable d'env). Vide = notification Boréal seule.
-  slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+  // DM d'Antoine Lambert, plus le canal comptabilité (demande du 2026-10-06).
+  slack_webhook_env: 'SLACK_WEBHOOK_PERSO',
 }
 
 export function getBalanceAlertConfig() {

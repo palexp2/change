@@ -82,6 +82,7 @@ describe('Fiches détail — état d\'erreur de chargement + Réessayer', () => 
     }
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     // Token injecté dans chaque page (lecture seule : aucun record créé/muté).
     await ctx.addInitScript((t) => localStorage.setItem('erp_token', t), token)
   })

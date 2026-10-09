@@ -203,7 +203,7 @@ export function SystemeContent() {
               {data.recentErrors.map((line, i) => {
                 const m = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?):?\s*(.*)$/s)
                 const parsed = m ? new Date(m[1]) : null
-                const time = parsed && !isNaN(parsed) ? parsed.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'America/Toronto' }) : null
+                const time = parsed && !isNaN(parsed) ? fmtDateTime(parsed) : null
                 const msg = m ? m[2] : line
                 return (
                   <p key={i} className="text-xs font-mono text-slate-300 leading-relaxed break-all">

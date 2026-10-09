@@ -181,8 +181,11 @@ export function InlineDuration({ value, saving, onSave, format = 'h:mm', classNa
 // Date : commit au changement (le sélecteur natif n'a pas de « blur » utile).
 // `withTime` : date + heure, commit au blur (chaque segment tapé déclencherait
 // sinon un enregistrement).
-export function InlineDate({ value, saving, onSave, withTime = false, className = 'input text-sm w-full', testId }) {
+// `iso` : saisie texte AAAA-MM-JJ, affichée telle quelle quelle que soit la
+// langue du navigateur (le sélecteur natif suit la locale) ; commit au blur.
+export function InlineDate({ value, saving, onSave, withTime = false, iso = false, className = 'input text-sm w-full', testId }) {
   if (withTime) return <InlineDateTime value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
+  if (iso) return <InlineIsoDate value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
   const current = value == null ? '' : String(value).slice(0, 10)
   return (
     <input
@@ -190,6 +193,38 @@ export function InlineDate({ value, saving, onSave, withTime = false, className 
       value={current}
       onChange={e => { if (e.target.value !== current) onSave(e.target.value) }}
       className={className}
+      disabled={saving}
+      data-testid={testId}
+    />
+  )
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+function isValidIsoDate(s) {
+  if (!ISO_DATE.test(s)) return false
+  const d = new Date(`${s}T00:00:00Z`)
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
+}
+
+function InlineIsoDate({ value, saving, onSave, className, testId }) {
+  const current = value == null ? '' : String(value).slice(0, 10)
+  const [local, setLocal] = useState(current)
+  useEffect(() => { setLocal(current) }, [current])
+  const commit = raw => {
+    const str = String(raw ?? '').trim()
+    if (str === current) return
+    if (str !== '' && !isValidIsoDate(str)) { setLocal(current); return }
+    onSave(str)
+  }
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => commit(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      className={`${className} tabular-nums`}
       disabled={saving}
       data-testid={testId}
     />

@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import { Truck } from 'lucide-react'
 import { fmtMoney } from '../utils/formatters.js'
+import { fmtDate } from '../lib/formatDate.js'
 
 export const BOX_PRESETS = {
   enveloppe: { label: 'Enveloppe (documents légers)', length: '13', width: '10', depth: '1', packagingType: 'envelope' },
@@ -32,7 +33,7 @@ export function getRateCarrier(rate) {
 export function getRateDelivery(rate) {
   const d = rate.expected_delivery_date
   if (d) {
-    return new Date(d.year, d.month - 1, d.day).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })
+    return fmtDate(new Date(d.year, d.month - 1, d.day))
   }
   if (rate.total_transit_day != null) return `${rate.total_transit_day} jour(s)`
   return null

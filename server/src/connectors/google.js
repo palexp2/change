@@ -78,12 +78,35 @@ export function isInvoiceOnlyMailbox(email) {
   return mailboxList(INVOICE_ONLY_KEY).includes(String(email || '').toLowerCase())
 }
 
+// Google Agenda (prise de rendez-vous, services/meetings.js) : disponibilités
+// (freebusy) + création des événements. Demandé seulement quand l'utilisateur
+// branche son agenda (Paramètres → Gmail) ou l'avait déjà accordé — les autres
+// comptes gardent le consentement minimal.
+export const CALENDAR_SCOPES = [
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/calendar.freebusy',
+]
+
+export function scopesGrantCalendar(granted) {
+  const list = String(granted || '').split(/\s+/)
+  return CALENDAR_SCOPES.every(s => list.includes(s))
+}
+
+function accountHasCalendar(email) {
+  if (!email) return false
+  const row = db.prepare(
+    `SELECT granted_scopes FROM connector_oauth WHERE connector='google' AND lower(account_email)=?`
+  ).get(email)
+  return scopesGrantCalendar(row?.granted_scopes)
+}
+
 /**
  * @param {string} state
  * @param {Object} [options]
  * @param {string} [options.loginHint] Compte visé (bouton « Reconnecter » d'un
  *   compte existant). Pré-sélectionne le compte chez Google et, s'il figure
  *   dans DRAFT_SCOPE_ACCOUNTS, ajoute le scope de création de brouillons.
+ * @param {boolean} [options.calendar] Ajoute les scopes Google Agenda.
  */
 export function getAuthUrl(state, options = {}) {
   const oauth2 = makeOAuth2Client()
@@ -92,6 +115,8 @@ export function getAuthUrl(state, options = {}) {
   if (canCreateDrafts(loginHint)) scope.push('https://www.googleapis.com/auth/gmail.compose')
   // Corbeille après import : messages.trash exige gmail.modify.
   if (canTrashInvoiceEmails(loginHint)) scope.push('https://www.googleapis.com/auth/gmail.modify')
+  // Une reconnexion Gmail ne doit pas faire perdre l'agenda déjà accordé.
+  if (options.calendar || accountHasCalendar(loginHint)) scope.push(...CALENDAR_SCOPES)
   return oauth2.generateAuthUrl({
     access_type: 'offline',
     prompt: 'select_account consent',
@@ -107,6 +132,11 @@ export async function exchangeCode(code) {
   oauth2.setCredentials(tokens)
   const info = await google.oauth2({ version: 'v2', auth: oauth2 }).userinfo.get()
   return { tokens, email: info.data.email }
+}
+
+export async function getCalendarClient(connectorOAuthId) {
+  const auth = await getOAuthClientForAccount(connectorOAuthId)
+  return google.calendar({ version: 'v3', auth })
 }
 
 export async function getOAuthClientForAccount(connectorOAuthId) {

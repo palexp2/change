@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Feuille du mois</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{brand:{50:'#EEFAF1',100:'#D2F4DD',200:'#A2E8B6',400:'#43CC6E',500:'#2BC25C',600:'#21B14B',700:'#1B8E3C',800:'#167030'}}}}}</script>
+<style>
+body{background:#f7f6f2;font-family:Inter,system-ui,sans-serif}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem}
+.c{width:100%;border:1px solid transparent;border-radius:4px;padding:3px 6px;background:transparent;font:inherit;outline:none}
+.c:hover{border-color:#e2e8f0}.c:focus{border-color:#43CC6E;background:#fff;box-shadow:0 0 0 2px #D2F4DD}
+tr.we td{background:#fafaf8;color:#94a3b8}
+tr.today td{background:#EEFAF1}
+tr.future td{color:#cbd5e1}
+/* google-sheets look */
+.gs{font-family:Arial,sans-serif;font-size:13px}
+.gs table{border-collapse:collapse}
+.gs td,.gs th{border:1px solid #e2e3e3;padding:2px 6px;height:22px}
+.gs th{background:#f8f9fa;color:#5f6368;font-weight:400;text-align:center}
+.gs .rh{background:#f8f9fa;color:#5f6368;text-align:center;width:36px}
+.gs .sel{outline:2px solid #1a73e8;outline-offset:-2px}
+</style>
+</head>
+<body class="text-slate-900">
+<div class="max-w-6xl mx-auto p-6">
+  <div class="flex items-center gap-2 mb-2 flex-wrap text-sm" id="tabs">
+    <h1 class="text-xl font-semibold mr-3">Feuille de temps</h1>
+    <span class="text-slate-400 mr-3">— Alicia Talbot-Lanciault</span>
+    <button data-o="s1" class="px-3 py-1.5 rounded-lg"><b>S1</b> Grille + journée</button>
+    <button data-o="s2" class="px-3 py-1.5 rounded-lg"><b>S2</b> La grille seulement</button>
+    <button data-o="s3" class="px-3 py-1.5 rounded-lg"><b>S3</b> Le vrai Sheet</button>
+  </div>
+  <p id="sub" class="text-sm text-slate-500 mb-4"></p>
+  <div id="view"></div>
+</div>
+
+<script>
+const PROJ = { 'Fiabilité': 'bg-sky-500', 'Intelligence de contrôle': 'bg-violet-500' }
+const TODAY = 3
+const DATA = { 1: [8, 'Sortie de 3.34.1', 'Fiabilité', '08:30', '17:00', '0:30'], 2: [6.5, 'Typage des relais côté contrôleur', 'Fiabilité', '08:30', '17:00', '0:30'], 3: [3, 'Inspection algo weekly check-in', 'Intelligence de contrôle', '08:30', '', ''] }
+const days = Array.from({ length: 31 }, (_, i) => i + 1)
+const wd = d => new Date(2026, 9, d).getDay()
+const lab = d => new Date(2026, 9, d).toLocaleDateString('fr-CA', { weekday: 'short' }).replace('.', '')
+const iso = d => `2026/10/${String(d).padStart(2, '0')}`
+const fmt = v => v ? String(v).replace('.', ',') : ''
+const projSel = (p) => `<div class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ${PROJ[p] || 'bg-transparent'} flex-shrink-0"></span><select class="c" onchange="this.previousElementSibling.className='w-2 h-2 rounded-full flex-shrink-0 '+({'Fiabilité':'bg-sky-500','Intelligence de contrôle':'bg-violet-500'}[this.value]||'bg-transparent')"><option></option>${Object.keys(PROJ).map(x => `<option ${x === p ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`
+const rowCls = d => [wd(d) === 0 || wd(d) === 6 ? 'we' : '', d === TODAY ? 'today' : '', d > TODAY ? 'future' : ''].join(' ')
+
+function grid({ clock = false, max = 'max-h-[420px]' } = {}) {
+  const total = Object.values(DATA).reduce((a, r) => a + r[0], 0)
+  return `<div class="card overflow-hidden">
+    <div class="flex items-center gap-3 px-4 py-2.5 border-b border-slate-100">
+      <button class="text-slate-400">‹</button><span class="font-medium text-slate-700">octobre 2026</span><button class="text-slate-400">›</button>
+      <span class="flex-1"></span>
+      <a class="text-xs text-brand-700 font-medium">feuille_de_temps_10_2026 ↗</a>
+    </div>
+    <div class="overflow-auto ${max}">
+    <table class="w-full text-sm">
+      <thead class="sticky top-0 bg-slate-50 z-10"><tr class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
+        <th class="px-3 py-2 w-32">Date</th>
+        ${clock ? '<th class="px-2 py-2 w-20">Arrivée</th><th class="px-2 py-2 w-20">Départ</th><th class="px-2 py-2 w-16">Pause</th>' : ''}
+        <th class="px-2 py-2 w-24 text-right">Heures RSDE</th><th class="px-2 py-2">Description RSDE</th><th class="px-2 py-2 w-52">Projet</th></tr></thead>
+      <tbody>${days.map(d => { const r = DATA[d] || []; return `<tr class="border-t border-slate-100 ${rowCls(d)}">
+        <td class="px-3 py-1 tabular-nums whitespace-nowrap"><span class="inline-block w-8 text-slate-400 capitalize">${lab(d)}</span>${iso(d)}</td>
+        ${clock ? `<td class="px-1 py-0.5"><input class="c tabular-nums" value="${r[3] || ''}"></td><td class="px-1 py-0.5"><input class="c tabular-nums" value="${r[4] || ''}"></td><td class="px-1 py-0.5"><input class="c tabular-nums text-right" value="${r[5] || ''}"></td>` : ''}
+        <td class="px-1 py-0.5"><input class="c text-right tabular-nums" value="${fmt(r[0])}"></td>
+        <td class="px-1 py-0.5"><input class="c" value="${r[1] || ''}"></td>
+        <td class="px-1 py-0.5">${projSel(r[2])}</td></tr>` }).join('')}</tbody>
+      <tfoot class="sticky bottom-0 bg-slate-50"><tr class="border-t-2 border-slate-200 font-semibold"><td class="px-3 py-1.5">Total</td>${clock ? '<td colspan="3"></td>' : ''}<td class="px-2 py-1.5 text-right tabular-nums">${fmt(total)}</td><td colspan="2" class="px-2 py-1.5 text-xs font-normal text-slate-500"><span class="inline-flex items-center gap-1 mr-3"><i class="w-2 h-2 rounded-full bg-sky-500"></i>Fiabilité 14,5</span><span class="inline-flex items-center gap-1"><i class="w-2 h-2 rounded-full bg-violet-500"></i>Intelligence 3</span></td></tr></tfoot>
+    </table></div></div>`
+}
+
+function dayCard() {
+  return `<div class="card p-4 mt-4">
+    <div class="flex items-center gap-2 mb-3 text-sm"><button class="text-slate-400">‹</button><span class="font-medium text-slate-700">samedi 3 octobre 2026</span><button class="text-slate-400">›</button><span class="flex-1"></span><span class="text-xs text-slate-400 uppercase tracking-wide mr-2">Total payable du jour</span><b class="text-lg tabular-nums">—</b></div>
+    <div class="flex items-end gap-4">
+      <label class="text-sm text-slate-600">Arrivée<input class="c mt-1 w-24 block border-slate-200" value="08:30"></label>
+      <label class="text-sm text-slate-600">Départ<input class="c mt-1 w-24 block border-slate-200"></label>
+      <label class="text-sm text-slate-600">Pause<input class="c mt-1 w-20 block border-slate-200 text-right" value="0:00"></label>
+    </div></div>`
+}
+
+function sheet() {
+  const cols = ['', 'A', 'B', 'C', 'D', 'E']
+  let rows = `<tr><td class="rh">1</td><td>Alicia Talbot-Lanciault</td><td></td><td></td><td></td><td></td></tr>
+    <tr><td class="rh">2</td><td><b>Dates</b></td><td><b>Heures RSDE</b></td><td><b>Description RSDE</b></td><td><b>Projet</b></td><td></td></tr>`
+  days.slice(0, 14).forEach((d, i) => { const r = DATA[d] || []; rows += `<tr><td class="rh">${i + 3}</td><td>${iso(d)}</td><td style="text-align:right" class="${d === TODAY ? 'sel' : ''}">${r[0] ?? 0}</td><td>${r[1] || ''}</td><td>${r[2] || ''}</td><td></td></tr>` })
+  return `<div class="card overflow-hidden">
+    <div class="flex items-center gap-3 px-4 py-2.5 border-b border-slate-100 text-sm">
+      <span class="font-medium text-slate-700">feuille_de_temps_10_2026</span><span class="text-xs text-slate-400">Google Sheets</span><span class="flex-1"></span>
+      <a class="text-xs text-brand-700 font-medium">Ouvrir dans Drive ↗</a>
+    </div>
+    <div class="gs bg-white">
+      <div class="flex gap-4 px-3 py-1.5 border-b border-slate-200 text-slate-600 text-xs"><span>↶</span><span>↷</span><span>100%</span><span>Arial</span><span>10</span><b>B</b><i>I</i></div>
+      <div class="flex items-center gap-2 px-3 py-1 border-b border-slate-200 text-xs"><span class="text-slate-400 w-10">B5</span><span class="text-slate-300">fx</span><span>3</span></div>
+      <div class="overflow-auto max-h-[440px]"><table class="w-full"><thead><tr>${cols.map(c => `<th class="${c ? '' : 'rh'}">${c}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="flex gap-1 px-2 py-1 border-t border-slate-200 bg-slate-50 text-xs">${['Alicia Talbot-Lanciault', 'Antoine Lambert', 'Charles Joachim', 'Guillaume Lambert', 'Marc-Antoine Plante', 'Pierre-Alexandre Papillon'].map((n, i) => `<span class="px-3 py-1 ${i === 0 ? 'bg-white text-blue-700 font-medium shadow-sm' : 'text-slate-600'}">${n}</span>`).join('')}</div>
+    </div></div>`
+}
+
+const OPTS = {
+  s1: ['L\'onglet du mois en haut, la journée (arrivée/départ) en dessous.', () => grid() + dayCard()],
+  s2: ['Une seule grille du mois : heures payées et heures R&D sur la même ligne.', () => grid({ clock: true, max: 'max-h-[560px]' })],
+  s3: ['La vraie feuille Google, affichée dans Boréal sur l\'onglet de la personne.', () => sheet()],
+}
+function show(o) {
+  document.querySelectorAll('#tabs button').forEach(b => b.className = 'px-3 py-1.5 rounded-lg ' + (b.dataset.o === o ? 'bg-brand-600 text-white' : 'bg-white border border-slate-200 text-slate-600'))
+  sub.textContent = OPTS[o][0]; view.innerHTML = OPTS[o][1]()
+}
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.dataset.o))
+show('s1')
+</script>
+</body>
+</html>

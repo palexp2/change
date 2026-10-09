@@ -57,7 +57,7 @@ export function txnFacts(txn) {
 export function normalizeBankState(raw) {
   const v = String(raw ?? '').trim().toLowerCase()
   if (!v) return null
-  if (/autoris/.test(v)) return 'autorise'
+  if (/autoris|authori[sz]/.test(v)) return 'autorise'
   if (/pending|attente|en cours|processing/.test(v)) return 'en_attente'
   if (/complet|posted|settled|termin/.test(v)) return 'complete'
   return null

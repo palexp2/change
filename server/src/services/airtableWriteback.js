@@ -461,7 +461,7 @@ export const WRITEBACK_MODULES = {
     linkColumns: { product_id: 'products' },
     defaultDirection: 'pull',
     pushValues: {
-      qty: row => stockMovementSignedChange(row),
+      qty: row => stockMovementAirtableChange(row),
       reason: row => stockMovementLabel(row),
     },
     // Un mouvement né dans Boréal part vers Airtable avec sa pièce, mais
@@ -486,6 +486,15 @@ export function stockMovementSignedChange(row) {
   if (row.type === 'out') return -qty
   if (row.type === 'adjustment' && /diminution/i.test(row.reason || '')) return -qty
   return qty
+}
+
+// Valeur poussée dans « Changement ». Airtable range les ajustements par leur
+// libellé (rollups « Ajustements positifs » / « Ajustements négatifs », le
+// second SOUSTRAIT) : un ajustement part donc en valeur absolue, le sens est
+// porté par le « Type ». Une diminution poussée à -3 ajoutait 3 au stock.
+export function stockMovementAirtableChange(row) {
+  const change = stockMovementSignedChange(row)
+  return row.type === 'adjustment' ? Math.abs(change) : change
 }
 
 // Libellé « Type » d'Airtable. Un ajustement garde un libellé « Ajustement… » :

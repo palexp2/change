@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Lignes d'activité</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{brand:{50:'#EEFAF1',100:'#D2F4DD',200:'#A2E8B6',400:'#43CC6E',500:'#2BC25C',600:'#21B14B',700:'#1B8E3C',800:'#167030'}}}}}</script>
+<style>
+body{background:#f7f6f2;font-family:Inter,system-ui,sans-serif}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem}
+.inp{border:1px solid #e2e8f0;border-radius:.5rem;padding:.25rem .5rem;font-size:.875rem;background:#fff;width:100%;outline:none}
+.inp:focus{border-color:#43CC6E}
+.ghost .inp{border-style:dashed;background:transparent}
+.ghost .inp::placeholder{color:#cbd5e1}
+.dim .inp{color:#94a3b8}
+</style>
+</head>
+<body class="text-slate-900">
+<div class="max-w-4xl mx-auto p-6">
+  <div class="flex items-center gap-2 mb-5 flex-wrap text-sm" id="tabs">
+    <h1 class="text-xl font-semibold mr-3">Lignes d'activité</h1>
+    <button data-o="a1" class="px-3 py-1.5 rounded-lg bg-brand-600 text-white"><b>L1</b> Ligne vide</button>
+    <button data-o="a2" class="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600"><b>L2</b> Lignes habituelles</button>
+    <button data-o="a3" class="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600"><b>L3</b> Une phrase</button>
+    <button data-o="a4" class="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600"><b>L4</b> Grille semaine</button>
+  </div>
+  <p id="sub" class="text-sm text-slate-500 mb-3"></p>
+
+  <div class="card p-4">
+    <div class="flex items-end gap-4 pb-4 border-b border-slate-100" id="clock">
+      <label class="text-sm text-slate-600">Arrivée<input class="inp mt-1 w-24 block" value="08:30"></label>
+      <label class="text-sm text-slate-600">Départ<input class="inp mt-1 w-24 block" value="17:00"></label>
+      <label class="text-sm text-slate-600">Pause<input class="inp mt-1 w-20 block text-right" value="0:30"></label>
+    </div>
+    <div id="body" class="mt-2"></div>
+  </div>
+</div>
+
+<script>
+const CODES = [['R&D · Fiabilité','bg-sky-500'],['R&D · Intelligence de contrôle','bg-violet-500'],['ERP','bg-sky-500'],['Support client',''],['Administration',''],['Dîner','']]
+const dot = c => { const k = CODES.find(x => x[0] === c); return k && k[1] ? `<span class="w-2 h-2 rounded-full ${k[1]} inline-block flex-shrink-0"></span>` : '<span class="w-2 h-2 inline-block flex-shrink-0"></span>' }
+const sel = (v, ph) => `<select class="inp">${ph ? `<option value="">${ph}</option>` : ''}${CODES.map(c => `<option ${c[0] === v ? 'selected' : ''}>${c[0]}</option>`).join('')}</select>`
+const head = `<thead><tr class="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide"><th class="px-2 py-2 w-64">Activité</th><th class="px-2 py-2">Description</th><th class="px-2 py-2 w-24 text-right">Durée</th></tr></thead>`
+const rest = (txt) => `<tfoot><tr class="border-t border-slate-100 text-slate-400"><td class="px-2 py-1.5 italic" colspan="2">Non ventilé</td><td class="px-2 py-1.5 text-right tabular-nums">${txt}</td></tr></tfoot>`
+const SUB = {
+  a1: 'Une ligne vide attend toujours en bas ; on tape, une autre apparaît.',
+  a2: 'Les activités des derniers jours sont déjà là ; on remplit les durées.',
+  a3: 'On écrit la journée en une phrase, Boréal fait les lignes.',
+  a4: 'Une ligne par activité, une colonne par jour, comme le Sheet.',
+}
+
+function a1() {
+  let rows = [['R&D · Fiabilité', 'Tests de dérive capteur CO₂', '3:00']]
+  const render = () => {
+    body.innerHTML = `<table class="w-full text-sm">${head}<tbody>${rows.map(r => `<tr class="border-t border-slate-100"><td class="px-2 py-1.5"><div class="flex items-center gap-1.5">${dot(r[0])}${sel(r[0], r[0] ? null : "Activité…")}</div></td><td class="px-2 py-1.5"><input class="inp" value="${r[1]}"></td><td class="px-2 py-1.5"><input class="inp text-right" value="${r[2]}"></td></tr>`).join('')}
+      <tr class="border-t border-slate-100 ghost" id="g"><td class="px-2 py-1.5"><div class="flex items-center gap-1.5">${dot('')}${sel('', 'Activité…')}</div></td><td class="px-2 py-1.5"><input class="inp" placeholder="Description"></td><td class="px-2 py-1.5"><input class="inp text-right" placeholder="0:00"></td></tr></tbody>${rest('4:00')}</table>`
+    const g = document.getElementById('g')
+    g.querySelectorAll('select,input').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
+      const vals = [...g.querySelectorAll('select,input')].map(x => x.value)
+      rows.push([vals[0] || '', vals[1], vals[2]]); render()
+      const last = body.querySelectorAll('tbody tr')[rows.length - 1].querySelectorAll('select,input')[el.tagName === 'SELECT' ? 1 : (el.placeholder === '0:00' ? 2 : 1)]
+      last.focus(); if (last.setSelectionRange) last.setSelectionRange(99, 99)
+    }, { once: true }))
+  }
+  render()
+}
+
+function a2() {
+  const rows = [['R&D · Fiabilité', 'Tests de dérive capteur CO₂', '3:00'], ['R&D · Intelligence de contrôle', 'Modèle de ventilation', ''], ['Support client', '', ''], ['Administration', '', '']]
+  body.innerHTML = `<table class="w-full text-sm">${head}<tbody>${rows.map(r => `<tr class="border-t border-slate-100 ${r[2] ? '' : 'dim'}"><td class="px-2 py-1.5"><div class="flex items-center gap-1.5">${dot(r[0])}${sel(r[0])}</div></td><td class="px-2 py-1.5"><input class="inp" value="${r[1]}"></td><td class="px-2 py-1.5"><input class="inp text-right" placeholder="0:00" value="${r[2]}" oninput="this.closest('tr').classList.toggle('dim', !this.value)"></td></tr>`).join('')}
+    <tr class="border-t border-slate-100 ghost"><td class="px-2 py-1.5"><div class="flex items-center gap-1.5">${dot('')}${sel('', 'Activité…')}</div></td><td class="px-2 py-1.5"><input class="inp" placeholder="Description"></td><td class="px-2 py-1.5"><input class="inp text-right" placeholder="0:00"></td></tr></tbody>${rest('5:00')}</table>`
+}
+
+function a3() {
+  const parse = (t) => t.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean).map(s => {
+    const m = /(\d+(?:[.,:h]\d+)?)\s*h?/i.exec(s); const h = m ? m[1].replace(',', ':').replace('h', ':') : ''
+    const low = s.toLowerCase()
+    const code = /fiab|capteur|firmware|wifi/.test(low) ? 'R&D · Fiabilité' : /intel|algo|modèle|ventil/.test(low) ? 'R&D · Intelligence de contrôle' : /support|client|appel/.test(low) ? 'Support client' : /dîner|diner/.test(low) ? 'Dîner' : 'Administration'
+    const desc = s.replace(m ? m[0] : '', '').replace(/^(fiabilité|intelligence( de contrôle)?|support|admin)\s*[-—:]?\s*/i, '').trim()
+    return [code, desc, h.includes(':') ? h : (h ? h + ':00' : '')]
+  })
+  const draw = (t) => {
+    const rows = parse(t)
+    tbl.innerHTML = rows.length ? `<table class="w-full text-sm mt-3">${head}<tbody>${rows.map(r => `<tr class="border-t border-slate-100"><td class="px-2 py-1.5"><div class="flex items-center gap-1.5">${dot(r[0])}<span>${r[0]}</span></div></td><td class="px-2 py-1.5 text-slate-700">${r[1]}</td><td class="px-2 py-1.5 text-right tabular-nums">${r[2]}</td></tr>`).join('')}</tbody></table>` : ''
+  }
+  body.innerHTML = `<textarea id="ta" rows="2" class="inp mt-2" placeholder="3h fiabilité tests capteur, 2h algo ventilation, 1h support Ferme Lufa"></textarea><div id="tbl"></div>`
+  ta.value = '3h fiabilité tests capteur CO₂, 2h30 algo ventilation, 1h support Ferme Lufa, 1h admin'
+  ta.addEventListener('input', () => draw(ta.value)); draw(ta.value)
+}
+
+function a4() {
+  clock.classList.add('hidden')
+  const days = ['Dim 27', 'Lun 28', 'Mar 29', 'Mer 30', 'Jeu 1', 'Ven 2', 'Sam 3']
+  const rows = [['R&D · Fiabilité', [, 4, 6, 3.5, 5, 2, ]], ['R&D · Intelligence de contrôle', [, 2, , 3, 2, 4, ]], ['Support client', [, 1, 1, 0.5, , 1, ]], ['Administration', [, 1, 1, 1, 1, 1, ]]]
+  const cell = v => `<input class="w-14 text-center border border-transparent hover:border-slate-200 focus:border-brand-400 outline-none rounded px-1 py-1 tabular-nums" value="${v ? String(v).replace('.', ',') : ''}">`
+  body.innerHTML = `<div class="overflow-x-auto"><table class="w-full text-sm"><thead><tr class="text-xs font-semibold text-slate-500 uppercase tracking-wide"><th class="px-2 py-2 text-left w-64">Activité</th>${days.map((d, i) => `<th class="px-1 py-2 text-center ${i === 0 || i === 6 ? 'text-slate-300' : ''}">${d}</th>`).join('')}<th class="px-2 py-2 text-right">Total</th></tr></thead><tbody>
+    ${rows.map(r => `<tr class="border-t border-slate-100"><td class="px-2 py-1.5"><div class="flex items-center gap-1.5">${dot(r[0])}<span>${r[0]}</span></div></td>${days.map((_, i) => `<td class="px-1 py-1 text-center">${cell(r[1][i])}</td>`).join('')}<td class="px-2 py-1.5 text-right tabular-nums font-semibold">${String(r[1].reduce((a, b) => a + (b || 0), 0)).replace('.', ',')}</td></tr>`).join('')}
+    <tr class="border-t border-slate-100 ghost"><td class="px-2 py-1.5"><div class="flex items-center gap-1.5">${dot('')}${sel('', 'Activité…')}</div></td>${days.map(() => `<td class="px-1 py-1 text-center">${cell('')}</td>`).join('')}<td></td></tr>
+    <tr class="border-t-2 border-slate-200 bg-slate-50 font-semibold"><td class="px-2 py-1.5">Total</td>${days.map((_, i) => `<td class="px-1 py-1.5 text-center tabular-nums">${rows.reduce((a, r) => a + (r[1][i] || 0), 0) || ''}</td>`).join('')}<td class="px-2 py-1.5 text-right tabular-nums">40</td></tr>
+  </tbody></table></div>`
+}
+
+const OPTS = { a1, a2, a3, a4 }
+function show(o) {
+  clock.classList.remove('hidden')
+  document.querySelectorAll('#tabs button').forEach(b => b.className = 'px-3 py-1.5 rounded-lg ' + (b.dataset.o === o ? 'bg-brand-600 text-white' : 'bg-white border border-slate-200 text-slate-600'))
+  sub.textContent = SUB[o]; OPTS[o]()
+}
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => show(b.dataset.o))
+show('a1')
+</script>
+</body>
+</html>

@@ -26,7 +26,7 @@ initSchema()
 const migration = await import('../db/migrations/011-purged-fields.js')
 migration.up(db)
 
-const { purgeFields, purgedNativeFields, clearFieldTombstone } = await import('./fieldPurge.js')
+const { purgeFields, purgedNativeFields, clearFieldTombstone, cleanPurgedReferences } = await import('./fieldPurge.js')
 
 const columns = (table) => new Set(db.pragma(`table_info(${table})`).map(c => c.name))
 const cfExists = (id) => !!db.prepare('SELECT 1 FROM custom_fields WHERE id=?').get(id)
@@ -112,7 +112,8 @@ test('purge avec filtres groupés, anciens filtres et regroupements multiples', 
     [{ conjunction: 'OR', rules: [{ conjunction: 'AND', rules: [removed] }, kept] },
       { conjunction: 'OR', rules: [kept] }],
     [[removed, kept], [kept]],
-    [{ conjunction: 'AND', rules: [removed] }, []],
+    // Tout le filtre reposait sur le champ détruit : la pastille est supprimée.
+    [{ conjunction: 'AND', rules: [removed] }, undefined],
     [null, null],
   ]
   for (const [i, [filters]] of fixtures.entries()) {
@@ -127,7 +128,21 @@ test('purge avec filtres groupés, anciens filtres et regroupements multiples', 
   assert.equal(columns('projects').has('cf_purge_filters'), false)
   for (const [i, [, expected]] of fixtures.entries()) {
     const pill = db.prepare('SELECT filters, group_by FROM table_view_pills WHERE id=?').get(`purge-filter-${i}`)
+    if (expected === undefined) { assert.equal(pill, undefined); continue }
     assert.deepEqual(JSON.parse(pill.filters), expected)
     assert.deepEqual(JSON.parse(pill.group_by), ['name'])
   }
+})
+
+test('champ natif détruit : retiré des vues de sa clé de page et des colonnes gelées', () => {
+  db.prepare(`INSERT INTO table_view_pills (id, table_name, label, filters, visible_columns, column_widths)
+    VALUES ('ref-pill', 'retours', 'Réf', '[]', ?, ?)`)
+    .run(JSON.stringify(['n_de_retour', 'vieux_champ']), JSON.stringify({ vieux_champ: 80, n_de_retour: 120 }))
+  db.prepare(`INSERT INTO airtable_frozen_columns (erp_table, column_name) VALUES ('returns', 'vieux_champ')`).run()
+  const out = cleanPurgedReferences('returns', ['vieux_champ'])
+  assert.equal(out.pills, 1)
+  assert.equal(out.frozen, 1)
+  const pill = db.prepare('SELECT visible_columns, column_widths FROM table_view_pills WHERE id=?').get('ref-pill')
+  assert.deepEqual(JSON.parse(pill.visible_columns), ['n_de_retour'])
+  assert.deepEqual(JSON.parse(pill.column_widths), { n_de_retour: 120 })
 })

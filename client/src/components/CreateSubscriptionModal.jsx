@@ -63,7 +63,7 @@ export function CreateSubscriptionModal({ companyId, isOpen, onClose, onCreated 
     ]).then(([shipResp, prodResp, billResp]) => {
       setShipping(shipResp)
       const all = (prodResp.data || prodResp || [])
-      setProducts(all.filter(p => p.is_sellable === 1 || p.is_sellable === true))
+      setProducts(all.filter(p => (p.is_sellable === 1 || p.is_sellable === true) && !p.offer_legacy && p.active !== 0))
       setBilling(billResp)
       const def = (billResp.payment_methods || []).find(pm => pm.is_default) || (billResp.payment_methods || [])[0]
       if (def) setPaymentMethodId(def.id)

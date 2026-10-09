@@ -13,6 +13,10 @@ db.exec(`ALTER TABLE purchases ADD COLUMN nom_de_la_piece TEXT;
   ALTER TABLE purchases ADD COLUMN date_de_commande TEXT;
   ALTER TABLE purchases ADD COLUMN notes_2 TEXT;
   ALTER TABLE purchases ADD COLUMN fournisseur TEXT;`)
+// Colonnes du miroir Airtable lues par le calcul FIFO (services/fifoCost.js).
+for (const column of ['at_id', 'cf_date_de_reception_complete', 'override_prix_unitaire_paye_cad', 'prix_unitaire_facture_cad', 'prix_unitaire_cad']) {
+  try { db.exec(`ALTER TABLE purchases ADD COLUMN ${column} TEXT`) } catch {}
+}
 for (const column of ['deleted_at', 'manufacturier']) { try { db.exec(`ALTER TABLE products ADD COLUMN ${column} TEXT`) } catch {} }
 db.prepare("INSERT INTO connector_oauth (id,connector,account_key,access_token) VALUES ('at','airtable','test','test-token')").run()
 db.prepare("INSERT INTO airtable_module_config (module,base_id,table_id,field_map) VALUES ('achats','test-base','test-achats','{}')").run()

@@ -70,7 +70,11 @@ const SNAPSHOT_REVIEWED = {
   orders: ['address_id', 'assigned_name', 'items_count'],
   projects: ['annule', 'autonumber', 'orders', 'soumission', 'version'],
   shipments: ['commande', 'company_name', 'order_number', 'shipping_id_novoxpress', 'status'],
-  tickets: ['mois', 'semaine'],
+  // `heures` : seulement la route /heures-rsde (App.jsx).
+  tickets: ['heures', 'mois', 'semaine'],
+  // Les incidents (OpsIssues, OpsIssueDetail) viennent de l'API ; le cache n'y
+  // sert qu'aux utilisateurs.
+  ops_issues: ['area'],
   // Les assemblages viennent de l'API ; leur sku est joint au produit. Les
   // autres noms ne sont que des commentaires, attributs JSX ou variables.
   assemblages: ['image', 'mois', 'semaine', 'sku'],
@@ -78,7 +82,8 @@ const SNAPSHOT_REVIEWED = {
   // supplier_link est lu dans PrioriteAssemblage sur api.products.list(),
   // pas sur useTable('products'). Les autres noms concernent routes, textes
   // et statuts d'autres tables (commandes, tâches et incidents).
-  products: ['changelog', 'compte', 'documents', 'orisha', 'status', 'supplier_link'],
+  // `emplacement` n'est nommé que pour les ACHATS (pages/Purchases.jsx).
+  products: ['changelog', 'compte', 'documents', 'emplacement', 'orisha', 'status', 'supplier_link'],
   // emplacement est un champ du formulaire de création envoyé à l'API ;
   // les autres noms ne sont pas lus sur les achats du cache.
   purchases: ['autonumber', 'depenses', 'emplacement', 'image', 'mois'],
@@ -86,7 +91,8 @@ const SNAPSHOT_REVIEWED = {
   // (contacts, commandes, produits), dans des URLs ou du texte français.
   return_items: ['action', 'autonumber', 'client', 'commande', 'contact', 'product_name', 'sku', 'valeur'],
   returns: ['envoi', 'expedition', 'facture', 'type'],
-  serial_numbers: ['assemblage', 'image'],
+  // `slug` : seulement le paramètre de la route /rdv/:slug (App.jsx).
+  serial_numbers: ['assemblage', 'image', 'slug'],
 }
 
 // Colonnes de structure : jamais retirées du snapshot, quoi qu'il arrive à leur

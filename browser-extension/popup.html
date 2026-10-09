@@ -16,10 +16,15 @@
   .n { flex: 1; }
   .d { opacity: .65; font-size: 11px; }
   .ok { color: #059669; } .absent { color: #b45309; } .erreur { color: #dc2626; }
+  #doc { background: #059669; margin-bottom: 4px; }
+  #docOut { margin: 0 0 14px; min-height: 14px; font-size: 11px; }
+  #docOut a { opacity: 1; font-weight: 600; }
   a { font-size: 11px; opacity: .7; color: inherit; }
 </style>
 </head>
 <body>
+  <button id="doc">Envoyer ce document à l’extracteur</button>
+  <p id="docOut" class="d"></p>
   <h1>Tout récolter</h1>
   <button id="go">Envoyer mes sessions et collecter</button>
   <ul id="out"></ul>

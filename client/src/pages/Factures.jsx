@@ -54,6 +54,9 @@ const RENDERS = {
   company_name:    row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
+  contact_name:    row => row.contact_id
+    ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.contact_name}</Link>
+    : <span className="text-slate-400">—</span>,
   project_name:    row => <span className="text-slate-600">{row.project_name || '—'}</span>,
   order_number:    row => row.order_id && row.order_number
     ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="link-record">#{row.order_number}</Link>
@@ -375,7 +378,7 @@ export default function Factures() {
         manageViews
         columns={COLUMNS_WITH_CUSTOM}
         data={displayedFactures}
-        searchFields={['document_number', 'company_name', 'project_name', 'order_number', 'total_amount', 'amount_before_tax_cad', 'balance_due', 'notes']}
+        searchFields={['document_number', 'company_name', 'contact_name', 'project_name', 'order_number', 'total_amount', 'amount_before_tax_cad', 'balance_due', 'notes']}
         loading={loading}
         peek={{
           title: row => row.document_number || `Facture #${row.id}`,

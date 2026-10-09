@@ -44,14 +44,19 @@ function normFloor(v) {
 /**
  * Seuils effectifs, un par plafond : { session, week }. Réglage propre au plafond,
  * sinon l'ancien seuil unique (installations antérieures), sinon le défaut.
+ *
+ * `accountId` : chaque compte Claude a ses propres seuils (demande de P.-A. Papillon,
+ * 2026-10-08), rangés dans `quotaFloorsByAccount[id]` ; un plafond qu'un compte n'a
+ * pas réglé retombe sur le seuil commun ci-dessus.
  */
-export function getQuotaFloors() {
+export function getQuotaFloors(accountId = null) {
   const s = getSettings()
   const legacy = normFloor(s.quotaFloorPct)
   const fallback = legacy == null ? QUOTA_FLOOR_PCT : legacy
+  const own = (accountId && s.quotaFloorsByAccount?.[accountId]) || {}
   return {
-    session: normFloor(s.quotaFloorSessionPct) ?? fallback,
-    week: normFloor(s.quotaFloorWeekPct) ?? fallback,
+    session: normFloor(own.session) ?? normFloor(s.quotaFloorSessionPct) ?? fallback,
+    week: normFloor(own.week) ?? normFloor(s.quotaFloorWeekPct) ?? fallback,
   }
 }
 
@@ -137,7 +142,9 @@ export async function syncQuotaGuard() {
   }
 
   const s = getSettings()
-  const worst = tightestBucket(usage, getQuotaFloors())
+  // La vue agrégée est celle du compte le plus loin de SES seuils : s'il passe dessous,
+  // tous les comptes y sont — c'est là seulement que la file s'arrête.
+  const worst = tightestBucket(usage, getQuotaFloors(usage.activeAccountId || usage.accountId))
   // Le seuil qui décide est celui du plafond retenu : la fenêtre de 5 h et la semaine
   // n'ont plus la même exigence.
   const floor = worst ? worst.floor : QUOTA_FLOOR_PCT

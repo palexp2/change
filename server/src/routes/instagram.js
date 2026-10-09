@@ -12,6 +12,7 @@ import {
 import {
   runCommentScrape,
   getSessionCookie,
+  saveSessionCookie,
   getScrapeConfig,
 } from '../services/instagramCommentScrape.js'
 import { isSystemAutomationActive, logSystemRun } from '../services/systemAutomations.js'
@@ -435,14 +436,7 @@ router.put('/session', requireAdmin, (req, res) => {
   const sessionid = String(req.body?.sessionid || '').trim()
   const dsUserId = String(req.body?.ds_user_id || '').trim()
   if (sessionid && sessionid.length < 20) return res.status(400).json({ error: 'sessionid invalide (trop court)' })
-  const put = db.prepare(`
-    INSERT INTO connector_config (connector, key, value) VALUES ('instagram', ?, ?)
-    ON CONFLICT(connector, key) DO UPDATE SET value = excluded.value
-  `)
-  db.transaction(() => {
-    put.run('sessionid', sessionid)
-    put.run('ds_user_id', dsUserId)
-  })()
+  saveSessionCookie({ sessionid, dsUserId })
   // Une session fraîche ne dure pas : on en profite tout de suite pour lire,
   // trier, écrire et envoyer la liste de la semaine à Philippe.
   if (sessionid) {
@@ -504,6 +498,7 @@ router.post('/drafts/write', requireAuth, async (req, res) => {
       instructions: req.body?.instructions,
       force: req.body?.force !== false,
     })
+    if (out.skipped) return res.status(422).json({ error: 'Aucune réponse vérifiée à cette question : à écrire soi-même, ou donner une consigne.' })
     res.json(out)
   } catch (e) { res.status(400).json({ error: e.message }) }
 })

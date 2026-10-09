@@ -13,7 +13,7 @@ const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-sl
 export default function CodesActivite() {
   const [newName, setNewName] = useState('')
   const [newPayable, setNewPayable] = useState(true)
-  const [newRsde, setNewRsde] = useState(false)
+  const [newProject, setNewProject] = useState('')
   const [adding, setAdding] = useState(false)
   const [includeInactive, setIncludeInactive] = useState(false)
   const [users, setUsers] = useState([])
@@ -52,9 +52,9 @@ export default function CodesActivite() {
       await api.activityCodes.create({
         name: newName.trim(),
         payable: newPayable,
-        rsde_default: newRsde,
+        rsde_project: newProject || null,
       })
-      setNewName(''); setNewPayable(true); setNewRsde(false)
+      setNewName(''); setNewPayable(true); setNewProject('')
       load()
     } catch (err) {
       addToast({ message: err.message, type: 'error' })
@@ -123,16 +123,9 @@ export default function CodesActivite() {
           title="Les heures de ce code comptent-elles dans le total à payer ?"
         />
       ),
-      rsde_default: row => (
-        <input
-          type="checkbox"
-          checked={!!row.rsde_default}
-          onChange={e => handlePatch(row.id, { rsde_default: e.target.checked })}
-          className="rounded"
-          aria-label={row.rsde_default ? 'Ne plus pré-cocher RSDE' : 'Pré-cocher RSDE'}
-          title="Pré-coche la case RSDE des entrées de feuille de temps qui utilisent ce code"
-          data-testid={`code-rsde-${row.id}`}
-        />
+      // Un code avec un projet R&D rend R&D toute ligne qui l'utilise.
+      rsde_project: row => (
+        <ProjectSelect value={row.rsde_project} onChange={v => handlePatch(row.id, { rsde_project: v })} testId={`code-rsde-${row.id}`} />
       ),
       active: row => (
         <input
@@ -170,11 +163,8 @@ export default function CodesActivite() {
               </label>
             </div>
             <div className="col-span-2 flex flex-col">
-              <label className="label">RSDE</label>
-              <label className="flex items-center gap-2 text-sm text-slate-700 h-[30px] cursor-pointer" title="Pré-coche la case RSDE des entrées qui utilisent ce code">
-                <input type="checkbox" checked={newRsde} onChange={e => setNewRsde(e.target.checked)} className="rounded" />
-                Pré-coché RSDE
-              </label>
+              <label className="label">Projet R&amp;D</label>
+              <ProjectSelect value={newProject} onChange={v => setNewProject(v || '')} />
             </div>
             <div className="col-span-1 flex items-end">
               <button type="submit" disabled={adding || !newName.trim()} className="btn-primary w-full flex items-center justify-center gap-1.5">
@@ -207,6 +197,23 @@ export default function CodesActivite() {
           }}
         />
     </ListPage>
+  )
+}
+
+const RD_PROJECTS = ['Fiabilité', 'Intelligence de contrôle']
+
+function ProjectSelect({ value, onChange, testId }) {
+  const options = value && !RD_PROJECTS.includes(value) ? [...RD_PROJECTS, value] : RD_PROJECTS
+  return (
+    <select
+      className="border border-slate-200 rounded-lg px-2 py-1 text-sm bg-white text-slate-900 focus:outline-none focus:border-brand-400"
+      value={value || ''}
+      onChange={e => onChange(e.target.value || null)}
+      data-testid={testId}
+    >
+      <option value="">—</option>
+      {options.map(p => <option key={p} value={p}>{p}</option>)}
+    </select>
   )
 }
 

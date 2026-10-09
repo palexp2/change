@@ -30,26 +30,33 @@ const PAGES_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../client
 // Page détail → clé de table (celle de /champs/:table). `null` = la page
 // n'affiche pas les champs d'une table configurable, avec la raison.
 const DETAIL_PAGES = new Map([
+  ['AcceptationDetail.jsx',   'page_acceptances'],
   ['AdresseDetail.jsx',       'adresses'],
   ['AutomationDetail.jsx',    'automations'],
   ['CompanyDetail.jsx',       'companies'],
   ['ContactDetail.jsx',       'contacts'],
   ['DiscoveryFormDetail.jsx', null], // réponses au formulaire public, configurées par discovery-form-schema, hors tableDefs
   ['DirectDepositDetail.jsx', null], // dépôt direct d'une paie : pas de table dans tableDefs
+  ['EmailTemplateDetail.jsx', 'email_templates'],
   ['EmployeeDetail.jsx',      'employees'],
   ['EnvoisDetail.jsx',        'shipments'],
   ['InteractionDetail.jsx',   'interactions'],
   ['FactureDetail.jsx',       'factures'],
+  ['FournitureDetail.jsx',    'fournitures'],
+  ['MarketingFormDetail.jsx', 'marketing_forms'],
+  ['MeetingTypeDetail.jsx',   'meeting_types'],
   ['OpsIssueDetail.jsx',      'ops_issues'],
   ['OrderDetail.jsx',         'orders'],
   ['ProductDetail.jsx',       'products'],
   ['ProjectDetail.jsx',       'projects'],
   ['PurchaseDetail.jsx',      'purchases'],
   ['RetourDetail.jsx',        'retours'],
+  ['SaleOfferDetail.jsx',     'catalogue_offers'],
   ['SaleReceiptDetail.jsx',   'sale_receipts'],
   ['SerialDetail.jsx',        'serial_numbers'],
   ['SoumissionDetail.jsx',    'soumissions'],
   ['StripePayoutDetail.jsx',  'stripe_payouts'],
+  ['StripeProductDetail.jsx', 'stripe_products'],
   ['TicketDetail.jsx',        'tickets'],
 ])
 

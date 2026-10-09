@@ -65,7 +65,9 @@ describe('CustomFieldModal — colonne de lookup recherchable avec noms UI', () 
 
     // FK order_id → la table cible « Commandes (orders) » est pré-remplie avec
     // son libellé UI.
-    await page.getByTestId('cf-lookup-fk').selectOption('order_id')
+    await page.getByTestId('cf-lookup-fk').click()
+    await page.getByTestId('cf-lookup-fk-menu').locator('input').fill('Commande')
+    await page.getByTestId('cf-lookup-fk-menu').locator('button', { hasText: 'Commande' }).first().click()
     await page.getByTestId('cf-lookup-target-table')
       .filter({ hasText: 'Commandes (orders)' })
       .waitFor({ state: 'visible', timeout: 5000 })

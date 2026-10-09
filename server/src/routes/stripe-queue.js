@@ -10,7 +10,7 @@ import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
 import { autoLinkStripeFacture } from '../services/stripeProjectLink.js'
 import { APP_URL } from '../config/appUrl.js'
-import { refreshOverdueFactures } from '../services/factureBalance.js'
+import { refreshOverdueFactures, isStripeInvoiceRetrying } from '../services/factureBalance.js'
 import {
   STRIPE_FACTURE_FIELDS, STRIPE_FACTURE_FIXED, getCustomFieldSpecs,
   getFactureFieldMap, saveFactureFieldMap, resolveStripeInvoiceFields,
@@ -171,6 +171,7 @@ router.post('/batch-enrich', async (req, res) => {
         currency=?, document_date=?, document_number=COALESCE(document_number,?),
         subscription_id=COALESCE(subscription_id,?), company_id=COALESCE(company_id,?),
         montant_avant_taxes=?, customer_email=COALESCE(?, customer_email), lien_stripe=?,
+        stripe_payment_failed=?,
         sync_source='Factures Stripe', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE invoice_id=?
     `)
@@ -178,8 +179,8 @@ router.post('/batch-enrich', async (req, res) => {
     const insertStmt = db.prepare(`
       INSERT INTO factures (id, invoice_id, company_id, document_number, document_date,
         status, currency, amount_before_tax_cad, total_amount, balance_due,
-        subscription_id, sync_source, montant_avant_taxes, customer_email, lien_stripe, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        subscription_id, sync_source, montant_avant_taxes, customer_email, lien_stripe, stripe_payment_failed, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     `)
 
     const samples = [] // { factureId, invoiceNumber, action }
@@ -187,6 +188,8 @@ router.post('/batch-enrich', async (req, res) => {
       try {
         const invoiceId = inv.id
         const status = mapStripeStatus(inv.status)
+        // « Retrying » Stripe → « En retard » via refreshOverdueFactures en fin de lot.
+        const paymentFailed = isStripeInvoiceRetrying(inv) ? 1 : 0
         // Champs configurables (modale « Mapping Stripe » sur /factures) —
         // défauts = comportement historique, voir services/stripeFactureFieldMap.js.
         const resolved = resolveStripeInvoiceFields(inv)
@@ -220,7 +223,7 @@ router.post('/batch-enrich', async (req, res) => {
           updateStmt.run(
             status, total, subtotal, balanceDue, currency, date, docNumber,
             subscriptionId, companyId, String(subtotal), resolved.customer_email,
-            `https://dashboard.stripe.com/invoices/${invoiceId}`, invoiceId
+            `https://dashboard.stripe.com/invoices/${invoiceId}`, paymentFailed, invoiceId
           )
           batchProgress.updated++
           factureId = existing.id
@@ -231,7 +234,7 @@ router.post('/batch-enrich', async (req, res) => {
           insertStmt.run(
             newId, invoiceId, companyId, docNumber, date,
             status, currency, subtotal, total, balanceDue, subscriptionId, String(subtotal),
-            resolved.customer_email, `https://dashboard.stripe.com/invoices/${invoiceId}`
+            resolved.customer_email, `https://dashboard.stripe.com/invoices/${invoiceId}`, paymentFailed
           )
           batchProgress.created++
           factureId = newId

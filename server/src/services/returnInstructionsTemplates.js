@@ -115,20 +115,21 @@ We thank you for your collaboration.
 1-888-267-4742
 support@orisha.io`),
   },
-  // #6 — CAN, FR, différé (Purolator) — objet resté en anglais dans HubSpot, reproduit tel quel
+  // #6 — CAN, FR, différé (Purolator)
   ca_fr_deferred: {
-    subject: 'How to ship back your defective equipment',
+    subject: 'Comment renvoyer votre équipement défectueux',
     body: (firstName) => nl2p(`Bonjour ${firstName},
 
 Voici la procédure pour retourner l'équipement Orisha.
+Voici un aide-mémoire en pièce jointe.
 
 - Mettez l'article dans une boîte.
-- Imprimez l'étiquette de retour jointe à ce courriel et collez-là sur la boîte.
+- Imprimez l'étiquette de retour jointe à ce courriel et collez-la sur la boîte.
 - Retourner la boîte en utilisant l'une de ces deux méthodes:
   - Apportez la boîte au point de dépôt Purolator le plus proche
-  - Planifiez un ramassage à vôtre ferme via la fonction de clavardage sur https://www.purolator.com/fr ou appelez au 1-888-SHIP-123 (1-888-744-7123)
+  - Planifiez un ramassage à votre ferme via la fonction de clavardage sur https://www.purolator.com/fr ou appelez au 1-888-SHIP-123 (1-888-744-7123)
 
-Merci de vôtre collaboration,`),
+Merci de votre collaboration,`),
   },
 }
 
@@ -157,7 +158,6 @@ export function buildReturnInstructionsHtml(template, firstName) {
   <head><meta charset="utf-8"><title>${template.subject}</title></head>
   <body style="margin:0;padding:20px;background:#ffffff;font-family:Arial, sans-serif;color:#333333;font-size:15px;line-height:1.5;">
     ${body}
-    <p style="margin:24px 0 0 0;color:#555555;">Automatisation Orisha Inc.<br>1-888-267-4742 · support@orisha.io</p>
   </body>
 </html>`
 }

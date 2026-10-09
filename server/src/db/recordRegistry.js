@@ -28,9 +28,9 @@ export const RECORD_REGISTRY = {
     writeAuth: requireHR,
     softDelete: true,
     touchUpdatedAt: true,
-    allowed: ['name', 'description', 'active', 'payable', 'rsde_default'],
+    allowed: ['name', 'description', 'active', 'payable', 'rsde_default', 'rsde_project'],
     nonNullable: new Set(['name']),
-    coerce: { name: trimOrNull, active: toBool, payable: toBool, rsde_default: toBool },
+    coerce: { name: trimOrNull, active: toBool, payable: toBool, rsde_default: toBool, rsde_project: trimOrNull },
     required: { name: 'name requis' },
     defaults: { active: 1, payable: 1, rsde_default: 0 },
     messages: { empty: () => 'name ne peut pas être vide' },
@@ -38,6 +38,11 @@ export const RECORD_REGISTRY = {
     beforeCreate(body) {
       if (body.active !== undefined) body.active = toBoolDefaultTrue(body.active)
       if (body.payable !== undefined) body.payable = toBoolDefaultTrue(body.payable)
+      if (body.rsde_project !== undefined) body.rsde_default = body.rsde_project ? 1 : 0
+    },
+    // Un projet R&D fait du code un code R&D : la case historique suit.
+    beforeUpdate(id, body) {
+      if (body.rsde_project !== undefined) body.rsde_default = String(body.rsde_project || '').trim() ? 1 : 0
     },
   },
 

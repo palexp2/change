@@ -964,6 +964,10 @@ export function initSchema() {
     // Reporté dans le mémo QB et suffixé aux lignes d'articles, pour qu'en fin d'année
     // on sache d'un coup d'œil quelle facture couvre quel mois. NULL = achat ponctuel.
     'ALTER TABLE sale_receipts ADD COLUMN service_period TEXT',
+    // Mois du service (2026-10-03) : date de fin de période à laquelle le reçu a été
+    // comptabilisé en facture, et le BillPayment posé au jour du débit.
+    'ALTER TABLE sale_receipts ADD COLUMN service_accrual_date TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN accrual_payment_qb_id TEXT',
     // Choix de comptabilisation retenus à la publication QB — conservés pour
     // servir de modèle aux futurs reçus du même fournisseur (panneau "transactions
     // passées" + bouton "Utiliser comme modèle"). Ids QuickBooks.
@@ -1149,6 +1153,10 @@ export function initSchema() {
     'ALTER TABLE automations ADD COLUMN last_run_status TEXT',
     'ALTER TABLE automations ADD COLUMN system INTEGER DEFAULT 0',
     'ALTER TABLE automation_logs ADD COLUMN duration_ms INTEGER',
+    // Page Automatisations (façon Airtable) : groupe de la colonne de gauche.
+    'ALTER TABLE automations ADD COLUMN group_name TEXT',
+    // Nom donné par l'utilisateur : le seed des automatisations système ne l'écrase plus.
+    'ALTER TABLE automations ADD COLUMN name_custom INTEGER DEFAULT 0',
 
     // Phase 6 — Airtable-like interactions
     `CREATE TABLE IF NOT EXISTS base_interactions (
@@ -1838,6 +1846,48 @@ export function initSchema() {
     );
   `)
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_public_files_folder ON public_files(folder)') } catch {}
+  // Page HTML hébergée avec bloc d'acceptation (<… data-orisha-accept …>) :
+  // recalculé au téléversement / remplacement (services/hostedPages.js).
+  try { db.exec('ALTER TABLE public_files ADD COLUMN accept_page INTEGER DEFAULT 0') } catch {}
+  // Journal d'acceptation des pages hébergées (remplace l'outil Contrats,
+  // Charles 2026-10-09) : qui a accepté quelle version (empreinte) de la page.
+  // Factures Stripe d'un ajout à un abonnement existant (contrat ou soumission
+// approuvé) : annoncées sur #paiements même si l'abonnement a déjà été payé.
+db.exec(`CREATE TABLE IF NOT EXISTS subscription_upgrade_invoices (
+  stripe_invoice_id TEXT PRIMARY KEY,
+  stripe_subscription_id TEXT,
+  source TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+)`)
+db.exec(`
+    CREATE TABLE IF NOT EXISTS page_acceptances (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      public_file_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT,
+      email_verified INTEGER DEFAULT 0,
+      contact_id TEXT,
+      hash TEXT NOT NULL,
+      ip TEXT,
+      user_agent TEXT,
+      at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_page_acceptances_file ON page_acceptances(public_file_id)')
+  // Texte lisible de la version acceptée (preuve consultable dans l'ERP).
+  try { db.exec('ALTER TABLE page_acceptances ADD COLUMN text TEXT') } catch {}
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS page_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      public_file_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      actor TEXT,
+      ip TEXT,
+      user_agent TEXT,
+      at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_page_events_file ON page_events(public_file_id)')
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_public_files_created ON public_files(created_at DESC)') } catch {}
 
   try { db.exec("ALTER TABLE tasks ADD COLUMN hubspot_task_id TEXT") } catch {}
@@ -1994,6 +2044,17 @@ export function initSchema() {
   // le mémo QB reste vierge (comportement historique). Rempli par les écritures
   // automatiques qui veulent un libellé lisible dans les livres (recharges Twilio).
   try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN qb_memo TEXT') } catch {}
+  // Bénéficiaire QuickBooks choisi tel quel (fournisseur, client ou employé).
+  try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN qb_payee_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN qb_payee_type TEXT') } catch {}
+  // Pièce récurrente (bail, contrat) : dernier choix « joint / pas joint » par fournisseur.
+  db.exec(`CREATE TABLE IF NOT EXISTS standing_doc_choices (
+    vendor_key TEXT PRIMARY KEY,
+    choice TEXT NOT NULL,
+    drive_file_id TEXT,
+    file_name TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`)
 
   const achatsCount = db.prepare('SELECT COUNT(*) AS c FROM achats_fournisseurs').get().c
   const hasDepenses = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='depenses'").get()
@@ -2896,6 +2957,8 @@ export function initSchema() {
 
   // Préférence persistante du mode de feuille de temps par utilisateur
   try { db.exec("ALTER TABLE users ADD COLUMN timesheet_default_mode TEXT DEFAULT 'simple'") } catch {}
+  // Payé à la semaine : la feuille de temps masque Début / Fin / Pause / Total.
+  try { db.exec('ALTER TABLE users ADD COLUMN timesheet_paid_weekly INTEGER DEFAULT 0') } catch {}
 
   // Préférences UI par utilisateur — items/groupes du menu de gauche masqués.
   // Liste JSON de clés cachées (blacklist) : item = route `to`, groupe = `group:<nom>`.
@@ -3058,6 +3121,85 @@ export function initSchema() {
     console.error('Migration timesheet_entries échouée:', e.message)
   }
 
+  // Projet RS&DE choisi sur la ligne elle-même (colonne « Projet » du tableau
+  // Détaillé) ; vide = celui du code d'activité.
+  try { db.exec('ALTER TABLE timesheet_entries ADD COLUMN rsde_project TEXT') } catch {}
+
+  // Projet RS&DE d'un code d'activité (« Fiabilité », « Intelligence de contrôle »…).
+  // Un code avec un projet EST un code R&D : choisir le code suffit, plus de case
+  // RSDE à cocher sur la feuille. rsde_default reste aligné (= projet non vide)
+  // pour les lecteurs historiques.
+  try { db.exec('ALTER TABLE activity_codes ADD COLUMN rsde_project TEXT') } catch {}
+  // Les codes R&D d'avant les projets sont rangés en Fiabilité — c'est ce que
+  // portaient les feuilles mensuelles du Drive (ERP, ChatBot…). Ne repasse pas :
+  // retirer le projet d'un code remet aussi rsde_default à 0.
+  try { db.exec(`UPDATE activity_codes SET rsde_project = 'Fiabilité' WHERE rsde_default = 1 AND rsde_project IS NULL`) } catch {}
+  // Un code par projet pour ceux qui n'ont pas de code dédié. Cherché par nom,
+  // supprimés compris : un code retiré à la main ne renaît pas.
+  for (const project of ['Fiabilité', 'Intelligence de contrôle']) {
+    const name = `R&D · ${project}`
+    try {
+      if (!db.prepare('SELECT 1 FROM activity_codes WHERE name = ?').get(name)) {
+        db.prepare(`INSERT INTO activity_codes (id, name, active, payable, rsde_default, rsde_project) VALUES (?, ?, 1, 1, 1, ?)`)
+          .run(newRecordId(), name, project)
+      }
+    } catch {}
+  }
+
+  // Activités hors R&D de la colonne « Activité » de la feuille de temps.
+  for (const [name, payable] of [['Autres', 1], ['Non payée', 0]]) {
+    try {
+      if (!db.prepare('SELECT 1 FROM activity_codes WHERE name = ?').get(name)) {
+        db.prepare(`INSERT INTO activity_codes (id, name, active, payable, rsde_default) VALUES (?, ?, 1, ?, 0)`)
+          .run(newRecordId(), name, payable)
+      }
+    } catch {}
+  }
+
+  // Lignes d'activité d'une semaine déclarée d'un seul chiffre : la ventilation
+  // facultative (R&D surtout). Le total payé reste timesheet_weeks.minutes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS timesheet_week_entries (
+      id TEXT PRIMARY KEY,
+      week_id TEXT NOT NULL REFERENCES timesheet_weeks(id),
+      sort_order INTEGER DEFAULT 0,
+      description TEXT,
+      activity_code_id TEXT REFERENCES activity_codes(id),
+      duration_minutes INTEGER DEFAULT 0,
+      rsde INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_timesheet_week_entries_week ON timesheet_week_entries(week_id, sort_order)') } catch {}
+  // Une ligne de semaine venue de la feuille du Drive garde le jour qu'elle
+  // représente ; une ligne saisie dans Boréal en mode semaine se rattache au lundi.
+  try { db.exec('ALTER TABLE timesheet_week_entries ADD COLUMN sheet_date TEXT') } catch {}
+
+  // Synchro feuille de temps R&D ↔ feuille mensuelle du Drive : empreinte de
+  // chaque côté (personne × jour) au dernier passage, pour savoir lequel a
+  // changé (services/rdTimesheetSheetSync.js).
+  // Heures de paie recopiées de Boréal vers une ligne de paie (Airtable) : la
+  // dernière valeur écrite, pour reconnaître une correction faite à la main
+  // dans Airtable et ne pas l'écraser (services/timesheetPaieSync.js).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS paie_timesheet_sync_state (
+      paie_item_id TEXT PRIMARY KEY,
+      written_hours REAL,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rd_sheet_sync_state (
+      user_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      sheet_sig TEXT,
+      boreal_sig TEXT,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      PRIMARY KEY (user_id, date)
+    )
+  `)
+
   // Vacances — plages de congé par employé. `paid` = 1 pour congé payé, 0 pour sans solde.
   db.exec(`
     CREATE TABLE IF NOT EXISTS vacations (
@@ -3096,6 +3238,9 @@ export function initSchema() {
   // inv.payments.data[0].payment.payment_intent. On le stocke pour pouvoir
   // matcher les balance_transactions (qui ont source.payment_intent dans leur raw).
   try { db.exec('ALTER TABLE factures ADD COLUMN paid_payment_intent TEXT') } catch {}
+  // 1 = Stripe affiche « Retrying » (facture ouverte, prélèvement déjà refusé) :
+  // la facture reste « En retard » même avant l'échéance. Voir factureBalance.js.
+  try { db.exec('ALTER TABLE factures ADD COLUMN stripe_payment_failed INTEGER DEFAULT 0') } catch {}
 
   // Courriel du client Stripe (invoice.customer_email) — mapping configurable
   // via la modale « Mapping Stripe » sur /factures. Utile pour identifier les
@@ -3511,6 +3656,9 @@ export function initSchema() {
   // câble coaxial, plus loin). `within_central_controller_range` reste le
   // booléen qui dit si un nouveau contrôleur central est à fournir.
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN central_controller_distance TEXT') } catch {}
+  // Site existant + Chef de culture : le client dit s'il lui faut un capteur
+  // de vent (il en a souvent déjà un). NULL = pas répondu → fourni.
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN needs_wind_sensor INTEGER') } catch {}
   // Soumission payée sur Stripe dont le System builder a été tiré.
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN soumission_id TEXT') } catch {}
 
@@ -4213,6 +4361,10 @@ export function initSchema() {
   // Qui a posé le vert : NULL/manuel = un humain ; 'qb_rapproche' / 'ecart_zero' =
   // le passage automatique ; 'annule' = un humain l'a retiré, l'automate n'y revient plus.
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN reconcile_method TEXT`) } catch {}
+  // Ligne fondue dans une ligne regroupée (services/bankGrouping.js) : mise de
+  // côté tant que le groupe existe, rendue quand on le défait.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN group_parent_id TEXT`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_txn_group_parent ON bank_transactions(group_parent_id) WHERE group_parent_id IS NOT NULL`) } catch {}
   // Signet de relecture : la ligne où Michel s'est arrêté, une par compte
   // (le ruban orange du classeur).
   try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN bookmark_txn_id TEXT`) } catch {}
@@ -4223,6 +4375,13 @@ export function initSchema() {
   // liste complète quand il y en a une, et fait alors autorité.
   // Forme : { mode: 'all'|'any', terms: [{ field:'label'|'amount', op, value }] }
   try { db.exec(`ALTER TABLE bank_rules ADD COLUMN conditions TEXT`) } catch {}
+  // Ce que fait la règle (maquette O2, Charles 2026-10-03) : préparer une
+  // dépense (défaut), lier le virement vers `transfer_account_id`, ou exclure.
+  // `splits` : la répartition d'une dépense sur plusieurs comptes,
+  // { mode: 'pct'|'amount', lines: [{ account_id, value }] }.
+  try { db.exec(`ALTER TABLE bank_rules ADD COLUMN action TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_rules ADD COLUMN transfer_account_id TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_rules ADD COLUMN splits TEXT`) } catch {}
   // Seed du mapping (idempotent, ne touche pas un mapping déjà posé à la main).
   for (const [name, qbId] of [
     ['BNC CAD', '61'], ['BNC USD', '168,234'], ['BNC Épargne', '133'],
@@ -4291,6 +4450,10 @@ export function initSchema() {
   try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN invertible INTEGER DEFAULT 0') } catch {}
   // Relevé récupéré du Drive par le guetteur (services/bankStatementDriveWatch.js).
   try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN drive_file_id TEXT') } catch {}
+  // Classement au Drive d'un relevé mensuel déposé à la main (bankStatementDriveFiling.js) :
+  // 'depose' = envoyé par Boréal, 'deja' = le relevé y était déjà, 'erreur'.
+  try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN drive_filing TEXT') } catch {}
+  try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN drive_file_name TEXT') } catch {}
   // Jetons de reconnaissance d'un compte sur un relevé (numéro masqué, intitulé
   // imprimé) : appris quand l'humain corrige le compte deviné.
   try { db.exec('ALTER TABLE bank_accounts ADD COLUMN statement_hints TEXT') } catch {}
@@ -4652,6 +4815,9 @@ export function initSchema() {
   // la ligne « total » du fichier (formule pas toujours juste).
   try { db.exec(`ALTER TABLE rd_month_hours ADD COLUMN day_hours REAL`) } catch {}
   try { db.exec(`ALTER TABLE rd_month_hours ADD COLUMN file_total_hours REAL`) } catch {}
+  // Heures par projet RS&DE lues dans la colonne « Projet » de la feuille du
+  // mois — JSON { "Fiabilité": 78.4, "Intelligence de contrôle": 8 }.
+  try { db.exec(`ALTER TABLE rd_month_hours ADD COLUMN project_hours TEXT`) } catch {}
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rd_hours_month_emp ON rd_month_hours(month, employee_name) WHERE deleted_at IS NULL`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_rd_hours_month ON rd_month_hours(month, deleted_at)`) } catch {}
 
@@ -4817,6 +4983,8 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_record_revisions_rec ON record_revisions(table_name, record_id, id);
     CREATE TABLE IF NOT EXISTS record_revision_state (key TEXT PRIMARY KEY, value TEXT);
   `)
+  // Automatisation à l'origine d'une révision « Système » (services/writeOrigin.js).
+  try { db.exec(`ALTER TABLE record_revisions ADD COLUMN source TEXT`) } catch {}
 
   // ── Contrôles comptables (page /comptabilite, carte « Contrôles ») ─────────
   //
@@ -5068,8 +5236,9 @@ export function initSchema() {
       -- génèrent une occurrence par période et se cochent période par période.
       -- 'bihebdo' = deux fois par semaine (mardi et samedi) : deux occurrences
       -- par semaine, cochées séparément.
+      -- 'paie' = cycle de paie aux 2 semaines, lu dans la table paies.
       cadence TEXT NOT NULL DEFAULT 'hebdo'
-        CHECK(cadence IN ('hebdo','bihebdo','mensuel','trimestriel','annuel','adhoc')),
+        CHECK(cadence IN ('hebdo','bihebdo','paie','mensuel','trimestriel','annuel','adhoc')),
       owner TEXT NOT NULL DEFAULT 'AL',
       -- Indice de calendrier libre affiché sur la ligne (« mardi », « le 25 »…).
       day_hint TEXT,
@@ -5141,6 +5310,28 @@ export function initSchema() {
       } finally { db.pragma('foreign_keys = ON') }
     }
   } catch (e) { console.error('⚠️  recurring_tasks (cadence bihebdo) :', e.message) }
+  // Même reconstruction pour la cadence 'paie' : on reprend la DDL actuelle
+  // (toutes ses colonnes, dans le même ordre) en n'élargissant que le CHECK.
+  try {
+    const ddl = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='recurring_tasks'`).get()?.sql || ''
+    if (ddl && !ddl.includes("'paie'")) {
+      const next = ddl
+        .replace(/CREATE TABLE\s+"?recurring_tasks"?/, 'CREATE TABLE recurring_tasks_new')
+        .replace(/CHECK\s*\(\s*cadence IN \([^)]*\)\s*\)/, "CHECK(cadence IN ('hebdo','bihebdo','paie','mensuel','trimestriel','annuel','adhoc'))")
+      if (!next.includes("'paie'")) throw new Error('CHECK de cadence introuvable')
+      db.pragma('foreign_keys = OFF')
+      try {
+        db.transaction(() => {
+          db.exec(next)
+          db.exec(`INSERT INTO recurring_tasks_new SELECT * FROM recurring_tasks`)
+          db.exec(`DROP TABLE recurring_tasks`)
+          db.exec(`ALTER TABLE recurring_tasks_new RENAME TO recurring_tasks`)
+          db.exec(`CREATE INDEX IF NOT EXISTS idx_recurring_tasks_owner ON recurring_tasks(owner, cadence, position)`)
+        })()
+        console.log('✅ recurring_tasks : cadence « paie » autorisée')
+      } finally { db.pragma('foreign_keys = ON') }
+    }
+  } catch (e) { console.error('⚠️  recurring_tasks (cadence paie) :', e.message) }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS recurring_task_completions (
@@ -5693,7 +5884,7 @@ export function initSchema() {
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL CHECK(kind IN (
         'qb_link','doc_match','vendor_expense','invoice_found',
-        'payment_clear','paie_debit','aga_repartition','debt_payment')),
+        'payment_clear','paie_debit','aga_repartition','debt_payment','qb_habit')),
       bank_txn_id TEXT NOT NULL REFERENCES bank_transactions(id),
       account_id TEXT REFERENCES bank_accounts(id),
       target_type TEXT,
@@ -5947,6 +6138,8 @@ export function initSchema() {
       opened_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_email_opens_email ON email_opens(email_id, opened_at);
+    -- Réponses d'un courriel envoyé = courriels reçus du même fil Gmail (fil).
+    CREATE INDEX IF NOT EXISTS idx_emails_thread ON emails(gmail_thread_id);
     INSERT OR IGNORE INTO soumission_sends (email_id, soumission_id, sent_at)
       SELECT sent_email_id, id, sent_at FROM soumissions WHERE sent_email_id IS NOT NULL AND sent_at IS NOT NULL;
     INSERT INTO email_opens (email_id, opened_at)
@@ -6027,11 +6220,13 @@ const SELLABLE_DEFAULTS = [
 export function seedSellableProducts() {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO products (id, sku, name_fr, name_en, type, is_sellable, price_cad, price_usd, monthly_price_cad, monthly_price_usd)
-    VALUES (?, ?, ?, ?, 'Service', 1, 0, 0, 0, 0)
+    SELECT ?, ?, ?, ?, 'Service', 1, 0, 0, 0, 0
+    WHERE NOT EXISTS (SELECT 1 FROM products WHERE sku = ?)
   `)
   const run = db.transaction(() => {
     for (const p of SELLABLE_DEFAULTS) {
-      insert.run(`sellable-${p.sort}`, p.sku, p.name_fr, p.name_en)
+      // SKU déjà présent (même supprimé) : pas de doublon vide (2026-10-09).
+      insert.run(`sellable-${p.sort}`, p.sku, p.name_fr, p.name_en, p.sku)
     }
   })
   run()
@@ -6188,6 +6383,226 @@ db.exec(`
   )
 `)
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_interaction_files_interaction ON interaction_files(interaction_id)`) } catch {}
+
+// Prise de rendez-vous (Marketing → Rendez-vous, page publique /rdv/:slug) —
+// services/meetings.js. Une « page » (meeting_types) = un lien public avec ses
+// durées, plages horaires et rappels ; ses réservations vivent dans
+// meeting_bookings. Les JSON (durations, availability, reminders,
+// reminders_sent) sont lus/écrits par le service seulement.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS meeting_types (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    description TEXT,
+    owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    durations TEXT NOT NULL DEFAULT '[30]',
+    availability TEXT NOT NULL DEFAULT '{}',
+    timezone TEXT NOT NULL DEFAULT 'America/Toronto',
+    slot_interval INTEGER NOT NULL DEFAULT 30,
+    buffer_before INTEGER NOT NULL DEFAULT 0,
+    buffer_after INTEGER NOT NULL DEFAULT 0,
+    min_notice_hours INTEGER NOT NULL DEFAULT 4,
+    max_days_ahead INTEGER NOT NULL DEFAULT 30,
+    location_type TEXT NOT NULL DEFAULT 'meet',
+    location TEXT,
+    reminders TEXT NOT NULL DEFAULT '[1440,60]',
+    language TEXT NOT NULL DEFAULT 'fr',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS meeting_bookings (
+    id TEXT PRIMARY KEY,
+    meeting_type_id TEXT REFERENCES meeting_types(id) ON DELETE SET NULL,
+    owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    duration_minutes INTEGER NOT NULL,
+    invitee_name TEXT NOT NULL,
+    invitee_email TEXT NOT NULL,
+    invitee_phone TEXT,
+    invitee_company TEXT,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'confirmed',
+    contact_id TEXT REFERENCES contacts(id) ON DELETE SET NULL,
+    interaction_id TEXT REFERENCES interactions(id) ON DELETE SET NULL,
+    google_event_id TEXT,
+    meet_url TEXT,
+    calendar_error TEXT,
+    manage_token TEXT NOT NULL UNIQUE,
+    reminders_sent TEXT NOT NULL DEFAULT '[]',
+    cancelled_at TEXT,
+    cancelled_by TEXT,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_meeting_bookings_start ON meeting_bookings(start_at)`) } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_meeting_bookings_type ON meeting_bookings(meeting_type_id)`) } catch {}
+// Scopes accordés par Google au dernier consentement (« a » l'agenda ou non).
+try { db.exec(`ALTER TABLE connector_oauth ADD COLUMN granted_scopes TEXT`) } catch {}
+
+// Contrats à signature électronique (Autres outils → Contrats, page publique
+// /contrat/:token) — routes/contracts.js et contracts-public.js. Le jeton est
+// le secret du lien de signature. À la signature on fige le texte signé
+// (signed_hash = SHA-256 de titre + texte) avec nom, image de la signature,
+// IP et navigateur. contract_events = journal (créé, vu, signé, paiement…).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS contracts (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    signer_name TEXT,
+    signer_email TEXT,
+    payment_url TEXT,
+    token TEXT NOT NULL UNIQUE,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    viewed_at TEXT,
+    signed_at TEXT,
+    signed_name TEXT,
+    signature_data TEXT,
+    signed_ip TEXT,
+    signed_user_agent TEXT,
+    signed_hash TEXT,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS contract_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    event TEXT NOT NULL,
+    actor TEXT,
+    ip TEXT,
+    user_agent TEXT,
+    at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_contract_events_contract ON contract_events(contract_id)`) } catch {}
+// Langue des libellés de la page de signature (fr | en).
+try { db.exec(`ALTER TABLE contracts ADD COLUMN language TEXT NOT NULL DEFAULT 'fr'`) } catch {}
+// Courriel du signataire figé à la signature (paramètre ?email= du lien, sinon
+// celui de la fiche) et fiche contact retrouvée par ce courriel.
+try { db.exec(`ALTER TABLE contracts ADD COLUMN signed_email TEXT`) } catch {}
+try { db.exec(`ALTER TABLE contracts ADD COLUMN signed_contact_id TEXT`) } catch {}
+// Produit Stripe (prix récurrent) du contrat : remplace le lien de paiement —
+// ajouté à l'abonnement actif du client, sinon nouvel abonnement.
+try { db.exec(`ALTER TABLE contracts ADD COLUMN stripe_price_id TEXT`) } catch {}
+// Outil Contrats retiré (2026-10-09) : chaque contrat a été converti en page
+// hébergée ; les anciens liens /contrat/<jeton> y redirigent.
+try { db.exec('ALTER TABLE contracts ADD COLUMN moved_to_file_id TEXT') } catch {}
+// Prix du produit d'un contrat selon le client (nouveau / existant) et sa devise.
+for (const c of ['price_new_usd', 'price_new_cad', 'price_existing_usd', 'price_existing_cad']) {
+  try { db.exec(`ALTER TABLE contracts ADD COLUMN ${c} TEXT`) } catch {}
+}
+// Catalogue de vente : miroir des produits et prix Stripe (page /catalogue-vente).
+// Stripe reste la source : l'ERP y crée/archive, puis relit.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS stripe_products (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    description TEXT,
+    active INTEGER DEFAULT 1,
+    metadata TEXT,
+    created INTEGER,
+    updated INTEGER,
+    synced_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS stripe_prices (
+    id TEXT PRIMARY KEY,
+    product_id TEXT,
+    currency TEXT,
+    unit_amount INTEGER,
+    interval TEXT,
+    interval_count INTEGER,
+    active INTEGER DEFAULT 1,
+    nickname TEXT,
+    tax_behavior TEXT,
+    created INTEGER,
+    synced_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+db.exec('CREATE INDEX IF NOT EXISTS idx_stripe_prices_product ON stripe_prices(product_id)')
+// Produit de soumission ↔ produit Stripe (Catalogue de vente : un seul objet).
+try { db.exec('ALTER TABLE products ADD COLUMN stripe_product_id TEXT') } catch {}
+// Ancien forfait : produit Stripe encore facturé, absent des nouvelles soumissions.
+try { db.exec('ALTER TABLE products ADD COLUMN offer_legacy INTEGER DEFAULT 0') } catch {}
+// Un produit du catalogue = un produit Stripe PAR LANGUE (nom dans la langue
+// du client sur ses factures). products.stripe_product_id = lien principal (fr).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS product_stripe_products (
+    product_id TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    stripe_product_id TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (product_id, lang)
+  )
+`)
+// Anciens produits Stripe d'un produit du catalogue (doublons, produits créés
+// à la volée par les paiements de soumission) : prix et ventes réunis sur sa fiche.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS product_stripe_aliases (
+    stripe_product_id TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL
+  )
+`)
+db.exec('CREATE INDEX IF NOT EXISTS idx_psa_product ON product_stripe_aliases(product_id)')
+// Reprise des liens uniques : langue devinée par le nom du produit Stripe.
+// try : base de test sans table products à l'import du module.
+try { db.exec(`
+  INSERT OR IGNORE INTO product_stripe_products (product_id, lang, stripe_product_id)
+  SELECT p.id,
+    CASE WHEN sp.name IS NOT NULL AND p.name_en IS NOT NULL AND lower(trim(sp.name)) = lower(trim(p.name_en))
+      AND lower(trim(sp.name)) <> lower(trim(COALESCE(p.name_fr, ''))) THEN 'en' ELSE 'fr' END,
+    p.stripe_product_id
+  FROM products p LEFT JOIN stripe_products sp ON sp.id = p.stripe_product_id
+  WHERE p.stripe_product_id IS NOT NULL AND p.stripe_product_id <> ''
+`) } catch { /* products absente (tests) */ }
+// Un contrat est un MODÈLE : un seul lien, accepté par autant de clients que
+// voulu. Chaque acceptation garde sa preuve, dont le texte accepté tel quel
+// (le modèle reste modifiable). Les colonnes signer_*/signed_* ci-dessus ne
+// servent plus qu'aux contrats signés avant ce modèle.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS contract_acceptances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    email TEXT,
+    contact_id TEXT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    ip TEXT,
+    user_agent TEXT,
+    at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+// Courriel du lien signé (?email=…&sig=…) : seul un courriel vérifié ouvre le
+// prix client existant et l'ajout à l'abonnement de son entreprise.
+try { db.exec('ALTER TABLE contract_acceptances ADD COLUMN email_verified INTEGER DEFAULT 0') } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_contract_acceptances_contract ON contract_acceptances(contract_id)`) } catch {}
+
+// Modèles de courriel (Clients → Modèles de courriel) — routes/email-templates.js.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS email_templates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT 'fr',
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+// (contract_id : essai abandonné le 2026-10-08 — les liens se posent dans le texte.)
+try { db.exec(`ALTER TABLE email_templates ADD COLUMN contract_id TEXT REFERENCES contracts(id) ON DELETE SET NULL`) } catch {}
+// Texte de remplacement par variable quand la valeur manque ({ "company": "your farm" }).
+try { db.exec(`ALTER TABLE email_templates ADD COLUMN fallbacks TEXT`) } catch {}
 
 export function seedPaymentCards() {
   const insert = db.prepare(`

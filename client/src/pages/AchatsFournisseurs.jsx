@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { X, BookOpen, Plus, ShoppingCart, ExternalLink, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { ListPage } from '../components/ListPage.jsx'
@@ -17,6 +17,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { fmtCad, formatBytes } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import AttachmentPreview, { attachmentKind } from '../components/AttachmentPreview.jsx'
 import ThinkingOrb from '../components/ThinkingOrb'
 
 const NO_TAX = '__none__'
@@ -531,7 +532,7 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
   )
 }
 
-// Document extrait (/sale-receipts) qui a généré cet achat : aperçu + lien vers sa fiche.
+// Document extrait (/sale-receipts) qui a généré cet achat : vignette + lien vers sa fiche.
 function SourceDocumentSection({ receiptId }) {
   const [file, setFile] = useState(null)
   const [failed, setFailed] = useState(false)
@@ -545,33 +546,34 @@ function SourceDocumentSection({ receiptId }) {
       .then(blob => {
         if (cancelled) return
         url = URL.createObjectURL(blob)
-        setFile({ url, isImage: (blob.type || '').startsWith('image/') })
+        setFile({ url, contentType: blob.type || '' })
       })
       .catch(() => { if (!cancelled) setFailed(true) })
     return () => { cancelled = true; if (url) URL.revokeObjectURL(url) }
   }, [receiptId])
 
   return (
-    <div className="border rounded-lg p-3 bg-slate-50" data-testid="achat-source-document">
-      <div className="flex items-center justify-between mb-2">
-        <Link to={`/sale-receipts/${receiptId}`} className="inline-flex items-center gap-1 font-medium text-sm link-record">
-          <FileText size={14} /> Document source
-        </Link>
-        {file && (
-          <a href={file.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-brand-600" title="Ouvrir">
-            <ExternalLink size={14} />
-          </a>
-        )}
-      </div>
+    <div className="border rounded-lg p-3 bg-slate-50 flex items-start gap-3" data-testid="achat-source-document">
       {failed ? (
-        <p className="text-xs text-slate-400">Fichier introuvable.</p>
+        <span className="w-[92px] h-[120px] shrink-0 rounded-lg border border-dashed border-slate-300 flex items-center justify-center text-slate-300" title="Fichier introuvable">
+          <FileText size={20} />
+        </span>
       ) : !file ? (
-        <p className="text-xs text-slate-400"><Spinner size="xs" /></p>
-      ) : file.isImage ? (
-        <img src={file.url} alt="Document source" className="max-w-full max-h-[240px] object-contain rounded shadow mx-auto" />
+        <span className="w-[92px] h-[120px] shrink-0 flex items-center justify-center"><Spinner size="xs" /></span>
       ) : (
-        <iframe src={file.url} title="Document source" className="w-full h-[240px] rounded shadow bg-white" />
+        <AttachmentPreview
+          url={file.url}
+          contentType={file.contentType}
+          kind={attachmentKind({ contentType: file.contentType }) === 'file' ? 'pdf' : undefined}
+          title="Document source"
+          showFileName={false}
+          overModal
+          testId="achat-source-document-open"
+        />
       )}
+      <Link to={`/sale-receipts/${receiptId}`} className="inline-flex items-center gap-1 font-medium text-sm link-record">
+        <FileText size={14} /> Document source
+      </Link>
     </div>
   )
 }
@@ -677,12 +679,33 @@ export default function AchatsFournisseurs() {
   const [searchParams, setSearchParams] = useSearchParams()
   const confirm = useConfirm()
 
+  const navigate = useNavigate()
+  // Achat publié depuis une facture lue : on ouvre la facture elle-même (liens LIA,
+  // historique, republication) — c'est elle qui fait foi, l'achat n'en est que la copie QB.
+  const [pendingReceipt, setPendingReceipt] = useState(null)
+  const openRow = useCallback(row => {
+    if (row.source_receipt_id) navigate(`/sale-receipts/${row.source_receipt_id}`)
+    else setEditing(row)
+  }, [navigate])
+
   useEffect(() => {
     const openId = searchParams.get('id')
     if (!openId || rows.length === 0) return
     const row = rows.find(r => r.id === openId)
-    if (row) setEditing(row)
-  }, [rows, searchParams])
+    if (!row) return
+    if (!row.source_receipt_id) { setEditing(row); return }
+    // Lien profond : retirer ?id= d'abord, sinon la fermeture du panneau y ramènerait.
+    const next = new URLSearchParams(searchParams)
+    next.delete('id')
+    setSearchParams(next, { replace: true })
+    setPendingReceipt(row.source_receipt_id)
+  }, [rows, searchParams, setSearchParams])
+
+  useEffect(() => {
+    if (!pendingReceipt || searchParams.get('id')) return
+    setPendingReceipt(null)
+    navigate(`/sale-receipts/${pendingReceipt}`)
+  }, [pendingReceipt, searchParams, navigate])
 
   // Filtre venant du tableau de bord (clic sur une barre du graphique « Coûts d'expédition »).
   const fromParam = searchParams.get('from')
@@ -744,6 +767,13 @@ export default function AchatsFournisseurs() {
   const modalTitle = editing
     ? (editing.type === 'bill' ? 'Modifier la facture fournisseur' : 'Modifier la dépense')
     : (creating === 'bill' ? 'Nouvelle facture fournisseur' : 'Nouvelle dépense')
+  // Bandeau d'un achat existant : fournisseur en titre, date · montant HT dessous.
+  const revisionRef = useMemo(() => editing?.id ? { table: 'achats_fournisseurs', id: editing.id } : null, [editing?.id])
+  const peekTitle = editing?.vendor || modalTitle
+  const peekSubtitle = editing
+    ? [editing.date_achat && fmtDate(editing.date_achat), editing.amount_cad != null && editing.amount_cad !== '' && `${fmtCad(editing.amount_cad)} HT`]
+        .filter(Boolean).join(' · ')
+    : undefined
 
   return (
     <ListPage
@@ -792,7 +822,7 @@ export default function AchatsFournisseurs() {
         columns={COLUMNS}
         data={filteredRows}
         loading={loading}
-        onRowClick={row => setEditing(row)}
+        onRowClick={openRow}
         searchFields={['vendor', 'description', 'reference', 'vendor_invoice_number', 'bill_number', 'category', 'total_cad', 'amount_paid_cad', 'balance_due_cad']}
         emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ni dépense fournisseur n'est enregistrée. Crée-en une pour suivre les coûts.", cta: { label: 'Nouvelle facture fournisseur', icon: Plus, onClick: () => setCreating('bill') } }}
       />
@@ -800,9 +830,11 @@ export default function AchatsFournisseurs() {
       <RecordPeekDrawer
         open={modalOpen}
         onClose={() => { setCreating(null); setEditing(null) }}
-        title={modalTitle}
+        title={peekTitle}
+        subtitle={peekSubtitle}
         width={640}
         peekKey="achats"
+        revision={revisionRef || undefined}
       >
         <div className="px-5 py-4">
           <AchatModal

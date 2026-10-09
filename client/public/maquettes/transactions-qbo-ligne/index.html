@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Opérations bancaires</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f4f5f8;--exp:#f7f8fa;--line:#e3e5e8;--line2:#c9ced4;--ink:#393a3d;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--bs:#e6f1fa;--a:#b86e00;--as:#fdf3e1;--r:#d52b1e;--rs:#fcebea;--p:#6b3fd1;--ps:#f1ecfc;--sh:0 1px 2px rgb(0 0 0/.05),0 10px 30px rgb(0 0 0/.08)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--exp:#1d2024;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--exp:#1d2024;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer;z-index:9}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:hidden}
+.scroll{overflow-x:auto}
+/* cartes de compte (QBO) */
+.cards{display:flex;gap:12px;padding:16px 16px 4px;overflow-x:auto}
+.card{border:1px solid var(--line2);border-radius:8px;padding:10px 14px;min-width:200px;background:var(--s)}
+.card.on{border:2px solid var(--g);padding:9px 13px}
+.card .n{font-weight:600}
+.card .k{display:flex;justify-content:space-between;gap:16px;font-size:12px;color:var(--ink3);margin-top:3px}
+.card .k b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.card .rv{display:inline-block;margin-top:6px;font-size:11.5px;font-weight:600;color:var(--b)}
+.top{display:flex;align-items:center;gap:22px;padding:14px 16px 0;border-bottom:1px solid var(--line)}
+.top span{padding-bottom:9px;color:var(--ink3);font-weight:500;white-space:nowrap}
+.top span.on{color:var(--ink);border-bottom:3px solid var(--g);font-weight:600}
+.tools{display:flex;align-items:center;gap:10px;padding:10px 16px}
+.dd{border:1px solid var(--line2);border-radius:4px;height:30px;padding:0 10px;display:inline-flex;align-items:center;gap:8px;color:var(--ink2);white-space:nowrap}
+table{width:100%;border-collapse:collapse;min-width:720px}
+th{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;text-align:left;padding:9px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line2);white-space:nowrap;background:var(--s)}
+td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle;height:50px}
+tr.row{cursor:pointer}tr.row:hover td{background:var(--exp)}
+tr.open td{background:var(--exp);border-bottom:0}
+tr.xp td{background:var(--exp);padding:0;height:auto;border-bottom:1px solid var(--line2)}
+tr.open td:first-child,tr.xp td{box-shadow:inset 3px 0 0 var(--g)}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.m{color:var(--ink3);font-size:12.5px;white-space:nowrap}
+.desc{max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cb{width:14px;height:14px;border:1.5px solid var(--line2);border-radius:3px;display:inline-block;vertical-align:middle;background:var(--s)}
+.cat{display:flex;flex-direction:column;min-width:0;max-width:270px}
+.cat .l1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+.cat .l2{font-size:11.5px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cat .match{color:var(--gd);font-weight:600}
+.cat .xfer{color:var(--ink)}
+.tag{font-size:10px;font-weight:600;letter-spacing:.02em;padding:1px 6px;border-radius:4px;flex:none}
+.tag.ai{background:var(--ps);color:var(--p)}
+.tag.rule{background:var(--bs);color:var(--b)}
+.act{color:var(--b);font-weight:600;white-space:nowrap;cursor:pointer}
+.wr,.cat .l2.wr{color:var(--a)}.ms,.cat .l2.ms{color:var(--r)}.ok{color:var(--gd)}
+th:first-child{padding-left:18px}
+/* ligne ouverte */
+.x{padding:12px 18px 14px 18px;display:flex;flex-direction:column;gap:12px}
+.radios{display:flex;gap:22px;flex-wrap:wrap}
+.rad{display:flex;align-items:center;gap:7px;color:var(--ink2);cursor:pointer;white-space:nowrap}
+.rad i{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line2);flex:none;position:relative;background:var(--s)}
+.rad.on{color:var(--ink);font-weight:600}
+.rad.on i{border-color:var(--g)}.rad.on i:after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--g)}
+.fg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 14px;max-width:760px}
+.f{min-width:0}.f.w2{grid-column:span 2}
+.lab{font-size:11.5px;color:var(--ink3);margin-bottom:3px}
+.inp{border:1px solid var(--line2);border-radius:4px;height:34px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;background:var(--s);min-width:0}
+.inp>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inp.auto{border-color:color-mix(in srgb,var(--g) 60%,var(--line2))}
+.inp.warn{border-color:var(--a);background:var(--as)}
+.inp.empty{color:var(--ink4)}
+.car{color:var(--ink4);display:inline-flex}
+.bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;max-width:980px;border-top:1px solid var(--line);padding-top:12px}
+.bank{font-size:12px;color:var(--ink3)}.bank b{font-weight:500;color:var(--ink2);font-family:ui-monospace,Menlo,monospace;font-size:11.5px;margin-left:6px}
+.ctb{display:grid;grid-template-columns:1.1fr 1.4fr 1fr .9fr;gap:10px 14px;max-width:980px}
+.ctb .memo{grid-column:1/3}
+.ctb.xf{grid-template-columns:1.4fr .9fr 1.1fr 1fr}.ctb.xf .memo{grid-column:1/2}
+.ro{height:34px;display:flex;flex-direction:column;justify-content:center;font-weight:600;font-variant-numeric:tabular-nums}
+.ro small{font-weight:400;font-size:11px;color:var(--ink3)}
+.link.ms{color:var(--r)}
+.grow{flex:1}
+.link{color:var(--b);cursor:pointer;font-weight:500;white-space:nowrap}
+.btn{height:34px;padding:0 18px;border-radius:999px;border:0;background:var(--g);color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn.warn{background:var(--a)}
+.btn.ghost{background:var(--s);border:1px solid var(--line2);color:var(--ink2)}
+/* suggestion */
+.sug{border-radius:6px;padding:8px 12px;display:flex;gap:10px;align-items:center;background:var(--gs);max-width:980px;flex-wrap:wrap}
+.sug.warn{background:var(--as)}.sug.miss{background:var(--rs)}
+.sug .ic{flex:none;color:var(--gd);display:inline-flex}.sug.warn .ic{color:var(--a)}.sug.miss .ic{color:var(--r)}
+.sug .t{font-weight:600}
+.sug .why{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink2)}
+.sug .why span{display:inline-flex;align-items:center;gap:4px}
+/* correspondances */
+.mt{border-collapse:collapse;min-width:0;width:100%;max-width:620px;background:var(--s);border:1px solid var(--line);border-radius:6px}
+.mt th{font-size:10px;padding:6px 10px;border-top:0;background:transparent}.mt td{height:auto;padding:9px 10px;background:var(--s)!important}
+.mt tr.on td{background:var(--gs)!important}
+.mt .w{color:var(--a);font-weight:600}
+.face{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-width:620px;border:1px solid var(--line2);border-radius:6px;overflow:hidden;background:var(--s)}
+.face>div{padding:10px 14px;min-width:0}
+.face>div+div{border-left:1px solid var(--line2)}
+.face .cap{font-size:10px;font-weight:600;text-transform:uppercase;color:var(--ink3);letter-spacing:.03em;margin-bottom:6px}
+.face .k{display:grid;grid-template-columns:70px 1fr auto;gap:8px;padding:2px 0}
+.face .k span:first-child{color:var(--ink3)}
+.face .k span:nth-child(2){font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.face .k.w span:nth-child(2){color:var(--a)}
+.tot{display:flex;gap:22px;font-size:12.5px;color:var(--ink3);max-width:1000px}
+.tot b{color:var(--ink);font-variant-numeric:tabular-nums}.tot b.w{color:var(--a)}
+</style></head>
+<body><button class="theme" onclick="tg()">◐</button>
+<div class="wrap">
+<h1>Opérations bancaires — la ligne s'ouvre</h1>
+
+<h2><b>L1</b> QuickBooks tel quel <span>Clic sur la ligne : elle s'ouvre dessous. Un virement = un compte comme catégorie.</span></h2>
+<div class="scr" id="l1"></div>
+
+<h2><b>L2</b> QuickBooks + le pourquoi <span>Une bande dit seulement ce qui cloche.</span></h2>
+<div class="scr" id="l2"></div>
+
+<h2><b>L3</b> QuickBooks + face à face <span>Correspondance : la banque et la pièce côte à côte.</span></h2>
+<div class="scr" id="l3"></div>
+</div>
+
+<script>
+const I = {
+  ok: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>',
+  warn: '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="7" y="2.5" width="2.2" height="7.5" rx="1.1"/><circle cx="8.1" cy="13" r="1.3"/></svg>',
+  spark: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.6 4.4L14 7l-4.4 1.6L8 13l-1.6-4.4L2 7l4.4-1.6z"/></svg>',
+  car: '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>',
+  radio: (on) => `<span class="rad ${on ? 'on' : ''}" style="display:inline-flex"><i></i></span>`,
+}
+const C = [
+  { id: 'mc', date: '2026-10-06', desc: 'COMPTE A PAYER', who: 'M/CARD AFFAIRES', amt: -5238.25, kind: 'cat', xfer: true, st: 'ok',
+    l1: 'MasterCard BNC', why: [['ok', 'même montant que le relevé MasterCard'], ['ok', '9 fois en 9 mois']],
+    action: 'Ajouter', acct: 'MasterCard BNC' },
+  { id: 'qbg', date: '2026-10-05', desc: 'SOCIETE IMMOBILIERE', who: 'Société Immobilière Québourg', amt: -6115.89, kind: 'match', st: 'warn',
+    l1: '1 correspondance trouvée', l2: "Paiement émis · Les Jardins d'Inverness",
+    why: [['warn', '6,53 $ de différence'], ['warn', 'autre nom'], ['ok', '2 jours d\'écart']],
+    action: 'Apparier', doc: { type: 'Paiement émis', who: "Les Jardins d'Inverness", date: '2026-10-03', amt: 6122.42, acct: 'BNC CAD', whoWarn: true } },
+  { id: 'dec', date: '2026-10-05', desc: 'COMPTE DIVERS', who: 'DECEMBRE', amt: 7335.81, kind: 'match', st: 'warn',
+    l1: '1 correspondance trouvée', l2: 'Paiement de carte · 2026-10-01',
+    why: [['ok', 'même montant'], ['warn', 'inscrit sur MasterCard BNC'], ['warn', '4 jours d\'écart']],
+    action: 'Apparier', doc: { label: 'Paiement MasterCard', type: 'Paiement de carte', who: 'MasterCard BNC', date: '2026-10-01', amt: 7335.81, acct: 'MasterCard BNC', acctWarn: true } },
+  { id: 'edi', date: '2026-10-05', desc: 'COMPTE A PAYER', who: 'FACTURATION EDI', amt: -13.5, kind: 'cat', st: 'ok', tag: 'rule',
+    l1: 'Frais bancaires', why: [['ok', 'règle « Frais EDI »'], ['ok', 'pareil chaque mois']],
+    action: 'Ajouter', payee: 'Banque Nationale', acct: 'Frais bancaires', tax: 'Hors taxes' },
+  { id: 'mcr', date: '2026-10-05', desc: 'DEBOURSE MCR', who: '', amt: 1204, kind: 'cat', xfer: true, st: 'ok',
+    l1: 'Marge de crédit', why: [['ok', 'balayage de la marge'], ['ok', 'même montant à la marge']],
+    action: 'Ajouter', acct: 'Marge de crédit' },
+  { id: 'amz', date: '2026-10-04', desc: 'AMZN MKTP CA', who: 'Amazon', amt: -84.27, kind: 'cat', st: 'miss', tag: 'ai',
+    l1: 'Fournitures de bureau', why: [['ok', 'compte habituel d\'Amazon'], ['miss', 'aucune facture reçue']],
+    action: 'Ajouter', payee: 'Amazon', acct: 'Fournitures de bureau', tax: 'TPS/TVQ' },
+]
+const fmt = (n) => Math.abs(n).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $'
+const mark = (s) => s === 'ok' ? `<span class="ok">${I.ok}</span>` : `<span class="${s === 'miss' ? 'ms' : 'wr'}">${I.warn}</span>`
+const inp = (v, cls) => `<div class="inp ${cls}"><span>${v}</span><span class="car">${I.car}</span></div>`
+const field = (lab, v, cls, w2) => `<div class="f ${w2 ? 'w2' : ''}"><div class="lab">${lab}</div>${inp(v, cls)}</div>`
+
+function catCell(c, explained) {
+  const tag = c.xfer ? '<span class="tag rule">Virement</span>' : c.kind === 'match' ? '<span class="tag rule" style="background:var(--gs);color:var(--gd)">Correspondance</span>' : ''
+  const l2 = explained
+    ? (c.st !== 'ok' ? `<span class="l2 ${c.st === 'miss' ? 'ms' : 'wr'}">${c.why.find(([s]) => s !== 'ok')[1]}</span>` : '')
+    : ''
+  return `<div class="cat"><span class="l1 ${c.kind === 'match' ? 'match' : ''}">${c.kind === 'match' ? (c.doc.label || c.doc.who) : c.l1}${tag}</span>${l2}</div>`
+}
+const COLS = ['Date', 'Description', 'Catégorie ou correspondance', 'Montant', '']
+const row = (c, v) => `<td class="m" style="padding-left:18px">${c.date.slice(5).replace('-', '/')}</td>
+  <td><div class="who" style="max-width:240px">${c.who || c.desc}</div></td><td>${catCell(c, v.explained)}</td>
+  <td class="r ${c.amt > 0 ? 'ok' : ''}">${c.amt > 0 ? '+ ' : ''}${fmt(c.amt)}</td>
+  <td><span class="act ${v.explained && c.st !== 'ok' ? 'wr' : ''}">${c.action}</span></td>`
+
+const MODES = [['cat', 'Catégoriser'], ['match', 'Trouver une correspondance']]
+function fields(c, mode, v) {
+  if (mode === 'cat') {
+    const a = c.kind === 'cat'
+    const taxed = a && c.tax === 'TPS/TVQ'
+    const ht = taxed ? Math.abs(c.amt) / 1.14975 : Math.abs(c.amt)
+    return `<div class="ctb ${c.xfer ? 'xf' : ''}">
+      ${c.xfer ? '' : field(c.amt < 0 ? 'Bénéficiaire' : 'Client', a ? c.payee : 'Choisir', a ? 'auto' : 'empty')}
+      <div class="f"><div class="lab">Catégorie</div>${inp(a ? c.acct : 'Choisir une catégorie', a ? 'auto' : 'empty')}</div>
+      ${c.xfer ? '' : field('Taxe', a ? (taxed ? 'TPS/TVQ QC' : 'Hors taxes') : 'Choisir', a ? 'auto' : 'empty')}
+      <div class="f amtf"><div class="lab">Montant</div><div class="ro">${fmt(c.amt)}<small>${c.xfer ? (c.amt < 0 ? 'virement vers ' : 'virement de ') + c.acct : taxed ? `${fmt(ht)} + ${fmt(Math.abs(c.amt) - ht)} taxes` : 'sans taxes'}</small></div></div>
+      <div class="f memo"><div class="lab">Mémo</div><div class="inp" style="height:34px"><span>${c.desc}</span></div></div>
+    </div>`
+  }
+  if (mode === 'xfer') {
+    const a = c.kind === 'xfer'
+    return `<div class="fg">${field(c.amt < 0 ? 'Vers le compte' : 'Depuis le compte', a ? c.acct : 'Choisir un compte', a ? 'auto' : 'empty', true)}</div>`
+  }
+  if (!c.doc) return `<div style="color:var(--ink3);padding:6px 0">Aucune écriture au même montant.</div>`
+  const d = c.doc; const diff = Math.abs(c.amt) - d.amt; const off = Math.abs(diff) > .01
+  if (v.face) {
+    const k = (a, b, w) => `<div class="k ${w ? 'w' : ''}"><span>${a}</span><span>${b}</span><span>${w ? mark('warn') : mark('ok')}</span></div>`
+    return `<div class="face">
+      <div><div class="cap">Banque</div>${k('Qui', c.who || c.desc)}${k('Montant', fmt(c.amt))}${k('Compte', 'BNC CAD')}</div>
+      <div><div class="cap">QuickBooks · ${d.type}</div>${k('Qui', d.who, d.whoWarn)}${k('Montant', fmt(d.amt), off)}${k('Compte', d.acct, d.acctWarn)}</div>
+    </div>`
+  }
+  return `<table class="mt"><tbody>
+    <tr class="on"><td style="width:30px">${I.radio(true)}</td><td>${d.date.slice(5).replace('-', '/')}</td><td>${d.type}</td><td class="${d.whoWarn ? 'w' : ''}">${d.who}</td><td class="r ${off ? 'w' : ''}">${fmt(d.amt)}</td></tr></tbody></table>`
+}
+function banner(c) {
+  const t = c.kind === 'match' ? `${c.doc.type} · ${c.doc.who}` : c.l1
+  const lead = c.st === 'ok' ? 'Sûr' : c.st === 'warn' ? 'À vérifier' : 'Facture manquante'
+  return `<div class="sug ${c.st === 'ok' ? '' : c.st}"><span class="ic">${c.st === 'ok' ? I.spark : I.warn}</span>
+    <span class="t">${lead}</span><span class="why">${(c.st === 'ok' ? c.why.slice(0, 1) : c.st === 'miss' ? [] : c.why.filter(([s]) => s !== 'ok')).map(([s, w]) => w).join(' · ')}</span></div>`
+}
+const btnLabel = (c, mode) => mode === 'match' ? 'Apparier' : mode === 'xfer' ? 'Transférer' : 'Ajouter'
+function expansion(c, mode, v) {
+  const warnBtn = v.banner && mode === c.kind && c.st !== 'ok'
+  return `<div class="x">
+    <div class="radios">${MODES.map(([k, l]) => `<span class="rad ${k === mode ? 'on' : ''}" data-mode="${k}"><i></i>${l}</span>`).join('')}</div>
+    ${v.banner && mode === c.kind ? banner(c) : ''}
+    ${fields(c, mode, v)}
+    <div class="bar">
+      <span class="bank">Détail bancaire <b>${c.desc}</b></span>
+      <span class="grow"></span>
+      ${mode === 'cat' && !c.xfer ? (c.st === 'miss' ? '<span class="link ms">Demander la facture</span>' : '<span class="link">Joindre la facture</span>') : ''}
+      <span class="link" style="color:var(--ink3)">Exclure</span>
+      ${mode === 'cat' && !c.xfer ? '<button class="btn ghost">Diviser</button>' : ''}
+      <button class="btn ${warnBtn ? 'warn' : ''}">${btnLabel(c, mode)}</button>
+    </div></div>`
+}
+
+const V = {
+  l1: { explained: false, banner: false, face: false },
+  l2: { explained: true, banner: true, face: false },
+  l3: { explained: true, banner: true, face: true },
+}
+const state = { l1: ['mc', null], l2: ['amz', null], l3: ['qbg', null] }
+function render(id) {
+  const v = V[id]; const [sel, m] = state[id]
+  const el = document.getElementById(id)
+  el.innerHTML = `<div class="top"><span class="on">Pour révision 6</span><span>Catégorisées</span><span>Exclues</span></div>
+    
+    <div class="scroll"><table><thead><tr>${COLS.map((h, i) => `<th class="${i === 3 ? 'r' : ''}">${h}</th>`).join('')}</tr></thead><tbody>
+    ${C.map((x) => `<tr class="row ${x.id === sel ? 'open' : ''}" data-id="${x.id}">${row(x, v)}</tr>${x.id === sel ? `<tr class="xp"><td colspan="5">${expansion(x, m || x.kind, v)}</td></tr>` : ''}`).join('')}
+    </tbody></table></div>`
+  el.querySelectorAll('tr[data-id]').forEach((tr) => tr.onclick = () => { state[id] = [tr.dataset.id === sel ? null : tr.dataset.id, null]; render(id) })
+  el.querySelectorAll('[data-mode]').forEach((t) => t.onclick = () => { state[id] = [sel, t.dataset.mode]; render(id) })
+}
+render('l1'); render('l2'); render('l3')
+function tg() { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark' }
+</script>
+</body></html>

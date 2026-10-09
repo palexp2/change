@@ -88,6 +88,7 @@ export default function SoumissionSendModal({ soumissionId, isOpen, onClose, onS
       bodyClassName="leading-relaxed [&_p]:mb-4 [&_p:last-child]:mb-0"
       onPickRecipient={r => ({ subject: r.subject, bodyHtml: r.bodyHtml })}
       canSend={Boolean(from)}
+      fromAccount={from}
       headerExtra={
         <div>
           <label className="block text-xs text-slate-500 mb-1">De</label>

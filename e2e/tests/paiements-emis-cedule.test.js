@@ -268,16 +268,9 @@ describe('Paiements émis — cédule hebdomadaire de paiements fournisseurs', (
     assert.ok(/inclus/.test(rule), 'la règle doit préciser la dernière échéance couverte')
   })
 
-  test('un bouton ouvre la facture dans QuickBooks (grisé si elle n\'y est pas encore)', async () => {
-    // Pas encore publiée à QB : le bouton existe mais n'est pas un lien.
-    await openSchedule()
-    await page.waitForSelector(`[data-testid="schedule-qb-${billId}"]`, { timeout: 20000 })
-    assert.equal(await page.evaluate(id => document.querySelector(`[data-testid="schedule-qb-${id}"]`).tagName, billId), 'SPAN')
-
-    // Publiée à QB : lien direct vers la facture, dans un nouvel onglet.
-    const QB_ID = '999999'
+  test('le n° de facture ouvre la fiche dans l\'ERP, jamais QuickBooks', async () => {
     const r = await apiFetch(`/achats-fournisseurs/${billId}`, {
-      method: 'PUT', body: JSON.stringify({ quickbooks_id: QB_ID }),
+      method: 'PUT', body: JSON.stringify({ quickbooks_id: '999999' }),
     })
     assert.equal(r.status, 200, `lien QB : ${JSON.stringify(r.body)}`)
     await waitForSchedule(x => findItem(x, billId)?.qb_url, 'url QuickBooks exposée')
@@ -286,11 +279,9 @@ describe('Paiements émis — cédule hebdomadaire de paiements fournisseurs', (
     const link = page.locator(`a[data-testid="schedule-qb-${billId}"]`)
     await link.waitFor({ timeout: 20000 })
     const href = await link.getAttribute('href')
-    assert.ok(href.includes(`txnId=${QB_ID}`), `href inattendu : ${href}`)
-    assert.ok(/\/app\/bill\?/.test(href), `l'URL doit pointer sur la facture QB : ${href}`)
-    assert.equal(await link.getAttribute('target'), '_blank')
+    assert.ok(href.endsWith(`/fournisseurs/achats?id=${billId}`), `href inattendu : ${href}`)
+    assert.equal(await link.getAttribute('target'), null)
 
-    // Remis comme avant pour ne rien laisser traîner sur la facture jetable.
     await apiFetch(`/achats-fournisseurs/${billId}`, { method: 'PUT', body: JSON.stringify({ quickbooks_id: null }) })
   })
 

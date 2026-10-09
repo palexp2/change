@@ -61,6 +61,7 @@ export const BRIDGE_DOMAINS = {
   bellbusiness: ['business.bell.ca', 'bell.ca'],
   // Pas un collecteur : session du robot « Rapprocher » (voir bridgeSessions.js).
   quickbooks: SESSION_ONLY_TARGETS.quickbooks.domains,
+  instagram: SESSION_ONLY_TARGETS.instagram.domains,
 }
 
 const artifactsRoot = uploadsPath('scrapers')

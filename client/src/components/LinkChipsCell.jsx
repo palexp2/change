@@ -80,9 +80,14 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
         const label = labelFor(key, i)
         const href = hrefFor(i)
         const title = rec?.sub ? `${label} · ${rec.sub}` : label
-        const chip = href
+        // Option `col.linkChipImage(row, key)` : vignette devant la pastille.
+        const img = typeof col.linkChipImage === 'function' ? col.linkChipImage(row, key) : null
+        const link = href
           ? <Link to={href} onMouseDown={col.linkOpenOnClick !== false ? e => e.stopPropagation() : undefined} onClick={e => e.stopPropagation()} title={title} className="chip-record">{label}</Link>
           : <span className="chip-record" title={title}>{label}</span>
+        const chip = img
+          ? <span className="inline-flex min-w-0 items-center gap-1"><img src={img} alt="" loading="lazy" className="h-5 w-5 shrink-0 rounded object-cover" data-testid="link-chip-image" /><span className="min-w-0 truncate">{link}</span></span>
+          : link
         if (!showRemove) return <span key={`${key}-${i}`} className={`min-w-0 truncate${col.linkChipsScrollable ? ' shrink-0' : ''}`}>{chip}</span>
         return (
           <span

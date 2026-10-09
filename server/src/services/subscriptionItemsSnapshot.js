@@ -33,6 +33,8 @@ export function extractItemsFromStripeSub(sub) {
       currency: (price?.currency || '').toUpperCase() || null,
       recurring_interval: price?.recurring?.interval || null,
       recurring_interval_count: price?.recurring?.interval_count || null,
+      // Métadonnées de la ligne (ex. erp_contact_id du signataire d'une page).
+      ...(item?.metadata && Object.keys(item.metadata).length ? { metadata: item.metadata } : {}),
     }
   })
 }

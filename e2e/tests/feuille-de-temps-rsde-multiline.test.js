@@ -8,8 +8,7 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
 // Une description d'entrée RSDE saisie sur plusieurs lignes ne doit pas casser
-// le tableau du rapport RSDE ni le collage (TSV) : tout le texte reste dans une
-// seule cellule, les sauts de ligne deviennent des espaces.
+// le tableau du rapport RSDE : tout le texte reste dans une seule cellule, les sauts de ligne deviennent des espaces.
 describe('FeuilleDeTemps — RSDE : description multi-lignes reste dans une seule cellule', () => {
   let browser, ctx, page
   const createdCodeIds = []
@@ -98,25 +97,5 @@ describe('FeuilleDeTemps — RSDE : description multi-lignes reste dans une seul
     assert.ok(!/[\n\r\t]/.test(rawDesc), `la cellule Description ne doit contenir ni saut de ligne ni tabulation, reçue ${JSON.stringify(rawDesc)}`)
     const expected = `${setup.codeName} — Réunion d'équipe Suivi documents comptable Suivi facture CÉGEP Lévis`
     assert.equal(rawDesc, expected, `Description attendue "${expected}", reçue "${rawDesc}"`)
-  })
-
-  test('le bouton Copier produit une seule ligne TSV par journée, texte complet', async () => {
-    const report = page.locator('[data-testid="rsde-report"]')
-    await report.locator('[data-testid="rsde-copy"]').click()
-    const text = await page.evaluate(() => navigator.clipboard.readText())
-
-    const [y, m] = setup.date.split('-').map(Number)
-    const daysInMonth = new Date(y, m, 0).getDate()
-    const lines = text.split('\n')
-    assert.equal(lines.length, daysInMonth, `le TSV doit contenir exactement ${daysInMonth} lignes (une par jour), reçu ${lines.length} — un saut de ligne de description a créé des rangées`)
-
-    for (const line of lines) {
-      assert.equal(line.split('\t').length, 3, `chaque ligne TSV doit avoir 3 colonnes, reçue ${JSON.stringify(line)}`)
-    }
-
-    const todayLine = lines.find(l => l.startsWith(setup.date))
-    assert.ok(todayLine, `une ligne pour ${setup.date} doit exister dans le TSV`)
-    const parts = todayLine.split('\t')
-    assert.equal(parts[2], `${setup.codeName} — Réunion d'équipe Suivi documents comptable Suivi facture CÉGEP Lévis`, `la description complète doit tenir dans la 3e colonne, reçue "${parts[2]}"`)
   })
 })

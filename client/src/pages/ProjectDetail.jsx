@@ -33,6 +33,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { ChoiceBadge, parseSelectChoices } from '../lib/customFieldDisplay.jsx'
+import { useFieldOverrides, parseNativeChoices } from '../lib/fieldOverrides.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
@@ -299,20 +300,28 @@ export default function ProjectDetail({ recordId, onClose }) {
   // de la liste (import Airtable, ancien libellé) reste proposé — sinon le
   // champ paraîtrait vide et un simple coup d'œil l'effacerait.
   // Couleur de chaque type : celle du champ « Type » (la même que les pastilles
-  // du tableau des projets).
-  const typeColors = useMemo(() => {
+  // du tableau des projets). « Type » est une colonne native : ses choix
+  // (ordre, libellé, couleur) vivent dans l'override réglé depuis l'en-tête du
+  // tableau, pas dans les champs perso.
+  const { overrides: projectOverrides } = useFieldOverrides('projects')
+  const typeChoices = useMemo(() => {
+    const native = parseNativeChoices(projectOverrides.get('type'))
+    if (native.length) return native
     const f = projectFields.find(x => x.column_name === 'type')
-    return new Map(parseSelectChoices(f).map(c => [String(c.label ?? c.id), c.color]))
-  }, [projectFields])
+    return parseSelectChoices(f).map(c => ({ value: String(c.label ?? c.id), label: String(c.label ?? c.id), color: c.color }))
+  }, [projectOverrides, projectFields])
+  const typeColors = useMemo(() => new Map(typeChoices.map(c => [c.value, c.color])), [typeChoices])
   const renderTypeChoice = o => <ChoiceBadge color={typeColors.get(String(o.value)) || 'gray'}>{o.label}</ChoiceBadge>
 
   const typeOptions = useMemo(() => {
-    const opts = PROJECT_TYPES.map(t => ({ value: t, label: t }))
-    if (project?.type && !PROJECT_TYPES.includes(project.type)) {
+    const base = typeChoices.length ? typeChoices.map(c => c.value) : PROJECT_TYPES
+    const labels = new Map(typeChoices.map(c => [c.value, c.label]))
+    const opts = base.map(t => ({ value: t, label: labels.get(t) || t }))
+    if (project?.type && !base.includes(project.type)) {
       opts.unshift({ value: project.type, label: project.type })
     }
     return opts
-  }, [project?.type])
+  }, [project?.type, typeChoices])
 
   // Autosave champ par champ (règle CLAUDE.md : pas de bouton Enregistrer).
   // La valeur part au blur / au changement ; la réponse du PUT ramène les
@@ -626,6 +635,7 @@ export default function ProjectDetail({ recordId, onClose }) {
             <DetailField id="close_date" label="Date de clôture" saving={!!fieldSaving.close_date}>
               <InlineDate
                 value={project.close_date}
+                iso
                 saving={!!fieldSaving.close_date}
                 onSave={v => saveField('close_date', v)}
                 testId="project-field-close-date"

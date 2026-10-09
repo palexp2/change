@@ -23,6 +23,7 @@ import { Modal } from './Modal.jsx'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal.jsx'
 import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 import { FeedbackFab } from './FeedbackFab.jsx'
+import ReconcileNotifier from './ReconcileNotifier.jsx'
 import ThemeToggle from './ThemeToggle.jsx'
 import { Logo } from './Logo.jsx'
 import { AiUsageRail } from './AiUsageRail.jsx'
@@ -33,7 +34,8 @@ import { AiUsageRail } from './AiUsageRail.jsx'
 // un raccourci = ajouter une entrée ici (et rien d'autre).
 export const NAV_SHORTCUTS = [
   { key: 'd', label: 'Tableau de bord', to: '/dashboard' },
-  { key: 't', label: 'Feuille de temps', to: '/feuille-de-temps' },
+  // `state` : la feuille ouvre aujourd'hui en mode détaillé (FeuilleDeTemps.jsx).
+  { key: 't', label: 'Feuille de temps', to: '/feuille-de-temps', state: { timesheet: 'today-detailed' } },
   { key: 'b', label: 'Billets', to: '/tickets' },
   { key: 'p', label: 'Projets', to: '/pipeline' },
   { key: 'c', label: 'Commandes', to: '/orders' },
@@ -1361,7 +1363,7 @@ export function Layout({ children }) {
 
   // Raccourcis clavier globaux
   useEffect(() => {
-    const NAV_MAP = Object.fromEntries(NAV_SHORTCUTS.map(s => [s.key, s.to]))
+    const NAV_MAP = Object.fromEntries(NAV_SHORTCUTS.map(s => [s.key, s]))
     function onKey(e) {
       // Cmd+K → recherche globale
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -1390,7 +1392,7 @@ export function Layout({ children }) {
       const target = NAV_MAP[e.key.toLowerCase()]
       if (target) {
         e.preventDefault()
-        navigate(target)
+        navigate(target.to, target.state ? { state: target.state } : undefined)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -1585,6 +1587,7 @@ export function Layout({ children }) {
       <KeyboardShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
 
       <FeedbackFab />
+      <ReconcileNotifier />
     </div>
     </NavReorderProvider>
   )

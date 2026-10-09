@@ -56,11 +56,48 @@ function todayKey(offsetDays = 0) {
   return localISODate(d)
 }
 
+const RELATIVE_DATE_OPS = new Set([
+  'equals', 'is', 'not_equals', 'is_not', 'before', 'is_before', 'after', 'is_after',
+  'on_or_before', 'on_or_after',
+])
+
+// Date relative d'une règle de date (« est avant aujourd'hui », « est le
+// demain »…) : la value est un jeton '@…' résolu en jour calendaire au moment
+// de l'évaluation, donc la règle suit le calendrier sans être resauvegardée.
+// '@days_ago:N' / '@days_ahead:N' portent leur nombre de jours.
+// Renvoie le jour (YYYY-MM-DD), la value telle quelle si ce n'est pas un jeton,
+// ou null si le jeton est incomplet (nombre de jours pas encore saisi).
+export function resolveDateValue(value) {
+  if (typeof value !== 'string' || !value.startsWith('@')) return value
+  const [mode, nRaw] = value.split(':')
+  const n = Number(nRaw)
+  switch (mode) {
+    case '@today':      return todayKey()
+    case '@tomorrow':   return todayKey(1)
+    case '@yesterday':  return todayKey(-1)
+    case '@week_ago':   return todayKey(-7)
+    case '@week_ahead': return todayKey(7)
+    case '@month_ago':
+    case '@month_ahead': {
+      const d = new Date()
+      d.setMonth(d.getMonth() + (mode === '@month_ago' ? -1 : 1))
+      return localISODate(d)
+    }
+    case '@days_ago':   return nRaw && Number.isFinite(n) ? todayKey(-n) : null
+    case '@days_ahead': return nRaw && Number.isFinite(n) ? todayKey(n) : null
+    default:            return value
+  }
+}
+
 export function applyFilter(row, filter, ctx = {}) {
   // Support both old format {field, op, value} and new format {field_key, operator, value}
   const field = filter.field_key || filter.field
   const op = filter.operator || filter.op
-  const value = filter.value
+  // Seuls les opérateurs de comparaison à un jour lisent un jeton relatif : un
+  // « contient @orisha » sur un champ texte reste une recherche littérale.
+  const value = RELATIVE_DATE_OPS.has(op) ? resolveDateValue(filter.value) : filter.value
+  // Jeton relatif incomplet : règle inactive, comme une date pas encore choisie.
+  if (value === null) return true
   const v = row[field]
   const str = norm(v)
   const val = norm(value)
@@ -116,6 +153,14 @@ export function applyFilter(row, filter, ctx = {}) {
       const day = DAY_RE.test(String(value)) ? dayKey(v) : null
       if (day) return day > String(value)
       return new Date(v) > new Date(value)
+    }
+    case 'on_or_before':
+    case 'on_or_after': {
+      if (!value) return true
+      if (!v) return false
+      const day = DAY_RE.test(String(value)) ? dayKey(v) : null
+      if (day) return op === 'on_or_before' ? day <= String(value) : day >= String(value)
+      return op === 'on_or_before' ? new Date(v) <= new Date(value) : new Date(v) >= new Date(value)
     }
     case 'between':
     case 'is_within': {

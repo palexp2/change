@@ -151,12 +151,29 @@ export function resolveVendorProfileId(name) {
   return findVendorProfile(name)?.id || null
 }
 
+// Vendor QB du dernier document DÉJÀ COMPTABILISÉ de cette fiche dans cette devise.
+// La fiche n'apprend son vendor qu'à la publication depuis l'ERP (learnFromPush) : un
+// document saisi directement dans QB puis rattaché (DHL Douanes, oct. 2026) ne lui
+// apprenait rien, et la facture suivante arrivait sans fournisseur présélectionné.
+export function historicalQbVendorId(profileId, currency) {
+  if (!profileId) return null
+  const cur = String(currency || 'CAD').toUpperCase()
+  const row = db.prepare(`
+    SELECT vendor_id FROM sale_receipts
+    WHERE vendor_profile_id=? AND deleted_at IS NULL AND quickbooks_id IS NOT NULL
+      AND vendor_id IS NOT NULL AND vendor_id != '' AND UPPER(COALESCE(currency, 'CAD'))=?
+    ORDER BY COALESCE(receipt_date, created_at) DESC LIMIT 1
+  `).get(profileId, cur)
+  return row?.vendor_id || null
+}
+
 // Défauts applicables pour une devise donnée (les champs par devise sont résolus).
 export function profileDefaultsForCurrency(profile, currency) {
   if (!profile) return null
   const usd = String(currency || 'CAD').toUpperCase() === 'USD'
   return {
-    qb_vendor_id: usd ? profile.qb_vendor_id_usd : profile.qb_vendor_id_cad,
+    qb_vendor_id: (usd ? profile.qb_vendor_id_usd : profile.qb_vendor_id_cad)
+      || historicalQbVendorId(profile.id, usd ? 'USD' : 'CAD'),
     qb_type: profile.default_qb_type || null,
     expense_account_id: profile.default_expense_account_id || null,
     payment_account_id: usd ? profile.default_payment_account_id_usd : profile.default_payment_account_id_cad,

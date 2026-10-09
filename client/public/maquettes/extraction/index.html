@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Extraction — maquettes</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root{--bg:#f5f6f7;--s:#fff;--soft:#f8f9fa;--line:#eceef0;--line2:#dfe2e5;--ink:#1f2328;--ink2:#4a5058;--ink3:#7a8089;--ink4:#a6abb2;
+--g:#2ca01c;--gs:#eef7ec;--b:#0a6fbf;--bs:#eaf3fb;--a:#c27a00;--as:#fdf5e6;--r:#d1362a;--rs:#fcefee;--sh:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.06)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#30353b;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#45b934;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#30353b;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#45b934;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13.5px/1.45 Inter,system-ui,sans-serif;padding:28px 16px 60px;-webkit-font-smoothing:antialiased}
+h2{max-width:1100px;margin:44px auto 2px;font-size:18px;letter-spacing:-.01em}h2 b{color:var(--b);margin-right:8px}
+.sub{max-width:1100px;margin:0 auto 12px;color:var(--ink3);font-size:13px}
+.scr{max-width:1100px;margin:0 auto;background:var(--s);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
+.hd{display:flex;align-items:center;gap:10px;padding:18px 22px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.hd h1{font-size:19px;margin:0;font-weight:600;letter-spacing:-.02em}.sp{flex:1}
+.btn{height:30px;padding:0 12px;border-radius:8px;border:1px solid var(--line2);background:var(--s);color:var(--ink2);font:inherit;font-size:13px;display:inline-flex;align-items:center;gap:6px}
+.pill{font-size:11.5px;padding:2px 8px;border-radius:999px;white-space:nowrap;display:inline-flex;gap:4px;align-items:center}
+.pg{background:var(--gs);color:var(--g)}.pb{background:var(--bs);color:var(--b)}.pa{background:var(--as);color:var(--a)}.pr{background:var(--rs);color:var(--r)}.pn{background:var(--soft);color:var(--ink3)}
+.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.av{width:26px;height:26px;border-radius:7px;display:inline-grid;place-items:center;font-size:11px;font-weight:600;color:#fff;flex:none}
+.wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:680px}
+td,th{padding:9px 14px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{font-size:11.5px;font-weight:500;color:var(--ink3);background:var(--soft)}
+.v{display:flex;align-items:center;gap:10px;font-weight:500}.v small{display:block;color:var(--ink3);font-weight:400;font-size:12px}
+.mut{color:var(--ink3)}.dim td{color:var(--ink3)}.dim .v{font-weight:400}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.grp td{background:var(--soft);font-size:12px;font-weight:600;color:var(--ink2);padding:7px 14px}
+.grp .c{color:var(--ink4);font-weight:500;margin-left:6px}
+/* E2 */
+.strip{display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid var(--line)}
+.strip div{padding:14px 22px;border-right:1px solid var(--line);cursor:pointer}.strip div:last-child{border:0}
+.strip small{color:var(--ink3);font-size:12px;display:flex;gap:6px;align-items:center}.strip b{font-size:22px;font-weight:600;letter-spacing:-.02em}
+.strip .on{box-shadow:inset 0 -2px var(--b)}
+.conf{display:inline-flex;gap:2px}.conf i{width:4px;height:12px;border-radius:2px;background:var(--line2)}.conf i.f{background:var(--g)}.conf.lo i.f{background:var(--a)}
+.sugg{font-size:12px;color:var(--ink2)}.sugg em{font-style:normal;color:var(--ink4)}
+.go{height:26px;padding:0 10px;border-radius:7px;background:var(--g);color:#fff;border:0;font:inherit;font-size:12px;font-weight:500}
+/* E3 */
+.e3{display:grid;grid-template-columns:1fr 290px}
+.side{border-left:1px solid var(--line);padding:18px;background:var(--soft);display:flex;flex-direction:column;gap:10px}
+.side h3{margin:0 0 2px;font-size:12px;color:var(--ink3);font-weight:500}
+.card{background:var(--s);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12.5px;display:flex;gap:10px;align-items:center}
+.card b{font-weight:600}.card .sp{flex:1}
+.day{padding:10px 22px 4px;font-size:12px;color:var(--ink3);font-weight:500}
+.row{display:flex;align-items:center;gap:12px;padding:9px 22px;border-bottom:1px solid var(--line)}
+.row .amt{width:110px}
+.thumb{width:30px;height:38px;border-radius:4px;border:1px solid var(--line2);background:linear-gradient(var(--line) 0 0) 5px 8px/18px 2px no-repeat,linear-gradient(var(--line) 0 0) 5px 14px/14px 2px no-repeat,linear-gradient(var(--line) 0 0) 5px 20px/18px 2px no-repeat,var(--s);flex:none}
+@media(max-width:820px){.e3{grid-template-columns:1fr}.side{border-left:0;border-top:1px solid var(--line)}.strip{grid-template-columns:repeat(2,1fr)}}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer}
+</style>
+</head>
+<body>
+<button class="theme" onclick="const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">◐</button>
+
+<!-- E1 -->
+<h2><b>E1</b>Boîte de réception</h2>
+<div class="sub">Groupé par ce qu'il reste à faire.</div>
+<div class="scr">
+  <div class="hd"><h1>Extraction</h1><span class="pill pb">● 4 non lus</span><span class="sp"></span>
+    <button class="btn">⤒ Importer</button><button class="btn">◉ Capturer</button></div>
+  <div class="wrap"><table>
+    <tr><th>Fournisseur</th><th>Date</th><th class="num">Total</th><th>Source</th><th></th></tr>
+    <tr class="grp"><td colspan="5">À vérifier<span class="c">2</span></td></tr>
+    <tr><td><div class="v"><span class="av" style="background:#d1362a">D</span><div>DigiKey<small>Facture 132580242</small></div></div></td><td>28 sept.</td><td class="num">1 284,17 $</td><td class="mut">Courriel</td><td><span class="pill pa">Taxe incertaine</span></td></tr>
+    <tr><td><div class="v"><span class="av" style="background:#232f3e">A</span><div>Amazon Business<small>D01-4471920</small></div></div></td><td>27 sept.</td><td class="num">86,40 US$</td><td class="mut">Portail</td><td><span class="pill pr">Doublon probable</span></td></tr>
+    <tr class="grp"><td colspan="5">En lecture<span class="c">1</span></td></tr>
+    <tr><td><div class="v"><span class="av" style="background:#7a8089">?</span><div>scan-0930.pdf<small>Lecture…</small></div></div></td><td class="mut">—</td><td class="num mut">—</td><td class="mut">Déposé</td><td></td></tr>
+    <tr class="grp"><td colspan="5">Prêts à publier<span class="c">3</span></td></tr>
+    <tr><td><div class="v"><span class="av" style="background:#ff9900">A</span><div>AWS<small>Septembre 2026</small></div></div></td><td>1 oct.</td><td class="num">412,88 US$</td><td class="mut">Courriel</td><td><span class="pill pg">Débit BNC trouvé</span></td></tr>
+    <tr><td><div class="v"><span class="av" style="background:#1e6fd9">H</span><div>Hydro-Québec<small>Compte 299 004</small></div></div></td><td>30 sept.</td><td class="num">318,02 $</td><td class="mut">Photo</td><td><span class="pill pg">Débit BNC trouvé</span></td></tr>
+    <tr><td><div class="v"><span class="av" style="background:#10a37f">O</span><div>OpenAI<small>Invoice 8F2A-0014</small></div></div></td><td>29 sept.</td><td class="num">27,59 US$</td><td class="mut">Courriel</td><td><span class="pill pn">En attente du débit</span></td></tr>
+    <tr class="grp"><td colspan="5">Publiés cette semaine<span class="c">14</span></td></tr>
+    <tr class="dim"><td><div class="v"><span class="av" style="background:#4a5058">P</span><div>PCBWay<small>W2609-118</small></div></div></td><td>25 sept.</td><td class="num">2 140,00 US$</td><td>Courriel</td><td><span class="pill pg">QB #8812</span></td></tr>
+  </table></div>
+</div>
+
+<!-- E2 -->
+<h2><b>E2</b>Bandeau d'états + suggestion</h2>
+<div class="sub">Les compteurs filtrent ; chaque ligne propose son compte et se publie d'un clic.</div>
+<div class="scr">
+  <div class="hd"><h1>Extraction</h1><span class="sp"></span><button class="btn">⤒ Importer</button><button class="btn">◉ Capturer</button></div>
+  <div class="strip">
+    <div class="on"><small><span class="dot" style="background:var(--a)"></span>À vérifier</small><b>2</b></div>
+    <div><small><span class="dot" style="background:var(--b)"></span>En lecture</small><b>1</b></div>
+    <div><small><span class="dot" style="background:var(--g)"></span>Prêts</small><b>3</b></div>
+    <div><small><span class="dot" style="background:var(--ink4)"></span>Publiés · oct.</small><b>4</b></div>
+  </div>
+  <div class="wrap"><table>
+    <tr><th>Fournisseur</th><th>Date</th><th class="num">Total</th><th>Lecture</th><th>Proposé</th><th></th></tr>
+    <tr><td><div class="v"><span class="av" style="background:#d1362a">D</span>DigiKey</div></td><td>28 sept.</td><td class="num">1 284,17 $</td><td><span class="conf lo"><i class="f"></i><i class="f"></i><i></i></span></td><td class="sugg">14000 Pièces <em>· TPS+TVQ ?</em></td><td><button class="btn">Vérifier</button></td></tr>
+    <tr><td><div class="v"><span class="av" style="background:#232f3e">A</span>Amazon Business</div></td><td>27 sept.</td><td class="num">86,40 US$</td><td><span class="conf"><i class="f"></i><i class="f"></i><i class="f"></i></span></td><td class="sugg">= reçu du 26 sept. <em>· même total</em></td><td><button class="btn">Archiver</button></td></tr>
+  </table></div>
+</div>
+
+<!-- E3 -->
+<h2><b>E3</b>Fil du jour + radar</h2>
+<div class="sub">Liste par jour avec aperçu ; à droite, ce que Boréal a remarqué.</div>
+<div class="scr">
+  <div class="hd"><h1>Extraction</h1><span class="sp"></span><button class="btn">⤒ Importer</button><button class="btn">◉ Capturer</button></div>
+  <div class="e3">
+    <div>
+      <div class="day">Aujourd'hui</div>
+      <div class="row"><span class="thumb"></span><div class="v" style="flex:1"><div>AWS<small>Septembre 2026 · courriel</small></div></div><span class="pill pg">Débit trouvé</span><span class="num amt">412,88 US$</span></div>
+      <div class="row"><span class="thumb"></span><div class="v" style="flex:1"><div>scan-0930.pdf<small>Lecture…</small></div></div><span class="pill pb">●●●</span><span class="num amt mut">—</span></div>
+      <div class="day">Hier</div>
+      <div class="row"><span class="thumb"></span><div class="v" style="flex:1"><div>Hydro-Québec<small>photo</small></div></div><span class="pill pg">Débit trouvé</span><span class="num amt">318,02 $</span></div>
+      <div class="row"><span class="thumb"></span><div class="v" style="flex:1"><div>DigiKey<small>courriel</small></div></div><span class="pill pa">Taxe ?</span><span class="num amt">1 284,17 $</span></div>
+      <div class="row" style="opacity:.55"><span class="thumb"></span><div class="v" style="flex:1"><div>PCBWay<small>QB #8812</small></div></div><span class="pill pn">Publié</span><span class="num amt">2 140,00 US$</span></div>
+    </div>
+    <div class="side">
+      <h3>Radar</h3>
+      <div class="card"><span class="dot" style="background:var(--r)"></span><span><b>Bell</b> · octobre manquant</span><span class="sp"></span><span class="mut">↗</span></div>
+      <div class="card"><span class="dot" style="background:var(--a)"></span><span><b>3</b> débits BNC sans pièce</span><span class="sp"></span><span class="mut">↗</span></div>
+      <div class="card"><span class="dot" style="background:var(--a)"></span><span><b>Amazon</b> · doublon probable</span><span class="sp"></span><span class="mut">↗</span></div>
+      <div class="card"><span class="dot" style="background:var(--g)"></span><span><b>3</b> prêts à publier</span><span class="sp"></span><button class="go">Publier</button></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

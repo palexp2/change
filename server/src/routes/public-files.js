@@ -9,6 +9,8 @@ import { requireAuth } from '../middleware/auth.js'
 import { normalizeUploadName } from '../utils/uploadFileName.js'
 import { ensureUploadsDir } from '../config/uploads.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { getPageByToken, injectAcceptScript, refreshAcceptFlag, syncServedCopy } from '../services/hostedPages.js'
+import { emit } from '../services/realtime.js'
 
 const uploadsDir = ensureUploadsDir('public')
 
@@ -89,6 +91,7 @@ publicFilesRouter.post('/upload', upload.single('file'), (req, res) => {
     req.user.id
   )
 
+  refreshAcceptFlag(id)
   const row = db.prepare(`
     SELECT pf.*, u.name AS uploaded_by_name
     FROM public_files pf LEFT JOIN users u ON u.id = pf.uploaded_by
@@ -125,6 +128,7 @@ publicFilesRouter.post('/:id/replace', upload.single('file'), (req, res) => {
     req.file.size || null,
     req.params.id
   )
+  refreshAcceptFlag(req.params.id)
 
   const updated = db.prepare(`
     SELECT pf.*, u.name AS uploaded_by_name
@@ -132,6 +136,33 @@ publicFilesRouter.post('/:id/replace', upload.single('file'), (req, res) => {
     WHERE pf.id = ?
   `).get(req.params.id)
   res.json(hydrate(updated))
+})
+
+const ACCEPTANCE_SELECT = `
+  SELECT a.*, pf.original_name AS page_name, pf.token AS page_token,
+    TRIM(COALESCE(ct.first_name,'') || ' ' || COALESCE(ct.last_name,'')) AS contact_name
+  FROM page_acceptances a JOIN public_files pf ON pf.id = a.public_file_id
+  LEFT JOIN contacts ct ON ct.id = a.contact_id`
+
+// GET /api/public-files/acceptances — acceptations de toutes les pages (page Acceptations)
+publicFilesRouter.get('/acceptances', (_req, res) => {
+  res.json({ data: db.prepare(`${ACCEPTANCE_SELECT} ORDER BY a.at DESC, a.id DESC LIMIT 2000`).all() })
+})
+
+// GET /api/public-files/acceptances/:id — fiche d'une acceptation (texte signé)
+publicFilesRouter.get('/acceptances/:id', (req, res) => {
+  const row = db.prepare(`${ACCEPTANCE_SELECT} WHERE a.id = ?`).get(Number(req.params.id) || 0)
+  if (!row) return res.status(404).json({ error: 'Acceptation introuvable' })
+  res.json(row)
+})
+
+// DELETE /api/public-files/acceptances/:id — retire une acceptation
+publicFilesRouter.delete('/acceptances/:id', (req, res) => {
+  const id = Number(req.params.id) || 0
+  const r = db.prepare('DELETE FROM page_acceptances WHERE id = ?').run(id)
+  if (!r.changes) return res.status(404).json({ error: 'Acceptation introuvable' })
+  emit('page_acceptances:list', { type: 'page_acceptances:deleted', payload: { id } })
+  res.json({ ok: true })
 })
 
 publicFilesRouter.patch('/:id', (req, res) => {
@@ -162,9 +193,10 @@ publicFilesRouter.patch('/:id', (req, res) => {
 })
 
 publicFilesRouter.delete('/:id', (req, res) => {
-  const row = db.prepare('SELECT stored_name FROM public_files WHERE id=?').get(req.params.id)
+  const row = db.prepare('SELECT stored_name, token FROM public_files WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   try { unlinkSync(join(uploadsDir, row.stored_name)) } catch {}
+  syncServedCopy({ token: row.token, deleted: true })
   db.prepare('DELETE FROM public_files WHERE id=?').run(req.params.id)
   res.json({ ok: true })
 })
@@ -181,6 +213,15 @@ publicFileServeRouter.get('/:token{/:filename}', (req, res) => {
 
   const filePath = join(uploadsDir, row.stored_name)
   if (!existsSync(filePath)) return res.status(404).send('Fichier introuvable')
+
+  // Page avec acceptation : bloc « Nom + J'accepte + Payer » injecté.
+  if (row.accept_page) {
+    const page = getPageByToken(row.token)
+    if (page) {
+      res.setHeader('Cache-Control', 'no-store')
+      return res.type('html').send(injectAcceptScript(page.html))
+    }
+  }
 
   if (row.mime_type) res.setHeader('Content-Type', row.mime_type)
   // Affiche inline (images/pdf) — le navigateur force le téléchargement si type inconnu.

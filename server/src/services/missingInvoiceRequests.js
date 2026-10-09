@@ -8,6 +8,10 @@
 // « Facture manquante » de la barre de sélection (décision de Charles,
 // 2026-09-29).
 //
+// Une demande se ferme toute seule quand la pièce arrive : dès qu'une facture
+// lue par l'extracteur se rattache à la ligne du relevé, elle sort de la liste
+// (Charles, 2026-10-06).
+//
 // `in_send` sépare « je cherche encore cette facture » de « je la mets dans le
 // message » : décocher une ligne la sort de l'envoi, jamais de la liste.
 import db from '../db/database.js'
@@ -20,11 +24,12 @@ import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 export const MISSING_INVOICE_AUTOMATION_ID = 'sys_missing_invoice_request'
 
 const DEFAULT_CONFIG = {
-  slack_channel: '',
+  slack_channel: '#questions-importantes',
   slack_webhook_url: '',
   slack_webhook_env: '',
-  intro: 'Je cherche {n} facture{s} ({total}) pour fermer les livres.',
-  outro: 'Si vous en avez une, répondez ici ou envoyez-la à factures@orisha.io — merci !',
+  intro: 'Je cherche {n} facture{s} pour fermer les livres.',
+  // Plus de dernière ligne par défaut (Antoine Lambert, 2026-10-07).
+  outro: '',
 }
 
 export function getMissingInvoiceConfig() {
@@ -53,17 +58,25 @@ function vendorOf(row) {
 const money = (amount, currency) =>
   `${Math.abs(Number(amount) || 0).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency === 'USD' ? '$ US' : '$'}`
 
-const frDate = (iso) => {
-  const d = new Date(`${String(iso).slice(0, 10)}T12:00:00Z`)
-  if (Number.isNaN(d.getTime())) return String(iso || '')
-  return d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', timeZone: 'UTC' })
-}
+// Dates en YYYY-MM-DD dans Slack comme dans l'app (Charles, 2026-10-08).
+const frDate = (iso) => String(iso || '').slice(0, 10)
 
 const ageDays = (iso) =>
   Math.max(0, Math.round((Date.now() - new Date(`${String(iso).slice(0, 10)}T12:00:00Z`).getTime()) / 86400_000))
 
+/** Retire les demandes dont la ligne porte maintenant une pièce. */
+export function releaseFoundRequests() {
+  return db.prepare(`
+    DELETE FROM missing_invoice_requests WHERE bank_txn_id IN (
+      SELECT t.id FROM bank_transactions t
+      JOIN sale_receipts s ON s.id = t.matched_id
+      WHERE t.matched_type = 'receipt' AND s.archived_at IS NULL)
+  `).run().changes
+}
+
 /** La liste complète, la plus vieille d'abord — c'est l'ancienneté qui presse. */
 export function listRequests() {
+  releaseFoundRequests()
   const rows = db.prepare(`
     SELECT r.id, r.bank_txn_id, r.in_send, r.last_sent_at, r.created_at,
            t.txn_date, t.amount, t.reference, t.check_number,
@@ -136,7 +149,7 @@ export function buildMessage(rows = null) {
   const vendorW = Math.min(30, Math.max(...list.map((r) => String(r.vendor).length)))
   const amountW = Math.max(...list.map((r) => String(r.amount_label).length))
   const lines = list.map((r) =>
-    `${String(frDate(r.txn_date)).padEnd(9)} ${String(r.vendor).slice(0, vendorW).padEnd(vendorW)}  ${String(r.amount_label).padStart(amountW)}  ${r.account_name}`)
+    `${String(frDate(r.txn_date)).padEnd(10)} ${String(r.vendor).slice(0, vendorW).padEnd(vendorW)}  ${String(r.amount_label).padStart(amountW)}  ${r.account_name}`)
   return [intro, '```', ...lines, '```', cfg.outro].filter(Boolean).join('\n')
 }
 

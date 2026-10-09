@@ -4,8 +4,8 @@ import {
   ShoppingBag, Truck, RotateCcw, FileText, Wrench,
   Barcode, MessageSquare, CheckSquare, Hammer,
   Landmark, Users, Banknote, Contact,
-  Clock, Tag, Mail, PhoneCall,
-  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send, Megaphone, ClipboardList } from 'lucide-react'
+  Clock, Mail, PhoneCall, FlaskConical,
+  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send, Megaphone, ClipboardList, CalendarClock, Tags, FileSignature } from 'lucide-react'
 import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 
 // Structure canonique du menu de gauche, partagée entre la sidebar (Layout)
@@ -81,11 +81,14 @@ export const defaultNavItems = [
     { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
     { to: '/qualification-call', icon: PhoneCall, label: 'Appels de qualification' },
     { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
+    { to: '/modeles-courriel', icon: Mail, label: 'Modèles de courriel' },
     { to: '/discovery-forms', icon: FileText, label: 'System builder' },
+    { to: '/catalogue-vente', icon: Tags, label: 'Catalogue de vente' },
     { to: '/instagram', icon: Instagram, label: 'Instagram' },
   ]},
   { group: 'Marketing', icon: Megaphone, accent: 'marketing', items: [
     { to: '/formulaires', icon: ClipboardList, label: 'Formulaires' },
+    { to: '/rendez-vous', icon: CalendarClock, label: 'Rendez-vous' },
   ]},
   { group: 'Transport', icon: Truck, accent: 'envois', items: [
     { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },
@@ -108,7 +111,7 @@ export const defaultNavItems = [
   { group: 'RH', icon: Users, accent: 'rh', items: [
     { to: '/employees',        icon: Users,    label: 'Employés', selfLabel: 'Ma fiche personnelle' },
     { to: '/feuille-de-temps', icon: Clock,    label: 'Feuille de temps' },
-    { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité",      hrOnly: true },
+    { to: '/heures-rsde',      icon: FlaskConical, label: 'Heures RSDE', hrOnly: true },
     { to: '/paies',            icon: Banknote, label: 'Paies' },
   ]},
   { group: 'Autres outils', icon: Wrench, accent: 'outils', items: [
@@ -120,6 +123,7 @@ export const defaultNavItems = [
     // plat, comme la route (ProtectedRoute sans adminOnly) et l'API (requireAuth).
     { to: '/connectors',   icon: Plug,            label: 'Connecteurs' },
     { to: '/public-files', icon: FolderOpen,      label: 'Fichiers publics' },
+    { to: '/acceptations', icon: FileSignature,   label: 'Acceptations' },
     { to: '/problemes-operations', icon: AlertTriangle, label: "Problèmes d'opérations" },
     { to: '/fournitures', icon: ShoppingCart, label: 'Fournitures' },
     { external: true, href: 'https://customer.orisha.io/chatbot/admin', icon: Bot, label: 'Admin Chatbot' },

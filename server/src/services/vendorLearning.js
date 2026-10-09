@@ -63,7 +63,7 @@ function dominant(values, share = 2 / 3) {
 // effet une fois les fiches remplies.
 export function backfillProfilesFromHistory() {
   const receipts = db.prepare(`
-    SELECT company, currency, payment_terms_days, transaction_type
+    SELECT company, currency, payment_terms_days, transaction_type, vendor_id
     FROM sale_receipts
     WHERE deleted_at IS NULL AND quickbooks_id IS NOT NULL
       AND company IS NOT NULL AND TRIM(company) != ''
@@ -80,7 +80,7 @@ export function backfillProfilesFromHistory() {
   const bucket = (name) => {
     const p = findVendorProfile(name)
     if (!p) return null
-    if (!byVendor.has(p.id)) byVendor.set(p.id, { profile: p, currency: [], terms: [], method: [], account: [], tax: [], type: [] })
+    if (!byVendor.has(p.id)) byVendor.set(p.id, { profile: p, currency: [], terms: [], method: [], account: [], tax: [], type: [], vendorCad: [], vendorUsd: [] })
     return byVendor.get(p.id)
   }
   for (const r of receipts) {
@@ -89,6 +89,9 @@ export function backfillProfilesFromHistory() {
     b.currency.push(String(r.currency || 'CAD').toUpperCase())
     if (Number.isInteger(r.payment_terms_days) && r.payment_terms_days > 0) b.terms.push(r.payment_terms_days)
     b.type.push(r.transaction_type)
+    // Le vendor QB réellement utilisé, par devise — y compris pour un document saisi
+    // dans QB puis rattaché, que learnFromPush ne voit jamais passer.
+    ;(String(r.currency || 'CAD').toUpperCase() === 'USD' ? b.vendorUsd : b.vendorCad).push(r.vendor_id)
   }
   for (const a of bills) {
     const b = bucket(a.vendor)
@@ -121,6 +124,8 @@ export function backfillProfilesFromHistory() {
       default_transaction_type: dominant(b.type),
       default_expense_account_id: dominant(b.account),
       [usd ? 'default_tax_code_id_usd' : 'default_tax_code_id_cad']: dominant(b.tax),
+      qb_vendor_id_cad: dominant(b.vendorCad),
+      qb_vendor_id_usd: dominant(b.vendorUsd),
     })
     if (filled.length) touched++
     for (const c of filled) columns.set(c, (columns.get(c) || 0) + 1)

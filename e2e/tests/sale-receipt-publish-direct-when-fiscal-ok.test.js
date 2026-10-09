@@ -70,6 +70,7 @@ before(async () => {
 
   browser = await chromium.launch()
   ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
   page = await ctx.newPage()
   await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
 
@@ -111,23 +112,20 @@ test('écart fiscal → modale ; conforme → publication directe sans modale', 
   // Type « Produits alimentaires de base » → statut attendu Détaxé.
   await pickOption('qb-txtype-select', 'Produits alimentaires de base', { exact: false })
 
-  // ── Cas 1 : code NON conforme (TPS/TVQ QC) → écart → clic Publier ouvre la modale.
+  // ── Cas 1 : code NON conforme (TPS/TVQ QC) → écart → clic Publier affiche la bande.
   await pickOption('qb-taxcode-select', 'TPS/TVQ QC - 9,975')
   await page.getByTestId('qb-fiscal-mismatch').waitFor({ state: 'visible', timeout: 5000 })
   await page.getByTestId('qb-publish-open').click()
-  await page.getByTestId('qb-confirm-modal').waitFor({ state: 'visible', timeout: 5000 })
+  await page.getByTestId('qb-fiscal-block').waitFor({ state: 'visible', timeout: 5000 })
   assert.equal(pushCount, 0, 'aucune publication ne doit partir tant qu’il y a un écart fiscal')
-  // Fermer la modale pour repartir propre.
-  await page.getByRole('button', { name: 'Annuler' }).click()
-  await page.getByTestId('qb-confirm-modal').waitFor({ state: 'hidden', timeout: 5000 })
 
-  // ── Cas 2 : code conforme (Détaxé) → clic Publier publie DIRECTEMENT, sans modale.
+  // ── Cas 2 : code conforme (Détaxé) → la bande disparaît, Publier publie DIRECTEMENT.
   await pickOption('qb-taxcode-select', 'Détaxé')
   await page.getByTestId('qb-fiscal-ok').waitFor({ state: 'visible', timeout: 5000 })
   const pushReq = page.waitForRequest(u => u.url().includes('/push-to-qb'), { timeout: 8000 })
   await page.getByTestId('qb-publish-open').click()
   await pushReq // la publication est partie directement
   assert.equal(pushCount, 1, 'la publication doit partir au clic quand le statut fiscal est conforme')
-  assert.equal(await page.getByTestId('qb-confirm-modal').count(), 0, 'aucune modale de confirmation ne doit s’afficher quand c’est conforme')
+  assert.equal(await page.getByTestId('qb-fiscal-block').count(), 0, 'aucune bande d’écart quand c’est conforme')
 })
 })

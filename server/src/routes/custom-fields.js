@@ -480,6 +480,18 @@ router.get('/:erpTable', (req, res) => {
       const hit = recordLinkTargetOf(row.lookup_target_table, row.lookup_target_column)
       if (hit) { recordLink = true; target = hit.table }
     }
+    // ROLLUP qui liste (ARRAY / ARRAYUNIQUE) les enregistrements liés par leur
+    // id — ex. « Factures » d'une commande (factures.order_id) — ou une colonne
+    // FK de la table enfant : chaque valeur est un id, donc une pastille vers
+    // sa fiche. Lecture seule : un calcul.
+    else if (row.kind === 'rollup' && /^ARRAY(UNIQUE)?$/i.test(row.rollup_agg || '') && row.rollup_target_table) {
+      if (row.rollup_target_column === 'id') {
+        if (LINKABLE_TABLES.includes(row.rollup_target_table)) { recordLink = true; target = row.rollup_target_table; identity = 'erp' }
+      } else if (row.rollup_target_column) {
+        const hit = recordLinkTargetOf(row.rollup_target_table, row.rollup_target_column)
+        if (hit) { recordLink = true; target = hit.table }
+      }
+    }
     // Champ `data` dont la COLONNE est une clé étrangère (ex. une colonne
     // `*_id` adoptée depuis Airtable) : la valeur est un id ERP, donc
     // navigable. Sans ça un champ adossé à une FK s'affiche en
@@ -1058,7 +1070,7 @@ const FIELD_KINDS = {
         }
       }
       let defaultValue = null
-      if (['text', 'number', 'currency', 'percent', 'url', 'phone', 'duration', 'checkbox', 'rating'].includes(type)) {
+      if (['text', 'long_text', 'number', 'currency', 'percent', 'url', 'phone', 'duration', 'date', 'checkbox', 'rating'].includes(type)) {
         defaultValue = normalizeDefaultValue(body?.default_value, type)
       }
       // Affinité SQLite du type : number/currency/percent/duration → REAL,

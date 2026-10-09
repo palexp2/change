@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
-import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
+import { sendEmail as sendGmail } from '../services/gmail.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { buildReturnPartyContext } from '../services/returnContext.js'
 import { selectReturnRate } from '../services/returnCarrier.js'
@@ -69,7 +69,8 @@ function getReturnWithItems(returnId) {
   if (!row) return null
 
   const items = db.prepare(`
-    SELECT ri.*, sn.serial as serial_number,
+    SELECT ri.*, sn.serial as serial_number, sn.address as lora_address,
+           sn.status as serial_status,
            COALESCE(pr.name_fr, psn.name_fr) as product_name
     FROM return_items ri
     LEFT JOIN serial_numbers sn ON ri.serial_id = sn.id
@@ -78,6 +79,26 @@ function getReturnWithItems(returnId) {
     WHERE ri.return_id = ?
     ORDER BY ri.created_at
   `).all(returnId)
+
+  // L'issue GitHub d'un article suit celle de son billet : la copie Airtable
+  // (lookup figé) manque pour les articles créés dans Boréal ou dont le billet
+  // a reçu son issue après coup.
+  const ticketIssue = db.prepare(`
+    SELECT numero_de_l_issue_github AS num, lien_issue_github AS url
+    FROM tickets WHERE (id = ? OR airtable_id = ?) AND numero_de_l_issue_github IS NOT NULL AND numero_de_l_issue_github != ''
+  `)
+  for (const it of items) {
+    let ids = []
+    try { ids = JSON.parse(it.billets || '[]') } catch { ids = String(it.billets || '').split(',') }
+    for (const tid of (Array.isArray(ids) ? ids : []).map(s => String(s).trim()).filter(Boolean)) {
+      const t = ticketIssue.get(tid, tid)
+      if (!t) continue
+      const num = String(Math.trunc(Number(t.num)) || t.num)
+      it.issue_github = num
+      it.lien_issue_github = t.url || `https://github.com/yormi/goose-control/issues/${num}`
+      break
+    }
+  }
 
   return { ...row, items }
 }
@@ -274,18 +295,36 @@ function loadAttachmentBuffer(value) {
   try { return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null } catch { return null }
 }
 
+// Image du catalogue (products.image_url, `/erp/api/product-images/<fichier>`)
+// du produit retourné : n° de série → produit, sinon le produit de l'article.
+// Sert quand les images miroitées d'Airtable sont vides (article né dans Boréal).
+const productOfItem = db.prepare(`
+  SELECT p.image_url FROM products p
+  WHERE p.id = COALESCE((SELECT product_id FROM serial_numbers WHERE id = ?), ?)`)
+// Adresse (numéro inscrit sur l'appareil) du n° de série retourné.
+const serialAddress = db.prepare('SELECT address FROM serial_numbers WHERE id = ?')
+function loadProductImageBuffer(item) {
+  const url = productOfItem.get(item.serial_id || null, item.product_id || null)?.image_url
+  if (!url) return null
+  const marker = '/api/product-images/'
+  const idx = url.indexOf(marker)
+  if (idx === -1) return null
+  const filePath = uploadsPath('products', path.basename(url.slice(idx + marker.length)))
+  try { return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null } catch { return null }
+}
+
 router.post('/:id/memo', async (req, res) => {
   const ret = getReturnWithItems(req.params.id)
   if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
 
-  // Le retour n'a plus de contact à lui (colonne droppée, migration 037) : la
-  // langue des documents vient du contact de l'adresse de retour.
+  // Langue : celle du contact du retour (comme le courriel d'instructions), à
+  // défaut celle du contact de l'adresse de retour.
   const { ctx } = buildReturnPartyContext(req.params.id, req.body?.address_id || null) || {}
-  const langue = ctx?.address_contact_langue || null
+  const langue = returnLinkedContact(req.params.id)?.langue || ctx?.address_contact_langue || null
   const items = (ret.items || []).map(it => ({
     produit: (langue === 'English' ? it.poduit_a_recevoir_en_for_email_display : it.poduit_a_recevoir_fr_for_email_display) || it.product_name,
-    adresse: it.adresse_lora,
-    image: loadAttachmentBuffer(it.image_from_numero_de_serie) || loadAttachmentBuffer(it.image_from_produit_a_recevoir),
+    adresse: it.adresse_lora || serialAddress.get(it.serial_id || null)?.address || null,
+    image: loadAttachmentBuffer(it.image_from_numero_de_serie) || loadAttachmentBuffer(it.image_from_produit_a_recevoir) || loadProductImageBuffer(it),
     transfo: loadAttachmentBuffer(it.transfo_a_recevoir_from_numero_de_serie) || loadAttachmentBuffer(it.transfo_a_recevoir_from_produit_a_recevoir),
   }))
   const pdfBuffer = await buildReturnMemoPdf({ langue, items })
@@ -316,12 +355,14 @@ function loadInstructionsEmailContext(returnId) {
   if (!ret) return { error: { status: 404, message: 'Retour introuvable' } }
 
   const { ctx } = buildReturnPartyContext(returnId, null)
-  // Destinataire : le contact de l'adresse de retour (le retour lui-même n'a
-  // plus de contact depuis la migration 037), à défaut le courriel de
-  // l'entreprise.
-  const contact = ctx?.address_contact_email || ctx?.address_contact_first_name
-    ? { first_name: ctx.address_contact_first_name, langue: ctx.address_contact_langue, email: ctx.address_contact_email }
-    : null
+  // Contact du retour (champ « Contact ») : il fixe la langue, le prénom et le
+  // destinataire. Retours anciens sans contact → contact de l'adresse de
+  // retour, à défaut le courriel de l'entreprise.
+  const linked = returnLinkedContact(returnId)
+  const contact = linked
+    || (ctx?.address_contact_email || ctx?.address_contact_first_name
+      ? { id: ctx.address_contact_id, first_name: ctx.address_contact_first_name, langue: ctx.address_contact_langue, email: ctx.address_contact_email }
+      : null)
   // Un retour peut avoir plusieurs items avec des raisons différentes — on
   // retient la 1ère raison présente, fidèle à l'hypothèse implicite de
   // l'automatisation Airtable d'origine (un retour = une raison dominante).
@@ -337,10 +378,23 @@ function loadInstructionsEmailContext(returnId) {
     ret,
     ctx,
     contact,
-    to: ctx?.address_contact_email || contact?.email || ctx?.company_email || null,
+    to: contact?.email || ctx?.company_email || null,
     subject: template.subject,
     html: buildReturnInstructionsHtml(template, contact?.first_name),
   }
+}
+
+// Contact posé sur le retour (`cf_contact` : record id Airtable, ou id Boréal
+// pour un contact né dans l'ERP ; texte brut ou tableau JSON).
+function returnLinkedContact(returnId) {
+  let raw
+  try { raw = db.prepare('SELECT cf_contact FROM returns WHERE id = ?').get(returnId)?.cf_contact } catch { return null }
+  if (!raw) return null
+  let key = String(raw).trim()
+  if (key.startsWith('[')) { try { key = JSON.parse(key)[0] } catch { /* texte brut */ } }
+  if (!key) return null
+  return db.prepare(`SELECT id, first_name, email, langue FROM contacts
+    WHERE id = ? OR airtable_id = ?`).get(key, key) || null
 }
 
 // Pièces jointes du courriel d'instructions : étiquette de retour + aide-mémoire
@@ -366,7 +420,6 @@ router.get('/:id/instructions-email', (req, res) => {
 
   res.json({
     to: ctx.to,
-    from: getAutomationFrom('sys_return_instructions_email') || null,
     subject: ctx.subject,
     bodyHtml: ctx.html,
     // `url` : la modale en montre une vignette et l'aperçu, sans quitter le brouillon.
@@ -375,14 +428,15 @@ router.get('/:id/instructions-email', (req, res) => {
   })
 })
 
-// POST /api/retours/:id/send-instructions — courriel client (Postmark),
+// POST /api/retours/:id/send-instructions — courriel client, envoyé depuis le
+// Gmail de l'utilisateur connecté (ou `from_account`),
 // reproduisant l'un des 6 templates HubSpot réels (returnInstructionsTemplates.js) —
 // sélection par pays (transporteur) × langue × type de retour (immédiat/différé).
 // L'objet, le corps et le Cc peuvent être remplacés par ce que l'utilisateur a
 // édité dans la modale de composition (EmailComposerModal).
 router.post('/:id/send-instructions', async (req, res) => {
   const started = Date.now()
-  const { to, cc, subject, body_html } = req.body
+  const { to, cc, bcc, subject, body_html, from_account } = req.body
   if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
 
   const emailCtx = loadInstructionsEmailContext(req.params.id)
@@ -395,31 +449,29 @@ router.post('/:id/send-instructions', async (req, res) => {
   const attachments = []
   try {
     for (const a of instructionsAttachments(ret, req.params.id)) {
-      attachments.push({ Name: a.name, Content: fs.readFileSync(a.path).toString('base64'), ContentType: 'application/pdf' })
+      attachments.push({ filename: a.name, content: fs.readFileSync(a.path), contentType: 'application/pdf' })
     }
 
-    const fromAddress = getAutomationFrom('sys_return_instructions_email')
-    if (!fromAddress) throw new Error('Adresse expéditeur Postmark non configurée')
-    const client = getPostmarkClient()
-    await client.sendEmail({
-      From: fromAddress,
-      To: to,
-      Cc: cc || undefined,
-      Subject: finalSubject,
-      HtmlBody: trackEmailHtml(html, emailId),
-      Attachments: attachments,
+    const sent = await sendGmail(to, finalSubject, trackEmailHtml(html, emailId), {
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      attachments,
+      userId: req.user?.id,
+      accountEmail: from_account || undefined,
     })
+    const fromAddress = sent.account_email
+    const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(fromAddress)?.id || req.user?.id || null
 
     const interactionId = newRecordId()
     db.transaction(() => {
       db.prepare(`
-        INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
-        VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(interactionId, ctx?.address_contact_id || null, ctx?.company_id || null)
+        INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+        VALUES (?, ?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      `).run(interactionId, emailCtx.contact?.id || null, ctx?.company_id || null, senderUserId)
       db.prepare(`
-        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, automated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-      `).run(emailId, interactionId, finalSubject, html, fromAddress, to, cc || null)
+        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, bcc, gmail_message_id, gmail_thread_id, automated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      `).run(emailId, interactionId, finalSubject, html, fromAddress, to, cc || null, bcc || null, sent.message_id, sent.thread_id)
       db.prepare(`
         UPDATE returns SET instructions_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), instructions_interaction_id = ?
         WHERE id = ?
@@ -431,16 +483,16 @@ router.post('/:id/send-instructions', async (req, res) => {
       result: [
         `Instructions de retour envoyées`,
         `  De : ${fromAddress}`,
-        `  À : ${to}${cc ? ` (Cc : ${cc})` : ''}`,
+        `  À : ${to}${cc ? ` (Cc : ${cc})` : ''}${bcc ? ` (Cci : ${bcc})` : ''}`,
         `  Objet : ${finalSubject}`,
-        `  Pièces jointes : ${attachments.map(a => a.Name).join(', ') || 'aucune'}`,
+        `  Pièces jointes : ${attachments.map(a => a.filename).join(', ') || 'aucune'}`,
         `  Retour : ${req.params.id}`,
       ].join('\n'),
       duration_ms: Date.now() - started,
       triggerData: { return_id: req.params.id, to, cc: cc || null, interaction_id: interactionId },
     })
 
-    res.json({ success: true, interaction_id: interactionId, attachments: attachments.map(a => a.Name) })
+    res.json({ success: true, interaction_id: interactionId, attachments: attachments.map(a => a.filename) })
   } catch (e) {
     console.error('Retours send-instructions error:', e.message)
     logSystemRun('sys_return_instructions_email', { status: 'error', error: e.message, duration_ms: Date.now() - started, triggerData: { return_id: req.params.id } })
@@ -572,9 +624,11 @@ const linkKey = row => row?.airtable_id || row?.id || null
 // « Création d'un item de retour » créerait sinon une seconde commande de
 // remplacement pour la raison « échange immédiat ».
 router.post('/create', (req, res) => {
-  const { company_id, ticket_id, items, exchange } = req.body || {}
+  const { company_id, contact_id, ticket_id, items, exchange } = req.body || {}
   const company = company_id && db.prepare('SELECT id, airtable_id FROM companies WHERE id = ?').get(company_id)
   if (!company) return res.status(400).json({ error: 'Entreprise introuvable' })
+  const contact = contact_id && db.prepare('SELECT id, airtable_id FROM contacts WHERE id = ?').get(contact_id)
+  if (!contact) return res.status(400).json({ error: 'Contact requis' })
   if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Aucun article à retourner' })
 
   const ticket = ticket_id ? db.prepare('SELECT id, airtable_id FROM tickets WHERE id = ?').get(ticket_id) : null
@@ -634,6 +688,10 @@ router.post('/create', (req, res) => {
       db.prepare(`INSERT INTO returns (id, created_at, updated_at${companyCol ? `, [${companyCol}]` : ''})
                   VALUES (?, ${now}, ${now}${companyCol ? ', ?' : ''})`)
         .run(returnId, ...(companyCol ? [linkKey(company)] : []))
+      // Champ « Contact » du retour (colonne née d'Airtable, absente d'une base neuve).
+      if (db.prepare('PRAGMA table_info(returns)').all().some(c => c.name === 'cf_contact')) {
+        db.prepare('UPDATE returns SET cf_contact = ? WHERE id = ?').run(linkKey(contact), returnId)
+      }
 
       if (exchange && substituted.length) {
         if (!order) {

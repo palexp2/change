@@ -10,6 +10,9 @@
 // l'automation d'Émilie mais absente de server/.env — l'envoi échoue chaque
 // mardi et personne ne le voit passer.
 
+import db from '../db/database.js'
+import { decryptCredentials } from '../utils/encryption.js'
+
 const DEFAULT_FALLBACK_ENV = 'SLACK_WEBHOOK_TREASURY'
 
 /**
@@ -170,8 +173,12 @@ function cacheSet(key, id) {
 /** Vide le cache de résolution (utile après un renommage de canal). */
 export function clearSlackChannelCache() { channelCache.clear() }
 
+// « #comptabilite » doit trouver #comptabilité : un accent oublié ne doit pas
+// faire taire une alerte.
+const bareName = v => String(v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
 async function findChannelByName(name) {
-  const wanted = name.replace(/^#/, '').toLowerCase()
+  const wanted = bareName(name.replace(/^#/, ''))
   let cursor
   do {
     const json = await slackApi('conversations.list', {
@@ -180,11 +187,55 @@ async function findChannelByName(name) {
       limit: 200,
       ...(cursor ? { cursor } : {}),
     })
-    const hit = (json.channels || []).find(c => String(c.name).toLowerCase() === wanted)
+    const hit = (json.channels || []).find(c => bareName(c.name) === wanted)
     if (hit) return hit.id
     cursor = json.response_metadata?.next_cursor || null
   } while (cursor)
   return null
+}
+
+/** Canaux (publics + privés où le bot est membre), non archivés, triés par nom. */
+export async function listSlackChannels() {
+  const out = []
+  let cursor
+  do {
+    const json = await slackApi('conversations.list', {
+      types: 'public_channel,private_channel',
+      exclude_archived: true,
+      limit: 200,
+      ...(cursor ? { cursor } : {}),
+    })
+    for (const c of json.channels || []) out.push({ id: c.id, name: c.name, private: !!c.is_private })
+    cursor = json.response_metadata?.next_cursor || null
+  } while (cursor)
+  return out.sort((a, b) => a.name.localeCompare(b.name, 'fr'))
+}
+
+/**
+ * Personnes (humains actifs), triées par nom. `dm` = id du message privé déjà
+ * ouvert avec le bot, s'il existe : une ancienne cible « D… » s'affiche par nom.
+ */
+export async function listSlackUsers() {
+  const out = []
+  let cursor
+  do {
+    const json = await slackApi('users.list', { limit: 200, ...(cursor ? { cursor } : {}) })
+    for (const u of json.members || []) {
+      if (u.deleted || u.is_bot || u.id === 'USLACKBOT') continue
+      out.push({ id: u.id, name: u.profile?.real_name || u.real_name || u.name })
+    }
+    cursor = json.response_metadata?.next_cursor || null
+  } while (cursor)
+  const dms = new Map()
+  try {
+    cursor = undefined
+    do {
+      const json = await slackApi('conversations.list', { types: 'im', limit: 200, ...(cursor ? { cursor } : {}) })
+      for (const c of json.channels || []) dms.set(c.user, c.id)
+      cursor = json.response_metadata?.next_cursor || null
+    } while (cursor)
+  } catch { /* lecture des messages privés facultative */ }
+  return out.map(u => ({ ...u, dm: dms.get(u.id) || null })).sort((a, b) => a.name.localeCompare(b.name, 'fr'))
 }
 
 async function findUserByHandle(handle) {
@@ -244,8 +295,61 @@ export async function resolveSlackChannelId(target) {
 /** Poste un message via chat.postMessage. Throw si Slack refuse. */
 export async function postSlackChat(target, text) {
   const channel = await resolveSlackChannelId(target)
+  // Message privé à une personne : il part du compte d'Antoine quand son jeton
+  // personnel est branché (Connecteurs → Instagram), pas de l'app « ERP Orisha ».
+  if (/^U/.test(channel)) {
+    const sent = await postAsUser(channel, text)
+    if (sent) return sent
+  }
   await slackApi('chat.postMessage', { channel, text, unfurl_links: false })
   return channel
+}
+
+// ── Envoi au nom d'une personne (jeton Slack personnel xoxp-) ──────────────
+
+export function slackUserToken() {
+  const v = db.prepare("SELECT value FROM connector_config WHERE connector='slack' AND key='user_token'").get()?.value
+  if (!v) return null
+  try { return decryptCredentials(v) || null } catch { return null }
+}
+
+async function userApi(token, method, body = {}) {
+  const form = new URLSearchParams()
+  for (const [k, v] of Object.entries(body)) if (v != null) form.set(k, String(v))
+  const resp = await fetch(`${SLACK_API}/${method}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' },
+    body: form.toString(),
+  })
+  const json = await resp.json().catch(() => ({}))
+  if (!json.ok) throw new Error(`Slack (compte personnel) ${method} : ${json.error || resp.status}`)
+  return json
+}
+
+let ownerCache = null
+/** Qui est derrière le jeton personnel (son identifiant Slack et son nom). */
+export async function slackUserIdentity() {
+  const token = slackUserToken()
+  if (!token) return null
+  if (ownerCache?.token === token) return ownerCache.who
+  const json = await userApi(token, 'auth.test')
+  ownerCache = { token, who: { id: json.user_id, name: json.user } }
+  return ownerCache.who
+}
+
+/**
+ * Message privé envoyé par la personne du jeton. Rend l'identifiant de la
+ * conversation, ou null s'il n'y a pas de jeton (ou si c'est à elle-même :
+ * ses propres rappels restent signés par l'app, sinon ils ne la notifieraient pas).
+ */
+async function postAsUser(userId, text) {
+  const token = slackUserToken()
+  if (!token) return null
+  const me = await slackUserIdentity()
+  if (!me || me.id === userId) return null
+  const dm = await userApi(token, 'conversations.open', { users: userId })
+  await userApi(token, 'chat.postMessage', { channel: dm.channel.id, text, unfurl_links: false })
+  return dm.channel.id
 }
 
 /** Diagnostic de la connexion bot (page Connecteurs / test manuel). */

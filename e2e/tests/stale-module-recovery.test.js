@@ -47,8 +47,8 @@ test('builds successifs : conserver les modules récents et leurs dates, retirer
   try {
     const dir = path.join(root, 'dist/assets')
     fs.mkdirSync(dir, { recursive: true })
-    const recent = new Date(Date.now() - 86400000)
-    const old = new Date(Date.now() - 8 * 86400000)
+    const recent = new Date(Date.now() - 3600000)
+    const old = new Date(Date.now() - 2 * 86400000)
     for (const [name, date] of [['recent.js', recent], ['expired.js', old]]) {
       fs.writeFileSync(path.join(dir, name), name)
       fs.utimesSync(path.join(dir, name), date, date)

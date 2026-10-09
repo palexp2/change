@@ -11,8 +11,6 @@ import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 // prix Google. Serveur : services/aiCostMeter.js.
 
 const usd = (n, digits = 2) => fmtMoney(n, 'USD', { maximumFractionDigits: digits, minimumFractionDigits: digits })
-const DAY_FMT = new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'short', timeZone: 'UTC' })
-const FULL_FMT = new Intl.DateTimeFormat('fr-CA', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
 
 function Tile({ label, value }) {
   return (
@@ -55,10 +53,9 @@ export function AiCostsContent() {
   }, [])
   useEffect(load, [load])
 
-  const points = useMemo(() => (data?.days || []).map(d => {
-    const date = new Date(`${d.date}T00:00:00Z`)
-    return { key: d.date, label: FULL_FMT.format(date), short: DAY_FMT.format(date), value: d.cost || 0 }
-  }), [data])
+  const points = useMemo(() => (data?.days || []).map(d => (
+    { key: d.date, label: d.date, short: String(d.date).slice(5), value: d.cost || 0 }
+  )), [data])
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>
   if (!data) return <div className="text-sm text-slate-400 py-6"><Spinner size="xs" label="Chargement…" /></div>

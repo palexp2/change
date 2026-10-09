@@ -42,6 +42,7 @@ describe('Extraction de données : publier enchaîne sur le document suivant', (
     // Type « Dépense payée » forcé : le brouillon du reçu peut être en « Facture à
     // payer » (Bill), qui masque le compte de paiement. On fixe le mode pour que le
     // formulaire soit toujours le même quel que soit le reçu candidat.
+    await page.getByTestId('qb-type-menu').click()
     await page.getByTestId('qb-type-purchase').click()
     await page.getByTestId('qb-payment-select').waitFor({ state: 'visible', timeout: 10000 })
 
@@ -71,16 +72,13 @@ describe('Extraction de données : publier enchaîne sur le document suivant', (
       await page.getByTestId('qb-txtype-missing').waitFor({ state: 'detached', timeout: 5000 })
     }
 
-    await page.getByRole('button', { name: /Publier sur QuickBooks/ }).click()
+    await page.getByTestId('qb-publish-open').click()
 
-    // Écart entre le code de taxe et le statut fiscal → modale de confirmation :
-    // le serveur exige alors une justification. On la fournit et on force.
-    const modal = page.getByTestId('qb-confirm-modal')
-    if (await modal.waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false)) {
-      if (await page.getByTestId('qb-force-reason').count()) {
-        await page.getByTestId('qb-force-reason').fill('Test E2E — publication QB interceptée')
-      }
-      await page.getByTestId('qb-confirm-publish').click()
+    // Écart entre le code de taxe et le statut fiscal → bande « Publier quand même »
+    // (aucune justification à saisir).
+    const block = page.getByTestId('qb-fiscal-block')
+    if (await block.waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false)) {
+      await page.getByTestId('qb-fiscal-force').click()
     }
   }
 
@@ -94,6 +92,7 @@ describe('Extraction de données : publier enchaîne sur le document suivant', (
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)

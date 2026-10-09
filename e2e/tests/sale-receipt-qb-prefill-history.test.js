@@ -48,6 +48,7 @@ describe('Fiche reçu — auto-pré-sélection des comptes depuis l\'historique 
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -120,6 +121,7 @@ describe('Fiche reçu — auto-pré-sélection des comptes depuis l\'historique 
     await page.locator('[data-testid="qb-prefill-note"]').waitFor({ state: 'visible', timeout: 10000 })
 
     // Change le type → marque userTouched → la note disparaît
+    await page.getByTestId('qb-type-menu').click()
     await page.locator('[data-testid="qb-type-bill"]').click()
     await page.locator('[data-testid="qb-prefill-note"]').waitFor({ state: 'detached', timeout: 5000 }).catch(async () => {
       // selon le rendu, "hidden" plutôt que "detached"

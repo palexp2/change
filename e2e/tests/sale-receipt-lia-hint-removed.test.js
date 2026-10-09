@@ -21,6 +21,7 @@ describe('Reçu de vente : la note « Achats proposés » est retirée', () => {
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)

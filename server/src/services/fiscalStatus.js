@@ -211,7 +211,7 @@ const VENDOR_HINTS = [
   { match: /\bgoogle\b/, type: 'achat_num_inscrit_b2b_exempte' },
   { match: /axxess/, type: 'courtage_export' },
   { match: /digikey|mouser/, type: 'achat_pieces_etranger_douane' },
-  { match: /fedex|purolator|\bups\b|\bdhl\b|nationex|canpar|postes canada|canada post/, type: 'transport_export' },
+  { match: /fedex|purolator|\bups\b|\bdhl\b|nationex|canpar|postes canada|canada post|novo ?express/, type: 'transport_export' },
   { match: /desjardins|\bvisa\b|mastercard|\bbanque\b|\bbank\b/, type: 'remboursement_dette' },
   { match: /assurance|insurance/, type: 'assurances' },
   { match: /starbucks|tim hortons|mcdonald|restaurant|\bresto\b|traiteur|uber eats|doordash|skip the dishes/, type: 'repas_representation' },
@@ -256,6 +256,14 @@ export function suggestTransactionType({ company, currency, tps, tvq, generalDes
   const cur = (currency || 'CAD').toUpperCase()
   if (hasTax && cur === 'CAD') return 'achat_local_taxable'
 
-  // Aucune taxe + devise étrangère : trop ambigu (hors-champ vs détaxé vs exonéré).
+  // Aucune taxe + devise étrangère : fournisseur étranger, hors champ. Abonnement /
+  // service en ligne → service numérique non inscrit ; sinon des pièces. Signal de
+  // dernier recours (confiance basse) : le profil et l'historique passent devant.
+  if (!hasTax && cur !== 'CAD') {
+    return /subscription|abonnement|\bplan\b|licen[cs]e|saas|\bapi\b|credits?\b|monthly|mensuel|usage|hosting|hebergement/.test(haystack)
+      ? 'achat_num_etranger_non_inscrit'
+      : 'achat_pieces_etranger_fournisseur'
+  }
+
   return null
 }

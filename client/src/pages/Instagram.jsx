@@ -14,6 +14,7 @@ import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Copy, Send, RefreshCw, Search, ExternalLink, Sparkles, PauseCircle, X, Check, Filter, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import api from '../lib/api.js'
+import { fmtDate, fmtTime } from '../lib/formatDate.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
@@ -55,9 +56,28 @@ function inFuture(iso) {
   return m < 60 ? `dans ${m} min` : `dans ${Math.round(m / 60)} h`
 }
 
-function stamp(iso) {
-  if (!iso) return ''
-  return new Date(iso).toLocaleString('fr-CA', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+// Le fil prêt à afficher : séparateurs de jour, gestes (commentaire, clic),
+// et pour chaque bulle son auteur et si elle termine une suite du même auteur.
+function threadItems(messages) {
+  const authorOf = m => (m.direction !== 'out' ? 'her' : m.kind === 'msgout_instagram' ? 'auto' : 'us')
+  const items = []
+  let lastDay = null
+  messages.forEach((m, i) => {
+    const day = m.sent_at ? fmtDate(m.sent_at) : null
+    if (day && day !== lastDay) { items.push({ kind: 'day', key: `d${i}`, label: day }); lastDay = day }
+    if (m.direction === 'in' && EVENT.test(m.text || '')) { items.push({ kind: 'event', m }); return }
+    items.push({ kind: authorOf(m), m })
+  })
+  items.forEach((it, i) => {
+    if (!['her', 'us', 'auto'].includes(it.kind)) return
+    const next = items[i + 1]
+    it.last = !next || next.kind !== it.kind
+  })
+  return items
+}
+
+function clock(iso) {
+  return fmtTime(iso)
 }
 
 function windowState(lastIncomingAt) {
@@ -72,32 +92,54 @@ function Tab({ label, n, active, onClick }) {
   return (
     <button
       onClick={onClick}
-      className={`flex items-center gap-2 px-0.5 pb-2 border-b-2 -mb-px transition-colors ${
-        active ? 'border-brand-600' : 'border-transparent hover:border-slate-200'}`}
+      className={`flex items-center gap-1.5 pb-3 border-b-2 -mb-px text-sm transition-colors ${
+        active ? 'border-slate-900 font-semibold text-slate-900' : 'border-transparent font-medium text-slate-500 hover:text-slate-700'}`}
     >
-      <span className={`text-sm ${active ? 'font-bold text-slate-900' : 'font-medium text-slate-500'}`}>{label}</span>
-      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-        active ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-500'}`}>{n}</span>
+      {label}<span className="text-[11px] font-normal text-slate-400">{n}</span>
     </button>
   )
 }
 
+// Où en est le message de la personne, en un point de couleur et un mot.
+function statusOf(i) {
+  if (i.draft_status === 'queued') return { dot: 'bg-emerald-500', label: `Part ${inFuture(i.scheduled_at)}` }
+  if (i.reopened) return { dot: 'bg-sky-500', label: 'A réécrit' }
+  if (i.draft_status === 'draft') return { dot: 'bg-emerald-500', label: 'Prêt' }
+  if (i.draft_status === 'review') return { dot: 'bg-amber-500', label: 'À relire' }
+  if (['held', 'failed'].includes(i.draft_status)) return { dot: 'bg-amber-500', label: 'Retenu' }
+  return { dot: 'bg-amber-500', label: 'À écrire' }
+}
+
+function Avatar({ name, size = 'sm' }) {
+  return (
+    <div className={`${size === 'lg' ? 'w-11 h-11 text-base' : 'w-9 h-9 text-[13px]'} rounded-full bg-slate-100 text-slate-500 font-semibold flex items-center justify-center shrink-0`}>
+      {(name || '?').slice(0, 1).toUpperCase()}
+    </div>
+  )
+}
+
+// Gestes enregistrés par ManyChat (« 📝 A commenté », « 🔗 A cliqué un lien »…) :
+// une ligne discrète au milieu du fil, pas une bulle.
+const EVENT = /^(📝|🔗|✨|💬 A |💬 Réponse|📣|👤)/u
+
 function Row({ i, active, onPick }) {
+  const st = statusOf(i)
   return (
     <button
       onClick={() => onPick(i.prospect_id)}
-      className={`w-full text-left px-5 py-3.5 border-b border-slate-100 border-l-[3px] ${
-        active ? 'bg-brand-50 border-l-brand-600' : 'border-l-transparent hover:bg-slate-50'}`}
+      className={`w-full text-left flex gap-3 px-5 py-3 border-b border-slate-100 ${
+        active ? 'bg-slate-50 shadow-[inset_3px_0_0_theme(colors.slate.900)]' : 'hover:bg-slate-50'}`}
     >
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-semibold text-slate-900 truncate">@{i.ig_username}</span>
-        {i.draft_status === 'queued' && <Badge color="green" size="xs">{inFuture(i.scheduled_at)}</Badge>}
-        {i.reopened && <Badge color="amber" size="xs">a réécrit</Badge>}
-        <span className="ml-auto text-[11px] text-slate-400 shrink-0">{ago(i.last_incoming_at || i.last_message_at)}</span>
-      </div>
-      {!!i.review_label && <div className="text-[11px] text-amber-700 mt-0.5">{i.review_label}</div>}
-      <div className="text-xs text-slate-500 mt-0.5 line-clamp-2">
-        {i.profile_who || i.arrival || i.last_message_text || '—'}
+      <Avatar name={i.ig_username} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-slate-900 truncate">{i.ig_username}</span>
+          <span className="ml-auto text-[11px] text-slate-400 shrink-0">{ago(i.last_incoming_at || i.last_message_at || i.first_comment_at)}</span>
+        </div>
+        <div className="text-[12.5px] text-slate-500 truncate">{i.profile_who || i.arrival || i.last_message_text || '—'}</div>
+        <div className="mt-1 flex items-center gap-1.5 text-xs font-medium text-slate-600" title={i.review_label || ''}>
+          <span className={`w-[7px] h-[7px] rounded-full ${st.dot}`} />{st.label}
+        </div>
       </div>
     </button>
   )
@@ -127,6 +169,8 @@ export default function Instagram() {
   const [peek, setPeek] = useState(false)
   const peekTimer = useRef(null)
   const bottom = useRef(null)
+  // La boîte du message grandit avec son texte : on voit toujours le message en entier.
+  const box = useRef(null)
 
   const toggleList = () => setCollapsed(v => {
     const next = !v
@@ -167,13 +211,8 @@ export default function Instagram() {
 
   // Deux groupes : ceux à qui on peut écrire en privé (fenêtre de 24 h ouverte),
   // et les autres, à qui on répond directement sur Instagram, sous leur commentaire.
-  const groups = useMemo(() => {
-    if (tab === 'done') return [{ key: 'all', rows }]
-    return [
-      { key: 'dm', label: 'En privé', rows: rows.filter(i => i.window_open) },
-      { key: 'ig', label: 'Sur Instagram', rows: rows.filter(i => !i.window_open) },
-    ].filter(g => g.rows.length)
-  }, [rows, tab])
+  // Ceux à qui on peut écrire en privé (fenêtre de 24 h ouverte) passent devant.
+  const ordered = useMemo(() => (tab === 'done' ? rows : [...rows.filter(i => i.window_open), ...rows.filter(i => !i.window_open)]), [rows, tab])
 
   const active = useMemo(() => items.find(i => i.prospect_id === activeId) || null, [items, activeId])
 
@@ -238,6 +277,12 @@ export default function Instagram() {
     saveTimer.current = setTimeout(flush, 700)
   }
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'end' }) }, [messages])
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [text, activeId])
 
   const run = async (fn, okMsg) => {
     setBusy(true)
@@ -313,16 +358,7 @@ export default function Instagram() {
         </button>
       </label>
       <div className="flex-1 overflow-y-auto">
-        {groups.map(g => (
-          <div key={g.key}>
-            {groups.length > 1 && (
-              <div className="sticky top-0 z-10 px-5 py-1.5 text-[11px] font-semibold uppercase tracking-wider bg-slate-50 border-b border-slate-100 text-slate-500">
-                <span className={g.key === 'dm' ? 'text-emerald-700' : 'text-amber-700'}>{g.label}</span> · {g.rows.length}
-              </div>
-            )}
-            {g.rows.map(i => <Row key={i.prospect_id} i={i} active={activeId === i.prospect_id} onPick={setActiveId} />)}
-          </div>
-        ))}
+        {ordered.map(i => <Row key={i.prospect_id} i={i} active={activeId === i.prospect_id} onPick={setActiveId} />)}
         {!rows.length && <div className="px-4 py-14 text-center text-sm text-slate-400">Rien ici.</div>}
       </div>
     </div>
@@ -330,68 +366,52 @@ export default function Instagram() {
 
   return (
     <Layout>
-      <div className="px-6 pt-4">
-        <header className="flex items-center gap-3 flex-wrap">
-          <PageTitle>Instagram</PageTitle>
-          <span className="text-sm text-slate-400">
-            {counts.queued
-              ? <>envoi en cours · {counts.queued} restant{counts.queued > 1 ? 's' : ''}{data?.next_at ? ` · prochain ${inFuture(data.next_at)}` : ''}</>
-              : <>{counts.todo || 0} à traiter</>}
-          </span>
-          <div className="ml-auto flex gap-2">
-            {isAdmin && (
-              <button
-                disabled={scraping}
-                title="Relire tout de suite les commentaires Instagram"
-                onClick={async () => {
-                  setScraping(true)
-                  try { await api.instagram.scrape(); await load() }
-                  catch (e) { addToast({ message: e.message, type: 'error' }) }
-                  finally { setScraping(false) }
-                }}
-                className="btn-secondary btn-sm"
-              >
-                <RefreshCw size={14} className={scraping ? 'animate-spin' : ''} /> Relire
-              </button>
-            )}
-            {isAdmin && (
-              <button
-                disabled={sorting}
-                title="Ranger par type de demande, écarter les robots et sortir les déjà traités"
-                onClick={async () => {
-                  setSorting(true)
-                  try {
-                    const r = await api.instagram.sortSegments()
-                    if (r?.error) throw new Error(r.error)
-                    addToast({ message: r.summary || 'Trié', type: 'success' })
-                    await load()
-                  } catch (e) { addToast({ message: e.message, type: 'error' }) }
-                  finally { setSorting(false) }
-                }}
-                className="btn-secondary btn-sm"
-              ><Filter size={14} className={sorting ? 'animate-pulse' : ''} /> Trier</button>
-            )}
-            <button disabled={busy} onClick={() => run(() => api.instagram.writeAllDrafts(), r => r.summary || 'Messages écrits')}
-              className="btn-secondary btn-sm"><Sparkles size={14} /> Écrire</button>
-            {!!counts.queued && (
-              <button disabled={busy} onClick={() => run(() => api.instagram.holdDrafts(), 'Envoi arrêté')}
-                className="btn-secondary btn-sm"><PauseCircle size={14} /> Retenir</button>
-            )}
-            <button disabled={busy || !ready} onClick={() => run(() => api.instagram.sendDraftsNow(), r => `${r.sent || 0} parti(s), le reste suit aux ${data?.spacing_seconds || 90} s`)}
-              className="btn-primary btn-sm"><Send size={14} /> Envoyer les {ready}</button>
-          </div>
-        </header>
-
-        {/* Les piles : un onglet chacune, les déjà traités au bout. */}
-        <div className="flex items-end gap-7 mt-3 border-b border-slate-200">
-          {segments.map(s => (
-            <Tab key={s.key} label={SHORT[s.key] || s.label} n={counts[s.key] || 0}
-              active={tab === s.key} onClick={() => { setTab(s.key); setActiveId(null) }} />
-          ))}
-          <button onClick={() => { setTab(done ? segments[0]?.key : 'done'); setActiveId(null) }}
-            className={`ml-auto pb-2 text-xs ${done ? 'font-semibold text-slate-700' : 'text-slate-400 hover:text-slate-600'}`}>
-            Déjà traités{done ? ` · ${counts.done || 0}` : ''}
-          </button>
+      {/* Une seule barre : le titre, les piles, et l'envoi à droite. */}
+      <div className="flex items-end gap-6 px-6 pt-3 border-b border-slate-200 flex-wrap">
+        <div className="pb-2.5"><PageTitle>Instagram</PageTitle></div>
+        {segments.map(s => (
+          <Tab key={s.key} label={SHORT[s.key] || s.label} n={counts[s.key] || 0}
+            active={tab === s.key} onClick={() => { setTab(s.key); setActiveId(null) }} />
+        ))}
+        <Tab label="Déjà traités" n={done ? counts.done || 0 : ''} active={done}
+          onClick={() => { setTab(done ? segments[0]?.key : 'done'); setActiveId(null) }} />
+        <div className="ml-auto pb-2 flex items-center gap-1.5">
+          {!!counts.queued && <span className="text-xs text-slate-400 mr-1">{counts.queued} en route{data?.next_at ? ` · prochain ${inFuture(data.next_at)}` : ''}</span>}
+          {isAdmin && (
+            <button disabled={scraping} title="Relire les commentaires Instagram"
+              onClick={async () => {
+                setScraping(true)
+                try { await api.instagram.scrape(); await load() }
+                catch (e) { addToast({ message: e.message, type: 'error' }) }
+                finally { setScraping(false) }
+              }}
+              className="p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+            ><RefreshCw size={15} className={scraping ? 'animate-spin' : ''} /></button>
+          )}
+          {isAdmin && (
+            <button disabled={sorting} title="Trier : ranger par pile, écarter les robots et les déjà traités"
+              onClick={async () => {
+                setSorting(true)
+                try {
+                  const r = await api.instagram.sortSegments()
+                  if (r?.error) throw new Error(r.error)
+                  addToast({ message: r.summary || 'Trié', type: 'success' })
+                  await load()
+                } catch (e) { addToast({ message: e.message, type: 'error' }) }
+                finally { setSorting(false) }
+              }}
+              className="p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+            ><Filter size={15} className={sorting ? 'animate-pulse' : ''} /></button>
+          )}
+          <button disabled={busy} title="Écrire les messages manquants"
+            onClick={() => run(() => api.instagram.writeAllDrafts(), r => r.summary || 'Messages écrits')}
+            className="p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100"><Sparkles size={15} /></button>
+          {!!counts.queued && (
+            <button disabled={busy} onClick={() => run(() => api.instagram.holdDrafts(), 'Envoi arrêté')}
+              className="btn-secondary btn-sm"><PauseCircle size={14} /> Retenir</button>
+          )}
+          <button disabled={busy || !ready} onClick={() => run(() => api.instagram.sendDraftsNow(), r => `${r.sent || 0} parti(s), le reste suit aux ${data?.spacing_seconds || 90} s`)}
+            className="btn-primary btn-sm rounded-full"><Send size={14} /> Envoyer les {ready} prêts</button>
         </div>
       </div>
 
@@ -402,7 +422,7 @@ export default function Instagram() {
         </div>
       )}
 
-      <div className="relative flex border-t border-slate-200 overflow-hidden" style={{ height: 'calc(100vh - 186px)' }}>
+      <div className="relative flex overflow-hidden" style={{ height: 'calc(100vh - 64px)' }}>
 
         {/* La liste de l'onglet ouvert, aérée : deux lignes d'aperçu par personne.
             Repliée, elle revient en surimpression au survol du bord gauche. */}
@@ -442,44 +462,33 @@ export default function Instagram() {
           </>
         )}
 
-        {/* La conversation, lue dans une colonne centrée. */}
-        <div className="flex-1 min-w-0 bg-slate-50 flex justify-center overflow-hidden">
+        {/* La conversation : en-tête pleine largeur, fil et message centrés. */}
+        <div className="flex-1 min-w-0 bg-slate-50 flex flex-col overflow-hidden">
           {!active ? (
-            <div className="flex items-center text-sm text-slate-400">Choisis quelqu’un à gauche.</div>
+            <div className="m-auto text-sm text-slate-400">Choisis quelqu’un à gauche.</div>
           ) : (
-            <div className="w-full max-w-[780px] flex flex-col gap-5 px-10 py-6 min-h-0">
-
-              <div className="flex items-center gap-3 shrink-0">
-                <div className="w-11 h-11 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-base font-semibold shrink-0">
-                  {(active.ig_username || '?').slice(0, 1).toUpperCase()}
-                </div>
+            <>
+              <div className="shrink-0 flex items-center gap-3 px-8 py-4 bg-white border-b border-slate-200">
+                <Avatar name={active.ig_username} size="lg" />
                 <div className="min-w-0">
                   <a href={`https://www.instagram.com/${active.ig_username}/`} target="_blank" rel="noreferrer"
-                     className="text-[17px] font-bold tracking-tight text-slate-900 hover:text-brand-700 inline-flex items-center gap-1">
-                    @{active.ig_username} <ExternalLink size={12} className="text-slate-400" />
+                     className="text-base font-semibold text-slate-900 hover:text-brand-700 inline-flex items-center gap-1">
+                    {active.ig_username} <ExternalLink size={12} className="text-slate-400" />
                   </a>
-                  <div className="text-[13px] text-slate-700 truncate" title={active.profile_who || ''}>
-                    {active.profile_who || active.full_name || (active.profile_status === 'missing' ? 'Compte introuvable' : active.profile_status ? '' : 'Profil pas encore lu')}
-                  </div>
-                  <div className="text-xs text-slate-500 truncate" title={active.arrival || ''}>
-                    {(() => {
-                      const label = active.arrival_quote ? active.arrival_head : active.arrival
-                      return active.arrival_url
-                        ? <a href={active.arrival_url} target="_blank" rel="noreferrer" className="hover:text-brand-700 inline-flex items-center gap-1">{label} <ExternalLink size={10} /></a>
-                        : label
-                    })()}
+                  <div className="text-[13px] text-slate-500 truncate" title={active.profile_who || ''}>
+                    {active.profile_who || active.full_name || (active.profile_status === 'missing' ? 'Compte introuvable' : 'Profil pas encore lu')}
                   </div>
                 </div>
                 <div className="ml-auto flex items-center gap-2 shrink-0">
+                  <span className={`text-xs ${win.open ? 'text-emerald-700' : 'text-slate-400'}`}>{win.label}</span>
                   {/* Corriger le rangement : ce choix n'est jamais réécrit. */}
                   <select
                     value={active.segment || 'commentaire'}
                     onChange={e => run(() => api.instagram.setSegment(active.prospect_id, e.target.value), 'Rangé')}
-                    className="text-[11px] border border-slate-200 rounded-full px-2.5 py-1 bg-white text-slate-600"
+                    className="text-xs font-medium border-0 rounded-full px-3 py-1 bg-slate-100 text-slate-700"
                   >
-                    {segments.map(sg => <option key={sg.key} value={sg.key}>{sg.label}</option>)}
+                    {segments.map(sg => <option key={sg.key} value={sg.key}>{SHORT[sg.key] || sg.label}</option>)}
                   </select>
-                  <span className={`text-xs ${win.open ? 'text-emerald-700' : 'text-amber-700'}`}>{win.label}</span>
                   <button disabled={busy} title="C’est fait : sort de la liste, revient si elle réécrit"
                     onClick={() => {
                       const id = active.prospect_id
@@ -487,89 +496,122 @@ export default function Instagram() {
                       setData(d => d && ({ ...d, items: d.items.filter(i => i.prospect_id !== id) }))
                       run(() => api.instagram.update(id, { contacted: true }), 'Marqué traité')
                     }}
-                    className="btn-secondary btn-sm"><Check size={13} /> Traité</button>
+                    className="btn-secondary btn-sm rounded-full"><Check size={13} /> Traité</button>
                   <button disabled={busy} title="Pas un prospect : retirée de la liste (revient seulement si elle réécrit)"
                     onClick={() => run(() => api.instagram.remove(active.prospect_id), 'Écarté').then(() => setActiveId(null))}
-                    className="btn-secondary btn-sm"><X size={13} /> Écarter</button>
+                    className="btn-secondary btn-sm rounded-full"><X size={13} /> Écarter</button>
                 </div>
               </div>
 
-              {/* Ce qu'elle a écrit en arrivant, en entier : c'est à ça qu'on répond. */}
-              {!!active.arrival_quote && (
-                <blockquote className="shrink-0 text-sm leading-relaxed text-slate-700 bg-white border-l-4 border-brand-400 rounded-r-xl px-4 py-2.5 whitespace-pre-line">
-                  {active.arrival_quote}
-                </blockquote>
-              )}
-
-              <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-3.5">
-                {messages.map(m => (
-                  <div key={m.id} className={`flex flex-col gap-1 ${m.direction === 'out' ? 'items-end' : 'items-start'}`}>
-                    <span className="text-[10px] uppercase tracking-wider text-slate-400">
-                      {m.direction === 'out' ? 'Nous' : 'Elle'} · {stamp(m.sent_at)}
-                    </span>
-                    <div className={`max-w-[78%] text-sm leading-relaxed px-4 py-3 rounded-2xl border whitespace-pre-line ${
-                      m.direction === 'out'
-                        ? 'bg-brand-600 text-white border-brand-600'
-                        : 'bg-white border-slate-200 text-slate-700'}`}>
-                      {m.link_url
-                        ? <a href={m.link_url} target="_blank" rel="noreferrer" className="underline">{m.text}</a>
-                        : m.text}
-                    </div>
-                  </div>
-                ))}
-                {!messages.length && <div className="text-sm text-slate-400 text-center py-10">Aucun échange.</div>}
-                <div ref={bottom} />
-              </div>
-
-              {/* Le message écrit d'avance, dans sa carte. */}
-              <div className="shrink-0 bg-white border border-slate-200 rounded-2xl p-4 flex flex-col gap-3 shadow-sm">
-                <label htmlFor="ig-msg" className="sr-only">Message</label>
-                <textarea
-                  id="ig-msg"
-                  value={text}
-                  onChange={e => edit(e.target.value)}
-                  rows={4}
-                  className="w-full text-sm leading-relaxed bg-transparent border-none outline-none resize-none text-slate-900"
-                />
-                <div className="flex items-center gap-2 flex-wrap">
-                  {active.draft_id
-                    ? <Badge color="violet" size="xs">{active.edited ? '✎ Retouché' : '✦ Suggestion'}</Badge>
-                    : <span className="text-xs text-slate-400">Aucun message écrit.</span>}
-                  {!!active.error && <span className="text-xs text-amber-700">{active.error}</span>}
-                  <span className="flex-1" />
-                  {!!active.draft_id && (
-                    <button disabled={busy} title="Jeter la suggestion et écrire toi-même"
-                      onClick={() => { setText(''); pending.current = null; try { localStorage.removeItem(`ig.draft.${active.prospect_id}`) } catch { /* rien */ } run(() => api.instagram.updateDraft(active.draft_id, { action: 'drop' })) }}
-                      className="btn-secondary btn-sm"><X size={13} /> J’écris</button>
-                  )}
-                  {!active.draft_id && (
-                    <button disabled={busy} onClick={() => run(() => api.instagram.writeDraft(active.prospect_id, { force: true }), 'Message écrit')}
-                      className="btn-secondary btn-sm"><Sparkles size={13} /> Écrire</button>
-                  )}
-                  {win.open ? (
-                    <button disabled={busy || !text.trim()} onClick={send} className="btn-primary btn-sm">
-                      <Send size={13} /> Envoyer
-                    </button>
-                  ) : (
-                    // Fenêtre fermée : Boréal ne peut plus écrire, mais Phil, lui, le peut
-                    // depuis Instagram. Le message est copié, il n'a qu'à le coller.
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                <div className="max-w-[760px] mx-auto px-8 py-6 flex flex-col gap-2.5">
+                  {/* Ce qu'elle a écrit en arrivant, quand le fil ne le porte pas. */}
+                  {!!active.arrival_quote && !messages.length && (
                     <>
-                      {!!active.arrival_url && (
-                        <button title="Copie le message et ouvre le post : colle-le en réponse à son commentaire"
-                          onClick={() => copyAndOpen(active.arrival_url)} className="btn-secondary btn-sm">
-                          <Copy size={13} /> Répondre au commentaire
-                        </button>
-                      )}
-                      <button title="Copie le message et ouvre la conversation privée dans Instagram"
-                        onClick={() => copyAndOpen(`https://ig.me/m/${active.ig_username}`)} className="btn-primary btn-sm">
-                        <Copy size={13} /> Écrire sur Instagram
-                      </button>
+                      <div className="self-center text-[11.5px] text-slate-400">
+                        {active.arrival_url
+                          ? <a href={active.arrival_url} target="_blank" rel="noreferrer" className="hover:text-slate-600 inline-flex items-center gap-1">{active.arrival_head || 'A commenté'} <ExternalLink size={10} /></a>
+                          : active.arrival_head || 'A commenté'}
+                      </div>
+                      <div className="self-start max-w-[72%] text-sm leading-relaxed px-3.5 py-2.5 rounded-2xl bg-white border border-slate-200 text-slate-700 whitespace-pre-line">{active.arrival_quote}</div>
                     </>
                   )}
+                  {threadItems(messages).map(it => {
+                    if (it.kind === 'day') {
+                      return <div key={it.key} className="self-center my-1.5 text-[11px] font-semibold text-slate-500 bg-white border border-slate-200 rounded-full px-2.5 py-0.5">{it.label}</div>
+                    }
+                    const m = it.m
+                    if (it.kind === 'event') {
+                      const label = m.text.replace(EVENT, '').trim()
+                      return (
+                        <div key={m.id} className="self-center text-[11.5px] text-slate-400">
+                          {m.link_url ? <a href={m.link_url} target="_blank" rel="noreferrer" className="hover:text-slate-600">{label}</a> : label}
+                        </div>
+                      )
+                    }
+                    // Comme Instagram : elle à gauche en blanc, nous à droite en bleu,
+                    // la réponse automatique de ManyChat en pointillé. Le nom et
+                    // l'heure ne s'affichent qu'au bas d'une suite du même auteur.
+                    const mine = it.kind !== 'her'
+                    const bubble = it.kind === 'her'
+                      ? 'bg-white border border-slate-200 text-slate-700 rounded-bl-md'
+                      : it.kind === 'auto'
+                        ? 'border border-dashed border-slate-300 text-slate-500 rounded-br-md'
+                        : 'bg-[#3797f0] text-white rounded-br-md'
+                    return (
+                      <div key={m.id} className={`flex gap-2 items-end ${mine ? 'flex-row-reverse' : ''} ${it.last ? '' : '-mb-1.5'}`}>
+                        <div className={`w-7 h-7 shrink-0 rounded-full text-[11px] font-bold flex items-center justify-center ${it.last ? '' : 'invisible'} ${
+                          it.kind === 'her' ? 'bg-violet-100 text-violet-700' : it.kind === 'auto' ? 'bg-slate-200 text-slate-500' : 'bg-emerald-600 text-white'}`}>
+                          {it.kind === 'her' ? (active.ig_username || '?').slice(0, 1).toUpperCase() : it.kind === 'auto' ? 'A' : 'O'}
+                        </div>
+                        <div className={`flex flex-col gap-0.5 max-w-[72%] ${mine ? 'items-end' : 'items-start'}`}>
+                          <div className={`text-sm leading-relaxed px-3.5 py-2 rounded-[18px] whitespace-pre-line ${bubble}`}>
+                            {m.link_url ? <a href={m.link_url} target="_blank" rel="noreferrer" className="underline">{m.text}</a> : m.text}
+                          </div>
+                          {it.last && (
+                            <div className="text-[11px] text-slate-400 px-1">
+                              {it.kind === 'her' ? active.ig_username : it.kind === 'auto' ? 'Réponse automatique' : 'Orisha'} · {clock(m.sent_at)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <div ref={bottom} />
                 </div>
               </div>
 
-            </div>
+              {/* Le message écrit d'avance. */}
+              <div className="shrink-0 px-8 pb-6">
+                <div className="max-w-[760px] mx-auto bg-white border border-slate-200 rounded-2xl px-4 py-3.5 flex flex-col gap-3">
+                  <label htmlFor="ig-msg" className="sr-only">Message</label>
+                  <textarea
+                    id="ig-msg"
+                    ref={box}
+                    value={text}
+                    onChange={e => edit(e.target.value)}
+                    rows={2}
+                    className="w-full max-h-[55vh] overflow-y-auto text-sm leading-relaxed bg-transparent border-none outline-none resize-none text-slate-900"
+                  />
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {active.draft_id
+                      ? <Badge color="violet" size="xs">{active.edited ? 'Retouché' : 'Suggestion'}</Badge>
+                      : <span className="text-xs text-slate-400">À écrire toi-même</span>}
+                    {!!active.error && <span className="text-xs text-amber-700">{active.error}</span>}
+                    <span className="flex-1" />
+                    {!!active.draft_id && (
+                      <button disabled={busy} title="Jeter la suggestion et écrire toi-même"
+                        onClick={() => { setText(''); pending.current = null; try { localStorage.removeItem(`ig.draft.${active.prospect_id}`) } catch { /* rien */ } run(() => api.instagram.updateDraft(active.draft_id, { action: 'drop' })) }}
+                        className="btn-secondary btn-sm rounded-full">J’écris</button>
+                    )}
+                    {!active.draft_id && (
+                      <button disabled={busy} title="Proposer un message" onClick={() => run(() => api.instagram.writeDraft(active.prospect_id, { force: true }), 'Message écrit')}
+                        className="btn-secondary btn-sm rounded-full"><Sparkles size={13} /></button>
+                    )}
+                    {win.open ? (
+                      <button disabled={busy || !text.trim()} onClick={send} className="btn-primary btn-sm rounded-full">
+                        <Send size={13} /> Envoyer
+                      </button>
+                    ) : (
+                      // Fenêtre fermée : Boréal ne peut plus écrire, mais Phil, lui, le peut
+                      // depuis Instagram. Le message est copié, il n'a qu'à le coller.
+                      <>
+                        {!!active.arrival_url && (
+                          <button title="Copie le message et ouvre le post : colle-le en réponse à son commentaire"
+                            onClick={() => copyAndOpen(active.arrival_url)} className="btn-secondary btn-sm rounded-full">
+                            <Copy size={13} /> Répondre au commentaire
+                          </button>
+                        )}
+                        <button title="Copie le message et ouvre la conversation privée dans Instagram"
+                          onClick={() => copyAndOpen(`https://ig.me/m/${active.ig_username}`)} className="btn-primary btn-sm rounded-full">
+                          <Copy size={13} /> Écrire sur Instagram
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>
           )}
         </div>
       </div>

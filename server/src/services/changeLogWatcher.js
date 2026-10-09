@@ -12,6 +12,7 @@
 // (le harnais de tests importe les modules avant d'ouvrir la DB).
 
 import db from '../db/database.js'
+import { withOrigin } from './writeOrigin.js'
 
 /**
  * @param {object} opts
@@ -36,6 +37,8 @@ import db from '../db/database.js'
  * @param {Function|string} [opts.startLog]  Message loggé au démarrage (après
  *                   le préfixe) ; fonction évaluée au moment du start.
  * @param {string}   [opts.errorLabel='poll']  Libellé du log d'erreur.
+ * @param {string}   [opts.automationId]  Automatisation à qui attribuer les
+ *                   écritures du corps (historique des fiches).
  */
 export function createChangeLogWatcher({
   name,
@@ -49,6 +52,7 @@ export function createChangeLogWatcher({
   onPoll = null,
   startLog = null,
   errorLabel = 'poll',
+  automationId = null,
 }) {
   const tableList = tables == null ? null : (Array.isArray(tables) ? tables : [tables])
   const maxIdList = maxIdTables == null ? null : (Array.isArray(maxIdTables) ? maxIdTables : [maxIdTables])
@@ -94,8 +98,8 @@ export function createChangeLogWatcher({
           return 0
         }
       }
-      if (onPoll) return (await onPoll({ enabledState })) ?? 0
-      return (await onRows(fetchRows(), { advance, enabledState })) ?? 0
+      if (onPoll) return (await withOrigin(automationId, () => onPoll({ enabledState }))) ?? 0
+      return (await withOrigin(automationId, () => onRows(fetchRows(), { advance, enabledState }))) ?? 0
     } catch (e) {
       console.error(`[${name}] ${errorLabel} error:`, e.message)
       return 0

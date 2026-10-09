@@ -209,6 +209,9 @@ export async function produceVendorExpenses(accountId, { limit = 40 } = {}) {
   for (const txn of txns) {
     const draft = buildEntryDraft(txn, account)
     if (!draft.ready) continue
+    // Une règle qui exclut, vire ou répartit ne fait pas une dépense d'un seul
+    // compte : elle se traite dans le panneau, pas par cette proposition.
+    if (draft.rule && (draft.rule.action && draft.rule.action !== 'depense' || draft.rule.splits)) continue
     const f = draft.fields
     // Accepter cette proposition PUBLIE dans QuickBooks : une habitude
     // minoritaire (« 2 fois sur 4 ») ne suffit pas. Il faut une valeur
@@ -254,8 +257,61 @@ const HABIT_MIN_SHARE = 0.7
 
 export function isSolidEnoughToPublish(field, history) {
   if (!field?.value || !field.source) return false
+  // Ce qu'on a déjà fait pour ce libellé : trois fois au moins, et nettement.
+  const memo = /^déjà fait (\d+) fois(?: sur (\d+))?/.exec(field.source)
+  if (memo) {
+    const n = Number(memo[1]); const of = Number(memo[2] || memo[1])
+    return n >= HABIT_MIN_TIMES && n / of >= HABIT_MIN_SHARE
+  }
   if (!/^habitude/.test(field.source)) return true
   const top = history?.expense_accounts?.[0]
   if (!top || !history.count) return false
   return top.n >= HABIT_MIN_TIMES && top.n / history.count >= HABIT_MIN_SHARE
+}
+
+// ── Comme d'habitude dans QuickBooks ────────────────────────────────────────
+// « DEBOURSE MCR » : 113 fois un virement depuis la marge de crédit. Une ligne
+// sans pièce ni contrepartie au relevé, dont le libellé a toujours été passé de
+// la même façon (virement vers le même compte, dépôt dans le même compte),
+// reçoit la proposition de refaire la même écriture. PUBLIE à l'acceptation.
+// Les dépenses restent à vendor_expense, qui sait le fournisseur et la taxe.
+export async function produceQbHabits(accountId, { limit = 60 } = {}) {
+  const { qbHabitFor } = await import('../bankQbHabit.js')
+  const { findTransferCandidates } = await import('../bankActions.js')
+  const account = db.prepare('SELECT * FROM bank_accounts WHERE id=? AND deleted_at IS NULL').get(accountId)
+  if (!account?.qb_account_id || account.kind === 'card') return []
+  // Les comptes QuickBooks que l'ERP suit comme comptes bancaires : leur
+  // virement se lie aux deux lignes du relevé, pas ici — sauf si l'autre
+  // moitié n'est pas au relevé.
+  const tracked = new Set(db.prepare('SELECT qb_account_id FROM bank_accounts WHERE deleted_at IS NULL AND qb_account_id IS NOT NULL').all()
+    .flatMap((r) => String(r.qb_account_id).split(',').map((s) => s.trim())))
+  const txns = db.prepare(`
+    SELECT * FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL
+      AND matched_id IS NULL AND transfer_txn_id IS NULL AND qb_txn_id IS NULL
+      AND status='a_traiter' AND COALESCE(pending,0)=0
+    ORDER BY txn_date DESC LIMIT ?
+  `).all(accountId, limit)
+  const out = []
+  for (const txn of txns) {
+    const h = qbHabitFor(txn)
+    if (!h?.strong || !h.account_id || !['transfer', 'deposit'].includes(h.kind)) continue
+    if (h.kind === 'deposit' && !(txn.amount > 0)) continue
+    if (h.kind === 'transfer' && tracked.has(h.account_id) && findTransferCandidates(txn).some((c) => !c.fx)) continue
+    const what = h.kind === 'transfer' ? (txn.amount > 0 ? `Virement depuis ${h.account_name}` : `Virement vers ${h.account_name}`)
+      : `Dépôt — ${h.account_name}`
+    out.push(finish({
+      kind: 'qb_habit',
+      bank_txn_id: txn.id,
+      account_id: txn.account_id,
+      target_type: `qb_${h.kind}`,
+      target_id: h.account_id,
+      amount: txn.amount,
+      confidence: h.n >= 5 && h.n === h.total ? 0.95 : 0.85,
+      evidence: [{ label: 'Habitude QuickBooks', detail: `${what} — ${h.source}` }],
+      payload: { entity: h.kind, account_id: h.account_id, account_name: h.account_name, memo: h.memo, label: what, n: h.n, total: h.total },
+      producer: 'bankQbHabit',
+    }))
+  }
+  return out
 }

@@ -106,15 +106,24 @@ export async function fetchQbLedger(qbAccountId, startDate, endDate) {
 // Même rapport, mais SANS filtrer sur les types liables : pour recalculer un
 // solde il faut la totalité des mouvements, y compris ceux qu'on ne sait pas
 // transformer en URL (transferts de taxe, ajustements…).
-export async function fetchQbLedgerRaw(qbAccountId, startDate, endDate) {
-  const cols = 'tx_date,txn_type,debt_amt,credit_amt,nat_foreign_amount'
+// `inAccountCurrency` : sur un compte en devise (USD), le montant de la devise
+// du compte est `nat_foreign_amount`. Sur un compte CAD, ce même champ porte la
+// devise de l'ÉCRITURE : une conversion USD → CAD reçue au Venn CAD (20 000 $)
+// y valait 14 359,56 — le solde QB recalculé dérivait de 5 600 $ par
+// conversion (Charles, 2026-10-06). Là, on garde débit − crédit.
+export async function fetchQbLedgerRaw(qbAccountId, startDate, endDate, { inAccountCurrency = true } = {}) {
+  // `debt_amt`/`credit_amt` sont eux aussi en devise de l'écriture : sur un
+  // compte CAD, seuls `debt_home_amt`/`credit_home_amt` donnent les dollars
+  // canadiens réellement passés au compte.
+  const [debitKey, creditKey] = inAccountCurrency ? ['debt_amt', 'credit_amt'] : ['debt_home_amt', 'credit_home_amt']
+  const cols = inAccountCurrency ? 'tx_date,txn_type,debt_amt,credit_amt,nat_foreign_amount' : `tx_date,txn_type,${debitKey},${creditKey}`
   const d = await qbGet(
     `/reports/GeneralLedger?start_date=${startDate}&end_date=${endDate}&account=${qbAccountId}&columns=${cols}`
   )
   const colKeys = (d.Columns?.Column || []).map((c) => c.MetaData?.find((m) => m.Name === 'ColKey')?.Value)
   const idx = (k) => colKeys.indexOf(k)
   const [iDate, iType, iDebit, iCredit, iForeign] =
-    ['tx_date', 'txn_type', 'debt_amt', 'credit_amt', 'nat_foreign_amount'].map(idx)
+    ['tx_date', 'txn_type', debitKey, creditKey, 'nat_foreign_amount'].map(idx)
   const entries = []
   for (const cols2 of walkRows(d.Rows?.Row, [])) {
     const date = cols2[iDate]?.value || ''
@@ -123,7 +132,7 @@ export async function fetchQbLedgerRaw(qbAccountId, startDate, endDate) {
     const credit = Number(cols2[iCredit]?.value || 0)
     let amount = debit - credit
     const foreign = iForeign >= 0 ? Number(cols2[iForeign]?.value || 0) : 0
-    if (foreign) amount = Math.sign(amount || foreign) * Math.abs(foreign)
+    if (foreign && inAccountCurrency) amount = Math.sign(amount || foreign) * Math.abs(foreign)
     if (!amount) continue
     entries.push({ date, qbId: String(cols2[iType]?.id || ''), amount: Math.round(amount * 100) / 100 })
   }

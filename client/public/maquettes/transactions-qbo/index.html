@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Opérations bancaires</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f5f6f7; --surface: #fff; --soft: #f8f9fa; --hover: #fafbfb;
+  --line: #eceef0; --line2: #dfe2e5;
+  --ink: #1f2328; --ink2: #4a5058; --ink3: #7a8089; --ink4: #a6abb2;
+  --qb: #2ca01c; --qb-d: #1d7f12; --qb-soft: #eef7ec; --blue: #0a6fbf;
+  --amber: #c27a00; --amber-soft: #fdf5e6; --red: #d1362a; --red-soft: #fcefee; --ribbon: #e8890c;
+  --sel: #f1f7fc; --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 12px 32px rgb(0 0 0 / .06);
+}
+:root[data-theme="dark"] {
+  --bg: #111315; --surface: #181b1e; --soft: #1d2024; --hover: #1f2327;
+  --line: #262a2f; --line2: #30353b;
+  --ink: #eceef0; --ink2: #c3c8ce; --ink3: #8e959d; --ink4: #646b73;
+  --qb: #45b934; --qb-d: #6ccf5c; --qb-soft: #1a2a18; --blue: #5cb0ef;
+  --amber: #f0b04a; --amber-soft: #2e2617; --red: #ff7a6e; --red-soft: #33201e; --sel: #18242f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13.5px/1.45 Inter, system-ui, sans-serif; padding: 28px 16px 60px; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.screen { max-width: 1240px; margin: 0 auto; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+.theme { position: fixed; top: 12px; right: 14px; color: var(--ink3); border: 1px solid var(--line2); border-radius: 999px; padding: 4px 10px; background: var(--surface); font-size: 12px; }
+
+/* tête */
+.hd { display: flex; align-items: flex-end; gap: 28px; padding: 26px 32px 18px; flex-wrap: wrap; }
+.hd h1 { font-size: 13px; font-weight: 500; color: var(--ink3); margin: 0 0 4px; }
+.hd .acct { font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
+.kpi { display: flex; gap: 28px; }
+.kpi div { display: flex; flex-direction: column; }
+.kpi small { font-size: 11.5px; color: var(--ink3); }
+.kpi b { font-size: 15px; font-weight: 500; }
+.kpi .bad { color: var(--red); }
+.kpi .ok { color: var(--qb-d); }
+.hd .sp { flex: 1; }
+.btn { height: 34px; padding: 0 16px; border-radius: 999px; font-weight: 500; border: 1px solid var(--line2); background: var(--surface); color: var(--ink2); display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn.g { background: var(--qb); border-color: var(--qb); color: #fff; }
+.btn.sm { height: 28px; padding: 0 12px; font-size: 12.5px; }
+.btn.ic { width: 34px; padding: 0; justify-content: center; }
+.dotok { width: 7px; height: 7px; border-radius: 50%; background: #bff0b5; display: inline-block; }
+.menu { position: relative; }
+.menu .dd { display: none; position: absolute; right: 0; top: 40px; background: var(--surface); border: 1px solid var(--line2); border-radius: 10px; box-shadow: var(--shadow); min-width: 210px; z-index: 5; padding: 6px; }
+.menu.open .dd { display: block; }
+.menu .dd button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; }
+.menu .dd button:hover { background: var(--soft); }
+.menu .dd hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+
+/* étapes + filtres */
+.nav { display: flex; align-items: center; gap: 28px; padding: 0 32px; border-bottom: 1px solid var(--line); }
+.nav > button { padding: 12px 0; color: var(--ink3); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.nav > button.on { color: var(--ink); border-bottom-color: var(--ink); }
+.nav > button span { color: var(--ink4); margin-left: 4px; font-weight: 400; }
+.nav .sp { flex: 1; }
+.search { display: flex; align-items: center; gap: 6px; color: var(--ink4); border: 0; background: var(--soft); border-radius: 8px; padding: 6px 12px; width: 220px; }
+.flt { display: flex; gap: 4px; padding: 12px 28px; align-items: center; flex-wrap: wrap; }
+.f { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 8px; color: var(--ink2); }
+.f:hover { background: var(--soft); }
+.f b { font-weight: 600; font-size: 12px; color: var(--ink3); }
+.f.on { background: var(--ink); color: var(--surface); }
+.f.on b { color: inherit; opacity: .7; }
+.f[disabled] { opacity: .35; pointer-events: none; }
+.f .send { color: var(--amber); margin-left: 2px; padding: 0 2px; border-radius: 4px; }
+.f.on .send { color: inherit; }
+.mkc { width: 10px; height: 10px; border-radius: 50%; border: 1.6px solid var(--red); display: inline-block; }
+.mkf { color: var(--amber); font-size: 12px; }
+.batch { display: flex; align-items: center; gap: 8px; padding: 10px 32px; background: var(--sel); border-bottom: 1px solid var(--line); }
+.batch b { font-weight: 600; margin-right: 8px; }
+
+/* tableau */
+.wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 980px; }
+th { text-align: left; font-size: 11.5px; font-weight: 500; color: var(--ink4); padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 14px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th:first-child, td:first-child { padding-left: 32px; }
+th:last-child, td:last-child { padding-right: 32px; }
+tbody tr.r { cursor: pointer; }
+tbody tr.r:hover td { background: var(--hover); }
+tr.picked td { background: var(--sel) !important; }
+tr.open > td { border-bottom-color: transparent; background: var(--soft); }
+.cb { width: 15px; height: 15px; border: 1.5px solid var(--line2); border-radius: 4px; display: inline-block; vertical-align: middle; position: relative; opacity: .0; }
+tr.r:hover .cb, .cb.on, th .cb, .picking .cb { opacity: 1; }
+.cb.on { background: var(--ink); border-color: var(--ink); }
+.cb.on::after { content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid var(--surface); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.gut { width: 70px; white-space: nowrap; }
+.rib { display: inline-block; width: 9px; height: 14px; margin-left: 10px; background: var(--ribbon); clip-path: polygon(0 0,100% 0,100% 100%,50% 72%,0 100%); vertical-align: middle; opacity: 0; transition: opacity .1s; }
+tr.r:hover .rib { opacity: .25; }
+.rib.on { opacity: 1 !important; }
+.dt { position: relative; display: inline-block; padding: 2px 6px; margin-left: -6px; color: var(--ink2); }
+.dt.rev::before { content: ''; position: absolute; inset: -3px -2px; border: 1.8px solid var(--red); border-radius: 50%; transform: rotate(-4deg); }
+.dt:hover::after { content: '◯'; position: absolute; right: -14px; top: 1px; font-size: 10px; color: var(--red); opacity: .5; }
+.dt.rev:hover::after { content: ''; }
+.lab { font-weight: 500; }
+.lab .bk { display: block; font-size: 11.5px; color: var(--ink4); font-weight: 400; }
+.flag { color: var(--amber); margin-left: 8px; font-size: 12px; }
+.warn { color: var(--amber); margin-right: 6px; }
+.acct-tag { font-size: 11px; color: var(--ink3); background: var(--soft); border-radius: 4px; padding: 1px 6px; margin-left: 8px; }
+.vend { color: var(--blue); }
+.cat { color: var(--ink2); }
+.cat.unc { color: var(--ink4); }
+.cat .via { display: block; font-size: 11.5px; color: var(--ink4); }
+.match { color: var(--qb-d); font-weight: 500; }
+.match .via { display: block; font-size: 11.5px; color: var(--ink3); font-weight: 400; }
+.bal { color: var(--ink4); }
+.neg { }
+.pos { color: var(--qb-d); }
+.act { text-align: right; white-space: nowrap; }
+.split { display: inline-flex; border-radius: 999px; overflow: hidden; }
+.split .btn { border-radius: 0; }
+.split .btn:first-child { border-radius: 999px 0 0 999px; }
+.split .btn.car { border-radius: 0 999px 999px 0; padding: 0 9px; border-left: 1px solid rgb(255 255 255 / .35); }
+.split .btn:not(.g).car { border-left: 0; }
+tr.ghost td { color: var(--ink4); font-style: italic; }
+tr.ghost .lab { font-weight: 400; }
+
+/* dépliée */
+.exp > td { padding: 0 32px 22px; background: var(--soft); }
+.xbox { background: var(--surface); border-radius: 12px; padding: 4px 22px 20px; box-shadow: 0 1px 2px rgb(0 0 0 / .04); }
+.ut { display: flex; gap: 24px; border-bottom: 1px solid var(--line); margin-bottom: 18px; align-items: center; }
+.ut button { padding: 14px 0 12px; color: var(--ink3); font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.ut button.on { color: var(--ink); border-bottom-color: var(--qb); }
+.ut .sp { flex: 1; }
+.ut .lnk { color: var(--ink3); font-weight: 400; border: 0; }
+.lnk { color: var(--blue); font-weight: 500; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: 14px 18px; }
+.fl small { display: block; font-size: 11.5px; color: var(--ink3); margin-bottom: 5px; }
+.fl div { border: 1px solid var(--line2); border-radius: 8px; padding: 8px 10px; min-height: 36px; }
+.fl.dd div::after { content: '⌄'; float: right; color: var(--ink4); }
+.fl.w2 { grid-column: span 2; }
+.fl .warnv { color: var(--amber); border-style: dashed; }
+.hint { font-size: 12px; color: var(--ink3); margin-top: 6px; }
+.hint .ru { color: var(--qb-d); }
+.xfoot { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+.xfoot .sp { flex: 1; }
+.cand { border: 1px solid var(--line); border-radius: 10px; }
+.cand > div { display: flex; gap: 14px; align-items: center; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+.cand > div:last-child { border-bottom: 0; }
+.cand .best { background: var(--qb-soft); }
+.conf { font-size: 11.5px; color: var(--ink3); }
+
+/* comptes */
+.foot { display: flex; gap: 2px; padding: 0 20px; background: var(--soft); overflow-x: auto; }
+.foot button { padding: 11px 14px; color: var(--ink3); white-space: nowrap; border-top: 2px solid transparent; }
+.foot button.on { color: var(--ink); background: var(--surface); border-top-color: var(--qb); font-weight: 500; }
+.foot .n { color: var(--red); font-size: 11.5px; font-weight: 600; margin-left: 6px; }
+.foot .all { font-weight: 500; margin-right: 8px; }
+
+/* panneau */
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 100%; background: var(--surface); box-shadow: -12px 0 40px rgb(0 0 0 / .1); z-index: 10; padding: 24px; overflow: auto; }
+.drawer h3 { margin: 0 0 18px; font-size: 16px; font-weight: 600; display: flex; justify-content: space-between; }
+.dl { display: flex; gap: 12px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.dl .sp { flex: 1; }
+.dl small { display: block; color: var(--ink3); }
+.slackp { background: var(--soft); border-radius: 10px; padding: 12px 14px; margin: 18px 0; color: var(--ink2); white-space: pre-line; font-size: 12.5px; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.kv small { color: var(--ink3); }
+textarea { width: 100%; min-height: 70px; border: 1px solid var(--line2); border-radius: 8px; padding: 8px 10px; font: inherit; background: var(--surface); color: var(--ink); margin-top: 12px; }
+@media (max-width: 760px) { .hd, .nav, .flt, .batch { padding-left: 16px; padding-right: 16px; } .grid { grid-template-columns: 1fr 1fr; } .search { display: none; } }
+</style>
+</head>
+<body>
+<button class="theme" id="theme">◐</button>
+<div class="screen" id="screen"></div>
+<div id="dr"></div>
+<script>
+const ACCTS = [
+  { n: 'BNC CAD', bank: 71056.01, qb: 183653.75 },
+  { n: 'BNC USD', bank: 4812.40, qb: 4812.40 },
+  { n: 'Desjardins CAD', bank: 12300, qb: 12300 },
+  { n: 'Marge Desjardins', bank: -1909.26, qb: 0 },
+  { n: 'MasterCard BNC', bank: 3099.52, qb: 1237.38 },
+  { n: 'VISA Desjardins USD', bank: 0, qb: 645.20 },
+  { n: 'Venn CAD', bank: 975.85, qb: 1000 },
+  { n: 'Venn USD', bank: 881.56, qb: 1000 },
+]
+// k: cat (catégorie proposée) | match (correspondance) | xfer (virement) | none | ghost
+const R = (d, l, bk, m, b, k, x, v, f = {}) => ({ d, l, bk, m, b, k, x, v, ...f })
+const ROWS = {
+  'BNC CAD': [
+    R('25 sept.', 'NOVO EXPRESS', 'PMTS ENTREPRISES', -106.72, 71056.01, 'match', 'Facture Novoxpress 88519', 'Novoxpress'),
+    R('23 sept.', 'BDC', 'DPA ENTREPRISE', -8617.96, 71162.73, 'cat', 'Versement prêt BDC', 'BDC', { rev: 1, anom: 'Montant inhabituel', via: 'échéancier' }),
+    R('22 sept.', 'REMB. MCR', '', -41436, 79780.69, 'xfer', 'Marge Desjardins', ''),
+    R('22 sept.', 'CANADA', 'REMB. IMPOT', 121215.7, 121216.69, 'match', 'Dépôt · Agence du revenu', 'Agence du revenu du Canada', { bm: 1 }),
+    R('21 sept.', 'Dépôt Stripe', 'QuickBooks', 1540.12, null, 'ghost', 'Écriture QB sans ligne au relevé', ''),
+    R('16 sept.', 'BTTH SERVICES MULTIP', 'PMTS ENTREPRISES', -103.48, -102.55, 'cat', 'Entretien ménager', 'BTTH', { rule: 'BTTH', miss: 1 }),
+    R('15 sept.', 'TRF CT INTERNET', '', -1500, -102.55, 'none', '', '', { miss: 1, rev: 1 }),
+    R('14 sept.', 'VILLE DE QUEBEC', 'COMPTE DIVERS', -412.6, 21431.94, 'cat', 'Taxes et permis', 'Ville de Québec', { via: 'déjà vu 6 fois' }),
+  ],
+  'MasterCard BNC': [
+    R('25 sept.', 'PREMIER FARNELL', 'MISSISSAUGA ON', -1273.64, null, 'cat', 'Pièces et composants', 'Premier Farnell', { rule: 'Premier Farnell', miss: 1 }),
+    R('24 sept.', 'PROVO LTD', 'WOODBRIDGE ON', -204.1, null, 'match', 'Facture Provo 2291', 'Provo', { bm: 1 }),
+    R('24 sept.', 'OPENAI', 'SAN FRANCISCO CA', -30.37, null, 'cat', 'Logiciels', 'OpenAI', { via: 'déjà vu 11 fois' }),
+    R('23 sept.', 'AMAZON.CA', 'TORONTO ON', -8.4, null, 'none', '', '', { miss: 1, rev: 1 }),
+    R('22 sept.', 'BELL CANADA (CR)', 'VERDUN QC', -103.42, null, 'cat', 'Télécommunications', 'Bell Canada', { rule: 'Bell' }),
+  ],
+  'BNC USD': [R('25 sept.', 'VISA DESJ US', '', -645.2, null, 'xfer', 'VISA Desjardins USD', '')],
+  'Marge Desjardins': [R('1 nov. 2024', 'Remb. automatique', 'de EOP', 1909.26, null, 'none', '', '', { rev: 1 })],
+  'VISA Desjardins USD': [R('24 sept.', 'VOTRE PAIEMENT - MERCI', '', 645.2, null, 'xfer', 'BNC USD', '')],
+  'Venn USD': [R('19 sept.', 'AWS', 'SEATTLE WA', -118.44, null, 'cat', 'Hébergement', 'Amazon Web Services', { rule: 'AWS', miss: 1 })],
+  'Venn CAD': [R('20 sept.', 'FIGMA', 'SAN FRANCISCO CA', -24.15, null, 'cat', 'Logiciels', 'Figma', { via: 'déjà vu 8 fois' })],
+  'Desjardins CAD': [],
+}
+const DONE = [
+  R('21 sept.', 'REMB. MCR', '', -2650, 0.99, 'xfer', 'Transfert · Marge Desjardins', '', { st: 'Comptabilisé' }),
+  R('18 sept.', 'BIOTALENT CANAD', 'COMPTES DEBITEURS', 1177.47, 1177.62, 'match', 'Paiement · Facture 1043', 'BioTalent', { st: 'Rapproché' }),
+  R('17 sept.', 'NOVO EXPRESS', 'PMTS ENTREPRISES', -163.07, -162.12, 'cat', 'Transport', 'Novoxpress', { st: 'Rapproché' }),
+  R('15 sept.', 'DT NETHRIS PAIE', 'COMPTE DIVERS', -21480.33, 1397.45, 'match', 'Paie · 15 sept.', 'Nethris', { st: 'Comptabilisé' }),
+]
+const TODO = '__todo__'
+const st = { acct: 'BNC CAD', tab: 'rev', open: null, pick: new Set(), mode: {}, x: null, menu: null, drawer: null, row: null }
+const money = (v) => Math.abs(v).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $'
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const real = (n) => (ROWS[n] || []).filter(r => r.k !== 'ghost')
+const allTodo = () => Object.entries(ROWS).flatMap(([a, rs]) => rs.filter(r => r.k !== 'ghost').map(r => ({ ...r, acct: a, ref: r })))
+const base = () => st.acct === TODO ? allTodo() : (ROWS[st.acct] || [])
+const rowOf = (id) => { const r = base()[+id.split('#')[1]]; return r.ref || r }
+const verb = (r) => r.k === 'match' ? 'Apparier' : r.k === 'xfer' ? 'Transférer' : r.k === 'none' ? 'Catégoriser' : 'Ajouter'
+
+function head() {
+  const a = ACCTS.find(x => x.n === st.acct)
+  const gap = a ? Math.abs(a.bank - a.qb) : 0
+  const kpi = a ? `<div class="kpi"><div><small>Banque</small><b class="num">${money(a.bank)}</b></div><div><small>QuickBooks</small><b class="num">${money(a.qb)}</b></div>
+    <div><small>Écart</small><b class="num ${gap > .005 ? 'bad' : 'ok'}">${gap > .005 ? money(gap) : '0 $ ✓'}</b></div></div>` : ''
+  return `<div class="hd"><div><h1>Opérations bancaires</h1><div class="acct">${st.acct === TODO ? 'À comptabiliser' : esc(st.acct)}</div></div>${kpi}<span class="sp"></span>
+    <button class="btn g" title="Banque, QuickBooks et écart · QB vérifié il y a 4 min"><span class="dotok"></span>Mettre à jour</button>
+    <span class="menu ${st.menu === 'main' ? 'open' : ''}"><button class="btn ic" data-menu="main">⋯</button><div class="dd">
+      <button>Déposer un relevé</button><button>Règles bancaires</button><button>Rapprocher dans QuickBooks</button><hr><button>Recopier dans le classeur</button><button>Ouvrir le classeur</button></div></span></div>`
+}
+function nav() {
+  const n = base().filter(r => r.k !== 'ghost').length
+  return `<div class="nav">${[['rev', 'Pour révision', n], ['cat', 'Catégorisées', 412], ['exc', 'Exclues', 3]].map(([k, t, c]) =>
+    `<button data-tab="${k}" class="${st.tab === k ? 'on' : ''}">${t}<span>${c}</span></button>`).join('')}<span class="sp"></span><span class="search">⌕ Rechercher</span></div>`
+}
+function filters() {
+  if (st.tab !== 'rev') return ''
+  const rs = base()
+  const c = (fn) => rs.filter(fn).length
+  const F = [
+    ['rev', '<span class="mkc"></span>À réviser', c(r => r.rev)],
+    ['miss', '<span class="mkf">⚑</span>Sans facture', c(r => r.miss), '<span class="send" data-send title="Demander sur Slack">➤</span>'],
+    ['match', 'Correspondances', c(r => r.k === 'match')],
+    ['xfer', 'Virements', c(r => r.k === 'xfer')],
+    ['none', 'À catégoriser', c(r => r.k === 'none')],
+    ['ghost', 'Hors relevé', c(r => r.k === 'ghost')],
+  ]
+  return `<div class="flt">${F.map(([k, t, n, x = '']) => `<button class="f ${st.x === k ? 'on' : ''}" data-x="${k}" ${n ? '' : 'disabled'}>${t}<b>${n}</b>${x}</button>`).join('')}</div>`
+}
+function batch() {
+  if (!st.pick.size) return ''
+  return `<div class="batch"><b>${st.pick.size} sélectionnée${st.pick.size > 1 ? 's' : ''}</b>
+    <button class="btn g sm">Accepter</button><button class="btn sm">À réviser</button><button class="btn sm">Signet</button><button class="btn sm" data-send>Facture manquante</button><button class="btn sm">Exclure</button>
+    <span style="flex:1"></span><button class="lnk" data-clear>Désélectionner</button></div>`
+}
+function catCell(r) {
+  if (r.k === 'ghost') return `<span class="cat">${esc(r.x)}</span>`
+  if (r.k === 'match') return `<span class="match">1 correspondance<span class="via cat">${esc(r.x)}</span></span>`
+  if (r.k === 'xfer') return `<span class="cat">Transfert ${r.m < 0 ? 'vers' : 'de'} ${esc(r.x)}</span>`
+  if (r.k === 'none') return `<span class="cat unc">Non catégorisé</span>`
+  return `<span class="cat">${esc(r.x)}<span class="via">${r.rule ? `Règle « ${esc(r.rule)} »` : esc(r.via || '')}</span></span>`
+}
+function expansion(r, id) {
+  const def = r.k === 'match' ? 'find' : r.k === 'xfer' ? 'xfer' : 'cat'
+  const m = st.mode[id] || def
+  const T = [['cat', 'Catégoriser'], ['find', 'Trouver une correspondance'], ['xfer', 'Enregistrer comme transfert']]
+  let body
+  if (m === 'find') body = `<div class="cand">
+      <div class="${r.k === 'match' ? 'best' : ''}"><span class="cb on" style="opacity:1"></span><span style="flex:1">${esc(r.k === 'match' ? r.x : 'Facture ' + (r.v || r.l))}<span class="conf"> · ${r.d} · 98 %</span></span><span class="num">${money(r.m)}</span></div>
+      <div><span class="cb" style="opacity:1"></span><span style="flex:1">Dépense ${esc(r.v || r.l)}<span class="conf"> · 12 sept. · 61 %</span></span><span class="num">${money(r.m * 1.02)}</span></div></div>
+      <div class="hint">Rien ne colle ? <button class="lnk" data-send>Demander la facture</button></div>`
+  else if (m === 'xfer') body = `<div class="grid"><div class="fl"><small>Date</small><div>${r.d}</div></div><div class="fl dd w2"><small>${r.m < 0 ? 'Vers' : 'De'}</small><div>${esc(r.k === 'xfer' ? r.x : '')}</div></div><div class="fl"><small>Mémo</small><div>${esc(r.l)}</div></div></div>`
+  else body = `<div class="grid">
+      <div class="fl dd"><small>Fournisseur</small><div>${esc(r.v)}</div></div>
+      <div class="fl dd w2"><small>Catégorie</small><div>${esc(r.k === 'cat' ? r.x : '')}</div></div>
+      <div class="fl dd"><small>Taxe</small><div>TPS/TVQ QC</div></div>
+      <div class="fl w2"><small>Mémo</small><div>${esc(r.l)}</div></div>
+      <div class="fl"><small>Reçu</small><div class="${r.miss ? 'warnv' : ''}">${r.miss ? '⚑ Manquant' : 'Joindre'}</div></div></div>
+      <div class="hint">${r.rule ? `<span class="ru">Préparée par la règle « ${esc(r.rule)} »</span> · ` : ''}<button class="lnk">Diviser</button>${r.rule ? '' : ' · <button class="lnk">Créer une règle</button>'}</div>`
+  const go = m === 'find' ? 'Apparier' : m === 'xfer' ? 'Enregistrer' : 'Ajouter'
+  return `<tr class="exp"><td colspan="10"><div class="xbox">
+    <div class="ut">${T.map(([k, l]) => `<button class="${m === k ? 'on' : ''}" data-mode="${k}" data-id="${id}">${l}</button>`).join('')}<span class="sp"></span><button class="lnk" data-dossier="${id}">Dossier ›</button></div>
+    ${body}<div class="xfoot"><span class="sp"></span><button class="btn sm" data-close>Annuler</button><button class="btn g sm">${go}</button></div></div></td></tr>`
+}
+function table() {
+  const todo = st.acct === TODO
+  if (st.tab !== 'rev') {
+    const rs = st.tab === 'cat' ? DONE : [R('15 sept.', 'TRF CT INTERNET', '', -1500, null, 'none', '', '', { st: 'Exclue' })]
+    return `<div class="wrap"><table><thead><tr><th class="gut"></th><th>Date</th><th>Description</th><th>Fournisseur</th><th>Ajouté ou apparié à</th><th class="num">Dépense</th><th class="num">Dépôt</th><th class="num">Solde</th><th class="act"></th></tr></thead><tbody>
+      ${rs.map(r => `<tr class="r"><td class="gut"></td><td><span class="dt">${r.d}</span></td><td class="lab">${esc(r.l)}<span class="bk">${esc(r.bk)}</span></td><td class="vend">${esc(r.v)}</td>
+      <td class="cat">${esc(r.x || '—')}<span class="cat" style="display:block;font-size:11.5px;color:var(--ink4)">${r.st}</span></td><td class="num">${r.m < 0 ? money(r.m) : ''}</td><td class="num pos">${r.m > 0 ? money(r.m) : ''}</td><td class="num bal">${r.b != null ? money(r.b) : ''}</td>
+      <td class="act"><button class="lnk">${r.st === 'Exclue' ? 'Rétablir' : 'Annuler'}</button></td></tr>`).join('')}</tbody></table></div>`
+  }
+  let rs = base().map((r, i) => ({ r, id: st.acct + '#' + i }))
+  if (st.x === 'rev' || st.x === 'miss') rs = rs.filter(({ r }) => r[st.x])
+  else if (st.x) rs = rs.filter(({ r }) => r.k === st.x)
+  const hasBal = !todo && rs.some(({ r }) => r.b != null)
+  const all = rs.length && rs.filter(({ r }) => r.k !== 'ghost').every(({ id }) => st.pick.has(id))
+  const head = `<tr><th class="gut"><span class="cb ${all ? 'on' : ''}" data-all></span></th><th style="width:90px">Date</th><th>Description</th><th>Fournisseur</th><th>Catégorie ou correspondance</th><th class="num" style="width:110px">Dépense</th><th class="num" style="width:110px">Dépôt</th>${hasBal ? '<th class="num" style="width:110px">Solde</th>' : ''}<th class="act" style="width:150px">Action</th></tr>`
+  if (!rs.length) return `<div class="wrap"><table><thead>${head}</thead></table></div><div style="padding:70px;text-align:center;color:var(--ink3)">Tout est à jour ✓</div>`
+  const body = rs.map(({ r, id }) => {
+    const g = r.k === 'ghost', open = st.open === id, pick = st.pick.has(id)
+    const cls = ['r', open && 'open', pick && 'picked', g && 'ghost'].filter(Boolean).join(' ')
+    const act = g ? '<button class="lnk">Ouvrir dans QB</button>' : `<span class="split menu ${st.menu === id ? 'open' : ''}"><button class="btn sm ${r.k === 'none' ? '' : 'g'}" data-go="${id}">${verb(r)}</button><button class="btn sm car ${r.k === 'none' ? '' : 'g'}" data-menu="${id}">⌄</button>
+      <div class="dd"><button data-dossier="${id}">Dossier</button><button>Exclure</button></div></span>`
+    return `<tr class="${cls}" data-row="${id}">
+      <td class="gut">${g ? '' : `<span class="cb ${pick ? 'on' : ''}" data-pick="${id}"></span><span class="rib ${r.bm ? 'on' : ''}" data-bm="${id}" title="Signet"></span>`}</td>
+      <td><span class="dt ${r.rev ? 'rev' : ''}" ${g ? '' : `data-rev="${id}" title="À réviser"`}>${r.d}</span></td>
+      <td class="lab">${r.anom ? `<span class="warn" title="${esc(r.anom)}">⚠</span>` : ''}${g ? 'QuickBooks · ' : ''}${esc(r.l)}<span class="bk">${esc(g ? '' : r.bk)}</span>${r.miss ? '<span class="flag" title="Sans facture">⚑</span>' : ''}${todo ? `<span class="acct-tag">${esc(r.acct)}</span>` : ''}</td>
+      <td>${r.v ? `<span class="vend">${esc(r.v)}</span>` : ''}</td>
+      <td>${catCell(r)}</td>
+      <td class="num">${r.m < 0 ? money(r.m) : ''}</td><td class="num pos">${r.m > 0 ? money(r.m) : ''}</td>
+      ${hasBal ? `<td class="num bal">${r.b != null ? money(r.b) : ''}</td>` : ''}
+      <td class="act">${act}</td></tr>${open && !g ? expansion(r, id) : ''}`
+  }).join('')
+  return `<div class="wrap ${st.pick.size ? 'picking' : ''}"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`
+}
+function foot() {
+  const tot = ACCTS.reduce((s, a) => s + real(a.n).length, 0)
+  return `<div class="foot"><button data-acct="${TODO}" class="all ${st.acct === TODO ? 'on' : ''}">À comptabiliser<span class="n">${tot}</span></button>${ACCTS.map(a => {
+    const n = real(a.n).filter(r => r.rev).length
+    return `<button data-acct="${a.n}" class="${a.n === st.acct ? 'on' : ''}">${a.n}${n ? `<span class="n" title="À réviser">${n}</span>` : ''}</button>` }).join('')}</div>`
+}
+function drawer() {
+  if (st.drawer === 'send') {
+    const L = allTodo().filter(r => r.miss)
+    return `<div class="drawer"><h3>Factures à demander <button data-dclose>✕</button></h3>
+      ${L.map(r => `<div class="dl"><span class="cb on" style="opacity:1"></span><span><b style="font-weight:500">${esc(r.v || r.l)}</b><small>${r.d} · ${esc(r.acct)}</small></span><span class="sp"></span><span class="num">${money(r.m)}</span></div>`).join('')}
+      <div class="slackp">Il me manque ces factures :\n${L.map(r => `• ${r.v || r.l} — ${money(r.m)} (${r.d})`).join('\n')}</div>
+      <button class="btn g">Envoyer sur Slack</button></div>`
+  }
+  if (st.drawer === 'dossier') {
+    const r = rowOf(st.row)
+    return `<div class="drawer"><h3>${esc(r.l)} <button data-dclose>✕</button></h3>
+      <div class="kv"><small>Montant</small><span class="num" style="text-align:left">${money(r.m)} · ${r.d}</span></div>
+      <div class="kv"><small>QuickBooks</small><span>${r.k === 'match' ? '<button class="lnk">Facture publiée ›</button>' : 'Aucune écriture'}</span></div>
+      <div class="kv"><small>Portail</small><span><button class="lnk">Chercher la facture</button> <span class="conf">· essai il y a 3 j</span></span></div>
+      <div class="kv"><small>Libellé banque</small><span>${esc(r.l)} ${esc(r.bk)} <button class="lnk">Associer à un fournisseur</button></span></div>
+      <textarea placeholder=""></textarea></div>`
+  }
+  return ''
+}
+function render() {
+  document.getElementById('screen').innerHTML = head() + nav() + filters() + batch() + table() + foot()
+  document.getElementById('dr').innerHTML = drawer()
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-acct],[data-tab],[data-pick],[data-all],[data-clear],[data-mode],[data-close],[data-x],[data-rev],[data-bm],[data-send],[data-menu],[data-dossier],[data-dclose],[data-go],tr.r,#theme')
+  if (!t) { if (st.menu) { st.menu = null; render() } return }
+  if (t.id === 'theme') { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark'; return }
+  e.stopPropagation()
+  const m = st.menu; st.menu = null
+  if ('send' in t.dataset) st.drawer = 'send'
+  else if (t.dataset.dossier) { st.drawer = 'dossier'; st.row = t.dataset.dossier }
+  else if ('dclose' in t.dataset) st.drawer = null
+  else if (t.dataset.menu) st.menu = m === t.dataset.menu ? null : t.dataset.menu
+  else if (t.dataset.go) st.open = st.open === t.dataset.go ? null : t.dataset.go
+  else if (t.dataset.acct) { st.acct = t.dataset.acct; st.open = null; st.pick.clear(); st.tab = 'rev'; st.x = null }
+  else if (t.dataset.tab) { st.tab = t.dataset.tab; st.open = null }
+  else if (t.dataset.x) st.x = st.x === t.dataset.x ? null : t.dataset.x
+  else if (t.dataset.rev) { const r = rowOf(t.dataset.rev); r.rev = !r.rev }
+  else if (t.dataset.bm) { const r = rowOf(t.dataset.bm); const was = r.bm; (ROWS[r.acct] || base()).forEach(x => { (x.ref || x).bm = 0 }); Object.values(ROWS).forEach(rs => rs.includes(r) && rs.forEach(x => x.bm = 0)); r.bm = !was }
+  else if (t.dataset.pick) { st.pick.has(t.dataset.pick) ? st.pick.delete(t.dataset.pick) : st.pick.add(t.dataset.pick) }
+  else if ('all' in t.dataset) { const ids = [...document.querySelectorAll('[data-pick]')].map(x => x.dataset.pick); const all = ids.every(i => st.pick.has(i)); ids.forEach(i => all ? st.pick.delete(i) : st.pick.add(i)) }
+  else if ('clear' in t.dataset) st.pick.clear()
+  else if (t.dataset.mode) st.mode[t.dataset.id] = t.dataset.mode
+  else if ('close' in t.dataset) st.open = null
+  else if (t.matches('tr.r')) { if (st.tab !== 'rev' || t.classList.contains('ghost')) return; st.open = st.open === t.dataset.row ? null : t.dataset.row }
+  render()
+})
+if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark'
+render()
+</script>
+</body>
+</html>

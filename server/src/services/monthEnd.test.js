@@ -111,7 +111,7 @@ test('feuille de temps : l\'ERP refait le total à partir des lignes, la ligne �
     ['2026/07/03', 8, 'R&D'],
     ['total', 16, ''],
   ])
-  assert.deepEqual(sumSheetHours(sheet), { hours: 24, day_hours: 24, file_total: 16, days: 3, recognized: true })
+  assert.deepEqual(sumSheetHours(sheet), { hours: 24, day_hours: 24, file_total: 16, days: 3, recognized: true, projects: {} })
 })
 
 test('feuille de temps : sans ligne « total », l\'addition des lignes suffit', () => {

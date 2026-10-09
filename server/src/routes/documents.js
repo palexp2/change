@@ -12,7 +12,7 @@ import { parsePage } from '../utils/pagination.js'
 import { buildSoumissionHtml, renderSoumissionPdf } from '../services/soumissionPdf.js'
 import { sendEmail as sendGmail } from '../services/gmail.js'
 import { mirrorSoumissionPdf } from '../services/airtable.js'
-import { purchasePct, soumissionDiscounts, storeSoumissionTotals } from '../services/soumissionTotals.js'
+import { discountLines, soumissionDiscounts, storeSoumissionTotals } from '../services/soumissionTotals.js'
 import { recomputeProjectValeurCad } from '../services/projectValeur.js'
 import { getStripeClient, syncStripeCustomer } from '../services/stripeInvoices.js'
 import { assertStripeCurrency, stripeCurrencyOf } from '../services/stripeCustomerCompany.js'
@@ -97,12 +97,8 @@ function sanitizeDiscounts(list) {
     .filter(d => d.pct || d.pct_purchase || d.monthly || d.amount)
 }
 function discountTotals(discounts, monthlyBase, purchaseBase) {
-  const lines = discounts.map(d => ({
-    name: d.name,
-    until: d.until,
-    monthly: monthlyBase * (d.pct || 0) / 100 + (d.monthly || 0),
-    amount: purchaseBase * purchasePct(d) / 100 + (d.amount || 0),
-  }))
+  const lines = discountLines(discounts, monthlyBase, purchaseBase)
+    .map(l => ({ name: l.name, until: l.until, monthly: l.monthly, amount: l.amount }))
   const sum = k => lines.reduce((t, l) => t + l[k], 0)
   return { lines, monthly: Math.max(0, monthlyBase - sum('monthly')), amount: Math.max(0, purchaseBase - sum('amount')) }
 }
@@ -768,6 +764,7 @@ router.get('/soumissions/:id/email', (req, res) => {
     contact_id: c.id,
     email: c.email,
     name: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
+    language: c.language || soumission.language,
     ...soumissionEmailTemplate({ language: c.language || soumission.language, firstName: c.first_name, title, senderName }),
   }))
   const first = recipients[0]
@@ -777,6 +774,7 @@ router.get('/soumissions/:id/email', (req, res) => {
     subject: (first || fallback).subject,
     bodyHtml: (first || fallback).bodyHtml,
     recipients,
+    language: soumission.language,
     attachments: [{
       name: soumissionPdfFilename(soumission),
       url: `/erp/api/documents/soumissions/${soumission.id}/pdf?v=${encodeURIComponent(soumission.updated_at || '')}`,

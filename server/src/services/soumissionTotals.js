@@ -16,15 +16,24 @@ export function soumissionDiscounts(s) {
 // (`only: 'monthly'` : aucun — ex. Head start plan).
 export const purchasePct = d => d.pct_purchase ?? (d.only === 'monthly' ? 0 : d.pct || 0)
 
+// Montant retiré par chaque rabais : les rabais en $ d'abord, puis les % sur
+// ce qui reste (Pierre-Alexandre 2026-10-05). Même règle côté client
+// (lib/soumissionDiscount.js).
+export function discountLines(discounts, monthlyBase, purchaseBase) {
+  const fixed = k => discounts.reduce((t, d) => t + (Number(d[k]) || 0), 0)
+  const monthlyRest = Math.max(0, monthlyBase - fixed('monthly'))
+  const purchaseRest = Math.max(0, purchaseBase - fixed('amount'))
+  return discounts.map(d => ({
+    ...d,
+    monthly: monthlyRest * (d.pct || 0) / 100 + (Number(d.monthly) || 0),
+    amount: purchaseRest * purchasePct(d) / 100 + (Number(d.amount) || 0),
+  }))
+}
+
 export function totalsOf(items, discounts) {
   const monthly = items.reduce((t, it) => t + (it.qty || 1) * (it.unit_monthly_price || 0), 0)
   const amount = items.reduce((t, it) => t + (it.qty || 1) * (it.unit_price_cad || 0), 0)
-  const lines = discounts.map(d => ({
-    name: d.name,
-    until: d.until,
-    monthly: monthly * (d.pct || 0) / 100 + (d.monthly || 0),
-    amount: amount * purchasePct(d) / 100 + (d.amount || 0),
-  }))
+  const lines = discountLines(discounts, monthly, amount).map(l => ({ name: l.name, until: l.until, monthly: l.monthly, amount: l.amount }))
   const sum = k => lines.reduce((t, l) => t + l[k], 0)
   return { lines, monthly: Math.max(0, monthly - sum('monthly')), amount: Math.max(0, amount - sum('amount')) }
 }

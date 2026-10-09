@@ -65,11 +65,17 @@ function profiles() {
 // Longueur du nom reconnu dans le libellé, ou 0. Sert de poids : « Amazon Web
 // Services » (17) l'emporte sur « Amazon » (6) dans « AMAZON WEB SERVICES … ».
 // Sans ce départage, une facture AWS serait attribuée à Amazon.ca.
-function matchWeight(label, name) {
+//
+// Un NOM (pas un motif déclaré) se cherche par mots : « Bell » ne se lit pas
+// dans « BELLEVILLE ». Un mot de 5 lettres et plus peut ouvrir un mot plus long
+// (« TAKACHIELEC » pour « Takachi ») — le relevé colle souvent les mots.
+function matchWeight(label, name, { words = false } = {}) {
   const tokens = normalizeLabel(name).split(' ').filter(t => t.length >= 3)
   if (!tokens.length) return 0
   const compact = tokens.join('')
-  if (tokens.every(t => label.includes(t))) return compact.length
+  const labelWords = words ? label.split(' ') : null
+  const has = (t) => (words ? labelWords.some((w) => w === t || (t.length >= 5 && w.startsWith(t))) : label.includes(t))
+  if (tokens.every(has)) return compact.length
   if (compact.length >= 5 && label.replace(/ /g, '').includes(compact)) return compact.length
   return 0
 }
@@ -77,6 +83,12 @@ function matchWeight(label, name) {
 // Un nom de fiche porte souvent son autre nom entre parenthèses — « Newark (Premier
 // Farnell) », « ChatGPT (Open AI) », « Gumroad (Little Appy) ». Le relevé n'en imprime
 // qu'un des deux : chaque partie vaut donc comme alias implicite.
+// Une parenthèse qui ne fait que PRÉCISER (« UPS (Canada) », « Bell (Internet) »,
+// « DHL (Douanes) ») n'est pas un autre nom : seule, elle reconnaissait toute
+// station « PETRO-CANADA » comme UPS, et toute dépense américaine comme « UPA (USA) ».
+const QUALIFIERS = new Set(['canada', 'usa', 'us', 'etats', 'unis', 'quebec', 'ontario', 'internet', 'douanes',
+  'cad', 'usd', 'international', 'inc', 'ltee', 'telephone', 'cellulaire', 'mobile', 'abonnement', 'transport'])
+
 export function nameVariants(name) {
   const raw = String(name || '')
   const out = [raw]
@@ -84,7 +96,7 @@ export function nameVariants(name) {
   if (outside && outside !== raw) out.push(outside)
   for (const m of raw.matchAll(/\(([^)]*)\)/g)) {
     const inside = m[1].trim()
-    if (inside) out.push(inside)
+    if (inside && !normalizeLabel(inside).split(' ').every((w) => QUALIFIERS.has(w))) out.push(inside)
   }
   return out
 }
@@ -109,12 +121,12 @@ export function resolveVendorFromBankLabel(rawLabel) {
       if (w > weight) { weight = w; via = 'motif' }
     }
     for (const alias of p.aliases) {
-      const w = matchWeight(label, alias)
+      const w = matchWeight(label, alias, { words: true })
       if (w > weight) { weight = w; via = 'alias' }
     }
     // Le nom, et ses variantes entre parenthèses (« Newark », « Premier Farnell »).
     for (const variant of nameVariants(p.name)) {
-      const w = matchWeight(label, variant)
+      const w = matchWeight(label, variant, { words: true })
       if (w > weight) { weight = w; via = 'nom' }
     }
     if (!weight) continue

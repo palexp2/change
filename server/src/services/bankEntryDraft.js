@@ -22,6 +22,8 @@ import { resolveProfileByName, profileDefaultsForCurrency } from './vendorProfil
 import { resolveVendorFromBankLabel } from './scrapers/vendorFromBankLabel.js'
 import { txnFacts } from './bankTxnFacts.js'
 import { ruleForTxn } from './bankRules/store.js'
+import { learnedFromLabel } from './bankLabelMemory.js'
+import { qbHabitFor } from './bankQbHabit.js'
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100
 
@@ -38,11 +40,34 @@ const txnLabel = (t) => (t?.details || '').trim() || (t?.description || '').trim
 // brouillon n'est pas une habitude. Renvoie les valeurs par fréquence
 // décroissante, et dit si l'usage est constant — c'est cette contradiction que
 // l'utilisateur doit trancher.
-export function vendorHistory(vendorName, { limit = 24 } = {}) {
-  const name = String(vendorName || '').trim()
+const MONTH_RE = /(?:^|\s)(janvier|janv|f[ée]vrier|f[ée]vr?|mars|avril|avr|mai|juin|juillet|juil|ao[ûu]t|septembre|sept|octobre|oct|novembre|nov|d[ée]cembre|d[ée]c)\.?(?=\s|$|,)/i
+const MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
+
+// « Loyer octobre 2026 » pour une ligne du 2026-10-05.
+export function monthlyMemo(prefix, day) {
+  if (prefix == null || !/^\d{4}-\d{2}/.test(day || '')) return null
+  const text = `${MONTHS_FR[Number(day.slice(5, 7)) - 1]} ${day.slice(0, 4)}`
+  return prefix ? `${prefix[0].toUpperCase()}${prefix.slice(1)} ${text}` : `${text[0].toUpperCase()}${text.slice(1)}`
+}
+
+let publishedVendors = null
+export function vendorHistory(vendorName, { limit = 24, amount = null } = {}) {
+  let name = String(vendorName || '').trim()
   if (!name) return null
+  // QuickBooks écrit souvent le nom sans accents (« Societe Immobiliere
+  // Quebourg ») là où la fiche les porte : on retrouve la graphie publiée.
+  const fold = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim()
+  const exact = db.prepare('SELECT 1 FROM achats_fournisseurs WHERE LOWER(TRIM(vendor)) = LOWER(TRIM(?)) AND quickbooks_id IS NOT NULL LIMIT 1').get(name)
+  if (!exact) {
+    const key = fold(name)
+    if (!publishedVendors || Date.now() - publishedVendors.at > 60_000) {
+      publishedVendors = { at: Date.now(), list: db.prepare('SELECT DISTINCT vendor FROM achats_fournisseurs WHERE quickbooks_id IS NOT NULL AND vendor IS NOT NULL').all().map((r) => r.vendor) }
+    }
+    const alt = publishedVendors.list.find((v) => fold(v) === key)
+    if (alt) name = alt
+  }
   const rows = db.prepare(`
-    SELECT expense_account_id, tax_code_id, qb_memo, description, payment_method, lines, date_achat, type
+    SELECT expense_account_id, tax_code_id, qb_memo, description, payment_method, lines, date_achat, type, total_cad
     FROM achats_fournisseurs
     WHERE LOWER(TRIM(vendor)) = LOWER(TRIM(?)) AND quickbooks_id IS NOT NULL
     ORDER BY date_achat DESC, created_at DESC
@@ -78,15 +103,37 @@ export function vendorHistory(vendorName, { limit = 24 } = {}) {
   // remplirait le champ d'un texte sans rapport avec la nouvelle dépense.
   const memos = tally(rows.map((r) => (r.qb_memo || r.description || '').trim()))
     .filter((m) => m.n >= 2 && m.value.length <= 80 && !looksLikeBankLabel(m.value))
+  // Un mémo qui nomme le MOIS (« Loyer mai », « Août 2026 ») : l'habitude est
+  // le patron, pas le texte. On garde le mot qui précède le mois, s'il revient.
+  const recent = rows.slice(0, 8).map((r) => (r.qb_memo || r.description || '').trim())
+  const monthHits = recent.map((m) => MONTH_RE.exec(m)).filter(Boolean)
+  let monthlyPrefix = null
+  if (monthHits.length >= 3) {
+    const pre = tally(monthHits.map((h) => h.input.slice(0, h.index).trim().toLowerCase()))
+    monthlyPrefix = pre[0]?.value && pre[0].n >= 2 ? pre[0].value : ''
+  }
   const paymentMethods = tally(rows.map((r) => r.payment_method))
   const types = tally(rows.map((r) => r.type))
+
+  // Le contexte départage un fournisseur à plusieurs comptes (Bell : téléphone
+  // OU internet) : les achats passés au MÊME montant (±10 %) disent lequel,
+  // s'ils sont unanimes.
+  let byAmount = null
+  const amt = Math.abs(Number(amount) || 0)
+  if (amt > 0 && expenseAccounts.length > 1) {
+    const near = rows.filter((r) => Math.abs(Math.abs(Number(r.total_cad) || 0) - amt) <= amt * 0.1)
+    const t = tally(near.map(accountOfRow))
+    if (t.length === 1) byAmount = { value: t[0].value, n: t[0].n }
+  }
 
   return {
     count: rows.length,
     last_date: rows[0].date_achat,
+    by_amount: byAmount,
     expense_accounts: expenseAccounts,
     tax_codes: taxCodes,
     memos: memos.slice(0, 3),
+    monthly_prefix: monthlyPrefix,
     payment_methods: paymentMethods,
     types,
     // « Constant » = un seul compte de dépense ET un seul code de taxe sur tout
@@ -205,12 +252,15 @@ const addDays = (iso, days) => {
  * @param options  { rule } — la règle bancaire qui s'applique (tranche 7) ;
  *                 elle prime sur le profil, jamais sur un document apparié.
  */
-export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
+export function buildEntryDraft(txn, account, { rule = undefined, vendor: chosenVendor = null, learn = {} } = {}) {
   // Une règle non fournie se cherche : c'est le point d'accroche des règles
   // bancaires. `null` explicite = ne pas en chercher (aperçu, tests).
   if (rule === undefined) {
     try { rule = ruleForTxn(txn) } catch { rule = null }
   }
+  // Un autre bénéficiaire que celui de la règle : la règle ne parle plus de cette ligne.
+  const norm = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+  if (chosenVendor && rule?.vendor_name && norm(rule.vendor_name) !== norm(chosenVendor)) rule = null
   const label = txnLabel(txn)
   const currency = account?.currency || 'CAD'
   const facts = txnFacts(txn)
@@ -220,7 +270,30 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
   //   puis un achat passé dont le nom apparaît tel quel dans le libellé.
   const hit = resolveVendorFromBankLabel(label)
   let vendor = null; let vendorSource = null
-  if (rule?.vendor_name) { vendor = rule.vendor_name; vendorSource = `règle « ${rule.name} »` }
+  // Le bénéficiaire choisi à l'écran passe devant tout : c'est SON habitude
+  // qu'on veut relire (catégorie, taxe, mémo).
+  if (chosenVendor) { vendor = String(chosenVendor).trim(); vendorSource = 'bénéficiaire choisi' }
+  if (!vendor && rule?.vendor_name) { vendor = rule.vendor_name; vendorSource = `règle « ${rule.name} »` }
+  // Ce qu'on a déjà fait pour ce même libellé : la preuve la plus directe,
+  // devant le motif d'une fiche — elle porte aussi la graphie QuickBooks
+  // (« GitHub USD » sur un compte en dollars américains).
+  let learned = null
+  try { learned = learn === false ? null : learnedFromLabel(txn, account, learn) } catch { learned = null }
+  // Rien côté ERP : ce que QuickBooks a fait des lignes passées au même libellé
+  // (dépenses saisies directement dans QuickBooks, sans achat dans l'ERP).
+  if (!learned?.vendor && learn !== false && txn?.amount < 0) {
+    try {
+      const h = qbHabitFor(txn, { before: learn?.before || null })
+      if (h?.strong && h.kind === 'expense' && h.vendor) {
+        learned = { vendor: h.vendor, expense_account_id: h.account_id, tax_code_id: h.tax_code_id, memo: null, qb_type: null,
+          source: h.source, sources: { expense_account_id: h.source, tax_code_id: h.source } }
+      }
+    } catch { /* mémoire QuickBooks indisponible */ }
+  }
+  if (!vendor && learned?.vendor) { vendor = learned.vendor; vendorSource = learned.source }
+  // La mémoire ne parle que de SON fournisseur : un autre bénéficiaire choisi la fait taire.
+  if (learned?.vendor && norm(learned.vendor) !== norm(vendor)) learned = null
+  const fromMemory = !!learned?.vendor && vendorSource === learned.source
   if (!vendor && hit?.profile?.name) { vendor = hit.profile.name; vendorSource = `profil (${hit.via})` }
   if (!vendor && doc?.vendor) { vendor = doc.vendor; vendorSource = doc.label }
   if (!vendor) {
@@ -236,13 +309,14 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
   // La graphie d'origine reste utile : les achats passés sont classés sous elle,
   // pas sous le nom de la fiche.
   const rawVendor = vendor
-  if (profile && !rule?.vendor_name && !doc?.vendor && profile.name !== vendor) {
+  if (profile && !chosenVendor && !rule?.vendor_name && !fromMemory && !doc?.vendor && profile.name !== vendor) {
     vendorSource = `${vendorSource} → fiche « ${profile.name} »`
     vendor = profile.name
   }
   const defaults = profileDefaultsForCurrency(profile, currency) || {}
-  const history = (vendor ? vendorHistory(vendor) : null)
-    || (rawVendor && rawVendor !== vendor ? vendorHistory(rawVendor) : null)
+  const hOpts = { amount: txn?.amount }
+  const history = (vendor ? vendorHistory(vendor, hOpts) : null)
+    || (rawVendor && rawVendor !== vendor ? vendorHistory(rawVendor, hOpts) : null)
   const n = history?.count || 0
 
   const field = (value, source) => (value == null || value === '' || !source ? { value: null, source: null } : { value, source })
@@ -252,12 +326,15 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
   //   mais elle est affichée comme indice quand tout le reste est muet.
   const expense = doc?.expense_account_id ? field(doc.expense_account_id, doc.label)
     : rule?.expense_account_id ? field(rule.expense_account_id, `règle « ${rule.name} »`)
+      : learned?.expense_account_id ? field(learned.expense_account_id, learned.sources.expense_account_id)
       : defaults.expense_account_id ? field(defaults.expense_account_id, 'profil du fournisseur')
-        : field(history?.expense_accounts?.[0]?.value, habitSource(history?.expense_accounts?.[0], n))
+        : history?.by_amount ? field(history.by_amount.value, `habitude au même montant (${history.by_amount.n} fois)`)
+          : field(history?.expense_accounts?.[0]?.value, habitSource(history?.expense_accounts?.[0], n))
 
   // — Code de taxe : `__none__` est une décision, pas un vide, et remonte tel quel.
   const taxCode = doc?.tax_code_id ? field(doc.tax_code_id, doc.label)
     : rule?.tax_code_id ? field(rule.tax_code_id, `règle « ${rule.name} »`)
+      : learned?.tax_code_id ? field(learned.tax_code_id, learned.sources.tax_code_id)
       : defaults.tax_code_id ? field(defaults.tax_code_id, 'profil du fournisseur')
         : field(history?.tax_codes?.[0]?.value, habitSource(history?.tax_codes?.[0], n))
 
@@ -276,6 +353,7 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
   //   quand c'est ainsi qu'on traite ce fournisseur.
   const qbType = rule?.qb_type ? field(rule.qb_type, `règle « ${rule.name} »`)
     : defaults.qb_type ? field(defaults.qb_type, 'profil du fournisseur')
+      : learned?.qb_type ? field(learned.qb_type, learned.sources.qb_type)
       : field(history?.types?.[0]?.value, habitSource(history?.types?.[0], n))
 
   // — Numéro de pièce : celui du DOCUMENT, ou du chèque. Jamais `txn.reference`,
@@ -288,7 +366,9 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
   //   pas un (il porte la ville, le pays, le numéro d'autorisation).
   const memo = doc?.memo ? field(doc.memo, doc.label)
     : rule?.memo ? field(rule.memo, `règle « ${rule.name} »`)
-      : field(history?.memos?.[0]?.value, habitSource(history?.memos?.[0], n))
+      : history?.monthly_prefix != null ? field(monthlyMemo(history.monthly_prefix, txn?.txn_date), 'habitude : le mois payé')
+        : learned?.memo ? field(learned.memo, learned.sources.memo)
+        : field(history?.memos?.[0]?.value, habitSource(history?.memos?.[0], n))
 
   const termsDays = doc?.terms_days != null ? field(doc.terms_days, doc.label)
     : field(defaults.payment_terms_days, 'profil du fournisseur')
@@ -347,7 +427,7 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
     // quand la fiche ne pointe pas encore de compte QuickBooks, le formulaire s'en sert
     // pour choisir le compte qui porte ce numéro.
     vendor_category: profile?.qb_category || null,
-    rule: rule ? { id: rule.id, name: rule.name } : null,
+    rule: rule ? { id: rule.id, name: rule.name, action: rule.action || null, splits: rule.splits || null } : null,
     missing,
     ready: missing.length === 0,
   }

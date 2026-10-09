@@ -10,8 +10,10 @@ import { defaultNavItems, applyNavOrder } from '../lib/navItems.js'
 import { SETTINGS_ROUTE, settingsSectionsFor } from '../lib/settingsSections.js'
 import QuickBooksAccountCard from '../components/QuickBooksAccountCard.jsx'
 import GmailAccountCard from '../components/GmailAccountCard.jsx'
+import GoogleCalendarCard from '../components/GoogleCalendarCard.jsx'
 import EmailSignatureEditor from '../components/EmailSignatureEditor.jsx'
 import { Badge } from '../components/Badge.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { AddressCheckBadge, AddressCheckIssues } from '../components/AddressCheckIssues.jsx'
 import EmptyState from '../components/EmptyState.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -324,17 +326,50 @@ function AddressCheckSection() {
   )
 }
 
+// Admin : choisit de qui on édite la signature (soi par défaut).
+function SignatureOwnerPicker({ value, onChange }) {
+  const [users, setUsers] = useState([])
+  useEffect(() => { api.admin.listUsers().then(r => setUsers((r || []).filter(u => u.active))).catch(() => {}) }, [])
+  return (
+    <SearchableSelect
+      value={value}
+      options={users}
+      onChange={onChange}
+      getOptionValue={u => u.id}
+      getOptionLabel={u => u.name || u.email}
+      className="input-field text-sm w-full"
+      size="sm"
+      testId="email-signature-owner"
+    />
+  )
+}
+
+function SignatureEditors() {
+  const { user } = useAuth()
+  const isAdmin = hasRole(user, 'admin')
+  const [ownerId, setOwnerId] = useState(user?.id)
+  const otherId = ownerId && ownerId !== user?.id ? ownerId : null
+  return (
+    <>
+      {isAdmin && <SignatureOwnerPicker value={ownerId} onChange={setOwnerId} />}
+      <EmailSignatureEditor key={`fr-${otherId}`} lang="fr" userId={otherId} />
+      <EmailSignatureEditor key={`en-${otherId}`} lang="en" userId={otherId} />
+    </>
+  )
+}
+
 function GmailSection() {
   return (
     <div>
-      <h2 className="text-lg font-semibold text-slate-900">Ma boîte Gmail</h2>
+      <h2 className="text-lg font-semibold text-slate-900">Mon compte Google</h2>
       <p className="text-sm text-slate-500 mt-1 mb-5 max-w-xl">
         Connectez la boîte Gmail de votre adresse ERP : vos échanges apparaissent alors
         dans le fil des contacts et des projets, et vos envois partent de votre adresse.
       </p>
       <div className="max-w-xl space-y-5">
         <GmailAccountCard />
-        <EmailSignatureEditor />
+        <GoogleCalendarCard />
+        <SignatureEditors />
       </div>
     </div>
   )

@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { FileUp, Table2, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, MoreHorizontal, BookOpen, Download, Clock, Plus, ArrowLeftRight, Check, X, Landmark, Wallet, FileText, FileWarning, Flag, Bookmark, Send } from 'lucide-react'
+import { celebrate } from '../lib/celebrate.js'
+import { FileUp, Table2, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, MoreHorizontal, BookOpen, Download, Clock, Plus, ArrowLeftRight, Check, X, Landmark, Wallet, FileText, Flag, Bookmark, Send, Pencil, Paperclip, Combine, Split } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import api from '../lib/api.js'
-import { invalidate } from '../lib/prefetch.js'
+import { invalidate, prefetch } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -10,7 +12,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
-import { VendorProfileHint } from '../components/VendorProfileHint.jsx'
+import { VendorProfileHint, VendorHover } from '../components/VendorProfileHint.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { StatementDropModal } from '../components/StatementDropModal.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
@@ -56,10 +58,8 @@ const GHOST_META = { label: 'Hors relevé', tint: 'row-st-ghost', hint: 'Écritu
 // statut réel). Une seule fonction pour les compteurs, le filtre et la teinte.
 const bucketOf = (r) => (r._ghost ? 'ghost' : (STATUS_META[r.status] ? r.status : 'a_traiter'))
 
-// Ordre de la légende = ordre du travail, pas celui de STATUS_META.
 // Vert posé par le passage automatique (serveur : bankAutoReconcile).
 const AUTO_RECONCILE = { qb_rapproche: 'QuickBooks', ecart_zero: 'écart nul' }
-const LEGEND_ORDER = ['a_traiter', 'facture_recue', 'comptabilise', 'rapproche', 'ignore']
 
 const money = (n, currency = 'CAD') => fmtMoney(n, currency, { fallback: <span className="text-slate-300">—</span> })
 
@@ -109,6 +109,49 @@ function useMirror(flash) {
   return { busy, url, run }
 }
 
+// ── Panneau « reçu » (maquette P2, 2026-10-03) ─────────────────────────────
+// Une colonne qui se lit de haut en bas : libellé à gauche, valeur à droite,
+// crayon au survol. Un clic sur la valeur l'ouvre en saisie, sur place.
+function SlipRow({ label, value, warn, edit, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
+  const close = () => setOpen(false)
+  return (
+    <div className="group grid grid-cols-[88px_1fr_16px] gap-2.5 items-center py-2.5 border-b border-slate-100 last:border-0">
+      <span className="text-xs text-slate-500">{label}</span>
+      {open && edit ? <div className="min-w-0">{edit(close)}</div> : edit ? (
+        <button type="button" onClick={() => setOpen(true)}
+          className={`min-w-0 truncate text-left font-medium ${warn ? 'text-amber-600' : 'text-slate-900'}`}>{value}</button>
+      ) : <span className={`min-w-0 truncate font-medium ${warn ? 'text-amber-600' : 'text-slate-900'}`}>{value}</span>}
+      {edit && !open
+        ? <button type="button" aria-label={`Modifier ${label}`} onClick={() => setOpen(true)}
+            className="text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-600"><Pencil size={12} /></button>
+        : <span />}
+    </div>
+  )
+}
+
+// Le gros bouton du bas. Entrée le déclenche tant qu'aucun champ n'a le focus.
+function SlipCta({ label, busy, busyLabel, disabled, onClick }) {
+  const cb = useRef(onClick)
+  cb.current = disabled || busy ? null : onClick
+  useEffect(() => {
+    const h = (e) => {
+      if (e.key !== 'Enter' || e.defaultPrevented || !cb.current) return
+      const t = e.target
+      if (t && t !== document.body && t.closest?.('input,textarea,select,button,[role="combobox"],[contenteditable="true"]')) return
+      e.preventDefault(); cb.current()
+    }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  }, [])
+  return (
+    <button type="button" disabled={disabled || busy} onClick={onClick}
+      className="w-full h-11 rounded-full bg-[#2ca01c] hover:bg-[#248a17] text-white text-[14px] font-semibold disabled:opacity-40">
+      {busy ? busyLabel : label}{!busy && <span className="ml-1.5 text-[12px] font-normal opacity-70">↵</span>}
+    </button>
+  )
+}
+
 // ── « Ajouter » : comptabiliser une ligne qui n'aura jamais de facture ──────
 //
 // Le pendant du bouton « Ajouter » de QuickBooks, et le dossier de préparation
@@ -116,7 +159,11 @@ function useMirror(flash) {
 // document apparié, une règle, le profil du fournisseur, ou l'habitude (« 7 fois
 // sur 8 »). Un champ sans source reste vide : on ne devine pas en silence.
 // Quand le profil et l'habitude se contredisent, on le dit au lieu de trancher.
-function AddExpenseForm({ txn, currency, onDone, onCancel }) {
+// `compact` : la version du panneau (maquette C2, 2026-10-03) — deux colonnes,
+// ni provenance ni historique : l'app tranche, l'humain ne voit que le résultat
+// (et un « à vérifier » quand l'habitude se partage).
+function AddExpenseForm({ txn, currency, onDone, onCancel, compact = false, receipt = false, line = false, next = null, bankAccounts = null, opType = null }) {
+  const cheque = opType === 'cheque'
   const [defaults, setDefaults] = useState(null)
   const [form, setForm] = useState(null)
   const [accounts, setAccounts] = useState([])
@@ -126,29 +173,41 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   const [error, setError] = useState(null)
   // Écriture coupée : une part par compte. `null` = une seule dépense.
   const [parts, setParts] = useState(null)
+  const [requested, setRequested] = useState(false)
+  // Pièce récurrente (bail, contrat) jointe d'office, et les champs que
+  // l'humain a touchés — un nouveau bénéficiaire ne les écrase pas.
+  const [standing, setStanding] = useState(null)
+  const touched = useRef(new Set())
 
   useEffect(() => {
     let alive = true
     api.bank.addDefaults(txn.id).then((d) => {
       if (!alive) return
       setDefaults(d)
+      setStanding(d.standing_doc || null)
       // Remboursement de marge : l'écriture s'ouvre déjà coupée en capital et
       // intérêts, il ne reste qu'à confirmer.
       if (d.split?.lines?.length) setParts(d.split.lines.map((l) => ({ ...l })))
+      // Ligne ouverte (L3) : elle reprend EXACTEMENT ce que la colonne annonce —
+      // l'écriture préparée, ou le compte du virement détecté.
+      const sg = line && txn.suggestion?.kind === 'vendor_expense' ? txn.suggestion.payload || {} : {}
+      const xfer = line && next?.kind === 'virement' ? (bankAccounts || []).find((b) => b.id === next.account_id) : null
       setForm({
-        vendor: d.vendor || '',
-        expense_account_id: d.expense_account_id || '',
-        tax_code_id: d.tax_code_id || '',
+        vendor: sg.vendor || d.vendor || '',
+        expense_account_id: (xfer?.qb_account_id && String(xfer.qb_account_id)) || sg.expense_account_id || d.expense_account_id || '',
+        tax_code_id: sg.tax_code_id || d.tax_code_id || '',
         memo: d.memo || '',
-        doc_number: d.doc_number || '',
-        qb_type: d.qb_type === 'bill' ? 'bill' : 'purchase',
+        doc_number: d.doc_number || (cheque && txn.check_number) || '',
+        qb_type: cheque ? 'purchase' : d.qb_type === 'bill' ? 'bill' : 'purchase',
       })
     }).catch((e) => setError(e.message))
-    Promise.all([api.quickbooks.accounts(), api.quickbooks.taxCodes()])
+    // Ligne ouverte : tous les comptes — un virement, un remboursement de dette
+    // se catégorisent vers un compte de bilan, comme dans QuickBooks.
+    Promise.all([api.quickbooks.accounts(line ? { all: 1 } : {}), api.quickbooks.taxCodes()])
       .then(([a, t]) => { if (alive) { setAccounts(a || []); setTaxCodes(t || []) } })
       .catch(() => {})
     return () => { alive = false }
-  }, [txn.id])
+  }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Dernier recours pour le compte de dépense : la catégorie écrite sur la fiche
   // fournisseur (« 14000 Pièces ») désigne un numéro de compte — on prend celui qui
@@ -186,6 +245,44 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100
   const base = round2(total - taxCad)
   const rest = round2(base - (parts || []).reduce((n, p) => n + (Number(p.amount) || 0), 0))
+  // Répartition d'une règle en % : les montants suivent la base hors taxes
+  // (qui bouge avec le code de taxe) ; la dernière part prend le reste.
+  useEffect(() => {
+    if (rate === undefined) return
+    setParts((ps) => {
+      if (!ps?.some((p) => p.pct != null)) return ps
+      let used = 0
+      return ps.map((p, i) => {
+        if (p.pct == null) { used += Number(p.amount) || 0; return p }
+        const amount = i === ps.length - 1 ? round2(base - used) : round2(base * p.pct / 100)
+        used += amount
+        return amount === p.amount ? p : { ...p, amount }
+      })
+    })
+  }, [base, rate])
+
+  // Joint la pièce récurrente (ou retient qu'on n'en veut pas) une fois l'écriture faite.
+  const attachStanding = async () => {
+    if (!standing) return
+    try {
+      await api.bank.standingDoc(txn.id, { vendor: form.vendor, drive_file_id: standing.drive_file_id, file_name: standing.file_name, attach: standing.checked })
+    } catch (e) { throw new Error(`Écriture publiée, ${standing.file_name} non joint : ${e.message}`) }
+  }
+
+  // Bénéficiaire choisi : on relit SON habitude (catégorie, taxe, mémo, pièce).
+  const pickPayee = (p) => {
+    setForm((f) => ({ ...f, vendor: p.name, payee_id: p.type === 'new' ? null : p.id, payee_type: p.type === 'new' ? null : p.type }))
+    api.bank.addDefaults(txn.id, p.name).then((d) => {
+      setDefaults(d)
+      setStanding(d.standing_doc || null)
+      setForm((f) => {
+        if (!f || f.vendor !== p.name) return f
+        const next = { ...f }
+        for (const k of ['expense_account_id', 'tax_code_id', 'memo']) if (!touched.current.has(k) && d[k]) next[k] = d[k]
+        return next
+      })
+    }).catch(() => {})
+  }
 
   const submit = async () => {
     setBusy(true); setError(null)
@@ -193,19 +290,21 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
       const r = await api.bank.addExpense(txn.id, {
         vendor: form.vendor,
         expense_account_id: parts ? '' : form.expense_account_id,
-        lines: parts || undefined,
+        lines: parts ? parts.map(({ pct: _pct, ...p }) => p) : undefined,
         tax_code_id: form.tax_code_id || null,
         tax_cad: taxCad,
         memo: form.memo,
         payment_account_id: defaults?.payment_account_id || null,
-        payment_method: defaults?.payment_method || null,
+        payment_method: cheque ? 'Chèque' : defaults?.payment_method || null,
         doc_number: form.doc_number || null,
         qb_type: form.qb_type,
+        payee_id: form.payee_id || null,
+        payee_type: form.payee_type || null,
         due_date: form.qb_type === 'bill' ? defaults?.due_date || null : null,
       })
       invalidate('/bank')
       if (r.qbError) setError(`Écriture créée, publication QuickBooks refusée : ${r.qbError}`)
-      else onDone()
+      else { await attachStanding(); onDone() }
     } catch (e) {
       setError(e.message)
     } finally { setBusy(false) }
@@ -216,25 +315,240 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   const h = defaults?.history
   const accountName = (id) => accounts.find((a) => String(a.Id) === String(id))?.Name || id
   const taxName = (id) => (id === NO_TAX ? 'aucune' : taxCodes.find((t) => String(t.Id) === String(id))?.Name || id)
-  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }))
+  const set = (k) => (v) => { touched.current.add(k); setForm((f) => ({ ...f, [k]: v })) }
 
   const draft = defaults?.draft
   // La provenance d'une valeur, sous le champ. Vide = l'humain l'a saisie.
   const from = (k) => {
+    if (compact) return null
     const src = draft?.fields?.[k]?.source
     return src ? <span className="text-[11px] text-slate-400">{src}</span> : null
   }
 
+  const accSrc = draft?.fields?.expense_account_id?.source || ''
+  const unsure = compact && (!form.expense_account_id || accSrc.startsWith('habitude :') || accSrc.startsWith('déduit') || /^déjà fait \d+ fois sur/.test(accSrc))
+
+  if (line) {
+    const bank = bankOfQb(form.expense_account_id, bankAccounts)
+    const doc = draft?.document
+    const acctOpt = (a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`
+    const sgp = txn.suggestion?.kind === 'vendor_expense' ? txn.suggestion : null
+    const go = async () => {
+      if (!bank && !(sgp && !parts && !cheque
+        && String(sgp.payload?.expense_account_id || '') === String(form.expense_account_id || '')
+        && String(sgp.payload?.tax_code_id || '') === String(form.tax_code_id || '')
+        && (sgp.payload?.vendor || '') === (form.vendor || '')
+        && (form.memo || '') === (defaults?.memo || ''))) { await submit(); return }
+      setBusy(true); setError(null)
+      try {
+        // Rien n'a bougé dans l'écriture préparée : on la confirme telle quelle.
+        if (bank) await transferToBank(txn, bank)
+        else { await api.bank.acceptProposal(sgp.id); invalidate('/bank'); await attachStanding() }
+        await onDone(bank ? 'Virement lié' : 'Écriture ajoutée')
+      } catch (e) { setError(e.message) } finally { setBusy(false) }
+    }
+    const blocked = !bank && (!form.vendor || (parts ? (Math.abs(rest) > 0.02 || parts.some((p) => !p.expense_account_id)) : !form.expense_account_id))
+    return (
+      <div className="flex flex-col gap-3" data-testid="line-categorize">
+        <div className="grid grid-cols-[1.1fr_1.4fr_1fr_0.9fr] gap-x-3.5 gap-y-2.5 max-w-[980px] items-start">
+          {cheque && (
+            <LineField label="N° de chèque">
+              <input className={LINE_INPUT} value={form.doc_number} onChange={(e) => set('doc_number')(e.target.value)} />
+            </LineField>
+          )}
+          {!bank && (
+            <LineField label="Bénéficiaire">
+              <QbPayeeSelect name={form.vendor} payeeId={form.payee_id} payeeType={form.payee_type} currency={currency}
+                onPick={pickPayee} />
+            </LineField>
+          )}
+          {parts ? (
+            <LineField label="Catégorie">
+              <button type="button" className="min-h-[34px] text-left text-slate-600 hover:underline" onClick={() => setParts(null)}>
+                {parts.length} comptes · revenir à un seul
+              </button>
+            </LineField>
+          ) : (
+            <LineField label="Catégorie" warn={!bank && (accSrc.startsWith('habitude :') || accSrc.startsWith('déduit'))} className={bank ? 'col-span-2' : ''}>
+              <SearchableSelect value={form.expense_account_id} onChange={set('expense_account_id')}
+                options={accounts} getOptionValue={(a) => String(a.Id)} getOptionLabel={acctOpt} placeholder="Choisir une catégorie" className={LINE_INPUT} />
+            </LineField>
+          )}
+          {!bank && (
+            <LineField label="Taxe">
+              <SearchableSelect value={form.tax_code_id} onChange={set('tax_code_id')}
+                options={taxCodes} getOptionValue={(t) => String(t.Id)} getOptionLabel={(t) => t.Name}
+                emptyOption="Aucune taxe" placeholder="Aucune taxe" className={LINE_INPUT} />
+            </LineField>
+          )}
+          <LineField label="Montant">
+            <span className="flex flex-col justify-center min-h-[34px] tabular-nums">
+              <span className="font-semibold text-slate-900">{money(total, currency)}</span>
+              <span className="text-[11px] text-slate-500">
+                {bank ? `virement vers ${bank.name}` : rate === undefined ? '…' : taxCad ? `${money(base, currency)} + ${money(taxCad, currency)} taxes` : 'sans taxes'}
+              </span>
+            </span>
+          </LineField>
+          <LineField label="Mémo" className="col-span-2">
+            <input className={LINE_INPUT} value={form.memo}
+              onChange={(e) => set('memo')(e.target.value)} />
+          </LineField>
+        </div>
+        {parts && (
+          <div className="max-w-[640px] space-y-1.5">
+            {parts.map((p, i) => (
+              <div key={i} className="flex gap-2 items-center">
+                <div className="grow min-w-0">
+                  <SearchableSelect value={p.expense_account_id}
+                    onChange={(v) => setParts((ps) => ps.map((x, j) => (j === i ? { ...x, expense_account_id: v } : x)))}
+                    options={accounts} getOptionValue={(a) => String(a.Id)} getOptionLabel={acctOpt} placeholder="Choisir une catégorie" className={LINE_INPUT} />
+                </div>
+                <input type="number" step="0.01" value={p.amount}
+                  className="w-28 h-[34px] border border-slate-300 rounded px-2 text-sm text-right bg-white"
+                  onChange={(e) => setParts((ps) => ps.map((x, j) => (j === i ? { ...x, amount: Number(e.target.value), pct: null } : x)))} />
+                <button type="button" className="text-slate-300 hover:text-red-600" aria-label="Retirer"
+                  onClick={() => setParts((ps) => (ps.length > 2 ? ps.filter((_, j) => j !== i) : ps))}><X size={14} /></button>
+              </div>
+            ))}
+            <div className="flex items-center justify-between text-xs">
+              <button type="button" className="text-[#0077c5] hover:underline"
+                onClick={() => setParts((ps) => [...ps, { expense_account_id: '', amount: rest > 0 ? rest : 0 }])}>+ Ligne</button>
+              {Math.abs(rest) > 0.02 && <span className="text-amber-600">reste {money(rest, currency)}</span>}
+            </div>
+          </div>
+        )}
+        <LineBar txn={txn} error={error}>
+          {!bank && (doc
+            ? <span className="text-[13px] text-green-700">Facture ✓ {doc.label}</span>
+            : standing
+              ? <label className="flex items-center gap-1.5 text-[13px] text-slate-700" data-testid="standing-doc">
+                  <input type="checkbox" checked={standing.checked} onChange={(e) => setStanding((x) => ({ ...x, checked: e.target.checked }))} />
+                  <Paperclip size={13} className="text-slate-400" />
+                  <a href={standing.url} target="_blank" rel="noreferrer" className="hover:underline">{standing.file_name}</a>
+                </label>
+            : txn.invoice_requested || requested
+              ? <span className="text-[13px] text-slate-500">Facture manquante</span>
+              : null)}
+          {!bank && !parts && (
+            <button type="button" className={LINE_GHOST}
+              onClick={() => setParts([{ expense_account_id: form.expense_account_id, amount: base }, { expense_account_id: '', amount: 0 }])}>Diviser</button>
+          )}
+          <button type="button" className={LINE_GO} disabled={busy || blocked} onClick={go}>{busy ? 'Publication…' : 'Ajouter'}</button>
+        </LineBar>
+      </div>
+    )
+  }
+
+  if (receipt) {
+    const acctLabel = (id) => {
+      const a = accounts.find((x) => String(x.Id) === String(id))
+      return a ? `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}` : ''
+    }
+    const doubt = !form.expense_account_id || accSrc.startsWith('habitude :') || accSrc.startsWith('déduit')
+    const acctSelect = (close, value, onPick) => (
+      <SearchableSelect value={value} onChange={(v) => { onPick(v); close() }}
+        options={accounts} getOptionValue={(a) => String(a.Id)}
+        getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`} placeholder="Choisir un compte" />
+    )
+    const doc = draft?.document
+    return (
+      <div className="flex flex-col gap-3">
+        <div>
+          <SlipRow label="Fournisseur" value={form.vendor || '—'} defaultOpen={!form.vendor}
+            edit={(close) => <VendorSelect value={form.vendor} onChange={({ vendor }) => { set('vendor')(vendor); if (vendor) close() }} />} />
+          {!parts && (
+            <SlipRow label="Compte" warn={doubt} defaultOpen={!form.expense_account_id}
+              value={<>{acctLabel(form.expense_account_id)}{doubt && <span className="font-normal text-amber-600" data-testid="add-unsure"> · à vérifier</span>}</>}
+              edit={(close) => acctSelect(close, form.expense_account_id, set('expense_account_id'))} />
+          )}
+          {parts && (
+            <div className="py-2.5 border-b border-slate-100 space-y-1.5">
+              <div className="flex items-center justify-between text-xs text-slate-500">
+                <span>{defaults?.split?.reason || 'Comptes'}</span>
+                <button type="button" className="hover:underline" onClick={() => setParts(null)}>Un seul compte</button>
+              </div>
+              {parts.map((p, i) => (
+                <div key={i} className="flex gap-2 items-center">
+                  <div className="grow min-w-0">
+                    <SearchableSelect value={p.expense_account_id}
+                      onChange={(v) => setParts((ps) => ps.map((x, j) => (j === i ? { ...x, expense_account_id: v } : x)))}
+                      options={accounts} getOptionValue={(a) => String(a.Id)}
+                      getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`} placeholder="Choisir un compte" />
+                  </div>
+                  <input type="number" step="0.01" value={p.amount}
+                    className="w-24 border border-slate-300 rounded-lg px-2 py-1 text-sm text-right"
+                    onChange={(e) => setParts((ps) => ps.map((x, j) => (j === i ? { ...x, amount: Number(e.target.value), pct: null } : x)))} />
+                  <button type="button" className="text-slate-300 hover:text-red-600" aria-label="Retirer"
+                    onClick={() => setParts((ps) => (ps.length > 2 ? ps.filter((_, j) => j !== i) : ps))}><X size={14} /></button>
+                </div>
+              ))}
+              <div className="flex items-center justify-between text-xs">
+                <button type="button" className="text-slate-500 hover:underline"
+                  onClick={() => setParts((ps) => [...ps, { expense_account_id: '', amount: rest > 0 ? rest : 0 }])}>+ Part</button>
+                {Math.abs(rest) > 0.02 && <span className="text-amber-600">reste {money(rest, currency)}</span>}
+              </div>
+            </div>
+          )}
+          <SlipRow label="Taxe" value={form.tax_code_id && form.tax_code_id !== NO_TAX ? taxName(form.tax_code_id) : 'Aucun code (hors taxes)'}
+            edit={(close) => (
+              <SearchableSelect value={form.tax_code_id} onChange={(v) => { set('tax_code_id')(v); close() }}
+                options={taxCodes} getOptionValue={(t) => String(t.Id)} getOptionLabel={(t) => t.Name}
+                emptyOption="Aucune taxe" placeholder="Aucune taxe" />
+            )} />
+          <SlipRow label="Mémo" value={form.memo || '—'}
+            edit={(close) => (
+              <input autoFocus className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm" value={form.memo}
+                onChange={(e) => set('memo')(e.target.value)} onBlur={close}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); close() } }} />
+            )} />
+          {form.qb_type === 'bill' && (
+            <SlipRow label="Type" value={`Facture fournisseur${defaults?.due_date ? ` · échéance ${defaults.due_date}` : ''}`}
+              edit={(close) => (
+                <select autoFocus className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm bg-white" value={form.qb_type}
+                  onChange={(e) => { set('qb_type')(e.target.value); close() }} onBlur={close}>
+                  <option value="purchase">Dépense</option>
+                  <option value="bill">Facture fournisseur</option>
+                </select>
+              )} />
+          )}
+          {!!form.doc_number && <SlipRow label="N°" value={form.doc_number} />}
+          <SlipRow label="Reçu" value={doc
+            ? <>{doc.label} <span className="text-green-700">✓</span></>
+            : txn.invoice_requested || requested
+              ? <span className="font-normal text-slate-500">Manquante</span>
+              : <button type="button" className="font-normal text-brand-600 hover:underline"
+                  onClick={async () => { await api.bank.addInvoiceRequests([txn.id]); invalidate('/bank'); setRequested(true) }}>Demander</button>} />
+        </div>
+
+        <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 rounded-xl bg-slate-50 px-3.5 py-2.5 text-[12.5px] tabular-nums">
+          <span>Avant taxes</span><span className="text-right font-medium">{money(base, currency)}</span>
+          <span className="text-slate-500">Taxes{rate ? ` · ${rate.toFixed(3).replace(/\.?0+$/, '')} %` : ''}</span>
+          <span className="text-right text-slate-500">{rate === undefined ? '…' : money(taxCad, currency)}</span>
+        </div>
+
+        {error && <div className="text-xs text-red-600">{error}</div>}
+        <SlipCta label="Ajouter" busy={busy} busyLabel="Publication…" onClick={submit}
+          disabled={!form.vendor || (parts ? (Math.abs(rest) > 0.02 || parts.some((p) => !p.expense_account_id)) : !form.expense_account_id)} />
+        {!parts && (
+          <button type="button" className="self-center -mt-1 text-xs text-slate-500 hover:underline"
+            onClick={() => setParts([{ expense_account_id: form.expense_account_id, amount: base }, { expense_account_id: '', amount: 0 }])}>
+            Diviser
+          </button>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-3 text-sm">
-      <div className="text-xs text-slate-500">
+      {!compact && <div className="text-xs text-slate-500">
         Comptabiliser {money(total, currency)}{draft?.document ? ` · ${draft.document.label}` : ' sans facture'}.
         {/* La règle qui a rempli ces champs : sans elle, on ne saurait pas
             pourquoi le compte et la taxe sont déjà là. */}
         {txn.rule_name && <span className="text-slate-400"> Préparée par la règle « {txn.rule_name} ».</span>}
-      </div>
+      </div>}
 
-      {!!draft?.hints?.length && (
+      {!compact && !!draft?.hints?.length && (
         <div className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-500 space-y-0.5">
           {draft.hints.map((h) => <div key={h.label}>{h.label} : {h.value}</div>)}
         </div>
@@ -242,7 +556,7 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
 
       {/* Disposition de QuickBooks (choix de Charles, 2026-09-29) : les champs
           côte à côte sur une ligne, l'action dessous. */}
-      <div className="grid grid-cols-4 gap-x-3 gap-y-2 items-start">
+      <div className={`grid ${compact ? 'grid-cols-2' : 'grid-cols-4'} gap-x-3 gap-y-2 items-start`}>
         <label className="block">
           {/* La fiche du fournisseur (particularités, compte, taxes, échéance) se lit
               au survol de la pastille : on ne quitte pas la transaction pour aller
@@ -256,8 +570,11 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         </label>
 
         {!parts && (
-          <label className="block">
-            <span className="text-xs text-slate-500">Compte de dépense</span>
+          <label className={`block${compact ? ' col-span-2' : ''}`}>
+            <span className="text-xs text-slate-500">
+              Compte de dépense
+              {unsure && <span className="ml-1.5 text-amber-600" data-testid="add-unsure">· à vérifier</span>}
+            </span>
             <SearchableSelect value={form.expense_account_id} onChange={set('expense_account_id')}
               options={accounts} getOptionValue={(a) => String(a.Id)}
               getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
@@ -365,7 +682,7 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         )}
       </div>
 
-      {h && (() => {
+      {!compact && h && (() => {
         // Deux choses valent un avertissement : un historique qui se contredit,
         // et une proposition (venue du profil fournisseur) qui contredit ce
         // qu'on a réellement publié les fois précédentes.
@@ -405,7 +722,7 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
           disabled={busy || !form.vendor
             || (parts ? (Math.abs(rest) > 0.02 || parts.some((p) => !p.expense_account_id)) : !form.expense_account_id)}
           onClick={submit}>
-          {busy ? 'Publication…' : 'Ajouter'}
+          {busy ? 'Publication…' : compact ? 'Comptabiliser' : 'Ajouter'}
         </button>
       </div>
     </div>
@@ -413,7 +730,100 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
 }
 
 // ── « Transfert » : les deux moitiés d'un mouvement interne ─────────────────
-function TransferForm({ txn, currency, onDone, onCancel }) {
+// « Ajouter » pour une ENTRÉE sans document (intérêts, remboursement) : un
+// dépôt QuickBooks, au compte du dernier dépôt de même libellé.
+function DepositForm({ txn, currency, onDone, line = false, next = null, bankAccounts = null }) {
+  const [form, setForm] = useState(null)
+  // Sur une carte, l'entrée est un crédit de carte : le formulaire « Ajouter ».
+  const [card, setCard] = useState(false)
+  const [accounts, setAccounts] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  useEffect(() => {
+    let alive = true
+    setForm(null)
+    const xfer = line && next?.kind === 'virement' ? (bankAccounts || []).find((b) => b.id === next.account_id) : null
+    api.bank.depositDefaults(txn.id).then((d) => {
+      if (alive && d.card) { setCard(true); return }
+      if (alive) setForm({ account_id: (xfer?.qb_account_id && String(xfer.qb_account_id)) || d.account_id || '', memo: d.memo || '', source: d.source })
+    })
+      .catch((e) => { if (alive) { setForm({ account_id: '', memo: '' }); setError(e.message) } })
+    api.quickbooks.accounts({ all: 1 }).then((a) => { if (alive) setAccounts(a || []) }).catch(() => {})
+    return () => { alive = false }
+  }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (card) {
+    return line
+      ? <AddExpenseForm line txn={txn} currency={currency} next={next} bankAccounts={bankAccounts} onDone={onDone} />
+      : <AddExpenseForm receipt txn={txn} currency={currency} onDone={onDone} />
+  }
+  if (!form) return <div className="py-6 text-center text-xs text-slate-400">Chargement…</div>
+  const acct = accounts.find((a) => String(a.Id) === String(form.account_id))
+  const submit = async () => {
+    setBusy(true); setError(null)
+    try { await api.bank.addDeposit(txn.id, { account_id: form.account_id, memo: form.memo }); invalidate('/bank'); onDone() }
+    catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  if (line) {
+    const bank = bankOfQb(form.account_id, bankAccounts)
+    const go = async () => {
+      if (!bank) { await submit(); return }
+      setBusy(true); setError(null)
+      try { await transferToBank(txn, bank); await onDone('Virement lié') } catch (e) { setError(e.message) } finally { setBusy(false) }
+    }
+    return (
+      <div className="flex flex-col gap-3" data-testid="line-categorize">
+        <div className="grid grid-cols-[1.1fr_1.4fr_1fr_0.9fr] gap-x-3.5 gap-y-2.5 max-w-[980px] items-start">
+          <LineField label="Catégorie" className="col-span-2" warn={!!form.source?.startsWith('déduit')}>
+            <SearchableSelect value={form.account_id} onChange={(v) => setForm((f) => ({ ...f, account_id: v, source: null }))}
+              options={accounts} getOptionValue={(a) => String(a.Id)}
+              getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`} placeholder="Choisir une catégorie" className={LINE_INPUT} />
+          </LineField>
+          <LineField label="Montant">
+            <span className="flex flex-col justify-center min-h-[34px] tabular-nums">
+              <span className="font-semibold text-green-700">+ {money(Math.abs(txn.amount), currency)}</span>
+              <span className="text-[11px] text-slate-500">{bank ? `virement de ${bank.name}` : 'dépôt'}</span>
+            </span>
+          </LineField>
+          <span />
+          <LineField label="Mémo" className="col-span-2">
+            <input className={LINE_INPUT} value={form.memo}
+              onChange={(e) => setForm((f) => ({ ...f, memo: e.target.value }))} />
+          </LineField>
+        </div>
+        <LineBar txn={txn} error={error}>
+          <button type="button" className={LINE_GO} disabled={busy || !form.account_id} onClick={go}>{busy ? 'Publication…' : 'Ajouter'}</button>
+        </LineBar>
+      </div>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <SlipRow label="Type" value="Dépôt" />
+        <SlipRow label="Compte" defaultOpen={!form.account_id}
+          value={acct ? <>{acct.AcctNum ? `${acct.AcctNum} · ` : ''}{acct.Name}{form.source && (form.source.startsWith('déduit')
+            ? <span className="font-normal text-amber-600"> · à vérifier</span>
+            : <span className="font-normal text-slate-400"> · comme le {form.source.replace(/^dépôt du /, '')}</span>)}</> : '—'}
+          edit={(close) => (
+            <SearchableSelect value={form.account_id} onChange={(v) => { setForm((f) => ({ ...f, account_id: v, source: null })); close() }}
+              options={accounts} getOptionValue={(a) => String(a.Id)}
+              getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`} placeholder="Choisir un compte" />
+          )} />
+        <SlipRow label="Montant" value={money(Math.abs(txn.amount), currency)} />
+        <SlipRow label="Mémo" value={form.memo || '—'}
+          edit={(close) => (
+            <input autoFocus className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm" value={form.memo}
+              onChange={(e) => setForm((f) => ({ ...f, memo: e.target.value }))} onBlur={close}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); close() } }} />
+          )} />
+      </div>
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      <SlipCta label="Ajouter" busy={busy} busyLabel="Publication…" onClick={submit} disabled={!form.account_id} />
+    </div>
+  )
+}
+
+function TransferForm({ txn, currency, onDone, onCancel, receipt = false, preferAccountId = null }) {
   const [candidates, setCandidates] = useState(null)
   const [pick, setPick] = useState(null)
   const [amount, setAmount] = useState('')
@@ -424,10 +834,10 @@ function TransferForm({ txn, currency, onDone, onCancel }) {
   useEffect(() => {
     let alive = true
     api.bank.transferCandidates(txn.id)
-      .then((c) => { if (alive) { setCandidates(c); setPick(c[0]?.id || null) } })
+      .then((c) => { if (alive) { setCandidates(c); setPick((c.find((x) => preferAccountId && x.account_id === preferAccountId) || c[0])?.id || null) } })
       .catch((e) => { if (alive) { setCandidates([]); setError(e.message) } })
     return () => { alive = false }
-  }, [txn.id])
+  }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const chosen = candidates?.find((c) => c.id === pick) || null
 
@@ -444,6 +854,46 @@ function TransferForm({ txn, currency, onDone, onCancel }) {
     } catch (e) {
       setError(e.message)
     } finally { setBusy(false) }
+  }
+
+  if (receipt) {
+    if (candidates == null) return <div className="py-6 text-center text-xs text-slate-400">Recherche…</div>
+    const others = candidates.filter((c) => c.id !== pick)
+    return (
+      <div className="flex flex-col gap-3">
+        {chosen ? (
+          <div>
+            <SlipRow label="Vers" value={chosen.account_name} />
+            <SlipRow label="Contrepartie" value={<>{fmtDate(chosen.txn_date)} · {chosen.label}</>} />
+            <SlipRow label="Montant" value={<>{money(Math.abs(chosen.amount), chosen.currency)}{chosen.fx
+              ? <span className="font-normal text-amber-600"> · change ~{chosen.rate}</span> : <span className="text-green-700"> ✓</span>}</>} />
+            {chosen.fx && (
+              <SlipRow label={`Transféré (${currency})`} value={
+                <input type="number" step="0.01" className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
+                  value={amount} onChange={(e) => setAmount(e.target.value)} />
+              } />
+            )}
+            {others.length > 0 && (
+              <div className="py-2.5 space-y-1">
+                {others.map((c) => (
+                  <button key={c.id} type="button" onClick={() => setPick(c.id)}
+                    className="w-full flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-left hover:bg-slate-50">
+                    <span className="min-w-0 grow truncate">{c.account_name} · {c.label}</span>
+                    <span className="text-xs text-slate-500">{fmtDate(c.txn_date)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="py-6 text-center text-xs text-slate-500">Aucune contrepartie au même montant.</div>
+        )}
+        {note && <div className="text-xs text-amber-700">{note}</div>}
+        {error && <div className="text-xs text-red-600">{error}</div>}
+        {chosen && <SlipCta label="Transférer" busy={busy} busyLabel="Liaison…" onClick={submit}
+          disabled={chosen.fx && !(Number(amount) > 0)} />}
+      </div>
+    )
   }
 
   return (
@@ -493,18 +943,429 @@ function TransferForm({ txn, currency, onDone, onCancel }) {
   )
 }
 
+// ── La ligne qui s'ouvre (maquette L3, choix de Charles, 2026-10-06) ───────
+// Comme les Opérations bancaires de QuickBooks : un clic sur la transaction
+// l'ouvre DESSOUS (plus de panneau à droite). Deux choix seulement —
+// Catégoriser, Trouver une correspondance. Un virement se fait en
+// catégorisant vers un compte de banque ou de carte (« Enregistrer comme
+// transfert » retiré, décision du même jour).
+
+const LINE_BTN = 'h-9 px-5 rounded-full text-[13px] font-semibold whitespace-nowrap disabled:opacity-40'
+const LINE_GO = `${LINE_BTN} bg-[#2ca01c] hover:bg-[#248a17] text-white`
+const LINE_GHOST = `${LINE_BTN} border border-slate-300 bg-white text-slate-700 hover:bg-slate-50`
+const LINE_INPUT = 'w-full h-[34px] border border-slate-300 rounded px-2.5 text-sm bg-white'
+
+// Le compte de banque ERP derrière un compte QuickBooks : choisi comme
+// catégorie, il fait de la ligne un virement.
+const bankOfQb = (qbId, bankAccounts) => (qbId
+  ? (bankAccounts || []).find((b) => b.qb_account_id && String(b.qb_account_id) === String(qbId)) || null
+  : null)
+
+// Le virement : l'autre moitié est la ligne du compte choisi, au même montant.
+async function transferToBank(txn, bank) {
+  const candidates = await api.bank.transferCandidates(txn.id)
+  const list = Array.isArray(candidates) ? candidates : candidates?.data || []
+  const c = list.find((x) => x.account_id === bank.id)
+  if (!c) throw new Error(`Aucune ligne de ${bank.name} au même montant (±5 jours).`)
+  if (c.fx) throw new Error('Virement entre devises : passer par le Dossier.')
+  const r = await api.bank.transfer(txn.id, { counterpart_txn_id: c.id })
+  invalidate('/bank')
+  if (r?.qbError) throw new Error(`Virement lié, écriture QuickBooks refusée : ${r.qbError}`)
+}
+
+// « Bénéficiaire » : la liste de QuickBooks — fournisseurs, clients, employés —
+// chacun avec son genre, comme dans QuickBooks. Le nom proposé par l'app qui
+// n'y figure pas encore reste choisi : il sera créé comme fournisseur.
+const PAYEE_TYPE_FR = { Vendor: 'Fournisseur', Customer: 'Client', Employee: 'Employé' }
+const payeesCache = new Map()
+function QbPayeeSelect({ name, payeeId, payeeType, currency, onPick }) {
+  const [payees, setPayees] = useState(() => payeesCache.get(currency) || null)
+  useEffect(() => {
+    if (payeesCache.has(currency)) return
+    let alive = true
+    api.quickbooks.payees(currency).then((r) => { payeesCache.set(currency, r || []); if (alive) setPayees(r || []) }).catch(() => { if (alive) setPayees([]) })
+    return () => { alive = false }
+  }, [currency])
+  const norm = (v) => String(v || '').trim().toLowerCase()
+  const list = payees || []
+  const chosen = (payeeId && list.find((p) => p.id === payeeId && p.type === payeeType))
+    || (name && list.find((p) => norm(p.name) === norm(name))) || null
+  // Le choix de l'app retrouvé dans la liste : on retient l'id QuickBooks.
+  useEffect(() => {
+    if (chosen && (chosen.id !== payeeId || chosen.type !== payeeType)) onPick(chosen)
+  }, [chosen?.id, chosen?.type]) // eslint-disable-line react-hooks/exhaustive-deps
+  const options = chosen || !name ? list : [{ id: '', name, type: 'new' }, ...list]
+  const key = (p) => `${p.type}:${p.id}`
+  return (
+    <SearchableSelect value={chosen ? key(chosen) : name ? 'new:' : ''} options={options} getOptionValue={key}
+      getOptionLabel={(p) => p.name} placeholder={payees ? 'Choisir un bénéficiaire' : 'Chargement…'} className={LINE_INPUT}
+      renderOption={(p) => (
+        <span className="flex items-center justify-between gap-3 min-w-0">
+          <span className="truncate">{p.name}</span>
+          <span className="shrink-0 text-[11px] text-slate-400">{p.type === 'new' ? 'nouveau fournisseur' : PAYEE_TYPE_FR[p.type]}</span>
+        </span>
+      )}
+      onChange={(v) => { const p = options.find((o) => key(o) === v); if (p) onPick(p) }} />
+  )
+}
+
+function LineField({ label, warn, className = '', children }) {
+  return (
+    <label className={`block min-w-0 ${className}`}>
+      <span className="block mb-1 text-[11.5px] text-slate-500">
+        {label}{warn && <span className="ml-1.5 text-amber-600" data-testid="add-unsure">· à vérifier</span>}
+      </span>
+      {children}
+    </label>
+  )
+}
+
+// Le pied de la ligne ouverte : le libellé brut de la banque à gauche, les
+// gestes à droite.
+function LineBar({ txn, error, children }) {
+  const raw = [txn.details, txn.description].filter(Boolean)[0]
+  return (
+    <div className="flex flex-col gap-2 pt-3 border-t border-slate-200">
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        {raw && <span className="min-w-0 truncate text-xs text-slate-500">Détail bancaire <span className="ml-1.5 font-mono text-[11.5px] text-slate-600">{raw}</span></span>}
+        <span className="grow" />
+        {children}
+      </div>
+    </div>
+  )
+}
+
+function QboLine({ txn, currency, next, bankAccounts, accountName, onChanged, collapse }) {
+  const sg = txn.suggestion
+  const [mode, setMode] = useState(() => (
+    next?.kind === 'apparier' || (sg && sg.kind !== 'vendor_expense') ? 'match' : 'cat'))
+  const done = async (label) => { celebrate(typeof label === 'string' ? label : 'Fait'); collapse?.(); await onChanged() }
+  const modes = [['cat', 'Catégoriser'], ['match', 'Trouver une correspondance']]
+  const kind = (bankAccounts || []).find((b) => b.id === txn.account_id)?.kind
+  const ops = opTypesFor(txn, kind)
+  const [op, setOp] = useState(() => defaultOp(txn, next, kind, bankAccounts))
+  return (
+    <div className="px-5 py-3.5 flex flex-col gap-3 bg-slate-50 text-sm cursor-default" data-testid="qbo-line"
+      onClick={(e) => e.stopPropagation()}>
+      <div className="flex flex-wrap gap-6" role="radiogroup">
+        {modes.map(([k, l]) => (
+          <button key={k} type="button" role="radio" aria-checked={mode === k} onClick={() => setMode(k)}
+            className={`flex items-center gap-2 ${mode === k ? 'font-semibold text-slate-900' : 'text-slate-600'}`}>
+            <span className={`relative w-4 h-4 rounded-full border-[1.5px] bg-white ${mode === k ? 'border-[#2ca01c]' : 'border-slate-300'}`}>
+              {mode === k && <span className="absolute inset-[3px] rounded-full bg-[#2ca01c]" />}
+            </span>
+            {l}
+          </button>
+        ))}
+      </div>
+      {txn._flag && (
+        <div className="rounded-md bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800"><b>À vérifier</b> · {txn._flag}</div>
+      )}
+      {mode === 'cat' && (
+        <div className="max-w-[240px]">
+          <LineField label="Type d'opération">
+            <select className={`${LINE_INPUT} w-full font-semibold`} value={op} data-testid="op-type"
+              onChange={(e) => setOp(e.target.value)}>
+              {ops.map((k) => <option key={k} value={k}>{OP_TYPES[k]}</option>)}
+            </select>
+          </LineField>
+        </div>
+      )}
+      {mode === 'cat'
+        ? <LineOpForm key={op} op={op} txn={txn} currency={currency} next={next} bankAccounts={bankAccounts} onDone={done} />
+        : <LineMatch txn={txn} currency={currency} accountName={accountName} onDone={done} onAdd={() => setMode('cat')} />}
+    </div>
+  )
+}
+
+// « Type d'opération » (maquette K1, Charles 2026-10-06) : comme dans
+// QuickBooks, le type choisi refait les champs à remplir.
+const OP_TYPES = {
+  depense: 'Dépense', cheque: 'Chèque', facture: 'Paiement de facture', virement: 'Virement',
+  carte: 'Paiement de carte', depot: 'Dépôt', client: 'Paiement client', credit: 'Remboursement fournisseur',
+}
+function opTypesFor(txn, kind) {
+  if (txn.amount < 0) return kind === 'card' ? ['depense', 'facture', 'virement'] : ['depense', 'cheque', 'facture', 'virement', 'carte']
+  return kind === 'card' ? ['carte', 'credit', 'virement'] : ['depot', 'client', 'virement']
+}
+// Le compte bancaire que la ligne vise déjà : virement détecté, ou catégorie
+// d'une règle / d'une habitude qui est le compte QuickBooks d'un autre compte
+// (« M/CARD AFFAIRES » → 22000 Mastercard = paiement de la carte).
+function targetBank(txn, next, bankAccounts) {
+  if (next?.kind === 'virement' && next.account_id) return (bankAccounts || []).find((b) => b.id === next.account_id) || null
+  const qb = next?.expense_account_id || (txn.suggestion?.kind === 'vendor_expense' ? txn.suggestion.payload?.expense_account_id : null)
+  const b = bankOfQb(qb, bankAccounts)
+  return b && b.id !== txn.account_id ? b : null
+}
+function defaultOp(txn, next, kind, bankAccounts) {
+  const target = targetBank(txn, next, bankAccounts)
+  if (next?.kind === 'virement' || target) {
+    const other = target
+    return (other?.kind === 'card' && kind !== 'card') || (kind === 'card' && txn.amount > 0) ? 'carte' : 'virement'
+  }
+  if (txn.amount < 0) return txn.check_number ? 'cheque' : 'depense'
+  if (kind === 'card') return 'credit'
+  return /paiement|transfert|interac|virement/i.test(`${txn.description || ''} ${txn.details || ''}`) && !/stripe/i.test(txn.description || '') ? 'client' : 'depot'
+}
+
+function LineOpForm({ op, txn, currency, next, bankAccounts, onDone }) {
+  // Une dépense ne doit pas reprendre le compte d'un virement détecté.
+  const plain = next?.kind === 'virement' ? null : next
+  if (op === 'depense' || op === 'cheque') return <AddExpenseForm line opType={op} txn={txn} currency={currency} next={plain} bankAccounts={bankAccounts} onDone={onDone} />
+  if (op === 'depot' || op === 'credit') return <DepositForm line txn={txn} currency={currency} next={plain} bankAccounts={bankAccounts} onDone={onDone} />
+  if (op === 'virement' || op === 'carte') return <LineTransfer card={op === 'carte'} txn={txn} currency={currency} next={next} bankAccounts={bankAccounts} onDone={onDone} />
+  if (op === 'facture') return <LineBillPay txn={txn} currency={currency} onDone={onDone} />
+  if (op === 'client') return <LineClientPay txn={txn} currency={currency} onDone={onDone} />
+  return null
+}
+
+// Virement / Paiement de carte : l'autre compte, et sa ligne au même montant.
+function LineTransfer({ card, txn, currency, next, bankAccounts, onDone }) {
+  const self = (bankAccounts || []).find((b) => b.id === txn.account_id)
+  const options = (bankAccounts || []).filter((b) => b.id !== txn.account_id
+    && (!card || (self?.kind === 'card' ? b.kind !== 'card' : b.kind === 'card')))
+  const [to, setTo] = useState(() => {
+    const t = targetBank(txn, next, bankAccounts)
+    return (options.find((b) => b.id === t?.id) || (options.length === 1 ? options[0] : null))?.id || ''
+  })
+  const [cands, setCands] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  useEffect(() => {
+    let alive = true
+    api.bank.transferCandidates(txn.id).then((r) => { if (alive) setCands(Array.isArray(r) ? r : r?.data || []) }).catch(() => { if (alive) setCands([]) })
+    return () => { alive = false }
+  }, [txn.id])
+  const bank = options.find((b) => b.id === to)
+  const match = bank && cands ? cands.find((c) => c.account_id === bank.id) : null
+  const out = txn.amount < 0
+  const go = async () => {
+    setBusy(true); setError(null)
+    try {
+      if (match) await transferToBank(txn, bank)
+      else {
+        const r = await api.bank.qbTransfer(txn.id, { bank_account_id: bank.id })
+        invalidate('/bank')
+        if (r?.qbError) throw new Error(r.qbError)
+      }
+      await onDone(card ? 'Carte payée' : 'Virement enregistré')
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  const picker = (
+    <SearchableSelect value={to} onChange={setTo} options={options} getOptionValue={(b) => b.id}
+      getOptionLabel={(b) => b.name} placeholder="Choisir un compte" className={LINE_INPUT} />
+  )
+  const here = <span className="flex items-center min-h-[34px] font-medium text-slate-800">{self?.name || '—'}</span>
+  return (
+    <div className="flex flex-col gap-3" data-testid="line-transfer">
+      <div className="grid grid-cols-[1.1fr_1.4fr_1fr_0.9fr] gap-x-3.5 gap-y-2.5 max-w-[980px] items-start">
+        <LineField label={card ? (out ? 'Depuis' : 'Payée depuis') : 'Depuis'}>{out ? here : picker}</LineField>
+        <LineField label={card ? 'Carte payée' : 'Vers'}>{out ? picker : here}</LineField>
+        <LineField label="Montant">
+          <span className="flex flex-col justify-center min-h-[34px] tabular-nums">
+            <span className="font-semibold text-slate-900">{money(Math.abs(txn.amount), currency)}</span>
+            {bank && <span className={`text-[11px] ${match ? 'text-green-700' : 'text-slate-500'}`}>
+              {cands === null ? '…' : match ? `ligne du ${fmtDate(match.txn_date)} ✓` : 'pas encore au relevé de ce compte'}
+            </span>}
+          </span>
+        </LineField>
+      </div>
+      <LineBar txn={txn} error={error}>
+        <button type="button" className={LINE_GO} disabled={busy || !bank || cands === null || !!match?.fx || (!match && !bank.qb_account_id)} onClick={go}>
+          {busy ? 'Publication…' : card ? 'Payer la carte' : 'Enregistrer le virement'}
+        </button>
+      </LineBar>
+    </div>
+  )
+}
+
+// Paiement de facture : la facture fournisseur ouverte que ce débit règle.
+function LineBillPay({ txn, currency, onDone }) {
+  const [bills, setBills] = useState(null)
+  const [pick, setPick] = useState(null)
+  const [vendor, setVendor] = useState('')
+  const [memo, setMemo] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const amt = Math.abs(txn.amount)
+  const due = (b) => Number(b.balance_due_cad ?? b.total_cad) || 0
+  useEffect(() => {
+    let alive = true
+    api.treasury.payments.openBills().then((r) => {
+      if (!alive) return
+      const list = (Array.isArray(r) ? r : r?.data || []).filter((b) => (b.currency || 'CAD') === (currency || 'CAD'))
+      list.sort((a, b) => Math.abs(due(a) - amt) - Math.abs(due(b) - amt))
+      setBills(list)
+      const exact = list.find((b) => Math.abs(due(b) - amt) < 0.01)
+      if (exact) { setPick(exact.id); setVendor(exact.vendor || '') }
+    }).catch((e) => { if (alive) { setBills([]); setError(e.message) } })
+    return () => { alive = false }
+  }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const vendors = [...new Set((bills || []).map((b) => b.vendor).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+  const shown = (bills || []).filter((b) => !vendor || b.vendor === vendor).slice(0, 8)
+  const go = async () => {
+    setBusy(true); setError(null)
+    try { await api.bank.payBill(txn.id, { achat_id: pick, memo }); invalidate('/bank'); await onDone('Facture payée') }
+    catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="flex flex-col gap-3" data-testid="line-billpay">
+      <div className="grid grid-cols-[1.1fr_1.4fr_1fr_0.9fr] gap-x-3.5 gap-y-2.5 max-w-[980px] items-start">
+        <LineField label="Fournisseur" className="col-span-2">
+          <SearchableSelect value={vendor} onChange={(v) => { setVendor(v || ''); setPick(null) }} options={vendors}
+            getOptionValue={(v) => v} getOptionLabel={(v) => v} emptyOption="Tous" placeholder="Tous" className={LINE_INPUT} />
+        </LineField>
+        <LineField label="Montant">
+          <span className="flex items-center min-h-[34px] font-semibold text-slate-900 tabular-nums">{money(amt, currency)}</span>
+        </LineField>
+      </div>
+      <div className="max-w-[760px] rounded-md border border-slate-200 bg-white">
+        {bills === null ? <div className="px-3 py-3 text-xs text-slate-400">Chargement…</div>
+          : !shown.length ? <div className="px-3 py-3 text-xs text-slate-500">Aucune facture ouverte</div>
+          : shown.map((b) => {
+            const on = pick === b.id
+            return (
+              <button key={b.id} type="button" onClick={() => { setPick(b.id); setVendor(b.vendor || '') }}
+                className={`w-full grid grid-cols-[18px_1fr_110px_90px_110px] items-center gap-3 px-3 py-2 text-left text-[13px] border-b border-slate-100 last:border-0 ${on ? 'bg-green-50' : 'hover:bg-slate-50'}`}>
+                <span className={`w-3.5 h-3.5 rounded-[3px] border-[1.5px] ${on ? 'bg-[#2ca01c] border-[#2ca01c]' : 'border-slate-300'}`} />
+                <span className="truncate">{b.vendor}</span>
+                <span className="truncate text-slate-500">{b.vendor_invoice_number || b.bill_number || '—'}</span>
+                <span className="text-slate-500">{b.due_date ? fmtDate(b.due_date) : ''}</span>
+                <span className={`text-right tabular-nums ${Math.abs(due(b) - amt) < 0.01 ? 'text-green-700 font-semibold' : ''}`}>{money(due(b), b.currency)}</span>
+              </button>
+            )
+          })}
+      </div>
+      <div className="grid grid-cols-[1.1fr_1.4fr_1fr_0.9fr] gap-x-3.5 max-w-[980px]">
+        <LineField label="Mémo" className="col-span-2">
+          <input className={LINE_INPUT} value={memo} onChange={(e) => setMemo(e.target.value)} />
+        </LineField>
+      </div>
+      <LineBar txn={txn} error={error}>
+        <button type="button" className={LINE_GO} disabled={busy || !pick} onClick={go}>{busy ? 'Publication…' : 'Payer la facture'}</button>
+      </LineBar>
+    </div>
+  )
+}
+
+// Paiement client : la facture que cet encaissement règle (le même reçu que
+// le panneau, avec dépôt QuickBooks et Stripe marqué payé).
+function LineClientPay({ txn, currency, onDone }) {
+  const { dossier } = useDossier(txn.id)
+  if (!dossier) return <div className="py-4 text-xs text-slate-400">Chargement…</div>
+  return (
+    <div className="flex flex-col gap-3 max-w-[520px]" data-testid="line-clientpay">
+      <InvoiceSlip txn={txn} invoices={dossier.invoices || []} ambiguous={dossier.invoices_ambiguous} currency={currency} onDone={() => onDone('Paiement reçu')} />
+      <LineBar txn={txn} />
+    </div>
+  )
+}
+
+// « Trouver une correspondance » : la proposition d'un moteur s'il y en a une
+// (paiement émis, écriture QuickBooks retrouvée…), sinon les pièces au même
+// montant, côte à côte avec la ligne de banque.
+function LineMatch({ txn, currency, accountName, onDone, onAdd }) {
+  const [props, setProps] = useState(txn.proposal_count > 0 ? null : 0)
+  return (
+    <div className="flex flex-col gap-3 max-w-[760px]">
+      {txn.proposal_count > 0 && <ProposalCards line accountName={accountName} txn={txn} currency={currency} onChanged={() => onDone('Apparié')} onCount={setProps} />}
+      {props === 0 && <QbMatchPane txn={txn} currency={currency} onChanged={() => onDone('Apparié')} onAdd={onAdd} />}
+      <LineBar txn={txn} />
+    </div>
+  )
+}
+
+// La colonne « Catégorie ou correspondance » : ce que la ligne deviendra, en
+// un nom ; dessous, seulement ce qui cloche.
+const WARN_EVIDENCE = /écart|décal|autre compte/i
+function lineWarning(row) {
+  if (row._flag) return row._flag
+  const e = (row.suggestion?.evidence || []).find((x) => WARN_EVIDENCE.test(x.label || ''))
+  return e ? `${e.label}${e.detail ? ` ${e.detail}` : ''}` : null
+}
+function QboCatCell({ row, next, names, currency, bankAccounts }) {
+  const tag = (t, cls) => <span className={`shrink-0 text-[10px] font-semibold rounded px-1.5 py-px ${cls}`}>{t}</span>
+  const warn = lineWarning(row)
+  const line2 = warn ? <span className="block truncate text-[11.5px] text-amber-600" title={warn}>{warn}</span>
+    : row.invoice_requested ? <span className="block truncate text-[11.5px] text-slate-400">facture manquante</span> : null
+  const wrap = (name, t, cls = 'text-slate-700') => (
+    <span className="block min-w-0" data-testid="qbo-cat">
+      <span className="flex items-center gap-1.5 min-w-0"><span className={`truncate ${cls}`}>{name}</span>{t}</span>
+      {line2}
+    </span>
+  )
+  const sg = row.suggestion
+  if (next?.kind === 'virement' || row.transfer_txn_id) {
+    const bank = (bankAccounts || []).find((b) => b.id === next?.account_id)
+    return wrap(bank?.name || next?.label || 'Virement', tag('Virement', 'bg-sky-50 text-sky-700'))
+  }
+  if (sg?.kind === 'qb_habit') {
+    const p = sg.payload || {}
+    return wrap(p.account_name || p.label, tag(p.entity === 'deposit' ? 'Dépôt' : 'Virement', 'bg-sky-50 text-sky-700'))
+  }
+  if (sg?.kind === 'vendor_expense') {
+    const p = sg.payload || {}
+    return wrap(nameIn(names?.accounts, p.expense_account_id) || p.vendor || 'Dépense')
+  }
+  if (sg) {
+    const p = sg.payload || {}
+    const what = sg.kind === 'payment_clear' ? (p.label || 'Paiement émis')
+      : sg.kind === 'qb_link' ? `${QB_TYPE_FR[String(p.qb_txn_type || '').toLowerCase()] || 'Écriture'}${p.date ? ` du ${fmtDate(p.date)}` : ''}`
+        : suggestionText(sg, names, currency).what
+    return wrap(what, tag('Correspondance', 'bg-green-50 text-green-700'), 'font-semibold text-green-700')
+  }
+  if (next?.kind === 'apparier') return wrap(row.matched_label || next?.label || 'Correspondance', tag('Correspondance', 'bg-green-50 text-green-700'), 'font-semibold text-green-700')
+  if (next?.kind === 'exclure') return wrap('Hors comptabilité', next?.label ? tag('Règle', 'bg-slate-100 text-slate-500') : null, 'text-slate-500')
+  if (next?.kind === 'comptabiliser' && next.label) return wrap(next.label)
+  if (next?.kind === 'publier') {
+    // Une règle importée de QuickBooks n'a souvent que son nom : on ne le fait
+    // pas passer pour une catégorie.
+    const acct = nameIn(names?.accounts, next.expense_account_id)
+    if (acct) return wrap(acct, tag('Règle', 'bg-slate-100 text-slate-500'))
+  }
+  // L'habitude du fournisseur : proposée, pas encore décidée.
+  const habit = nameIn(names?.accounts, next?.expense_account_id)
+  if (habit) return wrap(habit, null, 'text-slate-500 italic')
+  return wrap('Non catégorisé', null, 'text-slate-400')
+}
+// Le lien « Action » : le geste de la ligne. Il ouvre la ligne (tout est déjà
+// rempli dessous) ; une règle « Exclure » s'applique d'un clic.
+function QboActCell({ row, next, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const sg = row.suggestion
+  const match = next?.kind === 'apparier' || (sg && sg.kind !== 'vendor_expense')
+  const label = next?.kind === 'exclure' ? 'Exclure' : match ? 'Apparier' : 'Ajouter'
+  const warn = !!lineWarning(row)
+  return (
+    <button type="button" disabled={busy} data-testid="qbo-act"
+      className={`text-[13px] font-semibold hover:underline disabled:opacity-50 ${warn ? 'text-amber-600' : 'text-[#0077c5]'}`}
+      onClick={async (e) => {
+        if (next?.kind !== 'exclure') return
+        e.stopPropagation(); setBusy(true)
+        try { await api.bank.updateTransaction(row.id, { status: 'ignore' }); invalidate('/bank'); celebrate('Exclue'); await onChanged() } finally { setBusy(false) }
+      }}>
+      {label}
+    </button>
+  )
+}
+
 // ── Drawer latéral : détail + suggestions de matching ────────────────────────
 // Ce qu'un moteur a trouvé et qui attend une décision. La preuve est écrite en
 // français par le serveur et affichée telle quelle : c'est elle qui permet de
 // trancher en une seconde, pas la confiance en pourcentage.
 // Un refus est DÉFINITIF — la proposition ne reviendra pas au prochain passage.
-function ProposalCards({ txn, currency, onChanged }) {
+const QB_TYPE_FR = { expense: 'Dépense', purchase: 'Dépense', deposit: 'Dépôt', transfer: 'Virement', billpayment: 'Paiement de facture', bill: 'Facture', journalentry: 'Écriture de journal', payment: 'Paiement', check: 'Chèque', creditcardcredit: 'Crédit de carte', creditcardpayment: 'Paiement de carte' }
+
+function ProposalCards({ txn, currency, onChanged, slip = false, line = false, accountName = null, onCount }) {
   const [items, setItems] = useState(null)
   const [busy, setBusy] = useState(null)
   const [error, setError] = useState(null)
 
   const load = () => api.bank.txnProposals(txn.id).then(setItems).catch(() => setItems([]))
   useEffect(() => { setItems(null); setError(null); load() }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const openCount = (items || []).filter((p) => p.status === 'proposee').length
+  useEffect(() => { if (items) onCount?.(openCount) }, [items, openCount]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const decide = async (p, accept) => {
     setBusy(p.id); setError(null)
@@ -518,6 +1379,96 @@ function ProposalCards({ txn, currency, onChanged }) {
 
   const open = (items || []).filter((p) => p.status === 'proposee')
   if (!open.length) return null
+
+  // Ligne ouverte (L3) : la banque et ce que le moteur a trouvé côte à côte,
+  // ✓ quand ça concorde, ! en orange sur ce qui cloche.
+  if (line) {
+    const p = open[0]
+    const pl = p.payload || {}
+    const type = p.kind === 'payment_clear' ? 'Paiement émis'
+      : QB_TYPE_FR[String(pl.qb_txn_type || '').toLowerCase()] || PROPOSAL_TITLE[p.kind] || 'Écriture'
+    const warns = (p.evidence || []).filter((e) => WARN_EVIDENCE.test(e.label || ''))
+    const off = (re) => warns.some((e) => re.test(e.label || ''))
+    const amt = pl.payment_amount ?? pl.amount ?? null
+    const bank = [
+      ['Qui', txn.vendor_name || txnLabel(txn)],
+      ['Montant', money(Math.abs(txn.amount), currency)],
+      ['Date', fmtDate(txn.txn_date)],
+      ['Compte', accountName || '—'],
+    ]
+    const qb = [
+      ['Qui', pl.label || pl.vendor || pl.debt || '—', pl.label || pl.vendor || pl.debt ? false : undefined],
+      ['Montant', amt != null ? money(Math.abs(amt), currency) : money(Math.abs(txn.amount), currency), off(/montant/i)],
+      ['Date', fmtDate(pl.payment_date || pl.date) || '—', off(/date|décal/i)],
+      ['Compte', pl.account_name || accountName || '—', off(/autre compte/i)],
+    ]
+    const side = (title, rows) => (
+      <div className="min-w-0 px-3.5 py-2.5">
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{title}</div>
+        {rows.map(([k, v, w]) => (
+          <div key={k} className="grid grid-cols-[70px_1fr_14px] gap-2 py-0.5 text-[13px]">
+            <span className="text-slate-500">{k}</span>
+            <span className={`truncate font-medium ${w ? 'text-amber-600' : 'text-slate-800'}`}>{v}</span>
+            {w === undefined ? <span /> : w ? <AlertTriangle size={12} className="mt-1 text-amber-600" /> : <Check size={13} className="mt-0.5 text-green-600" />}
+          </div>
+        ))}
+      </div>
+    )
+    return (
+      <div className="flex flex-col gap-3" data-testid="proposal-cards">
+        {warns.length > 0 && (
+          <div className="rounded-md bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800">
+            <b>À vérifier</b> · {warns.map((e) => `${e.label}${e.detail ? ` ${e.detail}` : ''}`).join(' · ')}
+          </div>
+        )}
+        <div className="grid grid-cols-2 divide-x divide-slate-300 rounded-md border border-slate-300 bg-white max-w-[640px]">
+          {side('Banque', bank)}
+          {side(`QuickBooks · ${type}`, qb)}
+        </div>
+        {error && <div className="text-xs text-red-600">{error}</div>}
+        <div className="flex items-center gap-4 max-w-[640px]">
+          <button type="button" className="text-[13px] font-medium text-red-600 hover:underline disabled:opacity-50"
+            title="Définitif : cette proposition ne reviendra pas" disabled={busy === p.id} onClick={() => decide(p, false)}>
+            Ce n'est pas ça
+          </button>
+          <span className="grow" />
+          <button type="button" disabled={busy === p.id} onClick={() => decide(p, true)}
+            className={`${LINE_BTN} text-white ${warns.length ? 'bg-amber-600 hover:bg-amber-700' : 'bg-[#2ca01c] hover:bg-[#248a17]'}`}>
+            {busy === p.id ? '…' : 'Apparier'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Le panneau « reçu » : la proposition se lit comme le reste — une ligne par
+  // fait, les preuves en ✓, un seul gros bouton.
+  if (slip) {
+    const p = open[0]
+    const pl = p.payload || {}
+    const type = QB_TYPE_FR[String(pl.qb_txn_type || '').toLowerCase()] || pl.qb_txn_type || 'Écriture'
+    return (
+      <div className="flex flex-col gap-3" data-testid="proposal-cards">
+        <div className="text-center text-xs text-slate-500">
+          {PROPOSAL_TITLE[p.kind] || p.kind}{p.confidence != null ? ` · ${Math.round(p.confidence * 100)} %` : ''}
+        </div>
+        <div>
+          {pl.qb_txn_id && <SlipRow label="QuickBooks" value={`${type} n° ${pl.qb_txn_id}`} />}
+          {pl.date && <SlipRow label="Date" value={fmtDate(pl.date)} />}
+          {pl.account_name && <SlipRow label="Compte" value={pl.account_name} />}
+          {(p.evidence || []).map((e, i) => (
+            <SlipRow key={i} label={e.label} value={<span className="font-normal">{e.detail || <Check size={13} className="inline text-green-600" />}</span>} />
+          ))}
+        </div>
+        {error && <div className="text-xs text-red-600">{error}</div>}
+        <SlipCta label="C'est bien ça" busy={busy === p.id} busyLabel="…" onClick={() => decide(p, true)} />
+        <button type="button" className="self-center text-xs text-red-600 hover:underline disabled:opacity-50"
+          title="Définitif : cette proposition ne reviendra pas" disabled={busy === p.id} onClick={() => decide(p, false)}>
+          Ce n'est pas ça
+        </button>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-2" data-testid="proposal-cards">
@@ -570,6 +1521,7 @@ const PROPOSAL_TITLE = {
   aga_repartition: 'Répartition AGA',
   debt_payment: 'Versement de dette',
   vendor_expense: 'Écriture prête',
+  qb_habit: 'Comme d\'habitude',
 }
 
 // ── Suggestion sur la ligne ────────────────────────────────────────────────
@@ -603,6 +1555,8 @@ function suggestionText(sg, names, currency) {
       return { what: 'Débit de la paie', facts: [], proof }
     case 'qb_link':
       return { what: `QuickBooks · ${p.qb_txn_type || 'écriture'} n° ${p.qb_txn_id}`, facts: [p.date && fmtDate(p.date), p.account_name], proof }
+    case 'qb_habit':
+      return { what: p.label || 'Comme d\'habitude', facts: [p.n && `${p.n} fois`], proof: [] }
     case 'vendor_expense': {
       const acct = nameIn(names?.accounts, p.expense_account_id)
       const tax = p.tax_code_id === '__none__' ? 'sans taxe' : nameIn(names?.taxCodes, p.tax_code_id)
@@ -611,53 +1565,6 @@ function suggestionText(sg, names, currency) {
     default:
       return { what: PROPOSAL_TITLE[sg.kind] || sg.kind, facts: [], proof }
   }
-}
-
-function SuggestionCell({ row, currency, names, onChanged }) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
-  const act = (fn) => async (e) => {
-    e.stopPropagation()
-    setBusy(true); setError(null)
-    try { await fn(); invalidate('/bank'); await onChanged() } catch (err) { setError(err.message) } finally { setBusy(false) }
-  }
-  const auto = row.auto_suggestion
-  if (auto && !row.suggestion) {
-    const t = suggestionText(auto, names, currency)
-    return (
-      <span className="flex items-center gap-1.5 min-w-0 text-sm">
-        <span className="truncate">{t.what}</span>
-        <span className="shrink-0 text-[10px] font-bold tracking-wide text-emerald-700 border border-emerald-600 rounded px-1">AUTO</span>
-        <button type="button" disabled={busy} onClick={act(() => api.bank.undoProposal(auto.id))}
-          className="shrink-0 text-xs text-slate-500 underline hover:text-slate-800 disabled:opacity-40">annuler</button>
-        {error && <span className="text-xs text-red-600 truncate" title={error}>{error}</span>}
-      </span>
-    )
-  }
-  const sg = row.suggestion
-  if (!sg) return null
-  const t = suggestionText(sg, names, currency)
-  const details = [...t.facts, ...t.proof].filter(Boolean)
-  const tip = [t.what, ...details.map((d) => (typeof d === 'string' ? d : null)).filter(Boolean),
-    sg.publishes ? 'Crée l\'écriture dans QuickBooks' : null].filter(Boolean).join('\n')
-  return (
-    <span className="flex items-center gap-1.5 min-w-0 text-sm" title={tip} data-testid="row-suggestion">
-      <span className="min-w-0 truncate rounded border border-dashed border-violet-500 px-1.5 text-violet-800 italic">
-        {t.what}
-        {details.map((d, i) => <span key={i} className="not-italic text-slate-500"> · {d}</span>)}
-      </span>
-      {sg.publishes && <span className="shrink-0 text-[10px] font-semibold text-amber-700" title="Crée l'écriture dans QuickBooks">QB</span>}
-      <button type="button" title="Oui" disabled={busy} onClick={act(() => api.bank.acceptProposal(sg.id))}
-        className="shrink-0 p-0.5 rounded border border-slate-300 bg-white text-emerald-700 hover:bg-emerald-50 disabled:opacity-40">
-        <Check size={13} />
-      </button>
-      <button type="button" title="Non — ne reviendra pas" disabled={busy} onClick={act(() => api.bank.refuseProposal(sg.id))}
-        className="shrink-0 p-0.5 rounded border border-slate-300 bg-white text-red-600 hover:bg-red-50 disabled:opacity-40">
-        <X size={13} />
-      </button>
-      {error && <span className="text-xs text-red-600 truncate" title={error}>{error}</span>}
-    </span>
-  )
 }
 
 // L'écriture QuickBooks de la ligne, montrée comme QuickBooks la montre.
@@ -799,10 +1706,18 @@ function QbEntryCard({ txn, currency, onChanged }) {
 // bancaire préremplie avec ce que l'humain vient de voir, et l'aperçu de ce
 // qu'elle couvrirait. Elle PRÉPARE l'écriture des prochaines lignes — elle ne
 // publie jamais seule.
+// Maquette N4 (choix de Charles, 2026-10-03) : à gauche la ligne du relevé, à
+// droite l'écriture que QuickBooks recevra — chaque ligne se clique pour être
+// changée. Dépense (sur un ou plusieurs comptes, en % ou en $), virement vers
+// un compte, ou exclusion ; mémo facultatif.
+const RULE_ACTIONS = [['depense', 'Dépense'], ['virement', 'Virement'], ['exclure', 'Exclure']]
+
 function RuleFromTxnForm({ txn }) {
   const [draft, setDraft] = useState(null)
-  const [keepBooking, setKeepBooking] = useState(true)
   const [names, setNames] = useState(null)
+  const [banks, setBanks] = useState([])
+  const [rate, setRate] = useState(null)
+  const [editing, setEditing] = useState(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState(null)
@@ -812,96 +1727,229 @@ function RuleFromTxnForm({ txn }) {
 
   useEffect(() => {
     let alive = true
+    setDraft(null); setDone(false); setChance(null)
     api.bank.rules.opportunity(txn.id).then((o) => { if (alive) setChance(o) }).catch(() => {})
     return () => { alive = false }
   }, [txn.id])
 
+  const taxId = draft?.tax_code_id
+  useEffect(() => {
+    if (!taxId || taxId === NO_TAX) { setRate(null); return undefined }
+    let alive = true
+    api.bank.taxCodeRate(taxId).then((r) => { if (alive) setRate(r.percent) }).catch(() => { if (alive) setRate(null) })
+    return () => { alive = false }
+  }, [taxId])
+
   const open = async () => {
     setBusy(true); setError(null)
     try {
-      setDraft(await api.bank.rules.draftFromTxn(txn.id))
-      // Les noms des comptes et des codes de taxe, seulement à l'ouverture.
+      const d = await api.bank.rules.draftFromTxn(txn.id)
+      let sp = d.splits
+      if (typeof sp === 'string') { try { sp = JSON.parse(sp) } catch { sp = null } }
+      setDraft({
+        ...d,
+        action: d.action || 'depense',
+        mode: sp?.mode || 'pct',
+        lines: sp?.lines?.length ? sp.lines.map((l) => ({ account_id: String(l.account_id), value: Number(l.value) }))
+          : [{ account_id: d.expense_account_id ? String(d.expense_account_id) : '', value: 100 }],
+      })
       if (!names) {
         Promise.all([api.quickbooks.accounts(), api.quickbooks.taxCodes()])
           .then(([a, t]) => setNames({ accounts: a || [], taxCodes: t || [] })).catch(() => {})
       }
+      if (!banks.length) api.bank.accounts().then((r) => setBanks((r || []).filter((x) => x.id !== txn.account_id))).catch(() => {})
     }
     catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
+  const set = (patch) => setDraft((d) => ({ ...d, ...patch }))
+  const setLine = (i, patch) => setDraft((d) => ({ ...d, lines: d.lines.map((l, j) => (j === i ? { ...l, ...patch } : l)) }))
+
   const save = async () => {
     setBusy(true); setError(null)
     try {
-      const { preview: _p, ...rule } = draft
-      // Sans la façon de comptabiliser, la règle ne retient que le libellé.
-      if (!keepBooking) {
-        rule.vendor_name = null; rule.expense_account_id = null
-        rule.tax_code_id = null; rule.memo = null; rule.qb_type = null
+      const { preview: _p, lines, mode, ...rule } = draft
+      rule.name = rule.name || rule.label_pattern.slice(0, 40)
+      if (rule.action === 'depense') {
+        const ok = lines.filter((l) => l.account_id)
+        rule.expense_account_id = ok[0]?.account_id || null
+        rule.splits = ok.length >= 2 ? { mode, lines: ok } : null
+        rule.transfer_account_id = null
+      } else {
+        // Un virement ou une exclusion ne retient rien de la façon de comptabiliser.
+        Object.assign(rule, { vendor_name: null, expense_account_id: null, tax_code_id: null, qb_type: null, splits: null })
+        if (rule.action === 'exclure') rule.transfer_account_id = null
       }
       await api.bank.rules.create(rule)
+      celebrate('Règle créée')
       setDone(true); setDraft(null)
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
   if (done) return <Link to="/regles-bancaires" className="text-xs text-emerald-700 hover:underline">Règle créée — la voir</Link>
   if (!draft) {
-    // Le libellé est déjà passé plusieurs fois : on le dit, plutôt que
-    // d'attendre que l'utilisateur pense tout seul à créer la règle.
     if (chance) {
       return (
-        <div className="flex items-center gap-2 rounded-lg bg-brand-50 px-2.5 py-1.5">
-          <span className="text-xs text-slate-600 flex-1 min-w-0">
-            <b className="font-semibold">{chance.lines}<sup>e</sup> fois</b> en {chance.months} mois
-            {chance.vendor_name ? ` · ${chance.vendor_name}` : ''} — en faire une règle ?
-          </span>
-          <button type="button" className="shrink-0 text-xs px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700"
-            disabled={busy} onClick={open}>Oui</button>
-          <button type="button" className="shrink-0 text-xs text-slate-400 hover:text-slate-700"
-            onClick={() => setChance(null)}>Non</button>
+        <div className="flex items-center gap-3 rounded-xl border border-slate-200 px-3 py-2">
+          <span className="text-lg font-bold tabular-nums text-slate-900">{chance.lines}×</span>
+          <span className="text-xs text-slate-500 flex-1 min-w-0 truncate">en {chance.months} mois</span>
+          <button type="button" className="shrink-0 h-7 px-3 rounded-full bg-brand-600 text-white text-xs font-semibold hover:bg-brand-700"
+            disabled={busy} onClick={open}>Chaque fois pareil</button>
+          <button type="button" aria-label="Plus tard" className="shrink-0 text-slate-300 hover:text-slate-600"
+            onClick={() => setChance(null)}><X size={14} /></button>
         </div>
       )
     }
     return (
       <div>
         <button type="button" className="text-xs text-slate-500 hover:text-brand-600 hover:underline"
-          disabled={busy} onClick={open}>
-          Toujours faire ça pour ce libellé
-        </button>
+          disabled={busy} onClick={open}>Chaque fois pareil</button>
         {error && <div className="text-xs text-red-600">{error}</div>}
       </div>
     )
   }
+
   const nameOf = (list, id) => (list || []).find((o) => String(o.Id) === String(id))?.Name || null
-  const booking = [
-    draft.vendor_name,
-    nameOf(names?.accounts, draft.expense_account_id) || (draft.expense_account_id ? 'compte choisi' : null),
-    draft.tax_code_id ? `taxe ${nameOf(names?.taxCodes, draft.tax_code_id) || ''}`.trim() : null,
-  ].filter(Boolean).join(' · ')
+  const acctName = (id) => (id ? nameOf(names?.accounts, id)?.split(':').pop() || 'compte choisi' : 'Choisir un compte')
+  const total = Math.abs(txn.amount)
+  const tax = rate ? Math.round((total - total / (1 + rate / 100)) * 100) / 100 : 0
+  const base = Math.round((total - tax) * 100) / 100
+  const sum = draft.lines.reduce((n, l) => n + (Number(l.value) || 0), 0)
+  const amounts = draft.lines.map((l, i) => {
+    if (draft.mode === 'amount') return Number(l.value) || 0
+    if (i === draft.lines.length - 1 && Math.abs(sum - 100) < 0.01) {
+      return Math.round((base - draft.lines.slice(0, -1).reduce((n, x) => n + Math.round(base * x.value) / 100, 0)) * 100) / 100
+    }
+    return Math.round(base * (Number(l.value) || 0)) / 100
+  })
+  const off = draft.lines.length > 1 && (draft.mode === 'pct' ? Math.abs(sum - 100) > 0.01 : Math.abs(sum - base) > 0.02)
+  const acctPicker = (value, onPick) => (
+    <SearchableSelect value={value} onChange={onPick}
+      options={names?.accounts || []} getOptionValue={(a) => String(a.Id)}
+      getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`} placeholder="Choisir un compte" />
+  )
+  const row = 'grid grid-cols-[1fr_auto_auto] gap-x-3 items-center py-1 px-1 -mx-1 rounded cursor-pointer hover:bg-slate-50'
+  const fmt = (n) => n.toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const valid = draft.label_pattern.trim().length >= 3 && (
+    draft.action === 'exclure' || (draft.action === 'virement' ? !!draft.transfer_account_id
+      : draft.lines.every((l) => l.account_id) && !off))
 
   return (
-    <div className="space-y-2 bg-slate-50 rounded-lg p-2">
-      <input value={draft.label_pattern} className="w-full text-xs border border-slate-300 rounded-lg px-2 py-1"
-        onChange={(e) => setDraft((d) => ({ ...d, label_pattern: e.target.value, name: e.target.value.slice(0, 40) }))} />
-      <div className="text-xs text-slate-500">
-        {draft.preview.count} lignes · {draft.preview.a_traiter} à traiter
+    <div className="space-y-3 rounded-xl border border-slate-200 p-3" data-testid="rule-n4">
+      <div className="grid grid-cols-[1fr_20px_1.5fr] gap-2 items-center">
+        <div className="rounded-lg border border-slate-200 p-2 min-w-0">
+          <input value={draft.label_pattern} aria-label="Si le libellé contient"
+            className="w-full font-mono text-[11px] text-slate-600 bg-transparent outline-none focus:text-slate-900"
+            onChange={(e) => set({ label_pattern: e.target.value, name: e.target.value.slice(0, 40) })} />
+          <div className="text-[15px] font-semibold tabular-nums text-right">−{fmt(total)}</div>
+        </div>
+        <span className="text-center text-slate-300">→</span>
+        <div className={`rounded-lg border-[1.5px] p-2 min-w-0 text-[12.5px] ${draft.action === 'exclure' ? 'border-slate-300' : 'border-green-600'}`}>
+          {draft.action === 'depense' && (
+            <>
+              {editing === 'vendor'
+                ? <VendorSelect value={draft.vendor_name || ''} onChange={({ vendor }) => { set({ vendor_name: vendor || null }); if (vendor) setEditing(null) }} />
+                : <button type="button" className="block w-full text-left text-[11px] text-slate-500 truncate hover:text-slate-800"
+                    onClick={() => setEditing('vendor')}>Dépense · {draft.vendor_name || <span className="text-amber-600">fournisseur ?</span>}</button>}
+              {draft.lines.map((l, i) => (editing === `l${i}` ? (
+                <div key={i} className="flex items-center gap-1.5 py-1">
+                  <div className="grow min-w-0">{acctPicker(l.account_id, (v) => setLine(i, { account_id: v }))}</div>
+                  {draft.lines.length > 1 && (
+                    <input type="number" step="0.01" value={l.value} aria-label={draft.mode === 'pct' ? '%' : '$'}
+                      className="w-16 border border-slate-300 rounded px-1.5 py-1 text-right text-xs"
+                      onChange={(e) => setLine(i, { value: Number(e.target.value) })} />
+                  )}
+                  {draft.lines.length > 1 && (
+                    <button type="button" aria-label="Retirer" className="text-slate-300 hover:text-red-600"
+                      onClick={() => { setDraft((d) => ({ ...d, lines: d.lines.filter((_, j) => j !== i) })); setEditing(null) }}><X size={13} /></button>
+                  )}
+                  <button type="button" aria-label="OK" className="text-green-600" onClick={() => setEditing(null)}><Check size={14} /></button>
+                </div>
+              ) : (
+                <div key={i} className={row} onClick={() => setEditing(`l${i}`)}>
+                  <span className={`pl-3 truncate ${l.account_id ? '' : 'text-amber-600'}`}>{acctName(l.account_id)}</span>
+                  <span className="text-[11px] text-slate-400">{draft.lines.length > 1 ? (draft.mode === 'pct' ? `${l.value} %` : '') : ''}</span>
+                  <span className="tabular-nums">{fmt(amounts[i])}</span>
+                </div>
+              )))}
+              {editing === 'tax' ? (
+                <SearchableSelect value={draft.tax_code_id || ''} onChange={(v) => { set({ tax_code_id: v || null }); setEditing(null) }}
+                  options={names?.taxCodes || []} getOptionValue={(t) => String(t.Id)} getOptionLabel={(t) => t.Name}
+                  emptyOption="Aucune taxe" placeholder="Aucune taxe" />
+              ) : (
+                <div className={row} onClick={() => setEditing('tax')}>
+                  <span className="pl-3 truncate text-slate-600">{draft.tax_code_id && draft.tax_code_id !== NO_TAX ? nameOf(names?.taxCodes, draft.tax_code_id) || 'Taxe' : 'Sans taxe'}</span>
+                  <span />
+                  <span className="tabular-nums text-slate-600">{fmt(tax)}</span>
+                </div>
+              )}
+              {off && <div className="text-[11px] text-amber-600 text-right">{draft.mode === 'pct' ? `${Math.round(sum * 10) / 10} %` : `reste ${fmt(base - sum)}`}</div>}
+            </>
+          )}
+          {draft.action === 'virement' && (
+            <>
+              <div className="text-[11px] text-slate-500">Virement</div>
+              <SearchableSelect value={draft.transfer_account_id || ''} onChange={(v) => set({ transfer_account_id: v || null })}
+                options={banks} getOptionValue={(b) => b.id} getOptionLabel={(b) => b.name} placeholder="Vers quel compte ?" />
+            </>
+          )}
+          {draft.action === 'exclure' && (
+            <div className="py-2 text-center text-slate-500"><span className="text-lg">⊘</span><div className="text-xs">Hors comptabilité</div></div>
+          )}
+          {draft.memo != null && editing !== 'memo' && draft.action !== 'exclure' && (
+            <button type="button" className="block w-full text-left pl-3 text-[11px] italic text-slate-500 truncate" onClick={() => setEditing('memo')}>{draft.memo || '—'}</button>
+          )}
+          {editing === 'memo' && (
+            <input autoFocus value={draft.memo || ''} aria-label="Mémo" className="mt-1 w-full border border-slate-300 rounded px-2 py-1 text-xs"
+              onChange={(e) => set({ memo: e.target.value })}
+              onBlur={() => { setEditing(null); if (!draft.memo) set({ memo: null }) }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); e.currentTarget.blur() } }} />
+          )}
+        </div>
       </div>
-      {/* Ce que la règle retiendra de la façon de comptabiliser : ce que la
-          ligne porte déjà, sinon ce que le dossier avait préparé. */}
-      {booking && (
-        <label className="flex items-start gap-2 text-xs text-slate-600">
-          <input type="checkbox" className="mt-0.5" checked={keepBooking} onChange={(e) => setKeepBooking(e.target.checked)} />
-          <span>{booking}</span>
-        </label>
+
+      {draft.action !== 'exclure' && (
+        <div className="flex justify-center gap-4 text-xs">
+          {draft.action === 'depense' && (
+            <button type="button" className="text-brand-600 hover:underline" onClick={() => {
+              setDraft((d) => {
+                const lines = d.lines.length === 1 && d.mode === 'pct' ? [{ ...d.lines[0], value: 50 }, { account_id: '', value: 50 }]
+                  : [...d.lines, { account_id: '', value: Math.max(0, Math.round((d.mode === 'pct' ? 100 - sum : base - sum) * 100) / 100) }]
+                return { ...d, lines }
+              })
+              setEditing(`l${draft.lines.length === 1 ? 1 : draft.lines.length}`)
+            }}>+ compte</button>
+          )}
+          {draft.action === 'depense' && draft.lines.length > 1 && (
+            <span className="inline-flex rounded border border-slate-300 overflow-hidden">
+              {[['pct', '%'], ['amount', '$']].map(([k, l]) => (
+                <button key={k} type="button" onClick={() => set({ mode: k, lines: draft.lines.map((x, i) => ({ ...x, value: k === 'pct' ? Math.round((amounts[i] / (base || 1)) * 1000) / 10 : amounts[i] })) })}
+                  className={`px-2 ${draft.mode === k ? 'bg-slate-800 text-white' : 'text-slate-500'}`}>{l}</button>
+              ))}
+            </span>
+          )}
+          {draft.memo == null && (
+            <button type="button" className="text-brand-600 hover:underline" onClick={() => { set({ memo: '' }); setEditing('memo') }}>+ mémo</button>
+          )}
+        </div>
       )}
-      <div className="flex items-center gap-2">
-        <button className="text-xs px-2 py-1 rounded-lg bg-brand-600 text-white disabled:opacity-50"
-          disabled={busy || draft.label_pattern.trim().length < 3} onClick={save}>
-          {busy ? '…' : 'Créer la règle'}
-        </button>
-        <Link to="/regles-bancaires" className="text-xs text-slate-500 hover:underline">Compléter</Link>
-        <button className="text-xs text-slate-500 hover:underline" onClick={() => setDraft(null)}>Annuler</button>
+
+      <div className="grid grid-cols-3 gap-1 rounded-full bg-slate-100 p-0.5 text-xs">
+        {RULE_ACTIONS.map(([k, l]) => (
+          <button key={k} type="button" onClick={() => { set({ action: k }); setEditing(null) }}
+            className={`rounded-full py-1.5 ${draft.action === k ? 'bg-white shadow-sm font-semibold text-slate-900' : 'text-slate-500'}`}>{l}</button>
+        ))}
       </div>
+
       {error && <div className="text-xs text-red-600">{error}</div>}
+      <button type="button" disabled={busy || !valid} onClick={save}
+        className="w-full h-10 rounded-full bg-[#2ca01c] hover:bg-[#248a17] text-white text-[13px] font-semibold disabled:opacity-40">
+        {busy ? '…' : `Chaque fois pareil · ${draft.preview?.count ?? 0} ligne${(draft.preview?.count ?? 0) > 1 ? 's' : ''}`}
+      </button>
+      <div className="flex justify-center gap-4 text-xs">
+        <Link to="/regles-bancaires" className="text-slate-400 hover:underline">Compléter</Link>
+        <button type="button" className="text-slate-400 hover:underline" onClick={() => setDraft(null)}>Annuler</button>
+      </div>
     </div>
   )
 }
@@ -1223,7 +2271,9 @@ function InvoiceCard({ txn, invoices, ambiguous, currency, onChanged }) {
         // Facture marquée « payée » dans Stripe sans encaissement réel : on
         // reprend la main, sinon le solde ne bougerait pas.
         clear_paid_status: !!(f.paid_at && !f.paid_charge_id && !f.paid_payment_intent),
+        bank_txn_id: txn.id, mark_stripe_paid: true,
       })
+      if (!r?.qb_error) celebrate(r?.stripe?.marked ? 'Payée · aussi dans Stripe' : 'Payée')
       if (r?.qb_error) setError(`Paiement enregistré, mais pas d'écriture QuickBooks — ${r.qb_error}`)
       else if (r?.qb?.attachment && !r.qb.attachment.attached && r.qb.attachment.reason !== 'déjà jointe') {
         setNote(`Écriture posée ; PDF de la facture non joint (${r.qb.attachment.error || r.qb.attachment.reason}).`)
@@ -1366,7 +2416,210 @@ function QbLink({ txn }) {
 // cette colonne depuis toujours (légende « Trx non révisée (Mike) ») : la
 // marque posée ici s'y recopie à la même place, et un X déjà écrit là-bas
 // remonte ici au premier passage.
-function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
+// ── Panneau C2 (choix de Charles, 2026-10-03) : un clic sur une ligne à
+// traiter ouvre CE panneau, et lui seul — il remplace la ligne dépliée et le
+// dossier. L'écriture arrive déjà remplie (règle, fiche, habitude du
+// fournisseur, au même montant quand l'habitude se partage) ; on ne montre pas
+// l'historique, seulement le résultat.
+// La même feuille pour une ligne déjà réglée (ou en cours) : ce qui est fait,
+// et le seul geste qui reste (comptabiliser, rapprocher, rétablir).
+function SlipSettled({ txn, currency, dossier, onChanged, onFull }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const act = (fn, label = 'Fait') => async () => {
+    setBusy(true); setError(null)
+    try { await fn(); invalidate('/bank'); celebrate(label); await onChanged() } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  const booked = !!(txn.qb_txn_id || txn.qb_url || dossier?.document?.booked)
+  // Document apparié pas encore publié : ce que l'écriture portera (compte,
+  // taxe, mémo, payé par), lu sur le document et l'habitude du fournisseur.
+  const [plan, setPlan] = useState(null)
+  useEffect(() => {
+    if (!txn.matched_id || booked) { setPlan(null); return undefined }
+    let alive = true
+    Promise.all([api.bank.addDefaults(txn.id), api.quickbooks.accounts(), api.quickbooks.taxCodes()])
+      .then(([d, a, t]) => {
+        if (!alive) return
+        const acc = (id) => { const x = (a || []).find((y) => String(y.Id) === String(id)); return x ? `${x.AcctNum ? `${x.AcctNum} · ` : ''}${x.Name}` : null }
+        const tax = (id) => (!id || id === NO_TAX ? 'Aucun code (hors taxes)' : (t || []).find((y) => String(y.Id) === String(id))?.Name || id)
+        setPlan({ vendor: d.vendor, account: acc(d.expense_account_id), tax: tax(d.tax_code_id), memo: d.memo, paidBy: acc(d.payment_account_id), taxCad: d.tax_cad })
+      }).catch(() => {})
+    return () => { alive = false }
+  }, [txn.id, txn.matched_id, booked])
+  const qbLink = txn.qb_url
+    ? <a href={txn.qb_url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline">Ouvrir <ExternalLink size={11} className="inline" /></a>
+    : null
+  let rows = null
+  let cta = null
+  const links = []
+  if (txn.status === 'ignore') {
+    rows = <SlipRow label="État" value={<span className="text-slate-500">Exclue</span>} />
+    cta = <SlipCta label="Rétablir" busy={busy} busyLabel="…" onClick={act(() => api.bank.updateTransaction(txn.id, { status: 'a_traiter' }), 'Rétablie')} />
+  } else if (txn.transfer_txn_id) {
+    rows = (
+      <>
+        <SlipRow label="Virement" value={txn.matched_label || 'Virement interne'} />
+        <SlipRow label="QuickBooks" value={qbLink || <span className="text-slate-400">—</span>} />
+      </>
+    )
+    links.push({ label: 'Défaire le virement', danger: true, fn: () => api.bank.unlinkTransfer(txn.id) })
+  } else if (txn.matched_id) {
+    rows = (
+      <>
+        <SlipRow label="Document" value={<MatchedDocument txn={txn} doc={dossier?.document} onChanged={onChanged} />} />
+        {plan && <>
+          {plan.vendor && <SlipRow label="Fournisseur" value={plan.vendor} />}
+          <SlipRow label="Compte" warn={!plan.account} value={plan.account || 'à choisir'} />
+          <SlipRow label="Taxe" value={<>{plan.tax}{plan.taxCad != null && <span className="font-normal text-slate-500"> · {money(plan.taxCad, currency)}</span>}</>} />
+          {plan.memo && <SlipRow label="Mémo" value={plan.memo} />}
+          {plan.paidBy && <SlipRow label="Payé par" value={plan.paidBy} />}
+        </>}
+        <SlipRow label="QuickBooks" warn={!booked || !!dossier?.document?.awaiting_payment}
+          value={!booked ? 'pas encore comptabilisé' : dossier?.document?.awaiting_payment ? 'facture inscrite, paiement à poser' : (qbLink || <span className="text-green-700">✓ comptabilisé</span>)} />
+      </>
+    )
+    if (!booked) cta = <SlipCta label="Comptabiliser" busy={busy} busyLabel="Comptabilisation…" onClick={act(() => api.bank.publishMatched(txn.id), 'Comptabilisé')} />
+    else if (dossier?.document?.awaiting_payment) {
+      cta = <SlipCta label="Payer la facture" busy={busy} busyLabel="Paiement…" onClick={act(() => api.bank.publishMatched(txn.id), 'Facture payée')} />
+    }
+    links.push({ label: 'Délier', danger: true, fn: () => api.bank.match(txn.id, { matched_type: null, matched_id: null }) })
+  } else if (booked) {
+    rows = <div className="pt-2"><QbEntryCard txn={txn} currency={currency} onChanged={onChanged} /></div>
+  }
+  if (txn.status === 'rapproche') {
+    rows = <>{rows}<SlipRow label="Banque" value={<span className="text-green-700">✓ Rapprochée</span>} /></>
+    links.push({ label: 'Annuler le rapprochement', fn: () => api.bank.reconcile([txn.id], true) })
+  } else if (txn.status !== 'ignore' && !cta && (booked || txn.transfer_txn_id)) {
+    cta = <SlipCta label="Marquer rapproché" busy={busy} busyLabel="…" onClick={act(() => api.bank.reconcile([txn.id]), 'Rapprochée')} />
+  }
+  return (
+    <div className="flex flex-col gap-3">
+      <div>{rows}</div>
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      {cta}
+      <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs">
+        {links.map((l) => (
+          <button key={l.label} type="button" disabled={busy} onClick={act(l.fn)}
+            className={`hover:underline disabled:opacity-50 ${l.danger ? 'text-slate-400 hover:text-red-600' : 'text-brand-600'}`}>{l.label}</button>
+        ))}
+        <button type="button" className="text-slate-400 hover:text-slate-700 hover:underline" onClick={onFull}>Dossier complet</button>
+      </div>
+    </div>
+  )
+}
+
+function TxnCompose({ txn, currency, next, accountName, onChanged, onClose, onFull }) {
+  const { dossier, reload } = useDossier(txn.id)
+  // Les pièces candidates s'apparient dans le volet côte à côte (M1), pas dans
+  // l'ancienne liste du dossier.
+  const found = dossierFocus(dossier)
+  const focus = found?.key === 'receipts' ? null : found
+  const [pane, setPane] = useState(() => {
+    const p = NEXT_META[next?.kind || 'rien']?.pane
+    return p === 'match' || p === 'transfer' || p === 'exclude' ? p : 'add'
+  })
+  const touched = useRef(false)
+  useEffect(() => { if (found && !touched.current) setPane(focus ? 'dossier' : 'match') }, [found?.key]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [comment, setComment] = useState(txn.comment || '')
+  const [noting, setNoting] = useState(false)
+  // Une proposition ouverte prend toute la place ; les autres gestes restent
+  // en liens dessous.
+  const [proposals, setProposals] = useState(0)
+  const [chose, setChose] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const finish = async (label) => { celebrate(typeof label === 'string' ? label : 'Fait'); await onChanged(); onClose() }
+
+  // Maquette P2 (choix de Charles, 2026-10-03) : le reçu. En tête le montant en
+  // grand ; dessous, ce qui sera écrit, une ligne par champ ; un seul gros
+  // bouton ; les autres gestes en liens discrets sous le bouton.
+  const alts = [
+    focus && { key: 'dossier', label: focus.label },
+    { key: 'add', label: 'Ajouter plutôt' },
+    { key: 'match', label: 'Apparier plutôt' },
+    { key: 'transfer', label: 'Virement' },
+  ].filter((a) => a && a.key !== pane)
+  const title = txn.vendor_name || txnLabel(txn)
+  const raw = [txn.details, txn.description].filter(Boolean).find((t) => t !== title)
+  const done = !!(txn.matched_id || txn.transfer_txn_id || txn.qb_txn_id || txn.status === 'rapproche' || txn.status === 'ignore')
+
+  return (
+    <div className="mx-auto max-w-[460px] px-5 pb-6 flex flex-col text-sm" data-testid="txn-compose">
+      <div className="pb-4 text-center border-b border-slate-100">
+        <div className="text-[15px] font-semibold text-slate-900 truncate">{title}</div>
+        <div className={`my-1 text-[30px] leading-tight font-semibold tabular-nums tracking-tight ${txn.amount > 0 ? 'text-green-700' : 'text-slate-900'}`}>
+          {txn.amount < 0 ? '−' : '+'}{money(Math.abs(txn.amount), currency)}
+        </div>
+        <div className="text-xs text-slate-500">{fmtDate(txn.txn_date)}{accountName ? ` · ${accountName}` : ''}</div>
+        {raw && <div className="mt-1 text-[11px] text-slate-400 font-mono truncate" title={raw}>{raw}</div>}
+      </div>
+
+      {txn.proposal_count > 0 && !done && (
+        <div className="pt-3"><ProposalCards slip txn={txn} currency={currency} onChanged={finish} onCount={setProposals} /></div>
+      )}
+
+      {done ? (
+        <div className="pt-2">
+          <SlipSettled txn={txn} currency={currency} dossier={dossier} onChanged={onChanged} onFull={onFull} />
+        </div>
+      ) : <>
+      {!(proposals > 0 && !chose) && <div className="pt-2">
+        {pane === 'dossier' && focus && (
+          <div className="pt-2">
+            <DossierFocus txn={txn} currency={currency} focus={focus} dossier={dossier} reload={reload} onChanged={onChanged}
+              onDone={async () => { await onChanged(); onClose() }} />
+          </div>
+        )}
+        {pane === 'add' && txn.amount < 0 && (
+          <AddExpenseForm receipt txn={txn} currency={currency} onDone={() => finish('Écriture ajoutée')} onCancel={onClose} />
+        )}
+        {pane === 'add' && txn.amount > 0 && <DepositForm txn={txn} currency={currency} onDone={() => finish('Écriture ajoutée')} />}
+        {pane === 'match' && <QbMatchPane txn={txn} currency={currency} onChanged={() => finish('Apparié')}
+          onAdd={() => { touched.current = true; setPane('add') }} />}
+        {pane === 'transfer' && <TransferForm receipt txn={txn} currency={currency} onDone={() => finish('Virement lié')} onCancel={onClose}
+          preferAccountId={next?.account_id || null} />}
+        {pane === 'exclude' && (
+          <div className="flex flex-col gap-3 pt-2">
+            <div className="py-4 text-center text-slate-500">
+              <div className="mx-auto mb-1.5 w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-lg">⊘</div>
+              Hors comptabilité{next?.label ? <div className="text-xs text-slate-400">Règle « {next.label} »</div> : null}
+            </div>
+            <SlipCta label="Exclure" busy={busy} busyLabel="…" onClick={async () => {
+              setBusy(true); try { await api.bank.updateTransaction(txn.id, { status: 'ignore' }); await finish('Exclue') } finally { setBusy(false) }
+            }} />
+          </div>
+        )}
+      </div>}
+
+      <div className="mt-3 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs">
+        {(proposals > 0 && !chose ? [...alts, { key: pane, label: { add: 'Ajouter plutôt', match: 'Apparier plutôt', transfer: 'Virement', dossier: focus?.label, exclude: 'Exclure' }[pane] }] : alts).filter((a) => a.label).map((a) => (
+          <button key={a.key} type="button" className="text-brand-600 hover:underline"
+            onClick={() => { touched.current = true; setChose(true); setPane(a.key) }}>{a.label}</button>
+        ))}
+        <button type="button" disabled={busy} className="text-slate-400 hover:text-slate-700 hover:underline disabled:opacity-50"
+          onClick={async () => { setBusy(true); try { await api.bank.updateTransaction(txn.id, { status: 'ignore' }); await finish('Exclue') } finally { setBusy(false) } }}>
+          Exclure
+        </button>
+        <button type="button" className="text-slate-400 hover:text-slate-700 hover:underline" onClick={onFull}>Dossier complet</button>
+      </div>
+      </>}
+
+      <div className="mt-6 pt-3 border-t border-slate-100 space-y-2">
+        {/* Le champ vide sans étiquette passait pour une barre blanche : il
+            n'apparaît qu'au clic, ou s'il a déjà une note. */}
+        {noting || comment ? (
+          <textarea className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs" rows={1} autoFocus={noting && !comment}
+            aria-label="Commentaire" value={comment} onChange={(e) => setComment(e.target.value)}
+            onBlur={() => { setNoting(false); if ((txn.comment || '') !== comment) api.bank.updateTransaction(txn.id, { comment: comment || null }).then(onChanged).catch(() => {}) }} />
+        ) : (
+          <button type="button" className="text-xs text-slate-400 hover:text-slate-700 hover:underline" onClick={() => setNoting(true)}>+ Note</button>
+        )}
+        <RuleFromTxnForm txn={txn} />
+      </div>
+    </div>
+  )
+}
+
+function TxnPeek({ txn, currency, onChanged, initialMode = null, next, accountName, onClose }) {
   // Le panneau porte les deux gestes qui demandent un formulaire : comptabiliser
   // sans facture, et apparier un virement. Les boutons de la ligne ouvrent le
   // panneau DÉJÀ dans le bon mode : `initialMode` n'est lu qu'au montage, la
@@ -1436,6 +2689,11 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
   // Ce que la ligne porte d'autre qu'une facture : versement de dette, paie,
   // paiement émis. Chacun s'ouvre ici plutôt que sur sa page.
   const { dossier, reload: reloadDossier } = useDossier(txn.id)
+
+  if (!initialMode && !mode && onClose) {
+    return <TxnCompose txn={txn} currency={currency} next={next} accountName={accountName} onChanged={onChanged} onClose={onClose}
+      onFull={() => setMode('full')} />
+  }
 
   if (mode === 'add') {
     return (
@@ -1649,24 +2907,25 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
 
 // Écriture QuickBooks sans ligne au relevé : rien à modifier ici, seulement à
 // constater et à aller corriger dans QuickBooks.
+// Écriture QuickBooks sans ligne au relevé, au même format que le panneau.
 function GhostPeek({ row, currency }) {
   return (
-    <div className="p-4 space-y-3 text-sm">
-      <div className="text-slate-600">
-        Cette écriture existe dans QuickBooks mais aucune ligne du relevé ne lui correspond.
+    <div className="mx-auto max-w-[460px] px-5 pb-6 flex flex-col gap-3 text-sm">
+      <div className="pb-4 text-center border-b border-slate-100">
+        <div className="text-[15px] font-semibold text-slate-900 truncate">{row.label}</div>
+        <div className={`my-1 text-[30px] leading-tight font-semibold tabular-nums ${row.amount > 0 ? 'text-green-700' : 'text-slate-900'}`}>
+          {row.amount < 0 ? '−' : '+'}{money(Math.abs(row.amount), currency)}
+        </div>
+        <div className="text-xs text-slate-500">{fmtDate(row.txn_date)} · QuickBooks</div>
       </div>
-      <div className="rounded-lg bg-slate-50 p-3 space-y-1">
-        <div className="font-medium text-slate-900">{row.label}</div>
-        <div className="text-slate-500">{fmtDate(row.txn_date)}</div>
-        <div className={`text-lg font-semibold ${row.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{money(row.amount, currency)}</div>
+      <div className="flex items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-amber-700 font-medium">
+        <AlertTriangle size={14} className="shrink-0" /> Aucune ligne du relevé
       </div>
-      <div className="text-xs text-slate-500">
-        Soit le relevé n'a pas encore été importé jusqu'à cette date, soit l'écriture est en trop dans QuickBooks.
-      </div>
+      <div className="text-center text-xs text-slate-500">Relevé pas encore importé, ou écriture en trop dans QuickBooks.</div>
       {row.qb_url && (
         <a href={row.qb_url} target="_blank" rel="noreferrer"
-          className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">
-          <ExternalLink size={12} /> Ouvrir dans QuickBooks
+          className="w-full h-11 rounded-full bg-[#2ca01c] hover:bg-[#248a17] text-white text-[14px] font-semibold inline-flex items-center justify-center gap-1.5">
+          Ouvrir dans QuickBooks <ExternalLink size={13} />
         </a>
       )}
     </div>
@@ -1781,44 +3040,6 @@ function QbRobotPill({ robot, currency }) {
   return last.screenshot_url
     ? <a href={withToken(last.screenshot_url)} target="_blank" rel="noreferrer" title={title} data-testid="qb-robot-pill" className={`${base} ${cls} hover:underline`}>{body}</a>
     : <span title={title} data-testid="qb-robot-pill" className={`${base} ${cls}`}>{body}</span>
-}
-
-// Une ligne, trois nombres : le solde du relevé, celui de QuickBooks, et
-// l'écart entre les deux — c'est le seul chiffre qui commande une action.
-function EcartBar({ account, rec, robot }) {
-  const { summary, qb, qbLoading, qbError, msg } = rec
-  if (!account) return null
-  const stmt = summary?.statement
-  const bal = qb?.balance && !qb.balance.error ? qb.balance : null
-  const diff = bal?.difference
-  const ok = diff != null && Math.abs(diff) < 0.01
-  const currency = account.currency
-
-  // Un seul chiffre affiché (2026-09-15) : les deux soldes qui le produisent
-  // sont dans l'infobulle — c'est l'écart, et lui seul, qui commande une action.
-  const detail = [
-    `Relevé ${stmt?.printed_balance_signed != null ? money(stmt.printed_balance_signed, currency) : '—'}`,
-    `QuickBooks ${bal ? money(bal.qb_as_of, currency) : account.qb_account_id ? '—' : 'non mappé'}`,
-    stmt?.date ? `soldes au ${fmtDate(stmt.date)}` : null,
-    bal && Math.abs(bal.qb_current - bal.qb_as_of) >= 0.01 ? `solde QuickBooks aujourd'hui ${money(bal.qb_current, currency)}` : null,
-  ].filter(Boolean).join(' · ')
-
-  return (
-    <div data-testid="reconcile-panel" title={detail}
-      data-statement-balance={stmt?.printed_balance_signed != null ? money(stmt.printed_balance_signed, currency) : ''}
-      data-qb-balance={bal ? money(bal.qb_as_of, currency) : ''}
-      className="flex items-baseline gap-x-1.5 text-xs min-w-0">
-      <span className="text-slate-400">Écart</span>
-      <span data-testid="reconcile-difference"
-        className={`text-sm font-semibold tabular-nums ${diff == null ? 'text-slate-300' : ok ? 'text-green-700' : 'text-red-700'}`}>
-        {qbLoading ? '…' : diff == null ? '—' : money(diff, currency)}
-      </span>
-      {robot && <QbRobotPill robot={robot} currency={currency} />}
-      {qbError && <span className="text-[11px] text-amber-700 truncate">QuickBooks indisponible</span>}
-      {msg && <span className="text-[11px] text-slate-400 truncate">{msg}</span>}
-      <PlaidDuplicates account={account} rec={rec} />
-    </div>
-  )
 }
 
 // Doublons hérités du fichier TRX_Orisha, sur un compte qui reçoit maintenant
@@ -1946,77 +3167,520 @@ function MoreMenu({ onDrop, onRules, flash, robot }) {
 // onglets. Recherche dès qu'il y a de quoi chercher (règle des >10 options).
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-// Trois files, comme « Opérations bancaires » de QuickBooks : ce qui demande
-// encore un geste, ce qui est classé, ce qu'on a mis de côté.
-// Les trois files « À réviser / Catégorisées / Exclues » ont disparu le
-// 2026-09-12 : une seule liste continue, comme le fichier, et la légende des
-// couleurs fait le filtre. Un compteur à zéro n'est pas cliquable — sinon la
-// liste se viderait et DataTable afficherait son écran « aucune transaction ».
-function StatusLegend({ counts, value, onChange, onRequests }) {
-  const chip = (key, label, hint, tint, n) => (
-    <button key={key} type="button" data-testid={`reconcile-legend-${key}`}
-      aria-pressed={value === key} aria-label={`${label} — ${n}`} title={hint}
-      disabled={n === 0} onClick={() => onChange(value === key ? null : key)}
-      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-default ${value === key
-        ? 'bg-slate-100 ring-1 ring-slate-300 text-slate-900 font-medium'
-        : 'text-slate-500 hover:bg-slate-50'}`}>
-      <span className={`w-2.5 h-2.5 rounded-[3px] border border-black/10 ${tint}`} />
-      <span className="whitespace-nowrap">{label}</span>
-      <span className="tabular-nums text-slate-400">{n}</span>
-    </button>
-  )
+// ── Clone « Opérations bancaires » de QuickBooks (maquette Q2, 2026-10-03) ───
+// Trois étapes comme QBO : ce qui attend un geste, ce qui est classé, ce qu'on
+// a mis de côté. Les lignes fantômes vivent avec ce qui attend.
+const STAGES = [
+  { key: 'rev', label: 'Pour révision' },
+  { key: 'cat', label: 'Catégorisées' },
+  { key: 'exc', label: 'Exclues' },
+]
+const stageOf = (r) => (r._ghost ? 'rev'
+  : r.status === 'ignore' ? 'exc'
+    : r.awaiting_payment ? 'rev'
+      : r.status === 'comptabilise' || r.status === 'rapproche' ? 'cat' : 'rev')
+
+// Ce que la ligne attend, dans le vocabulaire de QuickBooks : une catégorie,
+// une correspondance, un virement — ou rien encore. Une fonction pour le
+// filtre, la cellule et le bouton.
+function lineKind(r, next) {
+  if (r._ghost) return 'ghost'
+  if (r.transfer_txn_id || next?.kind === 'virement') return 'xfer'
+  if (r.auto_suggestion || r.suggestion?.kind === 'vendor_expense') return 'cat'
+  if (r.matched_id || r.proposal_count > 0 || next?.kind === 'apparier' || next?.kind === 'comptabiliser') return 'match'
+  if (next?.kind === 'publier' || r.rule_name) return 'cat'
+  return 'none'
+}
+
+function Kpi({ label, children, cls = 'text-slate-800', testId }) {
   return (
-    <div role="group" aria-label="Filtrer par statut" className="flex items-center gap-x-0.5 py-1">
-      {LEGEND_ORDER.map((k) => chip(k, STATUS_META[k].label, STATUS_META[k].hint, STATUS_META[k].tint, counts[k] || 0))}
-      {counts.ghost > 0 && chip('ghost', GHOST_META.label, GHOST_META.hint, GHOST_META.tint, counts.ghost)}
-      {/* Pas une couleur du fichier : ce que les moteurs proposent et qui
-          attend un clic. Posée à la suite, séparée par un filet. */}
-      {/* Sortie d'argent sans pièce justificative : le vrai « il manque une
-          facture ». Posée ici plutôt que sur une page à part — c'est le relevé
-          qui la porte, et le dossier de la ligne donne la suite (chercher au
-          portail, apprendre le fournisseur, déposer la facture). */}
-      {counts.missing > 0 && (
-        <button type="button" data-testid="reconcile-legend-missing"
-          aria-pressed={value === 'missing'} title="Sorties d'argent sans facture"
-          onClick={() => onChange(value === 'missing' ? null : 'missing')}
-          className={`ml-2 pl-3 border-l border-slate-200 inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${value === 'missing'
-            ? 'bg-amber-100 text-amber-900 font-medium'
-            : 'text-amber-700 hover:bg-amber-50'}`}>
-          <FileWarning size={12} />
-          <span className="tabular-nums">{counts.missing}</span> sans facture
-        </button>
-      )}
-      {/* Ce que Charles réclame lui-même : le nombre ouvre le panneau, où se
-          prépare le message Slack. */}
-      {counts.requested > 0 && (
-        <span className="ml-2 pl-3 border-l border-slate-200 inline-flex items-center gap-0.5">
-          <button type="button" data-testid="reconcile-legend-requested"
-            aria-pressed={value === 'requested'} title="Factures demandées"
-            onClick={() => onChange(value === 'requested' ? null : 'requested')}
-            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${value === 'requested'
-              ? 'bg-amber-100 text-amber-900 font-medium'
-              : 'text-amber-700 hover:bg-amber-50'}`}>
-            <Flag size={12} />
-            <span className="tabular-nums">{counts.requested}</span> demandées
-          </button>
-          <button type="button" data-testid="reconcile-requests-open" title="Ouvrir le panneau des factures demandées"
-            onClick={onRequests} className="px-1.5 py-1 rounded-md text-amber-700 hover:bg-amber-50">
-            <Send size={12} />
-          </button>
-        </span>
-      )}
-      {counts.proposals > 0 && (
-        <button type="button" data-testid="reconcile-legend-proposals"
-          aria-pressed={value === 'proposals'} title="Propositions à confirmer"
-          onClick={() => onChange(value === 'proposals' ? null : 'proposals')}
-          className={`ml-2 pl-3 border-l border-slate-200 inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${value === 'proposals'
-            ? 'bg-brand-100 text-brand-800 font-medium'
-            : 'text-brand-700 hover:bg-brand-50'}`}>
-          <Wand2 size={12} />
-          <span className="tabular-nums">{counts.proposals}</span> à confirmer
-        </button>
-      )}
+    <div className="flex flex-col min-w-0">
+      <span className="text-[11.5px] text-slate-500">{label}</span>
+      <span data-testid={testId} className={`text-[15px] font-medium tabular-nums whitespace-nowrap ${cls}`}>{children}</span>
     </div>
+  )
+}
+
+// En-tête : le compte en grand, ses trois nombres, le seul bouton d'action.
+function QboHeader({ account, isTodo, rec, robot, menu }) {
+  const { summary, qb, qbLoading, qbError, msg } = rec
+  const currency = account?.currency
+  const stmt = summary?.statement
+  const bal = qb?.balance && !qb.balance.error ? qb.balance : null
+  const diff = bal?.difference
+  const ok = diff != null && Math.abs(diff) < 0.01
+  const bank = stmt?.printed_balance_signed
+  const detail = [
+    stmt?.date ? `Soldes au ${fmtDate(stmt.date)}` : null,
+    bal && Math.abs(bal.qb_current - bal.qb_as_of) >= 0.01 ? `QuickBooks aujourd'hui ${money(bal.qb_current, currency)}` : null,
+  ].filter(Boolean).join(' · ')
+  return (
+    <header className="flex items-end gap-x-8 gap-y-3 flex-wrap px-6 pt-5 pb-3">
+      <div className="min-w-0">
+        <div className="text-xs text-slate-500">Opérations bancaires</div>
+        <h1 className="text-2xl font-semibold tracking-tight text-slate-900 truncate">{isTodo ? 'À comptabiliser' : account?.name || '—'}</h1>
+      </div>
+      {account && !isTodo && (
+        <div data-testid="reconcile-panel" title={detail || undefined}
+          data-statement-balance={bank != null ? money(bank, currency) : ''}
+          data-qb-balance={bal ? money(bal.qb_as_of, currency) : ''}
+          className="flex items-end gap-7 flex-wrap">
+          <Kpi label="Banque">{bank != null ? money(bank, currency) : '—'}</Kpi>
+          <Kpi label="QuickBooks">{bal ? money(bal.qb_as_of, currency) : !account.qb_account_id ? 'non mappé' : qbLoading ? '…' : '—'}</Kpi>
+          <Kpi label="Écart" testId="reconcile-difference" cls={diff == null ? 'text-slate-300' : ok ? 'text-green-700' : 'text-red-600'}>
+            <Link to={`/rapprochement-qbo?compte=${account.id}`} data-testid="open-reconcile" title="Rapprocher"
+              className="border-b border-dashed border-current hover:opacity-80">
+              {qbLoading ? '…' : diff == null ? '—' : <>{money(diff, currency)}{ok ? ' ✓' : ''}</>} ›
+            </Link>
+          </Kpi>
+          <div className="flex items-center gap-2 pb-0.5">
+            {robot && <QbRobotPill robot={robot} currency={currency} />}
+            {qbError && <span className="text-[11px] text-amber-700">QuickBooks indisponible</span>}
+            {msg && <span className="text-[11px] text-slate-400 truncate max-w-xs">{msg}</span>}
+            <PlaidDuplicates account={account} rec={rec} />
+          </div>
+        </div>
+      )}
+      <div className="ml-auto flex items-center gap-2">
+        {account && !isTodo && (
+          <button type="button" data-testid="reconcile-auto-btn" disabled={rec.busy} onClick={rec.runUpdate}
+            title="Apparier aux documents, vérifier dans QuickBooks, recalculer l'écart"
+            className="qbo-go h-9 px-4 rounded-full text-sm font-medium inline-flex items-center gap-2 disabled:opacity-60">
+            <RefreshCw size={14} className={rec.busy ? 'animate-spin' : ''} />
+            {rec.busy ? 'Mise à jour…' : 'Mettre à jour'}
+          </button>
+        )}
+        {menu}
+      </div>
+    </header>
+  )
+}
+
+function StageTabs({ value, onChange, counts, isTodo }) {
+  return (
+    <nav aria-label="Étapes" className="flex items-end gap-7 px-6 border-b border-slate-200">
+      {STAGES.filter((s) => !isTodo || s.key === 'rev').map((s) => (
+        <button key={s.key} type="button" data-testid={`stage-${s.key}`} aria-current={value === s.key ? 'page' : undefined}
+          onClick={() => onChange(s.key)}
+          className={`py-3 -mb-px border-b-2 text-sm ${value === s.key
+            ? 'border-slate-900 text-slate-900 font-medium'
+            : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+          {s.label}<span className="ml-1.5 text-slate-400 tabular-nums">{counts[s.key] || 0}</span>
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+// Les filtres de « Pour révision ». Un compteur à zéro n'est pas cliquable —
+// sinon la liste se viderait sur l'écran « aucune transaction ».
+const LINE_FILTERS = [
+  { key: 'review', label: 'À réviser', hint: 'Lignes marquées d\'un rond rouge' },
+  { key: 'requested', label: 'Factures manquantes', hint: 'Sorties sans facture' },
+  { key: 'match', label: 'Correspondances', hint: 'Un document ou une proposition attend' },
+  { key: 'xfer', label: 'Virements', hint: 'Virement interne reconnu' },
+  { key: 'none', label: 'À catégoriser', hint: 'Rien trouvé encore' },
+  { key: 'ghost', label: 'Hors relevé', hint: 'Écriture QuickBooks sans ligne au relevé' },
+]
+// La légende du code couleur, toujours sous les yeux : la barre de gauche de
+// chaque ligne reprend la couleur pleine.
+const LEGEND = [
+  ['À traiter', '#dc2626', '#fde0de'], ['Facture reçue', '#2563eb', '#d6e4ff'], ['Comptabilisé', '#d4a106', '#fff0b3'],
+  ['Rapproché', '#2ca01c', '#cdeec3'], ['Exclu', '#a3aab3', '#eceef1'],
+]
+function StatusLegend() {
+  return (
+    <span className="ml-2 inline-flex items-center gap-3 text-[11.5px] text-slate-500 whitespace-nowrap" data-testid="status-legend">
+      {LEGEND.map(([l, c, t]) => (
+        <span key={l} className="inline-flex items-center gap-1.5">
+          <span className="w-4 h-3.5 rounded-sm" style={{ background: t, boxShadow: `inset 3px 0 0 ${c}` }} />{l}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+function LineFilters({ counts, value, onChange, onRequests }) {
+  return (
+    <div role="group" aria-label="Filtrer" className="flex items-center gap-0.5 flex-wrap">
+      {LINE_FILTERS.map((f) => {
+        const n = counts[f.key] || 0
+        if (f.key === 'ghost' && !n) return null
+        const on = value === f.key
+        return (
+          <span key={f.key} className={`inline-flex items-center rounded-lg ${on ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'} ${n ? '' : 'opacity-40'}`}>
+            <button type="button" data-testid={`reconcile-legend-${f.key}`} aria-pressed={on} title={f.hint}
+              disabled={!n} onClick={() => onChange(on ? null : f.key)}
+              className="inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1 text-[13px] whitespace-nowrap disabled:cursor-default">
+              {f.key === 'review' && <span className={`w-2.5 h-2.5 rounded-full border-[1.6px] ${on ? 'border-white' : 'border-red-600'}`} />}
+              {f.key === 'requested' && <Flag size={12} className={on ? '' : 'text-amber-600'} />}
+              {f.label}
+              <span className={`text-xs font-semibold tabular-nums ${on ? 'text-white/70' : 'text-slate-400'}`}>{n}</span>
+            </button>
+            {f.key === 'requested' && n > 0 && (
+              <button type="button" data-testid="reconcile-requests-open" title="Demander les factures sur Slack"
+                onClick={onRequests} className={`pr-2 py-1 ${on ? '' : 'text-amber-600'}`}>
+                <Send size={12} />
+              </button>
+            )}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
+// « Catégorie ou correspondance » : ce que la ligne deviendra, une ligne, et
+// d'où ça vient en petit dessous.
+function CategoryCell({ row, stage, next, names, currency, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const sub = (t) => (t ? <span className="block truncate text-[11.5px] text-slate-400">{t}</span> : null)
+  if (row._ghost) return <span className="italic text-slate-400">Écriture QuickBooks sans ligne au relevé</span>
+  if (stage !== 'rev') {
+    const what = row.transfer_txn_id ? 'Transfert' : row.matched_label || (row.qb_txn_id ? 'Écriture QuickBooks' : '—')
+    return <span className="block min-w-0"><span className="block truncate text-slate-700">{what}</span>{sub(STATUS_META[row.status]?.label)}</span>
+  }
+  const auto = row.auto_suggestion
+  if (auto && !row.suggestion) {
+    const t = suggestionText(auto, names, currency)
+    const undo = async (e) => {
+      e.stopPropagation(); setBusy(true)
+      try { await api.bank.undoProposal(auto.id); invalidate('/bank'); await onChanged() } finally { setBusy(false) }
+    }
+    return (
+      <span className="block min-w-0">
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="truncate text-slate-700">{t.what}</span>
+          <span className="shrink-0 text-[10px] font-bold text-white bg-[#2ca01c] rounded px-1">AUTO</span>
+          <button type="button" disabled={busy} onClick={undo} className="shrink-0 text-[11px] text-slate-500 hover:underline">annuler</button>
+        </span>
+        {sub(row.rule_name ? `Règle « ${row.rule_name} »` : null)}
+      </span>
+    )
+  }
+  if (row.suggestion) {
+    const t = suggestionText(row.suggestion, names, currency)
+    const details = [...t.facts, ...t.proof].filter((d) => typeof d === 'string' && d)
+    return <span className="block min-w-0" data-testid="row-suggestion"><span className="block truncate text-slate-700">{t.what}</span>{sub(details.join(' · '))}</span>
+  }
+  const kind = lineKind(row, next)
+  if (kind === 'xfer') return <span className="block min-w-0"><span className="block truncate text-slate-700">Transfert</span>{sub(next?.label)}</span>
+  if (kind === 'match') {
+    return <span className="block min-w-0"><span className="block truncate font-medium text-green-700">1 correspondance</span>{sub(row.matched_label || next?.label)}</span>
+  }
+  if (kind === 'cat') return <span className="block min-w-0"><span className="block truncate text-slate-700">{next?.label || 'Catégorie prête'}</span>{sub(row.rule_name ? `Règle « ${row.rule_name} »` : null)}</span>
+  return <span className="text-slate-400">Non catégorisé</span>
+}
+
+// L'ordre de QuickBooks, tenu quelle que soit la vue enregistrée.
+// Disposition L3 (2026-10-06) : Date | Description | Catégorie ou correspondance |
+// Montant | Action. Ids neufs : les largeurs et vues enregistrées des anciennes
+// colonnes ne les touchent pas.
+const PINNED_COLUMNS = ['_marks', 'qbo_date', 'r3_vendor', 'l3_cat', 'r3_amount', 'l3_act']
+
+const NEXT_VERB = { virement: 'Lier', apparier: 'Apparier', publier: 'Publier', comptabiliser: 'Comptabiliser', exclure: 'Exclure' }
+
+
+// R3+ : ce qui sert à décider, par geste. ✓ vert = concorde, ! ambre = à voir.
+const Mark = ({ ok }) => (ok
+  ? <span className="font-bold text-green-700">✓</span>
+  : <span className="font-bold text-amber-600">!</span>)
+const normText = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+const dayGap = (a, b) => Math.abs((new Date(String(a).slice(0, 10)) - new Date(String(b).slice(0, 10))) / 86400000)
+const sameVendor = (bankText, docLabel) => {
+  const bank = normText(bankText)
+  return normText(docLabel).split(/[^a-z0-9]+/).some((w) => w.length >= 3 && bank.includes(w))
+}
+
+// Panneau ancré sous la pastille « À faire ». Lectures seulement ; le bouton
+// du bas rappelle EXACTEMENT le geste de la pastille (onConfirm).
+function DecisionPanel({ kind, row, sg, names, currency, pos, busy, onConfirm, onOther, onClose }) {
+  const [data, setData] = useState(undefined)
+  const confirmRef = useRef(null)
+  const cb = useRef({ onConfirm, onClose })
+  cb.current = { onConfirm, onClose }
+
+  useEffect(() => {
+    let alive = true
+    const done = (d) => { if (alive) setData(d) }
+    const fail = () => done(null)
+    if (kind === 'match') api.bank.suggestions(row.id).then((r) => done(r?.[0] || null)).catch(fail)
+    else if (kind === 'xfer') api.bank.transferCandidates(row.id).then((r) => done((r?.data || r || [])[0] || null)).catch(fail)
+    else if (kind === 'publish' && !sg) api.bank.addDefaults(row.id).then(done).catch(fail)
+    else if (kind === 'ask') {
+      const id = row.resolved_vendor?.profile_id
+      if (!id) done(null)
+      else api.achatsFournisseurs.list({ vendor_id: id, limit: 2 }).then((r) => done(r?.data || [])).catch(fail)
+    } else done(null)
+    return () => { alive = false }
+  }, [kind, row.id, row.resolved_vendor?.profile_id, sg])
+
+  useEffect(() => {
+    confirmRef.current?.focus()
+    const h = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cb.current.onClose() }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); cb.current.onConfirm() }
+    }
+    document.addEventListener('keydown', h, true)
+    return () => document.removeEventListener('keydown', h, true)
+  }, [])
+
+  const abs = Math.abs(row.amount || 0)
+  const loading = data === undefined
+  const line = (k, a, b, ok) => (
+    <>
+      <span className="text-[11.5px] text-slate-500">{k}</span>
+      <span className="truncate">{a}</span>
+      {b !== undefined && <span className="truncate">{b}</span>}
+      <Mark ok={ok} />
+    </>
+  )
+  let title = ''
+  let grid = null
+  let links = null
+  let verb = ''
+  if (kind === 'match') {
+    title = 'Apparier'
+    verb = 'Apparier'
+    const c = data
+    const bankText = `${row.vendor_name || ''} ${row.details || ''} ${row.description || ''}`
+    grid = (
+      <div className="grid gap-x-3 gap-y-1.5 items-center text-[12.5px]" style={{ gridTemplateColumns: '84px 1fr 1fr 18px' }}>
+        <span /><span className="text-[11px] text-slate-400">Banque</span><span className="text-[11px] text-slate-400">Document</span><span />
+        {c ? (
+          <>
+            {line('Montant', money(abs, currency), money(Math.abs(c.total), currency), Math.abs(abs - Math.abs(c.total)) < 0.011)}
+            {line('Date', fmtDate(row.txn_date), fmtDate(c.date), dayGap(row.txn_date, c.date) <= 5)}
+            {line('Fournisseur', row.vendor_name || txnLabel(row), c.label, sameVendor(bankText, c.label))}
+          </>
+        ) : null}
+      </div>
+    )
+    links = (
+      <>
+        {c ? <span onClick={(e) => e.stopPropagation()} className="text-[12px]">{docLink(c.type, c.id, 'Voir la facture')}</span> : <span />}
+        <span className="grow" />
+        <button type="button" className="text-[12px] text-brand-600 hover:underline" onClick={onOther}>Autre</button>
+      </>
+    )
+  } else if (kind === 'publish') {
+    title = row.matched_id && !sg ? 'Comptabiliser' : 'Publier'
+    verb = title
+    const p = sg?.payload || {}
+    const d = sg ? { expense_account_id: p.expense_account_id, tax_code_id: p.tax_code_id, tax_cad: p.tax_cad } : data || {}
+    const acct = d.expense_account_id ? nameIn(names?.accounts, d.expense_account_id) : null
+    const taxName = d.tax_code_id === '__none__' ? 'sans taxe' : d.tax_code_id ? nameIn(names?.taxCodes, d.tax_code_id) : null
+    const taxAmt = d.tax_cad != null && d.tax_cad !== '' ? ` · ${money(Math.abs(Number(d.tax_cad)), currency)}` : ''
+    const hasDoc = !!row.matched_id
+    grid = (
+      <div className="grid gap-x-3 gap-y-1.5 items-center text-[12.5px]" style={{ gridTemplateColumns: '84px 1fr 18px' }}>
+        {line('Compte', acct || row.rule_name || '—', undefined, !!acct || !!row.rule_name)}
+        {line('Taxe', taxName ? `${taxName}${taxAmt}` : '—', undefined, !!taxName)}
+        {line('Pièce', hasDoc ? row.matched_label || 'Document joint' : 'Aucune', undefined, hasDoc)}
+      </div>
+    )
+    links = (
+      <>
+        <button type="button" className="text-[12px] text-brand-600 hover:underline" onClick={onOther}>Changer</button>
+        <span className="grow" />
+      </>
+    )
+  } else if (kind === 'xfer') {
+    title = 'Lier'
+    verb = 'Lier'
+    const c = data
+    const out = row.amount < 0
+    const other = c ? Math.abs(c.amount) : null
+    const fx = c && String(c.currency || 'CAD') !== String(currency || 'CAD')
+    grid = (
+      <div className="grid gap-x-3 gap-y-1.5 items-center text-[12.5px]" style={{ gridTemplateColumns: '84px 1fr 1fr 18px' }}>
+        <span /><span className="text-[11px] text-slate-400">{out ? 'Sortie' : 'Entrée'}</span><span className="truncate text-[11px] text-slate-400">{out ? 'Entrée' : 'Sortie'}{c ? ` · ${c.account_name}` : ''}</span><span />
+        {c ? (
+          <>
+            {line('Montant', money(abs, currency), money(other, c.currency || currency), fx || Math.abs(abs - other) < 0.011)}
+            {fx && line('Taux', c.rate || '—', '', !!c.rate)}
+            {line('Date', fmtDate(row.txn_date), fmtDate(c.txn_date), dayGap(row.txn_date, c.txn_date) <= 3)}
+          </>
+        ) : null}
+      </div>
+    )
+    links = <span className="grow" />
+  } else if (kind === 'ask') {
+    title = 'Demander'
+    verb = 'Demander'
+    const [last, prev] = data || []
+    const lastTotal = last ? Number(last.total_cad) : null
+    const gap = last && prev ? Math.round((lastTotal - Number(prev.total_cad)) * 100) / 100 : null
+    grid = (
+      <div className="grid gap-x-3 gap-y-1.5 items-center text-[12.5px]" style={{ gridTemplateColumns: '84px 1fr 18px' }}>
+        {line('Dernière', last ? `${fmtDate(last.date_achat)} · ${money(lastTotal, 'CAD')}` : 'Aucune connue', undefined, !!last)}
+        {line('Écart', gap == null ? '—' : `${money(gap, 'CAD')} vs précédente`, undefined, gap === 0)}
+      </div>
+    )
+    links = (
+      <>
+        <button type="button" className="text-[12px] text-brand-600 hover:underline" onClick={onOther}>Déposer moi-même</button>
+        <span className="grow" />
+      </>
+    )
+  }
+
+  const style = { position: 'fixed', top: pos.top, left: pos.left, width: 380 }
+  // Portail vers <body> : un ancêtre transformé du tableau décalait la position fixe.
+  return createPortal(
+    <div role="dialog" aria-label={title} data-testid="todo-popover" style={style}
+      onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}
+      className="z-50 rounded-xl border border-slate-200 bg-white shadow-xl px-3.5 py-3 text-left whitespace-normal">
+      <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-semibold text-slate-800 min-w-0">
+        {title}
+        <span className="font-normal text-slate-400 truncate">· {row.vendor_name || txnLabel(row)}</span>
+      </div>
+      {loading ? <div className="text-xs text-slate-400">…</div>
+        : kind === 'ask' || data || kind === 'publish' ? grid
+          : <div className="text-xs text-slate-400">Rien à comparer</div>}
+      <div className="mt-3 flex items-center gap-2">
+        {links}
+        <button ref={confirmRef} type="button" disabled={busy} onClick={onConfirm}
+          className={`h-7 px-3 rounded-lg text-[12.5px] font-medium text-white disabled:opacity-50 ${kind === 'ask' ? 'bg-amber-600 hover:bg-amber-700' : 'bg-brand-600 hover:bg-brand-700'}`}>
+          {verb} ↵
+        </button>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+// Le bouton de la ligne, comme QuickBooks : le geste attendu, et la flèche
+// pour le reste. Sans gestionnaire, le clic remonte à la ligne et la déplie sur
+// le bon volet. Quand le geste a un panneau R3+ (apparier, publier, lier,
+// demander), le clic sur la pastille l'ouvre : le bouton du panneau refait
+// exactement ce que faisait la pastille.
+function RowAction({ row, stage, next, target, names, currency, onChanged, onOpenPanel }) {
+  const [pop, setPop] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!pop) return undefined
+    const h = (e) => {
+      if (e.target.closest?.('[data-testid="todo-popover"]')) return
+      setPop(null)
+    }
+    const close = () => setPop(null)
+    document.addEventListener('mousedown', h)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', h)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [pop])
+  const run = (fn) => async (e) => {
+    e.stopPropagation(); setBusy(true)
+    try { await fn(); invalidate('/bank'); celebrate('Fait'); await onChanged() } finally { setBusy(false) }
+  }
+  const pill = 'h-7 px-3 text-[12.5px] font-medium whitespace-nowrap disabled:opacity-50'
+  const ghostBtn = `${pill} rounded-full border border-slate-300 text-slate-700 bg-white hover:bg-slate-50`
+
+  if (row._ghost) {
+    return row.qb_url
+      ? <a href={row.qb_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-[12.5px] font-medium text-blue-700 hover:underline">Ouvrir dans QB</a>
+      : null
+  }
+  if (stage === 'exc') {
+    return <button type="button" disabled={busy} className={ghostBtn}
+      onClick={run(() => api.bank.updateTransaction(row.id, { status: 'a_traiter' }))}>Rétablir</button>
+  }
+  if (stage === 'cat') {
+    return row.status === 'rapproche'
+      ? <button type="button" disabled={busy} className={ghostBtn} title="Annuler le rapprochement"
+          onClick={run(() => api.bank.reconcile([row.id], true))}>Annuler</button>
+      : <button type="button" className={ghostBtn} onClick={(e) => { e.stopPropagation(); onOpenPanel(row) }}>Dossier</button>
+  }
+
+  const sg = row.suggestion
+  const settled = (row.matched_id || row.transfer_txn_id) && next?.kind !== 'comptabiliser'
+  // Sortie sans proposition ni correspondance : le geste est de réclamer la facture.
+  const ask = !sg && !settled && !NEXT_VERB[next?.kind] && row.amount < 0 && !row.invoice_requested
+  const verb = sg ? (sg.publishes ? 'Publier' : 'Confirmer') : settled ? 'Ouvrir' : ask ? 'Demander' : NEXT_VERB[next?.kind] || 'Catégoriser'
+  const tgt = ask ? 'la facture' : target
+  const primary = !!sg || (!settled && !ask && !!NEXT_VERB[next?.kind])
+  const cls = ask
+    ? 'bg-amber-100 text-amber-800 border border-amber-300 hover:bg-amber-200'
+    : primary ? 'qbo-go' : 'border border-slate-300 text-slate-700 bg-white hover:bg-slate-50'
+  const onMain = sg ? run(() => api.bank.acceptProposal(sg.id))
+    : next?.kind === 'exclure' && !settled ? run(() => api.bank.updateTransaction(row.id, { status: 'ignore' }))
+    : ask ? run(async () => { await api.bank.addInvoiceRequests([row.id]) })
+    : undefined
+  const from = row.rule_name ? `Préparée par la règle « ${row.rule_name} »` : undefined
+  const popKind = sg ? (sg.kind === 'vendor_expense' ? 'publish' : null)
+    : settled ? null
+      : ask ? 'ask'
+        : next?.kind === 'apparier' ? 'match'
+          : next?.kind === 'publier' || next?.kind === 'comptabiliser' ? 'publish'
+            : next?.kind === 'virement' ? 'xfer' : null
+  // Sans gestionnaire propre, le geste de la pastille est d'ouvrir la ligne sur
+  // son volet : le clic remonte à la <tr>.
+  const expandRow = () => ref.current?.closest('tr')?.click()
+  const confirm = () => {
+    setPop(null)
+    if (onMain) onMain({ stopPropagation() {} })
+    else expandRow()
+  }
+  return (
+    <span ref={ref} className="relative inline-flex max-w-full">
+      <button type="button" disabled={busy} title={sg?.publishes ? 'Crée l\'écriture dans QuickBooks' : from}
+        onClick={popKind ? (e) => { e.stopPropagation(); onOpenPanel(row) } : onMain}
+        className={`${pill} rounded-full ${cls} max-w-[320px] truncate`}>
+        <b className="font-semibold">{verb}</b>{tgt ? ` ${tgt}` : ''}<span className="ml-1.5 opacity-60">↵</span>
+      </button>
+      {pop && popKind && (
+        <DecisionPanel kind={popKind} row={row} sg={sg} names={names} currency={currency} pos={pop} busy={busy}
+          onConfirm={confirm} onOther={() => { setPop(null); expandRow() }} onClose={() => setPop(null)} />
+      )}
+    </span>
+  )
+}
+
+// Le clic droit sur une ligne : les gestes secondaires (Charles, 2026-10-06).
+function RowContextMenu({ menu, onClose, onDossier, onChanged }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const h = (e) => { if (!ref.current?.contains(e.target)) onClose() }
+    const k = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('mousedown', h)
+    document.addEventListener('keydown', k)
+    window.addEventListener('scroll', onClose, true)
+    window.addEventListener('resize', onClose)
+    return () => {
+      document.removeEventListener('mousedown', h)
+      document.removeEventListener('keydown', k)
+      window.removeEventListener('scroll', onClose, true)
+      window.removeEventListener('resize', onClose)
+    }
+  }, [onClose])
+  const { row, x, y } = menu
+  const run = (fn, label) => async () => {
+    onClose()
+    await fn(); invalidate('/bank'); celebrate(label); await onChanged()
+  }
+  const item = 'w-full text-left px-2.5 py-1.5 rounded-md text-sm text-slate-700 hover:bg-slate-50'
+  const items = [
+    { label: 'Dossier', onClick: () => { onClose(); onDossier(row) } },
+    row.suggestion && { label: 'Refuser la suggestion', onClick: run(() => api.bank.refuseProposal(row.suggestion.id), 'Refusée') },
+    row.amount < 0 && !row.invoice_requested && row.status !== 'rapproche'
+      && { label: 'Demander la facture', onClick: run(() => api.bank.addInvoiceRequests([row.id]), 'Facture manquante') },
+    row.status === 'ignore'
+      ? { label: 'Rétablir', onClick: run(() => api.bank.updateTransaction(row.id, { status: 'a_traiter' }), 'Rétablie') }
+      : row.status !== 'rapproche' && { label: 'Exclure', onClick: run(() => api.bank.updateTransaction(row.id, { status: 'ignore' }), 'Exclue') },
+  ].filter(Boolean)
+  return createPortal(
+    <div ref={ref} data-testid="bank-row-menu" onContextMenu={(e) => e.preventDefault()}
+      style={{ position: 'fixed', top: Math.min(y, window.innerHeight - 40 * items.length - 16), left: Math.min(x, window.innerWidth - 208) }}
+      className="z-50 w-48 rounded-lg border border-slate-200 bg-white shadow-lg p-1 text-left">
+      {items.map((it) => <button key={it.label} type="button" className={item} onClick={it.onClick}>{it.label}</button>)}
+    </div>,
+    document.body,
   )
 }
 
@@ -2085,91 +3749,143 @@ const NEXT_META = {
   apparier: { label: 'Apparier', pane: 'match', cls: 'bg-brand-600 text-white hover:bg-brand-700' },
   publier: { label: 'Publier', pane: 'add', cls: 'bg-brand-600 text-white hover:bg-brand-700' },
   comptabiliser: { label: 'Comptabiliser', pane: 'publish', cls: 'bg-brand-600 text-white hover:bg-brand-700' },
+  exclure: { label: 'Exclure', pane: 'exclude', cls: 'border border-slate-300 text-slate-600 hover:bg-white' },
   rien: { label: 'Ouvrir', pane: 'add', cls: 'border border-slate-300 text-slate-600 hover:bg-white' },
 }
 
 // « Apparier » : les documents au même montant, et le bouton qui lie.
-function QbMatchPane({ txn, currency, onChanged }) {
+// Maquette M1 (choix de Charles, 2026-10-03) : la ligne du relevé et la pièce
+// côte à côte, un ✓ ou un ✕ par ligne. Une pièce déjà portée par une autre
+// ligne du relevé (la dépense du mois d'avant) le dit, et le gros bouton
+// devient « Créer la dépense » : l'apparier la paierait deux fois.
+function QbMatchPane({ txn, currency, onChanged, onAdd }) {
   const [items, setItems] = useState(null)
+  const [pick, setPick] = useState(0)
+  const [more, setMore] = useState(false)
+  const [mine, setMine] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const names = useQbNames(true)
 
   useEffect(() => {
     let alive = true
+    setPick(0); setMore(false); setItems(null); setMine(null)
     api.bank.suggestions(txn.id)
-      .then((r) => { if (alive) setItems(r) })
+      .then((r) => { if (alive) setItems(r || []) })
       .catch((e) => { if (alive) { setItems([]); setError(e.message) } })
+    if (txn.amount < 0) api.bank.addDefaults(txn.id).then((d) => { if (alive) setMine(d) }).catch(() => {})
     return () => { alive = false }
-  }, [txn.id])
+  }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const link = async (s) => {
     setBusy(true); setError(null)
     try {
       const r = await api.bank.match(txn.id, { matched_type: s.type, matched_id: s.id })
       invalidate('/bank')
-      await onChanged()
       // L'appariement est posé même si QuickBooks refuse : on le dit, le geste
       // reste rejouable depuis la ligne.
       if (r?.qbError) setError(`Lié, mais pas publié dans QuickBooks — ${r.qbError}`)
+      else await onChanged()
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
-  return (
-    <div className="space-y-2 text-sm">
-      {items == null && <div className="text-slate-400 text-xs">Recherche…</div>}
-      {items?.length === 0 && (
-        <div className="text-xs text-slate-500">Aucun document au même montant à ±7 jours — souvent une facture manquante.</div>
-      )}
-      {items?.map((s) => (
-        <div key={`${s.type}:${s.id}`} className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2">
-          <div className="min-w-0">
-            <div className="truncate">{docLink(s.type, s.id, s.label)}</div>
-            <div className="text-xs text-slate-500">
-              {fmtDate(s.date)} · {money(s.total, currency)} · {Math.round(s.confidence * 100)} %{s.quickbooks_id ? ' · publié dans QuickBooks' : ''}
-            </div>
+  if (items == null) return <div className="py-6 text-center text-xs text-slate-400">Recherche…</div>
+  const c = items[pick]
+  const others = (
+    items.length > 1 && (
+      <div className="text-center">
+        <button type="button" className="text-xs text-brand-600 hover:underline" onClick={() => setMore((m) => !m)}>
+          {items.length - 1} autre{items.length > 2 ? 's' : ''}
+        </button>
+        {more && (
+          <div className="mt-2 space-y-1 text-left">
+            {items.map((s, i) => (
+              <button key={`${s.type}:${s.id}`} type="button" onClick={() => { setPick(i); setMore(false) }}
+                className={`w-full flex items-center gap-2 rounded-lg border px-3 py-1.5 ${i === pick ? 'border-green-500 bg-green-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+                <span className="min-w-0 grow truncate">{s.vendor || s.label}</span>
+                {s.linked_txn && <span className="text-[11px] text-amber-600">déjà liée</span>}
+                <span className="text-xs text-slate-500">{fmtDate(s.date)}</span>
+                <span className="tabular-nums">{money(Math.abs(s.total), currency)}</span>
+              </button>
+            ))}
           </div>
-          <button type="button" disabled={busy}
-            className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-            onClick={() => link(s)}><Link2 size={12} /> Lier</button>
+        )}
+      </div>
+    )
+  )
+  if (!c) {
+    return (
+      <div className="flex flex-col gap-3">
+        <div className="py-6 text-center text-xs text-slate-500">Aucune pièce au même montant.</div>
+        {error && <div className="text-xs text-red-600">{error}</div>}
+        {onAdd && <SlipCta label={txn.amount < 0 ? 'Créer la dépense' : 'Ajouter'} onClick={onAdd} />}
+      </div>
+    )
+  }
+
+  const short = (d) => String(d).slice(0, 10)
+  const gap = Math.abs(Math.round((new Date(txn.txn_date) - new Date(c.date)) / 86400000))
+  const sameAmt = Math.abs(Math.abs(c.total) - Math.abs(txn.amount)) < 0.011 || (c.reasons || []).some((r) => /converti/.test(r))
+  const acctName = (id) => (names?.accounts || []).find((o) => String(o.Id) === String(id))?.Name || null
+  const myAcct = mine?.expense_account_id ? acctName(mine.expense_account_id) : null
+  const docAcct = c.account_name ? c.account_name.split(':').pop() : (c.account_id ? acctName(c.account_id) : null)
+  const myVendor = mine?.vendor || txn.vendor_name || txnLabel(txn)
+  const norm = (v) => String(v || '').toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '')
+  const sameVendor = mine?.vendor && c.vendor && (norm(c.vendor).includes(norm(mine.vendor)) || norm(mine.vendor).includes(norm(c.vendor)))
+  const rows = [
+    ['Qui', myVendor, c.vendor || c.label, sameVendor ? true : null],
+    ['Montant', money(Math.abs(txn.amount), currency), money(Math.abs(c.total), currency), sameAmt],
+    ['Date', short(txn.txn_date), short(c.date), gap <= 7],
+    (myAcct || docAcct) && ['Compte', myAcct || '—', docAcct || '—', myAcct && mine?.expense_account_id && String(mine.expense_account_id) === String(c.account_id) ? true : (myAcct && docAcct ? false : null)],
+  ].filter(Boolean)
+  const head = [c.kind || 'QuickBooks', c.quickbooks_id].filter(Boolean).join(' ')
+  const taken = c.linked_txn
+  const mark = (ok) => ok == null ? <span /> : ok
+    ? <Check size={13} className="text-green-600 mx-auto" />
+    : <X size={13} className="text-red-500 mx-auto" />
+
+  return (
+    <div className="flex flex-col gap-3" data-testid="qb-match-m1">
+      <div className="rounded-xl border border-slate-200 overflow-hidden text-[13px]">
+        <div className="grid grid-cols-[64px_1fr_20px_1fr] bg-slate-50 text-[11.5px] font-semibold text-slate-500">
+          <span /><span className="px-2 py-2">Banque</span><span />
+          <span className="px-2 py-2 truncate" onClick={(e) => e.stopPropagation()}>{docLink(c.type, c.id, head)}</span>
         </div>
-      ))}
+        {rows.map(([k, l, r, ok]) => (
+          <div key={k} className="grid grid-cols-[64px_1fr_20px_1fr] items-center border-t border-slate-100">
+            <span className="pl-3 py-2 text-xs text-slate-500">{k}</span>
+            <span className="px-2 py-2 truncate tabular-nums" title={l}>{l}</span>
+            {mark(ok)}
+            <span className={`px-2 py-2 truncate tabular-nums ${ok === false ? 'text-red-600' : ''}`} title={r}>{r}</span>
+          </div>
+        ))}
+      </div>
+      {taken && (
+        <div className="flex items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-amber-700 font-medium">
+          <AlertTriangle size={14} className="shrink-0" /> Déjà payée par la ligne du {short(taken.txn_date)}
+        </div>
+      )}
       {error && <div className="text-xs text-red-600">{error}</div>}
+      {taken && onAdd ? (
+        <>
+          <SlipCta label={`${txn.amount < 0 ? 'Créer la dépense' : 'Ajouter le dépôt'} du ${short(txn.txn_date)}`} onClick={onAdd} />
+          <div className="flex justify-center gap-4 text-xs">
+            <button type="button" disabled={busy} className="text-brand-600 hover:underline disabled:opacity-50" onClick={() => link(c)}>
+              {busy ? 'Liaison…' : 'Apparier quand même'}
+            </button>
+          </div>
+          {others}
+        </>
+      ) : (
+        <>
+          <SlipCta label="Apparier" busy={busy} busyLabel="Liaison…" onClick={() => link(c)} />
+          {others}
+        </>
+      )}
     </div>
   )
 }
 
-// Le document est apparié mais son écriture n'est jamais partie : ce bouton la
-// fait partir. Un clic humain, comme partout ailleurs.
-function PublishMatchedButton({ txn, onChanged }) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
-  const go = async () => {
-    setBusy(true); setError(null)
-    try {
-      await api.bank.publishMatched(txn.id)
-      invalidate('/bank')
-      await onChanged()
-    } catch (e) { setError(e.message) } finally { setBusy(false) }
-  }
-  return (
-    <span className="flex items-center gap-2 min-w-0">
-      <button type="button" disabled={busy} onClick={go}
-        className="shrink-0 px-2 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
-        {busy ? 'Publication…' : 'Comptabiliser dans QuickBooks'}
-      </button>
-      {error && <span className="truncate text-red-600" title={error}>{error}</span>}
-    </span>
-  )
-}
-
-// Ce que la ligne dépliée montre : le geste attendu, ouvert d'emblée, et les
-// autres à un clic. Rien à préparer ⇒ on dit pourquoi, court.
-// Les deux marques de Michel, au bout des doigts en tête de ligne : le rond
-// rouge au crayon (« à réviser », recopié en X dans TRX_Orisha) et le signet
-// orange (où il s'est arrêté — un seul par compte). Discrètes jusqu'au survol,
-// bien visibles une fois posées.
-// Les factures que Charles réclame : la liste, et le message qui part sur
-// Slack. Décocher une ligne la sort de l'envoi — elle reste réclamée.
 function InvoiceRequestsPanel({ onChanged }) {
   const [rows, setRows] = useState(null)
   const [message, setMessage] = useState(null)
@@ -2195,7 +3911,7 @@ function InvoiceRequestsPanel({ onChanged }) {
 
   if (error && !rows) return <div className="px-5 py-4 text-sm text-red-600">{error}</div>
   if (!rows) return <div className="px-5 py-4 text-sm text-slate-400">Chargement…</div>
-  if (!rows.length) return <div className="px-5 py-4 text-sm text-slate-400">Aucune facture demandée.</div>
+  if (!rows.length) return <div className="px-5 py-4 text-sm text-slate-400">Aucune facture manquante.</div>
 
   const inSend = rows.filter((r) => r.in_send).length
   return (
@@ -2234,22 +3950,20 @@ function InvoiceRequestsPanel({ onChanged }) {
   )
 }
 
-function RowMarks({ row, bookmarked, onReview, onBookmark }) {
+// Le signet : un ruban, un seul par compte. Le rond rouge « à réviser » se
+// pose sur la date elle-même (maquette Q2, 2026-10-03).
+function RowMarks({ row, bookmarked, onBookmark }) {
   const [busy, setBusy] = useState(false)
-  const red = !!row.review_flag
-  const run = (fn) => async (e) => {
+  const click = async (e) => {
     e.stopPropagation()
     setBusy(true)
-    try { await fn() } finally { setBusy(false) }
+    try { await onBookmark(bookmarked ? null : row.id) } finally { setBusy(false) }
   }
   return (
-    <span className="lg-marks flex items-center justify-center gap-1.5 h-full">
-      <button type="button" disabled={busy} data-testid="review-mark" aria-pressed={red}
-        aria-label={red ? 'Retirer « à réviser »' : 'À réviser'} title={red ? 'Retirer « à réviser »' : 'À réviser'}
-        onClick={run(() => onReview(row, !red))} className="lg-mark-pen" />
+    <span className="lg-marks flex items-center justify-center h-full">
       <button type="button" disabled={busy} data-testid="row-bookmark" aria-pressed={bookmarked}
         aria-label={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'} title={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'}
-        onClick={run(() => onBookmark(bookmarked ? null : row.id))} className="lg-mark-ribbon" />
+        onClick={click} className="lg-mark-ribbon" />
     </span>
   )
 }
@@ -2299,7 +4013,103 @@ function dossierFocus(d) {
   return null
 }
 
-function DossierFocus({ txn, currency, focus, dossier, reload, onChanged }) {
+// Encaissement d'une facture client, version « reçu » : la facture, ce que
+// QuickBooks recevra (compte, taxes) et un seul bouton qui enregistre le
+// paiement, pose le dépôt QuickBooks, comptabilise la ligne et marque la
+// facture payée dans Stripe.
+function InvoiceSlip({ txn, invoices, ambiguous, currency, onDone }) {
+  const [pick, setPick] = useState(0)
+  const [q, setQ] = useState('')
+  const [found, setFound] = useState(null)
+  const [preview, setPreview] = useState(undefined)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const list = found ?? invoices
+  const f = list[pick] || null
+  const amount = f ? (f.balance_due > 0 ? f.balance_due : f.total_amount) : 0
+  const method = /interac/i.test(`${txn.description || ''} ${txn.details || ''}`) ? 'interac' : 'virement_bancaire'
+
+  useEffect(() => {
+    const term = q.trim()
+    if (term.length < 2) { setFound(null); return undefined }
+    const t = setTimeout(() => {
+      api.bank.invoiceSearch(txn.id, term).then((r) => { setFound(r?.candidates || []); setPick(0) }).catch(() => setFound([]))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [q, txn.id])
+
+  useEffect(() => {
+    if (!f) { setPreview(null); return undefined }
+    let alive = true
+    setPreview(undefined)
+    api.payments.previewDeposit({ facture_id: f.id, amount, currency: f.currency || currency || 'CAD', method, received_at: txn.txn_date })
+      .then((r) => { if (alive) setPreview(r?.summary || null) })
+      .catch(() => { if (alive) setPreview(null) })
+    return () => { alive = false }
+  }, [f?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pay = async () => {
+    setBusy(true); setError(null)
+    try {
+      const r = await api.payments.create({
+        facture_id: f.id, direction: 'in', method, received_at: txn.txn_date, amount,
+        currency: f.currency || currency || 'CAD',
+        notes: `Encaissement vu au relevé — ${txnLabel(txn)}`,
+        clear_paid_status: !!(f.paid_at && !f.paid_charge_id && !f.paid_payment_intent),
+        bank_txn_id: txn.id, mark_stripe_paid: true,
+      })
+      invalidate('/bank')
+      if (r?.qb_error) { setError(`Paiement enregistré, mais pas de dépôt QuickBooks — ${r.qb_error}`); return }
+      if (r?.stripe?.error) celebrate('Comptabilisé — Stripe à marquer à la main')
+      else celebrate(r?.stripe?.marked ? 'Comptabilisé · payée dans Stripe' : 'Comptabilisé')
+      await onDone()
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
+  const sum = preview
+  return (
+    <div className="flex flex-col gap-3">
+      {f ? (
+        <div>
+          <SlipRow label="Client" value={<Link to={`/factures/${f.id}`} className="link-record">{f.company_name || '—'}</Link>} />
+          <SlipRow label="Facture" value={<>{f.document_number} <span className="font-normal text-slate-500">· {fmtDate(f.document_date)}</span>
+            {f.lien_stripe && <a href={f.lien_stripe} target="_blank" rel="noreferrer" className="ml-1.5 text-slate-300 hover:text-brand-600"><ExternalLink size={11} className="inline" /></a>}</>} />
+          <SlipRow label="Montant" warn={Math.abs(amount - Math.abs(txn.amount)) > 0.01}
+            value={<>{money(amount, f.currency || currency)} {Math.abs(amount - Math.abs(txn.amount)) <= 0.01 && <span className="text-green-700">✓</span>}</>} />
+          <SlipRow label="Compte" value={sum === undefined ? <span className="text-slate-400">…</span> : sum?.credit_account || '—'} />
+          <SlipRow label="Taxe" value={sum === undefined ? <span className="text-slate-400">…</span> : sum?.tax_code || 'Aucun code (hors taxes)'} />
+          <SlipRow label="Dépôt dans" value={sum === undefined ? <span className="text-slate-400">…</span> : sum?.bank_account || '—'} />
+          <SlipRow label="Stripe" value={<span className="font-normal text-slate-600">sera marquée payée</span>} />
+        </div>
+      ) : (
+        <div className="py-6 text-center text-xs text-slate-500">Aucune facture ne correspond.</div>
+      )}
+      {sum && sum.taxes > 0 && (
+        <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 rounded-xl bg-slate-50 px-3.5 py-2.5 text-[12.5px] tabular-nums">
+          <span>Avant taxes</span><span className="text-right font-medium">{money(sum.line_ht, sum.currency)}</span>
+          <span className="text-slate-500">Taxes</span><span className="text-right text-slate-500">{money(sum.taxes, sum.currency)}</span>
+        </div>
+      )}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      {f && <SlipCta label="Comptabiliser" busy={busy} busyLabel="Comptabilisation…" onClick={pay} />}
+      {(ambiguous || list.length > 1) && (
+        <div className="space-y-1">
+          {list.map((x, i) => i !== pick && (
+            <button key={x.id} type="button" onClick={() => setPick(i)}
+              className="w-full flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-left text-xs hover:bg-slate-50">
+              <span className="min-w-0 grow truncate">{x.company_name} · {x.document_number}</span>
+              <span className="tabular-nums">{money(x.balance_due > 0 ? x.balance_due : x.total_amount, x.currency)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      <input value={q} onChange={(e) => setQ(e.target.value)} aria-label="Chercher une facture"
+        className="text-xs border border-slate-200 rounded-lg px-2 py-1 text-slate-700" placeholder="Autre facture…" />
+    </div>
+  )
+}
+
+function DossierFocus({ txn, currency, focus, dossier, reload, onChanged, onDone }) {
   const after = async () => { await reload(); invalidate('/bank'); await onChanged() }
   if (focus.key === 'debt') return <DebtCard data={dossier.debt} onPublished={after} />
   if (focus.key === 'paie' || focus.key === 'aga') {
@@ -2310,123 +4120,13 @@ function DossierFocus({ txn, currency, focus, dossier, reload, onChanged }) {
     )
   }
   if (focus.key === 'invoices') {
+    if (onDone) return <InvoiceSlip txn={txn} invoices={dossier.invoices} ambiguous={dossier.invoices_ambiguous} currency={currency} onDone={onDone} />
     return <InvoiceCard txn={txn} invoices={dossier.invoices} ambiguous={dossier.invoices_ambiguous} currency={currency} onChanged={onChanged} />
   }
   return <ReceiptCard txn={txn} receipts={dossier.receipts} ambiguous={dossier.receipts_ambiguous} onChanged={onChanged} />
 }
 
-function QbRowExpansion({ txn, currency, next, onChanged, onOpenPanel, collapse }) {
-  // Une ligne qui porte une proposition s'ouvre dessus : c'est le geste que la
-  // page attend d'abord, avant celui que `next-actions` a calculé.
-  const ready = txn.proposal_count > 0
-  const [pane, setPane] = useState(ready ? 'ready' : NEXT_META[next?.kind || 'rien'].pane)
-  // « Exclure » a quitté cette barre (2026-09-29) : on l'y touchait par accident.
-  const { dossier, reload } = useDossier(txn._ghost ? null : txn.id)
-  const focus = dossierFocus(dossier)
-  // Le dossier arrive après le dépliage : s'il porte quelque chose de
-  // comptabilisable, c'est ce volet qui s'ouvre (sauf proposition ou choix fait).
-  const touched = useRef(false)
-  useEffect(() => {
-    if (focus && !ready && !touched.current) setPane('dossier')
-  }, [focus?.key]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (txn._ghost) {
-    return <div className="px-4 py-3 text-xs text-slate-500">Écriture QuickBooks sans ligne au relevé.</div>
-  }
-
-  // Confirmée : la ligne change de couleur et le dépliage se referme.
-  const proposalDone = async () => { await onChanged(); collapse() }
-
-  const settled = txn.matched_id || txn.transfer_txn_id || txn.status === 'rapproche' || txn.status === 'ignore'
-  if (settled) {
-    // Réglée mais encore porteuse d'une proposition ouverte : on la montre
-    // quand même, sinon elle n'est atteignable que par le panneau latéral.
-    return (
-      <div className="px-4 py-3 space-y-3 max-w-5xl">
-        {ready && <ProposalCards txn={txn} currency={currency} onChanged={proposalDone} />}
-        {!ready && focus && (
-          <DossierFocus txn={txn} currency={currency} focus={focus} dossier={dossier} reload={reload} onChanged={onChanged} />
-        )}
-        <div className="flex items-center gap-3 text-xs text-slate-500">
-          {txn.matched_id
-            ? <span className="flex items-center gap-1.5">{docLink(txn.matched_type, txn.matched_id, txn.matched_label)}<QbLink txn={txn} /></span>
-            : <span>{STATUS_META[bucketOf(txn)].hint}</span>}
-          {next?.kind === 'comptabiliser' && <PublishMatchedButton txn={txn} onChanged={onChanged} />}
-          <button type="button" className="px-2 py-1 rounded border border-slate-300 hover:bg-white"
-            onClick={() => onOpenPanel(txn)}>Ouvrir le dossier</button>
-        </div>
-        {!txn.transfer_txn_id && txn.status !== 'ignore' && <RuleFromTxnForm txn={txn} />}
-      </div>
-    )
-  }
-
-  // Maquette L5 (choix de Charles, 2026-09-29) : la barre de QuickBooks —
-  // trois onglets soulignés, celui que la ligne appelle déjà ouvert.
-  const GESTURES = [
-    { key: 'add', label: 'Catégoriser', show: txn.amount < 0 },
-    { key: 'match', label: 'Trouver une correspondance', show: true },
-    { key: 'transfer', label: 'Enregistrer comme transfert', show: true },
-  ].filter((g) => g.show)
-
-  // La bande verte de QuickBooks : ce que Boréal a déjà trouvé pour cette
-  // ligne, dit avant les onglets (demande de Charles, 2026-09-29).
-  const found = ready
-    ? (txn.proposal_count > 1 ? `${txn.proposal_count} propositions prêtes` : 'Proposition prête')
-    : focus ? `Correspondance trouvée · ${focus.label}`
-      : next?.kind === 'virement' ? 'Virement interne reconnu'
-        : next?.label ? next.label : null
-  const banner = [found, txn.rule_name ? `Règle « ${txn.rule_name} »` : null].filter(Boolean).join(' · ')
-
-  const tab = (key, label) => (
-    <button key={key} type="button" onClick={() => { touched.current = true; setPane(key) }} aria-pressed={pane === key}
-      className={`px-3 py-1.5 text-xs border-b-2 -mb-px ${pane === key
-        ? 'border-brand-600 text-slate-900 font-medium'
-        : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
-      {label}
-    </button>
-  )
-
-  return (
-    <div className="px-4 py-3 space-y-3 max-w-5xl">
-      {banner && (
-        <div className="flex items-center gap-2 rounded-lg bg-green-50 text-green-800 px-3 py-1.5 text-xs">
-          <CheckCheck size={13} className="shrink-0" /> {banner}
-        </div>
-      )}
-      <div className="flex items-center gap-1 flex-wrap border-b border-slate-200">
-        {ready && tab('ready', 'Prêt')}
-        {focus && tab('dossier', focus.label)}
-        {GESTURES.map((g) => tab(g.key, g.label))}
-        <button type="button" onClick={() => onOpenPanel(txn)}
-          className="ml-auto px-2 py-1 text-xs rounded-md text-slate-500 hover:bg-white/60">Dossier complet</button>
-      </div>
-
-      {pane === 'dossier' && focus && (
-        <DossierFocus txn={txn} currency={currency} focus={focus} dossier={dossier} reload={reload} onChanged={onChanged} />
-      )}
-      {pane === 'ready' && ready && (
-        <ProposalCards txn={txn} currency={currency} onChanged={proposalDone} />
-      )}
-      {pane === 'add' && txn.amount < 0 && (
-        <AddExpenseForm txn={txn} currency={currency} onDone={() => { collapse(); onChanged() }} onCancel={collapse} />
-      )}
-      {pane === 'add' && txn.amount > 0 && (
-        <div className="text-xs text-slate-500">Une entrée ne se comptabilise pas en dépense — l'apparier à un dépôt ou à un virement.</div>
-      )}
-      {pane === 'match' && <QbMatchPane txn={txn} currency={currency} onChanged={async () => { collapse(); await onChanged() }} />}
-      {pane === 'transfer' && (
-        <TransferForm txn={txn} currency={currency} onDone={() => { collapse(); onChanged() }} onCancel={collapse} />
-      )}
-
-      {/* La règle se crée là où le libellé est sous les yeux, une à la fois —
-          l'atelier, lui, les propose en lot. */}
-      {!txn.transfer_txn_id && <RuleFromTxnForm txn={txn} />}
-    </div>
-  )
-}
-
 export default function RapprochementBancaire() {
-  const navigate = useNavigate()
   const [accounts, setAccounts] = useState([])
   const [accountId, setAccountIdRaw] = useState(null)
   // Compte reflété dans l'URL (?compte=) : le sous-menu de la sidebar peut
@@ -2451,21 +4151,22 @@ export default function RapprochementBancaire() {
   const [notice, setNotice] = useState(null)
   const [rulesOpen, setRulesOpen] = useState(false)
   const [requestsOpen, setRequestsOpen] = useState(false)
-  // null = toute la liste ; sinon une clé de STATUS_META ou 'ghost'.
-  const [colorFilter, setColorFilter] = useState(null)
+  // L'étape (Pour révision / Catégorisées / Exclues) et le filtre de ligne.
+  const [stage, setStage] = useState('rev')
+  const [lineFilter, setLineFilter] = useState(null)
   const account = accounts.find((a) => a.id === accountId) || null
 
   const loadAccounts = useCallback(async () => {
     const list = await api.bank.accounts()
     setAccounts(list)
     // Au chargement : le compte demandé dans l'URL gagne, sinon on garde le
-    // courant, sinon le premier. On passe par le setter brut pour ne pas
-    // réécrire l'URL quand personne n'a rien demandé.
+    // courant, sinon « À comptabiliser » (Charles, 2026-10-06). On passe par le
+    // setter brut pour ne pas réécrire l'URL quand personne n'a rien demandé.
     setAccountIdRaw((prev) => {
       const wanted = new URLSearchParams(window.location.search).get('compte')
       if (wanted === TODO_TAB || (wanted && list.some((a) => a.id === wanted))) return wanted
       if (prev === TODO_TAB) return prev
-      return prev && list.some((a) => a.id === prev) ? prev : (list[0]?.id || null)
+      return prev && list.some((a) => a.id === prev) ? prev : TODO_TAB
     })
   }, [])
 
@@ -2477,7 +4178,7 @@ export default function RapprochementBancaire() {
       const list = await api.bank.accounts()
       const per = await Promise.all(list.filter((a) => a.todo_count > 0).map(async (a) => (
         (await api.bank.transactions(a.id))
-          .filter((r) => TODO_STATUSES.has(r.status) && (r.txn_date || '') >= TODO_SINCE)
+          .filter((r) => (TODO_STATUSES.has(r.status) || r.awaiting_payment) && (r.txn_date || '') >= TODO_SINCE)
           .map((r) => ({ ...r, _acct: { id: a.id, name: a.name, currency: a.currency } }))
       )))
       setRows(per.flat().sort((x, y) => String(y.txn_date).localeCompare(String(x.txn_date))))
@@ -2492,7 +4193,8 @@ export default function RapprochementBancaire() {
     }
   }, [askedAccount, accounts, accountId])
   useEffect(() => { loadTxns() }, [loadTxns])
-  useEffect(() => { setColorFilter(null) }, [accountId])
+  useEffect(() => { setLineFilter(null); setStage('rev') }, [accountId])
+  useEffect(() => { setLineFilter(null) }, [stage])
 
   // Incrémenté à chaque refresh : le résumé local se recalcule (la comparaison
   // QuickBooks, elle, reste à la demande).
@@ -2605,54 +4307,58 @@ export default function RapprochementBancaire() {
   }, [decorated, ghosts])
 
   const peekRow = allRows.find((r) => r.id === peekOpen.id)
+  // Panneau « reçu » (ligne à traiter, ouverte par un clic) : il porte son propre
+  // en-tête — l'en-tête du tiroir resterait en double.
+  const composing = !!peekRow && (peekRow._ghost || !(peekOpen.forId === peekRow.id && peekOpen.mode))
   // Facture retracée : le clic sur la ligne ouvre le document lui-même (reçu
   // extrait, payout, facture fournisseur) plutôt que de déplier la ligne.
   const [achatDoc, setAchatDoc] = useState(null)
-  const openMatchedDocument = (r) => {
-    if (r._ghost || !r.matched_id || r.transfer_txn_id) return false
-    if (r.matched_type === 'achat') {
-      api.achatsFournisseurs.get(r.matched_id).then(setAchatDoc).catch(() => {})
-      return true
-    }
-    if (r.matched_path) { navigate(r.matched_path); return true }
-    return false
-  }
-
+  const [rowMenu, setRowMenu] = useState(null)
+  const closeRowMenu = useCallback(() => setRowMenu(null), [])
+  const navigate = useNavigate()
+  // Ligne liée à un document de l'Extraction de données : le clic ouvre CE
+  // document, comme depuis l'Extraction (Charles, 2026-10-06 — « comme avant »).
+  const receiptOf = (r) => (!r._ghost && r.matched_type === 'receipt' && r.matched_id ? r.matched_id : null)
   const openTransaction = (r) => {
-    if (!r._ghost && r.status === 'facture_recue' && r.matched_type === 'receipt' && r.matched_id) {
-      navigate(`/sale-receipts/${r.matched_id}`)
-      return
-    }
+    const doc = receiptOf(r)
+    if (doc) { navigate(`/sale-receipts/${doc}`); return }
     setPeekOpen({ id: r.id, mode: null, forId: r.id })
   }
 
-  // Compteurs sur TOUTE la liste : ils ne doivent pas bouger quand on filtre.
-  const counts = useMemo(() => {
-    const c = { ghost: 0, proposals: 0, missing: 0, requested: 0 }
-    for (const k of LEGEND_ORDER) c[k] = 0
-    for (const r of allRows) {
-      c[bucketOf(r)] += 1
-      if (r.proposal_count) c.proposals += r.proposal_count
-      if (r.missing_invoice) c.missing += 1
-      if (r.invoice_requested) c.requested += 1
-    }
+  // « Ouvre CETTE ligne » : l'étape suit la ligne demandée.
+  useEffect(() => {
+    const r = askedRow && allRows.find((x) => x.id === askedRow)
+    if (r) setStage(stageOf(r))
+  }, [askedRow, allRows.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const stageCounts = useMemo(() => {
+    const c = { rev: 0, cat: 0, exc: 0 }
+    for (const r of allRows) if (!r._ghost) c[stageOf(r)] += 1
     return c
   }, [allRows])
+  const stageRows = useMemo(() => allRows.filter((r) => stageOf(r) === stage), [allRows, stage])
+
+  // Compteurs sur toute l'étape : ils ne bougent pas quand on filtre.
+  const counts = useMemo(() => {
+    const c = { review: 0, requested: 0, match: 0, xfer: 0, none: 0, ghost: 0 }
+    for (const r of stageRows) {
+      if (r.review_flag) c.review += 1
+      if (r.invoice_requested) c.requested += 1
+      c[lineKind(r, nextActions[r.id])] = (c[lineKind(r, nextActions[r.id])] || 0) + 1
+    }
+    return c
+  }, [stageRows, nextActions])
 
   const visibleRows = useMemo(() => {
-    if (!colorFilter) return allRows
-    if (colorFilter === 'proposals') return allRows.filter((r) => r.proposal_count > 0)
+    if (!lineFilter || stage !== 'rev') return stageRows
+    if (lineFilter === 'review') return stageRows.filter((r) => r.review_flag)
     // Les plus vieilles d'abord : c'est l'ancienneté qui dit ce qui presse.
-    if (colorFilter === 'requested') {
-      return allRows.filter((r) => r.invoice_requested)
+    if (lineFilter === 'requested') {
+      return stageRows.filter((r) => r.invoice_requested)
         .sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)))
     }
-    if (colorFilter === 'missing') {
-      return allRows.filter((r) => r.missing_invoice)
-        .sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)))
-    }
-    return allRows.filter((r) => bucketOf(r) === colorFilter)
-  }, [allRows, colorFilter])
+    return stageRows.filter((r) => lineKind(r, nextActions[r.id]) === lineFilter)
+  }, [stageRows, lineFilter, stage, nextActions])
 
   // Les lignes fantômes (`qb:…`) n'existent pas en base : aucune action de lot
   // ne doit leur être envoyée. Elles restent cochables — DataTable ne sait pas
@@ -2718,41 +4424,45 @@ export default function RapprochementBancaire() {
     invalidate('/bank')
   }, [accountId])
 
-  const qbNames = useQbNames(rows.some((r) => r.suggestion?.kind === 'vendor_expense'))
-  // Le relevé porte tous les gestes : la ligne prend la couleur de son statut
-  // (rouge à traiter, bleu facture reçue, jaune comptabilisé, vert rapproché),
-  // comme les cases peintes du fichier TRX_Orisha. Le face à face avec
-  // QuickBooks (maquette R3) est retiré — Charles, 2026-09-29.
+  const qbNames = useQbNames(rows.some((r) => r.suggestion?.kind === 'vendor_expense' || r.auto_suggestion?.kind === 'vendor_expense')
+    || Object.values(nextActions).some((n) => n?.expense_account_id))
+  // Clone des « Opérations bancaires » de QuickBooks (maquette Q2, 2026-10-03) :
+  // lignes neutres, Dépense / Dépôt, « Catégorie ou correspondance », et le
+  // geste attendu en bout de ligne. Les marques de Boréal restent : rond rouge
+  // sur la date, ruban du signet, drapeau « sans facture ».
   const COLUMNS = useMemo(() => {
     const num = (v, cls = '', cur = currency) => (v == null
-      ? <span className="block text-right text-slate-200">·</span>
+      ? null
       : <span className={`block text-right tabular-nums ${cls}`}>{money(v, cur)}</span>)
     const renderers = {
       comment: (r) => (r._ghost ? '—' : <TransactionComment key={r.id} txn={r} onSave={saveComment} />),
       txn_date: (r) => (
-        <span className="whitespace-nowrap text-slate-500 tabular-nums">
+        <span className="whitespace-nowrap text-slate-600 tabular-nums">
           {!!r.pending && <span title="En attente à la banque"><Clock size={11} className="inline mr-1 -mt-0.5 text-slate-400" /></span>}
-          {r.review_flag ? <span className="lg-pen">{fmtDate(r.txn_date)}</span> : fmtDate(r.txn_date)}
+          {r._ghost ? fmtDate(r.txn_date) : (
+            <button type="button" data-testid="review-mark" aria-pressed={!!r.review_flag}
+              title={r.review_flag ? 'Retirer « à réviser »' : 'Marquer à réviser'}
+              onClick={(e) => { e.stopPropagation(); setReview(r, !r.review_flag) }}
+              className={`qbo-date ${r.review_flag ? 'lg-pen' : ''}`}>{fmtDate(r.txn_date)}</button>
+          )}
         </span>
       ),
       description: (r) => (
-        <span className={`block truncate ${r._ghost ? 'italic text-slate-400' : ''}`} title={txnSubLabel(r) || undefined}>
-          {r.proposal_count > 0 && (
-            <span title={`${r.proposal_count} proposition${r.proposal_count > 1 ? 's' : ''}`}>
-              <Wand2 size={12} className="inline mr-1 -mt-0.5 text-brand-600" />
-            </span>
-          )}
-          {r._flag && <span title={r._flag}><AlertTriangle size={12} className="inline mr-1 -mt-0.5 text-amber-500" /></span>}
-          {r._ghost && <span className="text-slate-400">QuickBooks · </span>}
-          {r._acct && <span className="mr-1.5 px-1 rounded bg-slate-100 text-[11px] text-slate-500">{r._acct.name}</span>}
-          <span className="lg-lbl">{txnLabel(r)}</span>
-          {txnSubLabel(r) && <span className="lg-sub"> · {txnSubLabel(r)}</span>}
+        <span className={`block min-w-0 leading-tight ${r._ghost ? 'italic text-slate-400' : ''}`}>
+          <span className="flex items-center gap-1.5 min-w-0">
+            {r._flag && <span title={r._flag} className="shrink-0"><AlertTriangle size={12} className="text-amber-500" /></span>}
+            {r._ghost && <span className="shrink-0">QuickBooks ·</span>}
+            <span className="lg-lbl truncate">{txnLabel(r)}</span>
+            {!!r.invoice_requested && <span title="Facture manquante" className="shrink-0"><Flag size={11} className="text-amber-600" /></span>}
+            {r._acct && <span className="shrink-0 px-1.5 rounded bg-slate-100 text-[11px] text-slate-500">{r._acct.name}</span>}
+          </span>
+          {txnSubLabel(r) && <span className="block truncate text-[11.5px] text-slate-400 mt-0.5">{txnSubLabel(r)}</span>}
         </span>
       ),
       bank_description: (r) => (txnSubLabel(r)
         ? <span className="block truncate text-slate-500" title={txnSubLabel(r)}>{txnSubLabel(r)}</span>
-        : <span className="text-slate-200">·</span>),
-      debit: (r) => num(r._ghost ? (r.amount < 0 ? -r.amount : null) : r.debit, 'text-slate-700', r._acct?.currency || currency),
+        : null),
+      debit: (r) => num(r._ghost ? (r.amount < 0 ? -r.amount : null) : r.debit, 'text-slate-800', r._acct?.currency || currency),
       credit: (r) => num(r._ghost ? (r.amount > 0 ? r.amount : null) : r.credit, 'text-green-700', r._acct?.currency || currency),
       amount: (r) => num(r.amount, r.amount < 0 ? 'text-slate-700' : 'text-green-700', r._acct?.currency || currency),
       balance: (r) => num(r.balance, 'text-slate-400', r._acct?.currency || currency),
@@ -2766,109 +4476,154 @@ export default function RapprochementBancaire() {
         )
         : r.resolved_vendor
           ? (
-            <Link to="/fournisseurs" onClick={(e) => e.stopPropagation()} className="block truncate text-slate-500 hover:text-brand-600"
+            <Link to="/fournisseurs" onClick={(e) => e.stopPropagation()} className="block truncate text-blue-700 hover:underline"
               title={`Reconnu par ${VENDOR_VIA[r.resolved_vendor.via] || r.resolved_vendor.via}`}>
               {r.resolved_vendor.name}
             </Link>
           )
-          : <span className="text-slate-200">·</span>),
+          : null),
       bank_state: (r) => {
         const m = BANK_STATE_META[r.bank_state]
-        return m ? <span className={`block truncate ${m.cls}`}>{m.label}</span> : <span className="text-slate-200">·</span>
+        return m ? <span className={`block truncate ${m.cls}`}>{m.label}</span> : null
       },
       match_confidence: (r) => (r.match_confidence != null ? `${Math.round(r.match_confidence * 100)} %` : '—'),
     }
-    // Le statut ne prend plus de colonne : c'est la couleur de la ligne. La
-    // description de la banque suit le libellé, sur la même ligne.
-    const base = TABLE_COLUMN_META.bank_transactions
-      .filter((c) => c.id !== 'status' && c.id !== 'bank_description')
-      .map((c) => ({ ...c, render: renderers[c.id] }))
+    const LABELS = { debit: 'Dépense', credit: 'Dépôt' }
+    // Le statut est l'étape ; la description de la banque vit sous le libellé ;
+    // l'état à la banque se lit à l'horloge sur la date.
+    const meta = Object.fromEntries(TABLE_COLUMN_META.bank_transactions
+      .filter((c) => !['status', 'bank_description', 'txn_date', 'description'].includes(c.id))
+      .map((c) => [c.id, {
+        ...c, label: LABELS[c.id] || c.label, render: renderers[c.id],
+        ...(c.id === 'bank_state' ? { defaultVisible: false } : {}),
+      }]))
+    // Date et libellé sous des ids neufs : les largeurs enregistrées pour
+    // l'ancien relevé (174 et 542 px) poussaient Dépense, Dépôt et le bouton
+    // hors de l'écran.
+    meta.qbo_date = { id: 'qbo_date', label: 'Date', field: 'txn_date', type: 'date', width: 112, render: renderers.txn_date }
+    meta.qbo_label = { id: 'qbo_label', label: 'Description', field: 'label', width: 250, render: renderers.description }
+    const fixed = { alwaysVisible: true, sortable: false, filterable: false, groupable: false }
     const marks = {
-      id: '_marks', label: '', width: 56, alwaysVisible: true, sortable: false, filterable: false, groupable: false,
-      render: (r) => (r._ghost ? null : (
-        <RowMarks row={r} bookmarked={account?.bookmark_txn_id === r.id} onReview={setReview} onBookmark={setBookmark} />
+      id: '_marks', label: '', width: 30, ...fixed,
+      render: (r) => (r._ghost || accountId === TODO_TAB ? null : (
+        <RowMarks row={r} bookmarked={account?.bookmark_txn_id === r.id} onBookmark={setBookmark} />
       )),
     }
-    const iBal = base.findIndex((c) => c.id === 'balance')
-    const withMarks = iBal === -1 ? [...base, marks] : [...base.slice(0, iBal + 1), marks, ...base.slice(iBal + 1)]
-    const suggestion = {
-      id: '_suggestion', label: 'Suggestion', width: 440, alwaysVisible: true, sortable: false, filterable: false, groupable: false,
-      render: (r) => (r._ghost ? null : (
-        <SuggestionCell row={r} currency={r._acct?.currency || currency} names={qbNames} onChanged={refresh} />
-      )),
-    }
-    const iDesc = withMarks.findIndex((c) => c.id === 'description')
-    const cols = iDesc === -1 ? [...withMarks, suggestion] : [...withMarks.slice(0, iDesc + 1), suggestion, ...withMarks.slice(iDesc + 1)]
-    // Le geste attendu, en tête de ligne : un clic la déplie sur le bon volet.
-    return [{
-      id: '_next', label: '', width: 190, sortable: false, filterable: false, groupable: false,
+    const cur = (r) => r._acct?.currency || currency
+    // Fournisseur reconnu en gras, libellé de la banque dessous ; sans
+    // fournisseur, le libellé devient la ligne principale.
+    meta.r3_vendor = {
+      id: 'r3_vendor', label: 'Fournisseur', field: 'vendor_name', width: 280,
       render: (r) => {
-        if (r._ghost || r.status === 'rapproche' || r.status === 'ignore' || r.suggestion || r.auto_suggestion) return null
-        const pending = nextActions[r.id]
-        if (r.qb_txn_id && !pending) return null
-        if ((r.matched_id || r.transfer_txn_id) && pending?.kind !== 'comptabiliser') {
-          return <span className="text-xs text-slate-400 truncate">{r.matched_label || 'Virement'}</span>
-        }
-        const n = pending || { kind: 'rien', label: null }
-        const meta = NEXT_META[n.kind] || NEXT_META.rien
-        const from = r.rule_name ? `Préparée par la règle « ${r.rule_name} »` : null
+        const v = renderers.vendor(r)
+        const sub = txnSubLabel(r)
+        const flags = (
+          <>
+            {r._flag && <span title={r._flag} className="shrink-0"><AlertTriangle size={12} className="text-amber-500" /></span>}
+            {!!r.invoice_requested && <span title="Facture manquante" className="shrink-0"><Flag size={11} className="text-amber-600" /></span>}
+            {r._acct && <span className="shrink-0 px-1.5 rounded bg-slate-100 text-[11px] text-slate-500">{r._acct.name}</span>}
+          </>
+        )
+        const bank = txnLabel(r)
         return (
-          <span className="flex items-center gap-2 min-w-0">
-            <button type="button" title={from || undefined} className={`shrink-0 text-xs px-2 py-1 rounded-md ${meta.cls}`}>{meta.label}</button>
-            {n.label && <span className="truncate text-xs text-slate-500" title={from || n.label}>{n.label}</span>}
+          <span className={`block min-w-0 leading-tight ${r._ghost ? 'italic' : ''}`}>
+            <span className="flex items-center gap-1.5 min-w-0">
+              {r._ghost && <span className="shrink-0 text-slate-400">QuickBooks ·</span>}
+              {v ? <span className="min-w-0 font-semibold text-slate-800 truncate"><VendorHover name={r.resolved_vendor?.name || r.vendor_name}>{v}</VendorHover></span>
+                : <span className="lg-lbl truncate text-slate-700" title={sub || undefined}>{bank}</span>}
+              {flags}
+            </span>
+            {v && <span className="block truncate text-[11.5px] text-slate-400 mt-0.5" title={sub || bank}>{bank}</span>}
           </span>
         )
       },
-    }, ...cols]
-  }, [currency, saveComment, refresh, nextActions, account?.bookmark_txn_id, setReview, setBookmark, qbNames])
+    }
+    meta.r3_amount = {
+      id: 'r3_amount', label: 'Montant', field: 'amount', type: 'number', width: 130,
+      render: (r) => (r.amount == null ? null : (
+        <span className={`block text-right tabular-nums ${r.amount < 0 ? 'text-slate-800' : 'text-green-700'}`}>
+          {r.amount < 0 ? money(-r.amount, cur(r)) : `+ ${money(r.amount, cur(r))}`}
+        </span>
+      )),
+    }
+    // L3 : ce que la ligne deviendra, puis le geste en lien bleu (QuickBooks).
+    // Hors « Pour révision », la cellule et le bouton d'avant restent.
+    const category = {
+      id: 'l3_cat', label: 'Catégorie ou correspondance', width: 340, ...fixed,
+      render: (r) => (r._ghost || stage !== 'rev' || (r.auto_suggestion && !r.suggestion)
+        ? <CategoryCell row={r} stage={stage} next={nextActions[r.id]} names={qbNames} currency={cur(r)} onChanged={refresh} />
+        : <QboCatCell row={r} next={nextActions[r.id]} names={qbNames} currency={cur(r)} bankAccounts={accounts} />),
+    }
+    const action = {
+      id: 'l3_act', label: 'Action', width: 120, ...fixed,
+      render: (r) => (r._ghost || stage !== 'rev'
+        ? <RowAction row={r} stage={stage} next={nextActions[r.id]} onChanged={refresh} onOpenPanel={openTransaction} />
+        : <QboActCell row={r} next={nextActions[r.id]} onChanged={refresh} />),
+    }
+    // Solde, Dépense, Dépôt, Description : masqués, réactivables au sélecteur.
+    for (const k of ['debit', 'credit', 'balance', 'vendor']) if (meta[k]) meta[k].defaultVisible = false
+    meta.qbo_label.defaultVisible = false
+    const order = ['qbo_date', 'r3_vendor']
+    const rest = Object.values(meta).filter((c) => !order.includes(c.id) && c.id !== 'r3_amount')
+    return [marks, ...order.map((k) => meta[k]), category, meta.r3_amount, action, ...rest]
+  }, [currency, saveComment, refresh, nextActions, account?.bookmark_txn_id, accountId, setReview, setBookmark, qbNames, stage, accounts]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Panneau instantané : ce qu'il lit est demandé dès que la souris passe sur
+  // la ligne (cache de 30 s), et les listes QuickBooks dès l'arrivée sur la page.
+  useEffect(() => { prefetch(() => api.quickbooks.accounts()); prefetch(() => api.quickbooks.taxCodes()) }, [])
+  const warmed = useRef(new Set())
+  const warmRow = (e) => {
+    const id = e.target.closest?.('tr[data-row-id]')?.getAttribute('data-row-id')
+    if (!id || warmed.current.has(id)) return
+    const r = allRows.find((x) => String(x.id) === id)
+    if (!r || r._ghost || r.matched_id || r.transfer_txn_id) return
+    warmed.current.add(id)
+    setTimeout(() => warmed.current.delete(id), 25_000)
+    if (r.amount < 0) {
+      prefetch(() => api.bank.addDefaults(r.id).then((d) => {
+        const t = d?.draft?.fields?.tax_code_id?.value || d?.tax_code_id
+        if (t && t !== NO_TAX) prefetch(() => api.bank.taxCodeRate(t))
+      }))
+    }
+    prefetch(() => api.bank.suggestions(r.id))
+    prefetch(() => api.bank.rules.opportunity(r.id))
+  }
 
   return (
     <Layout>
       <div className="px-3 pt-3">
-        {/* Plus d'en-tête (2026-09-15) : le titre ne sert qu'aux lecteurs
-            d'écran, le compte, l'écart et les actions vivent dans la barre
-            d'outils du tableau. */}
-        <h1 className="sr-only">Rapprochement bancaire</h1>
-
         {notice && <div className="mb-3 text-sm bg-green-50 text-green-800 rounded-lg px-3 py-2">{notice}</div>}
 
+        <div className="qbo-sheet" onMouseOver={warmRow}>
+          <QboHeader account={account} isTodo={accountId === TODO_TAB} rec={rec}
+            robot={account?.qb_account_id ? robot : null}
+            menu={<MoreMenu onDrop={() => setShowDrop(true)} onRules={() => setRulesOpen(true)} flash={flash} robot={account?.qb_account_id ? robot : null} />} />
+          <StageTabs value={stage} onChange={setStage} counts={stageCounts} isTodo={accountId === TODO_TAB} />
         <DataTable
           table="bank_transactions"
           skin="ledger"
           expandToggle={false}
-          height="calc(100vh - 165px)"
-          // Le compte n'est nommé qu'une fois : par son onglet, en bas
-          // (maquette T1, 2026-09-27). Les outils du tableau tiennent dans un
-          // seul menu.
+          height="calc(100vh - 290px)"
+          rowHeight={52}
+          pinnedColumns={PINNED_COLUMNS}
+          // Le compte n'est nommé qu'une fois en grand, dans l'en-tête ; les
+          // comptes restent en onglets en bas (maquette Q2, 2026-10-03).
           toolsMenu
-          toolbarEnd={
-            <div className="flex items-center gap-2 ml-2 min-w-0">
-              <StatusLegend counts={counts} value={colorFilter} onChange={setColorFilter} onRequests={() => setRequestsOpen(true)} />
-              <EcartBar account={account} rec={rec} robot={account?.qb_account_id ? robot : null} />
-              {/* Le seul bouton d'action de la page : apparier aux documents,
-                  vérifier dans QuickBooks, recalculer l'écart. */}
-              {accountId !== TODO_TAB && (
-                <button type="button" data-testid="reconcile-auto-btn" aria-label="Mettre à jour"
-                  className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-800 disabled:opacity-50"
-                  title={rec.busy ? 'Mise à jour…' : "Mettre à jour — apparier aux documents, vérifier dans QuickBooks, recalculer l'écart"}
-                  disabled={rec.busy || !accountId} onClick={rec.runUpdate}>
-                  <RefreshCw size={14} className={rec.busy ? 'animate-spin' : ''} />
-                </button>
-              )}
-              <MoreMenu onDrop={() => setShowDrop(true)} onRules={() => setRulesOpen(true)} flash={flash} robot={account?.qb_account_id ? robot : null} />
-            </div>
-          }
+          toolbarStart={<>
+            {stage === 'rev' && <LineFilters counts={counts} value={lineFilter} onChange={setLineFilter} onRequests={() => setRequestsOpen(true)} />}
+            <StatusLegend />
+          </>}
           columns={COLUMNS}
           openKey={askedRow}
           data={visibleRows}
           loading={loading}
           rowKey="id"
-          // La ligne porte la couleur de son statut (index.css, `row-st-*`).
-          // L'anomalie ne prend PLUS le fond — elle pose un filet à gauche, qui
-          // cohabite avec la teinte. Une règle de couleur de vue, elle, est
-          // posée en style inline par DataTable : elle gagne sur tout, c'est
-          // voulu (la règle explicite de l'utilisateur passe avant).
-          rowClassName={(r) => `${r._ghost ? GHOST_META.tint : STATUS_META[bucketOf(r)].tint}${r._flag ? ' row-flagged' : ''}`}
+          // Lignes neutres, comme QuickBooks : seule la ligne fantôme se
+          // distingue. Une règle de couleur de vue (style inline de DataTable)
+          // gagne toujours — la règle explicite de l'utilisateur passe avant.
+          // Code couleur du classeur (rouge / bleu / jaune / vert / gris) : la ligne
+          // entière prend la couleur de son statut — Charles s'en sert, ne pas retirer.
+          rowClassName={(r) => `${r._ghost ? GHOST_META.tint : STATUS_META[r.awaiting_payment ? 'facture_recue' : bucketOf(r)].tint}${r._flag ? ' row-flagged' : ''}`}
           searchFields={['details', 'description', 'reference', 'amount', 'comment', 'matched_label']}
           // Sans `bulkDeleteAlways`, DataTable n'affiche les cases à cocher que
           // si un admin a activé la suppression en lot sur la table : la
@@ -2943,11 +4698,46 @@ export default function RapprochementBancaire() {
               show: (rows) => rows.some((r) => !r._ghost && !r.invoice_requested),
               onClick: async (ids) => {
                 await bulkReal(ids, (real) => api.bank.addInvoiceRequests(real))
-                setRequestsOpen(true)
               },
             },
             {
-              key: 'ignore', label: 'Ignorer', icon: Unlink, busyLabel: 'Mise à jour…',
+              // Plusieurs lignes du relevé pour un seul montant ailleurs (10
+              // petits crédits Rona contre une ligne de 163,49 $). Si la
+              // sélection contient déjà la ligne du total, les autres s'y fondent.
+              key: 'group', label: 'Regrouper', icon: Combine, busyLabel: 'Regroupement…',
+              show: (rows) => {
+                const real = rows.filter((r) => !r._ghost)
+                if (real.length === 1) return !!real[0].group_parent_id
+                return real.length >= 2 && !real.some((r) => r.group_count)
+              },
+              onClick: async (ids) => {
+                const rows = allRows.filter((r) => ids.includes(r.id) && !r._ghost)
+                try {
+                  const parents = new Set(rows.map((r) => r.group_parent_id))
+                  if (parents.size === 1 && rows[0].group_parent_id) {
+                    await api.bank.regroupTxn(rows[0].id)
+                  } else {
+                    const sum = rows.reduce((s, r) => s + r.amount, 0)
+                    const total = rows.find((r) => Math.abs(2 * r.amount - sum) < 0.005)
+                    if (total) await api.bank.groupTxns(rows.filter((r) => r !== total).map((r) => r.id), total.id)
+                    else await api.bank.groupTxns(rows.map((r) => r.id))
+                  }
+                } catch (e) { flash(e.message) }
+                invalidate('/bank')
+                await refresh()
+              },
+            },
+            {
+              key: 'ungroup', label: 'Dégrouper', icon: Split, busyLabel: 'Mise à jour…',
+              show: (rows) => rows.length === 1 && !!rows[0].group_count,
+              onClick: async (ids) => {
+                try { await api.bank.ungroupTxn(ids[0]) } catch (e) { flash(e.message) }
+                invalidate('/bank')
+                await refresh()
+              },
+            },
+            {
+              key: 'ignore', label: 'Exclure', icon: Unlink, busyLabel: 'Mise à jour…',
               show: (rows) => rows.some((r) => !r._ghost && r.status !== 'ignore'),
               onClick: async (ids) => {
                 await bulkReal(ids, async (real) => {
@@ -2956,7 +4746,7 @@ export default function RapprochementBancaire() {
               },
             },
             {
-              key: 'reactivate', label: 'Ré-activer', icon: Undo2, busyLabel: 'Mise à jour…',
+              key: 'reactivate', label: 'Rétablir', icon: Undo2, busyLabel: 'Mise à jour…',
               show: (rows) => rows.length > 0 && rows.every((r) => r.status === 'ignore'),
               onClick: async (ids) => {
                 await bulkReal(ids, async (real) => {
@@ -2965,16 +4755,27 @@ export default function RapprochementBancaire() {
               },
             },
           ]}
-          onRowClick={(r) => (openMatchedDocument(r) ? undefined : false)}
-          renderExpanded={(row, { collapse }) => (
-            <QbRowExpansion key={row.id} txn={row} currency={row._acct?.currency || currency} next={nextActions[row.id]}
-              onChanged={refresh} onOpenPanel={openTransaction} collapse={collapse} />
-          )}
-          emptyState={{
-            title: 'Aucune transaction',
-            description: 'Importer un relevé pour commencer le rapprochement.',
+          // « Pour révision » : la ligne s'ouvre dessous (L3). Ailleurs, et pour
+          // une écriture fantôme, le panneau d'avant.
+          singleExpand
+          onRowContextMenu={(r, e) => { if (!r._ghost) setRowMenu({ row: r, x: e.clientX, y: e.clientY }) }}
+          onRowClick={(r) => {
+            if (stage === 'rev' && !r._ghost && !receiptOf(r)) return false
+            openTransaction(r)
+            return undefined
           }}
+          renderExpanded={(r, { collapse }) => (stage === 'rev' && !r._ghost ? (
+            <RecordScope id={r.id}>
+              <QboLine key={r.id} txn={r} currency={r._acct?.currency || currency} next={nextActions[r.id]} bankAccounts={accounts}
+                accountName={r._acct?.name || account?.name}
+                onChanged={refresh} collapse={collapse} />
+            </RecordScope>
+          ) : null)}
+          emptyState={stage === 'rev' && rows.length
+            ? { title: 'Tout est à jour ✓', description: '' }
+            : { title: 'Aucune transaction', description: stage === 'rev' ? 'Importer un relevé pour commencer le rapprochement.' : '' }}
         />
+        </div>
         <div className="dt-skin-ledger">
           <AccountTabs accounts={accounts} accountId={accountId} onChange={setAccountId} />
         </div>
@@ -2982,15 +4783,19 @@ export default function RapprochementBancaire() {
 
       <RecordPeekDrawer open={!!peekRow}
         onClose={() => setPeekOpen({ id: null, mode: null, forId: null })}
-        title={peekRow ? txnLabel(peekRow) : ''}
-        subtitle={peekRow ? fmtDate(peekRow.txn_date) : ''} width={420}>
+        title={peekRow && !composing ? txnLabel(peekRow) : ''}
+        subtitle={peekRow && !composing ? fmtDate(peekRow.txn_date) : ''} width={480} peekKey="bank-txn-slip">
         {peekRow && <RecordScope id={peekRow.id}>
           {peekRow._ghost
             ? <GhostPeek row={peekRow} currency={currency} />
             : <TxnPeek key={peekRow.id} txn={peekRow} currency={peekRow._acct?.currency || currency} onChanged={refresh}
-                initialMode={peekOpen.forId === peekRow.id ? peekOpen.mode : null} />}
+                initialMode={peekOpen.forId === peekRow.id ? peekOpen.mode : null} next={nextActions[peekRow.id]}
+                accountName={peekRow._acct?.name || account?.name}
+                onClose={() => setPeekOpen({ id: null, mode: null, forId: null })} />}
         </RecordScope>}
       </RecordPeekDrawer>
+
+      {rowMenu && <RowContextMenu menu={rowMenu} onClose={closeRowMenu} onDossier={(r) => (receiptOf(r) ? openTransaction(r) : setPeekOpen({ id: r.id, mode: 'full', forId: r.id }))} onChanged={refresh} />}
 
       {achatDoc && (
         <RecordPeekDrawer open onClose={() => setAchatDoc(null)} peekKey="achats" width={640}
@@ -3005,7 +4810,7 @@ export default function RapprochementBancaire() {
       )}
 
       <RecordPeekDrawer open={requestsOpen} onClose={() => setRequestsOpen(false)} peekKey="invoice-requests"
-        title="Factures demandées" subtitle="Décocher sort du message, pas de la liste" width={460}>
+        title="Factures manquantes" subtitle="Décocher sort du message, pas de la liste" width={460}>
         {requestsOpen && <InvoiceRequestsPanel onChanged={refresh} />}
       </RecordPeekDrawer>
 

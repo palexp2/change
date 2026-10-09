@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Extraction simplifiée</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root { --bg:#f5f6f7; --s:#fff; --soft:#f8f9fa; --line:#eceef0; --line2:#dfe2e5; --ink:#1f2328; --ink2:#4a5058; --ink3:#7a8089; --ink4:#a6abb2; --qb:#2ca01c; --qbd:#1d7f12; --qbs:#eef7ec; --amber:#b86e00; --ambs:#fdf3e1; --blue:#0a6fbf; --red:#d1362a; }
+:root[data-theme="dark"] { --bg:#111315; --s:#181b1e; --soft:#1d2024; --line:#262a2f; --line2:#30353b; --ink:#eceef0; --ink2:#c3c8ce; --ink3:#8e959d; --ink4:#646b73; --qb:#45b934; --qbd:#6ccf5c; --qbs:#1a2a18; --amber:#f0b04a; --ambs:#2e2617; --blue:#5cb0ef; --red:#ff7a6e; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111315; --s:#181b1e; --soft:#1d2024; --line:#262a2f; --line2:#30353b; --ink:#eceef0; --ink2:#c3c8ce; --ink3:#8e959d; --ink4:#646b73; --qb:#45b934; --qbd:#6ccf5c; --qbs:#1a2a18; --amber:#f0b04a; --ambs:#2e2617; --blue:#5cb0ef; --red:#ff7a6e; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:13.5px/1.45 Inter,system-ui,sans-serif; padding:24px 16px 60px; -webkit-font-smoothing:antialiased; }
+button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
+.top { max-width:1240px; margin:0 auto 14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.top h1 { font-size:16px; font-weight:600; margin:0 10px 0 0; }
+.opt { padding:6px 12px; border:1px solid var(--line2); border-radius:999px; background:var(--s); color:var(--ink2); font-weight:500; }
+.opt b { color:var(--qbd); margin-right:5px; }
+.opt[aria-pressed="true"] { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+.opt[aria-pressed="true"] b { color:inherit; opacity:.6; }
+.lede { max-width:1240px; margin:0 auto 12px; color:var(--ink3); }
+.screen { max-width:1240px; margin:0 auto; background:var(--s); border-radius:14px; box-shadow:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.06); overflow:hidden; }
+.wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; min-width:940px; }
+th { text-align:left; font-size:11.5px; font-weight:500; color:var(--ink4); padding:11px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
+td { padding:13px 12px; border-bottom:1px solid var(--line); vertical-align:middle; }
+th:first-child, td:first-child { padding-left:28px; } th:last-child, td:last-child { padding-right:28px; }
+tr:hover td { background:#fafbfb; } :root[data-theme="dark"] tr:hover td { background:#1f2327; }
+.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.dt { color:var(--ink3); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.lab { font-weight:500; max-width:260px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pos { color:var(--qbd); }
+.muted { color:var(--ink4); }
+.btn { height:28px; padding:0 13px; border-radius:999px; font-size:12.5px; font-weight:500; border:1px solid var(--line2); background:var(--s); color:var(--ink2); white-space:nowrap; }
+.btn.g { background:var(--qb); border-color:var(--qb); color:#fff; }
+.act { text-align:right; }
+.dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:8px; vertical-align:middle; flex-shrink:0; }
+.d-ok { background:var(--qb); } .d-half { background:#e0a100; } .d-no { background:transparent; border:1.5px solid var(--ink4); }
+.pill { display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:500; white-space:nowrap; }
+.p-ok { background:var(--qbs); color:var(--qbd); } .p-half { background:var(--ambs); color:var(--amber); } .p-no { background:var(--soft); color:var(--ink3); }
+.cell { display:flex; align-items:center; min-width:0; }
+.cell span.t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.arrow { color:var(--ink4); margin:0 6px; }
+.vend { color:var(--ink2); }
+.vend.new { color:var(--ink4); font-style:italic; }
+.chk { color:var(--qbd); font-weight:600; }
+.legend { display:flex; gap:16px; padding:12px 28px; color:var(--ink3); font-size:12px; border-bottom:1px solid var(--line); }
+.theme { position:fixed; top:12px; right:14px; border:1px solid var(--line2); border-radius:999px; padding:4px 10px; background:var(--s); color:var(--ink3); font-size:12px; }
+.av{width:22px;height:22px;border-radius:6px;display:inline-grid;place-items:center;color:#fff;font-size:11px;font-weight:600;margin-right:8px;vertical-align:middle}
+.unread td .vn{font-weight:600}
+.ud{width:7px;height:7px;border-radius:50%;background:var(--blue);display:inline-block;margin-right:8px;vertical-align:middle}
+.sub{display:block;color:var(--ink4);font-size:11.5px}
+.p-red{background:#fcefee;color:var(--red)}
+.d-red{background:var(--red)}
+.d-wait{background:transparent;border:1.5px solid var(--ink4)}
+.d-warn{background:#e0a100}
+.tabs{display:flex;gap:26px;padding:0 28px;border-bottom:1px solid var(--line)}
+.tabs span{padding:12px 0;color:var(--ink3);font-weight:500}
+.tabs span.on{color:var(--ink);border-bottom:2px solid var(--ink)}
+.tabs i{font-style:normal;color:var(--ink4);margin-left:4px;font-weight:400}
+</style>
+</head>
+<body>
+<button class="theme" id="theme">◐</button>
+<div class="top"><h1>Extraction de données</h1><span id="opts"></span></div>
+<div class="lede" id="lede"></div>
+<div class="screen"><div class="tabs" id="tabs"></div><div class="wrap" id="screen"></div></div>
+<script>
+// [fournisseur, n°, date, total, devise, état: ok|wait|warn|dup, non lu, détail]
+const ROWS = [
+  ['Webflow', '1790950589', '2026-10-02', 89.68, 'US', 'ok', 1, 'BNC USD · 2 oct.'],
+  ['Google', '5707138961', '2026-10-02', 202.40, '', 'ok', 0, 'MasterCard BNC · 2 oct.'],
+  ['Google', '5710085013', '2026-09-30', 0, '', 'dup', 1, 'Montant à 0 $'],
+  ['Les Jardins d\u2019Inverness', '4668', '2026-10-01', 6122.42, '', 'wait', 1, ''],
+  ['Novo Express', '253426', '2026-10-01', 29.42, '', 'wait', 1, ''],
+  ['Amazon Web Services', 'CAIN26-2464390', '2026-10-01', 73.38, 'US', 'ok', 1, 'Venn USD · 1 oct.'],
+  ['McMaster-Carr', '', '', 0, 'US', 'wait', 1, ''],
+  ['DHL (Douanes)', 'E103277528500', '2026-10-02', 147.99, '', 'warn', 1, 'TPS facturée sur un envoi détaxé ?'],
+  ['Takachi', '', '2026-09-29', 0, 'US', 'dup', 1, 'Doublon de CI260929AU'],
+  ['Takachi', 'CI260929AU', '2026-09-28', 2422.99, 'US', 'ok', 0, 'BNC USD · 28 sept.'],
+  ['Linode (Akamai)', '20621940', '2026-10-01', 104.47, 'US', 'ok', 1, 'Venn USD · 1 oct.'],
+  ['Dubois Agrinovation', '602193', '2026-09-30', 1039.38, '', 'dup', 1, 'Doublon'],
+  ['The Letter EM', '122', '2026-10-01', 6898.50, '', 'wait', 1, ''],
+]
+const COLORS = ['#0f9d58', '#1a73e8', '#8e44ad', '#d35400', '#c0392b', '#16a085', '#2c3e50']
+const av = (n) => { let h = 0; for (const c of n) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `<span class="av" style="background:${COLORS[h % 7]}">${n[0]}</span>` }
+const OPTS = [
+  ['E0', 'Actuel', 'Pour comparer.'],
+  ['E1', 'Un point + un mot', 'Trois états : Prêt · En attente · À vérifier. Le détail au survol.'],
+  ['E2', 'Le bouton', 'Plus de colonne Statut : le geste suivant, ou rien.'],
+  ['E3', 'Problèmes seulement', 'Rien n\u2019est écrit quand tout va bien ; seuls les problèmes parlent.'],
+]
+let opt = 'E1'
+const fmt = (r) => r[3].toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (r[4] ? ' $ US' : ' $')
+const S = { ok: ['Prêt', 'ok'], wait: ['En attente', 'wait'], warn: ['À vérifier', 'warn'], dup: ['À vérifier', 'warn'] }
+const vend = (r) => `<td>${r[6] ? '<span class="ud"></span>' : '<span class="ud" style="visibility:hidden"></span>'}<span class="vn">${r[0]}</span></td>`
+const base = (r) => `<td class="dt">${r[2] || '<span class="muted">—</span>'}</td><td class="num">${r[3] ? fmt(r) : '<span class="muted">—</span>'}</td>`
+
+function e0() {
+  const pill = { ok: ['p-ok', 'Débit trouvé'], wait: ['p-no', 'Débit à venir'], warn: ['p-half', 'Taxe à vérifier'], dup: ['p-red', 'Doublon / 0 $'] }
+  return `<table><thead><tr><th>Fournisseur</th><th>Date</th><th>N° de reçu</th><th>Total</th><th>Statut</th><th>QuickBooks</th><th></th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr class="${r[6] ? 'unread' : ''}"><td style="white-space:nowrap">${r[6] ? '<span class="ud"></span>' : '<span class="ud" style="visibility:hidden"></span>'}${av(r[0])}<span style="display:inline-block;vertical-align:middle;line-height:1.2"><span class="vn">${r[0]}</span>${r[1] ? `<span class="sub">${r[1]}</span>` : ''}</span></td>
+    <td class="dt">${r[2] || '—'}</td><td style="font-size:12px;font-weight:600">${r[1] ? '#' + r[1] : '<span class="muted">—</span>'}</td><td class="num" style="text-align:left">${fmt(r)}</td>
+    <td><span class="pill ${pill[r[5]][0]}">${pill[r[5]][1]}</span></td><td class="muted">—</td><td class="muted">🗑</td></tr>`).join('')}</tbody></table>`
+}
+function e1() {
+  return `<table><thead><tr><th>Fournisseur</th><th>N°</th><th>Date</th><th class="num">Total</th><th>État</th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr class="${r[6] ? 'unread' : ''}">${vend(r)}<td class="muted">${r[1] || '—'}</td>${base(r)}
+    <td title="${r[7]}"><div class="cell"><i class="dot d-${S[r[5]][1]}"></i><span class="t ${r[5] === 'wait' ? 'muted' : ''}">${S[r[5]][0]}</span></div></td></tr>`).join('')}</tbody></table>`
+}
+function e2() {
+  const b = (r) => r[5] === 'ok' ? '<button class="btn g">Publier</button>' : r[5] === 'wait' ? '<span class="muted" style="font-size:12px">attend le débit</span>' : '<button class="btn" style="border-color:#e0a100;color:var(--amber)">Vérifier</button>'
+  return `<table><thead><tr><th>Fournisseur</th><th>N°</th><th>Date</th><th class="num">Total</th><th class="act"></th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr class="${r[6] ? 'unread' : ''}">${vend(r)}<td class="muted">${r[1] || '—'}</td>${base(r)}<td class="act" title="${r[7]}">${b(r)}</td></tr>`).join('')}</tbody></table>`
+}
+function e3() {
+  return `<table><thead><tr><th>Fournisseur</th><th>N°</th><th>Date</th><th class="num">Total</th><th></th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr class="${r[6] ? 'unread' : ''}">${vend(r)}<td class="muted">${r[1] || '—'}</td>${base(r)}
+    <td>${r[5] === 'warn' || r[5] === 'dup' ? `<span style="color:var(--amber)">⚠ ${r[5] === 'dup' ? 'Doublon' : 'Taxe'}</span>` : r[5] === 'ok' ? '<span class="chk">✓</span>' : ''}</td></tr>`).join('')}</tbody></table>`
+}
+function render() {
+  document.getElementById('opts').innerHTML = OPTS.map(([k, t]) => `<button class="opt" data-o="${k}" aria-pressed="${opt === k}"><b>${k}</b>${t}</button>`).join(' ')
+  document.getElementById('lede').textContent = OPTS.find(o => o[0] === opt)[2]
+  document.getElementById('tabs').innerHTML = '<span class="on">À publier<i>18</i></span><span>Publiés</span><span>Archivés</span>'
+  document.getElementById('screen').innerHTML = { E0: e0, E1: e1, E2: e2, E3: e3 }[opt]()
+}
+document.addEventListener('click', (e) => {
+  const o = e.target.closest('[data-o]'); if (o) { opt = o.dataset.o; render() }
+  if (e.target.id === 'theme') { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme = dark ? 'light' : 'dark' }
+})
+render()
+</script>
+</body>
+</html>

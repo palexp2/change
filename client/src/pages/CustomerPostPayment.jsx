@@ -1,13 +1,13 @@
 import { roofInverterSupplyKey, roofVentAnswers, thermalScreen } from '../lib/discoveryRoofs.js'
 import { useEffect, useState, useCallback, useRef, useMemo, createContext, useContext, Fragment } from 'react'
-import { Copy, Eye, EyeOff, HelpCircle } from 'lucide-react'
+import { Copy, Eye, EyeOff, HelpCircle, Pencil } from 'lucide-react'
 import { Modal } from '../components/Modal.jsx'
 import { useSearchParams, useParams } from 'react-router-dom'
 import Spinner from '../components/Spinner.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
 import { fmtMoney } from '../utils/formatters.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
-import { buildForm, controllerDistanceValue, customAnswered, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
+import { buildForm, controllerDistanceValue, customAnswered, sideVentOther, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
 import GreenhouseIllustration from '../components/GreenhouseIllustration.jsx'
 import SideVentCountChoice from '../components/SideVentCountChoice.jsx'
 import RoofVentCountChoice from '../components/RoofVentCountChoice.jsx'
@@ -45,7 +45,8 @@ const filled = (v) => v != null && String(v).trim() !== ''
 const MAX_VALVE_WIRE_FEET = 125
 const MAX_FURNACE_WIRE_FEET = 225
 // Inverseurs déjà en place sur les moteurs des côtés : la longueur ne sert plus.
-const asksLength = g => g.has_side_vents === true && !(g.has_existing_side_vent_motors && g.side_has_inverters === true)
+// Côté « Autre » : rien ne se dimensionne sur la longueur non plus.
+const asksLength = g => g.has_side_vents === true && !sideVentOther(g) && !(g.has_existing_side_vent_motors && g.side_has_inverters === true)
 
 // Illustration de chaque accès réseau livré par le code. Un choix ajouté dans
 // l'éditeur retombe sur la scène générique.
@@ -130,6 +131,10 @@ export default function CustomerPostPayment() {
         const seed = d.response || {}
         if (!seed.farm_address && d.context?.farm_address) seed.farm_address = d.context.farm_address
         if (!seed.shipping_address && d.context?.shipping_address) seed.shipping_address = d.context.shipping_address
+        // L'adresse pré-remplie est celle que le client valide en passant
+        // l'étape : elle doit être enregistrée même s'il n'y touche pas.
+        const seeded = Object.fromEntries(['farm_address', 'shipping_address'].filter(k => !d.response?.[k] && seed[k]).map(k => [k, seed[k]]))
+        if (Object.keys(seeded).length && seed.status !== 'submitted') pendingPatch.current = { ...seeded, ...pendingPatch.current }
         setResp(seed)
       })
       .catch(e => setError(e.message))
@@ -407,6 +412,12 @@ function asksNetwork(resp, hasMobileController) {
   return resp.is_new_site === 'new' || (resp.is_new_site === 'add_to_existing' && resp.within_central_controller_range === false)
 }
 
+// Site existant avec au moins une serre Chef de culture : il a souvent déjà son
+// capteur de vent, on lui demande s'il en faut un.
+function asksWindSensor(resp, permission) {
+  return resp.is_new_site === 'add_to_existing' && (resp.greenhouses || []).some(g => (g.permission_level || resp.permission_level || permission) === 'chief_grower')
+}
+
 function visibleCustomSections(resp, hasMobileController) {
   const s = ['intro', 'order_type']
   if (resp.is_new_site === 'new') {
@@ -435,6 +446,7 @@ function canSubmit(resp, hasMobileController, form, permission) {
     if (!ship?.line1 || !ship?.province) return false
   }
   if (asksNetwork(resp, hasMobileController) && !resp.network_access) return false
+  if (asksWindSensor(resp, permission) && typeof resp.needs_wind_sensor !== 'boolean') return false
   if (!Number.isFinite(Number(resp.num_greenhouses)) || Number(resp.num_greenhouses) <= 0) return false
   // Questions ajoutées via l'éditeur et marquées obligatoires. Une question que
   // sa condition d'affichage masque ne bloque pas la soumission.
@@ -560,6 +572,10 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
     </div>, typeof resp.within_central_controller_range === 'boolean')
     networkPages()
   }
+  if (asksWindSensor(resp, permission)) add('wind_sensor', form.t('wind_sensor.title'), <div className="space-y-2">
+    <p className="text-sm text-slate-600">{form.t('wind_sensor.prompt')}<Req /></p>
+    <YesNoButtons value={resp.needs_wind_sensor} onChange={v => queueSave({ needs_wind_sensor: v })} />
+  </div>, typeof resp.needs_wind_sensor === 'boolean')
   rootCustom('order_type')
   if (!resp.is_new_site) return pages
 
@@ -603,7 +619,8 @@ const validEquipmentCount = value => filled(value) && Number.isInteger(Number(va
 // serre. Chauffage = 2 fournaises de plus, Irrigation = 4 valves, Côtés
 // ouvrants = 2 moteurs, Toits ouvrants = 1 toit, Toiles thermiques = 1 toile.
 const EXTRA_UNITS = { furnaces: 2, valves: 4, rollups: 2, roofs: 1, screens: 1 }
-// Chauffage ouvre jusqu'à 4 fournaises, Irrigation jusqu'à 8 valves, Helper compris.
+// Chauffage ouvre jusqu'à 4 fournaises, Irrigation jusqu'à 8 valves — sauf au
+// Helper : un extra lui donne 1 à 2 fournaises, 1 à 4 valves, 1 toit sans question.
 const PERMISSION_FLOOR = { furnaces: 4, valves: 8 }
 const STANDARD_LIMITS = {
   chief_grower: { rollups: 2, furnaces: 2, valves: 4, roofs: 1, screens: 0 },
@@ -613,16 +630,20 @@ const SCREEN_COUNT_LABELS = { 0: 'Aucune toile thermique', 1: '1 toile thermique
 // Une seule toile achetée en extra : elle existe, la question n'est pas posée.
 const SCREEN_IMPLIED = { has_roof_vents: true, num_roof_vents: 1 }
 const screenRec = (g, lim) => (lim === 1 ? { ...thermalScreen(g), ...SCREEN_IMPLIED } : thermalScreen(g))
+// Helper avec un toit en extra : idem, le toit existe.
+const roofRec = (g, limit) => (limit.roofImplied ? { ...g, ...SCREEN_IMPLIED } : g)
 function greenhouseLimits(options, idx, permission) {
   const e = Array.isArray(options?.additional_equipment) ? options.additional_equipment[idx] || {} : {}
   const base = STANDARD_LIMITS[permission] || STANDARD_LIMITS.chief_grower
+  const helper = permission === 'helper'
   const n = key => {
     const extra = Math.max(0, Number(e[key]) || 0) * EXTRA_UNITS[key]
-    return extra && PERMISSION_FLOOR[key] ? Math.max(base[key] + extra, PERMISSION_FLOOR[key] + extra - EXTRA_UNITS[key]) : base[key] + extra
+    return extra && PERMISSION_FLOOR[key] && !helper ? Math.max(base[key] + extra, PERMISSION_FLOOR[key] + extra - EXTRA_UNITS[key]) : base[key] + extra
   }
   // Permission Ventilation : louvres et ventilateurs de bout de 2 à 4.
   const aerators = e.ventilation === true ? 4 : 2
-  return { furnaces: n('furnaces'), valves: n('valves'), rollups: n('rollups'), roofs: n('roofs'), screens: n('screens'), louvers: aerators, fans: aerators, extraFurnaces: Number(e.furnaces) > 0 }
+  return { furnaces: n('furnaces'), valves: n('valves'), rollups: n('rollups'), roofs: n('roofs'), screens: n('screens'), louvers: aerators, fans: aerators, extraFurnaces: Number(e.furnaces) > 0,
+    minValves: helper && Number(e.valves) > 0 ? 1 : 0, roofImplied: helper && n('roofs') === 1 }
 }
 
 // Au-delà des choix illustrés (0 à `from`), un nombre libre jusqu'au plafond.
@@ -688,12 +709,22 @@ const SIDE_INVERTER_MODELS = [['8ZE133L', '8ZE133L'], ['8ZE133LDC', '8ZE133LDC']
 // Marques de valves proposées quand le client a déjà les siennes.
 const VALVE_BRANDS = ['Rainbird', 'Irritrol', 'Autre marque']
 
-// Mode de la serre, à côté de son numéro.
+// Mode de la serre, à côté de son numéro. Le nom donné par le client suit le
+// numéro ; avec `onRename`, un crayon le rend modifiable sur place.
 const PERMISSION_MODES = { chief_grower: 'Chef de culture', helper: 'Assistant' }
-function GreenhouseTitle({ idx, permission, suffix }) {
+function GreenhouseTitle({ idx, permission, suffix, name, onRename }) {
   const { tr } = useFormSchema()
+  const [draft, setDraft] = useState(null)
   const mode = tr(PERMISSION_MODES[permission])
-  return <>{tr('Serre')} #{idx + 1}{mode && <span className="ml-2 text-sm font-normal text-slate-500">{mode}</span>}{suffix && ` · ${suffix}`}</>
+  const label = `${tr('Nom de la serre')} #${idx + 1}`
+  const commit = () => { if (draft != null && draft.trim() !== (name || '')) onRename(draft.trim()); setDraft(null) }
+  const title = draft != null
+    ? <input autoFocus aria-label={label} className="ml-2 border-b border-slate-300 focus:border-emerald-500 outline-none font-semibold bg-transparent w-48 max-w-full"
+      value={draft} onChange={e => setDraft(e.target.value)} onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit() } else if (e.key === 'Escape') setDraft(null) }} />
+    : <>{name && ` · ${name}`}{onRename && <button type="button" onClick={() => setDraft(name || '')} aria-label={label} title={tr('Nommer')}
+      className="ml-1.5 align-middle text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>}</>
+  return <>{tr('Serre')} #{idx + 1}{title}{mode && <span className="ml-2 text-sm font-normal text-slate-500">{mode}</span>}{suffix && ` · ${suffix}`}</>
 }
 
 function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
@@ -701,7 +732,7 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   const helperOnly = sideVentsOnly(cardPermission)
   const limit = greenhouseLimits(root.form_options, idx, cardPermission)
   const { tr } = form
-  const page = (id, content, complete = true, suffix = '') => add(`greenhouse:${idx}:${id}`, <GreenhouseTitle idx={idx} permission={cardPermission} suffix={suffix} />, content, complete)
+  const page = (id, content, complete = true, suffix = '') => add(`greenhouse:${idx}:${id}`, <GreenhouseTitle idx={idx} permission={cardPermission} suffix={suffix} name={g.name} onRename={v => onChange({ name: v })} />, content, complete)
   // Toute question retient le bouton Suivant (d'où l'astérisque rouge) : par
   // défaut une réponse saisie suffit, `complete` en options dit mieux quand la
   // réponse doit remplir une condition (nombre au-delà d'un seuil, liste non
@@ -762,12 +793,25 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
       <MoreCount from={extraSides ? 4 : 2} max={limit.rollups} value={sideVents} onChange={pickSideVents} label={tr('Moteurs')} />
     </div>, sideVents != null && sideVents >= (extraSides ? 1 : 0) && sideVents <= Math.max(2, limit.rollups))
     if (g.has_side_vents === true) {
+      // Roll-up ou autre système : « Autre » saute les questions roll-up.
+      const ventType = g.side_vent_type
+      page('side_vent_type', <fieldset className="min-w-0 space-y-2">
+        <legend className="text-sm text-slate-600">{form.t('greenhouse.side_vent_type_label')}<Req /></legend>
+        <div className="grid grid-cols-2 gap-3">
+          {form.opts('greenhouse.side_vent_type_options').map(o => <RadioOption key={o.value} checked={ventType === o.value} label={o.label} help={o.help} onChange={() => onChange({ side_vent_type: o.value })} />)}
+        </div>
+        {ventType === 'other' && <Field label={tr('Précisez')} required>
+          <input aria-label={tr('Précisez')} className={inputCls} value={g.side_vent_type_other || ''} onChange={e => onChange({ side_vent_type_other: e.target.value })} />
+        </Field>}
+      </fieldset>, ventType === 'other' ? filled(g.side_vent_type_other?.trim()) : filled(ventType))
+    }
+    if (g.has_side_vents === true && !sideVentOther(g)) {
       const motors = g.has_existing_side_vent_motors == null ? '' : g.has_existing_side_vent_motors ? 'yes' : 'no'
       page('existing_motors', <div className="space-y-2">
         <p className="text-sm text-slate-600">{form.t('greenhouse.motors_label')}<Req /></p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {form.opts('greenhouse.motors_options').map(o => (
-            <ImageOption key={o.value} checked={motors === o.value} onChange={() => onChange({ has_existing_side_vent_motors: o.value === 'yes' })} label={o.label} help={o.help}
+            <ImageOption key={o.value} checked={motors === o.value} onChange={() => onChange({ has_existing_side_vent_motors: o.value === 'yes', ...(o.value === 'yes' ? { guide_pipes_state: '', guide_pipe_diameter: '', wants_compatible_guide_pipes: false } : {}) })} label={o.label} help={o.help}
               focus={MOTORS_FOCUS[o.value] || 'side_vents'} image={form.image(MOTORS_IMAGE_IDS[o.value])} />
           ))}
         </div>
@@ -845,7 +889,7 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
     </div>, longGreenhouse ? Number.isFinite(Number(g.length)) && Number(g.length) > 200 : filled(lengthRange))
   }
   if (!form.isHidden('greenhouse.side_vents')) {
-    if (g.has_side_vents === true) {
+    if (g.has_side_vents === true && !sideVentOther(g)) {
       if (g.has_existing_side_vent_motors === false) {
         const heightRange = g.side_vent_height_range || (g.side_vent_height === DONT_KNOW ? 'unknown' : Number(g.side_vent_height) > 0 ? (Number(g.side_vent_height) > 6 ? 'over_6' : 'up_to_6') : '')
         // Deux seuils existants et une hauteur inconnue, sans inventer de mesure.
@@ -883,7 +927,8 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
         </div>, filled(g.side_pipe_type))
         if (['aluminum_C', 'steel_O'].includes(g.side_pipe_type)) diameter('side_pipe_diameter', tr(g.side_pipe_type === 'aluminum_C' ? 'Diamètre du tuyau aluminium' : 'Diamètre externe du tuyau d\'acier'), g.side_pipe_diameter, v => onChange({ side_pipe_diameter: v }), g.side_pipe_type === 'aluminum_C' ? '2"' : '1 5/16"')
       }
-      page('guide_pipes', <fieldset className="space-y-2">
+      // Moteurs déjà en place : leurs tuyaux guides aussi, on ne le demande pas.
+      if (g.has_existing_side_vent_motors === false) page('guide_pipes', <fieldset className="space-y-2">
         <legend className="text-sm text-slate-600">{form.t('greenhouse.guide_pipes_label')}<Req /></legend>
         <img src={`${import.meta.env.BASE_URL}images/discovery/guide-pipes-present.${form.lang === 'en' ? 'webp' : 'svg'}`} alt="" className="w-full max-h-72 object-contain" />
         <div className="grid grid-cols-3 gap-3">
@@ -902,8 +947,8 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   // Toile thermique (extra seulement) : mêmes questions, rangées dans
   // `thermal_screen` (voir thermalScreen), pages `screen_…`.
   const ventKinds = [
-    { limit: limit.roofs, t: 'roofs', id: 'roof', focus: 'roof_vents', name: 'Toit ouvrant', rec: g, patch: onChange },
-    { limit: limit.screens, t: 'screens', id: 'screen', focus: 'thermal_screens', image: 'none', name: 'Toile thermique', rec: screenRec(g, limit.screens), patch: p => onChange({ thermal_screen: { ...screenRec(g, limit.screens), ...p } }) },
+    { limit: limit.roofs, t: 'roofs', id: 'roof', focus: 'roof_vents', name: 'Toit ouvrant', implied: limit.roofImplied, rec: roofRec(g, limit), patch: p => onChange(limit.roofImplied ? { ...SCREEN_IMPLIED, ...p } : p) },
+    { limit: limit.screens, t: 'screens', id: 'screen', focus: 'thermal_screens', image: 'none', name: 'Toile thermique', implied: limit.screens === 1, rec: screenRec(g, limit.screens), patch: p => onChange({ thermal_screen: { ...screenRec(g, limit.screens), ...p } }) },
   ]
   for (const kind of ventKinds.filter(k => k.limit > 0)) {
     const g = kind.rec, onChange = kind.patch, limit = { roofs: kind.limit }
@@ -913,7 +958,7 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
     const pickRoofs = n => onChange(n === 0
       ? { has_roof_vents: false, num_roof_vents: 0, roof_motor_voltage: '', roof_motor_ridder_rw240: null, has_roof_inverter: null, roof_inverter_type: '', roof_inverter_brand: '', roof_inverter_model: '', extra_roof_vents: [] }
       : { has_roof_vents: true, num_roof_vents: n, extra_roof_vents: g.extra_roof_vents || [] })
-    if (!(kind.t === 'screens' && limit.roofs === 1)) page(`${kind.id}_present`, <fieldset className="min-w-0 space-y-2">
+    if (!kind.implied) page(`${kind.id}_present`, <fieldset className="min-w-0 space-y-2">
       <legend className="text-sm text-slate-600">{form.t(`${kind.t}.${extraRoofs ? 'present_count' : 'present'}`)}<Req /></legend>
       <div className="grid grid-cols-2 gap-3">
         {(extraRoofs ? [1, 2] : [0, 1]).map(n => kind.t === 'roofs'
@@ -993,7 +1038,7 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
             {form.opts('louvers.types').map(o => {
               const def = LOUVER_COMBOS.find(c => c.value === o.value)
               return <LouverTypeChoice key={o.value} name={`louver-${idx}-${i}`} combo={o.value}
-                label={o.value === 'spring_110' ? tr('Actuateur 110 V et retour automatique en position fermée avec un ressort.') : o.label} checked={combo === o.value}
+                label={o.value === 'spring_110' ? tr('Actuateur 110 ou 240 V et retour automatique en position fermée avec un ressort.') : o.label} checked={combo === o.value}
                 onChange={() => set({ control_type: def?.control_type || o.value, voltage: def?.voltage ?? '', voltage_other: '' })} />
             })}
           </div>
@@ -1006,7 +1051,7 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
                 checked={l.has_fan === hasFan} onChange={() => set({ has_fan: hasFan })} />
             ))}
           </div>
-          {l.control_type === 'open_close' && l.has_fan && <p className="text-xs text-slate-500">{form.t('louvers.fan_unavailable')}</p>}
+          {l.control_type === 'open_close' && l.has_fan && l.voltage !== '24' && <p className="text-xs text-slate-500">{form.t('louvers.fan_unavailable')}</p>}
         </fieldset>, typeof l.has_fan === 'boolean', opts.suffix)
       })
     }
@@ -1123,9 +1168,9 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
     const zones = Number(g.irrigation_zones) || 0
     // La réponse se choisit sur l'image : de 0 à 8 valves selon le plafond ;
     // au-delà (plusieurs permissions Irrigation), un nombre jusqu'au plafond.
-    const zonesDone = validEquipmentCount(g.irrigation_zones) && Number(g.irrigation_zones) <= limit.valves
+    const zonesDone = validEquipmentCount(g.irrigation_zones) && Number(g.irrigation_zones) >= limit.minValves && Number(g.irrigation_zones) <= limit.valves
     page('irrigation_zones', <>
-      <IrrigationZones name={`valves-${idx}`} label={form.t('chief.irrigation_zones_label')} value={g.irrigation_zones} max={limit.valves} onChange={v => onChange({ irrigation_zones: v })} />
+      <IrrigationZones name={`valves-${idx}`} label={form.t('chief.irrigation_zones_label')} value={g.irrigation_zones} min={limit.minValves} max={limit.valves} onChange={v => onChange({ irrigation_zones: v })} />
     </>, zonesDone)
     if (zones > 0) {
       // Oui : combien de valves (une par zone). Non : quelle marque.
@@ -1172,14 +1217,14 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
 }
 
 // Zones d'irrigation : 5 images de 0 à 4 valves.
-function IrrigationZones({ name, label, value, onChange, max = 4 }) {
+function IrrigationZones({ name, label, value, onChange, min = 0, max = 4 }) {
   const { tr } = useFormSchema()
   const zones = Number(value) || 0
   return (
     <div className="space-y-2">
       <p className="text-sm text-slate-600">{label}<Req /></p>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {Array.from({ length: Math.min(max, 8) + 1 }, (_, n) => <IrrigationValveChoice key={n} name={name} count={n} checked={filled(value) && zones === n} onChange={() => onChange(n)} />)}
+        {Array.from({ length: Math.min(max, 8) + 1 - min }, (_, n) => n + min).map(n => <IrrigationValveChoice key={n} name={name} count={n} checked={filled(value) && zones === n} onChange={() => onChange(n)} />)}
       </div>
       <MoreCount from={8} max={max} value={filled(value) ? zones : ''} onChange={onChange} label={tr('Valves')} />
     </div>
@@ -1513,6 +1558,7 @@ function AnswersSummary({ resp, permission, hasMobileController, grouped, classN
     [tr('Commande'), 'order_type', [
       [form.t('order_type.title'), form.opts('order_type.options').find(o => o.value === resp.is_new_site)?.label || '—'],
       resp.is_new_site === 'add_to_existing' && !hasMobileController && [tr('Distance du contrôleur central'), form.opts('controller_distance.options').find(o => o.value === controllerDistanceValue(resp))?.label || '—'],
+      asksWindSensor(resp, permission) && [form.t('wind_sensor.title'), typeof resp.needs_wind_sensor === 'boolean' ? tr(resp.needs_wind_sensor ? 'Oui' : 'Non') : '—'],
     ]],
     [tr('Adresses'), newSite ? 'farm_address' : 'shipping_address', [
       newSite && [tr('Ferme'), addr(resp.farm_address)],
@@ -1666,7 +1712,8 @@ function GreenhouseAnswers({ g, idx, form, permission, root, grouped = false, on
 
   row('Longueur', g.length_range === 'up_to_200' ? '200 pi ou moins' : feet(g.length))
   row('Côtés ouvrants', g.has_side_vents === false ? 'Aucun' : filled(g.num_side_vent_motors) ? String(g.num_side_vent_motors) : yn(g.has_side_vents))
-  if (g.has_side_vents) {
+  if (sideVentOther(g)) row('Type de côté ouvrant', [tr('Autre'), g.side_vent_type_other].filter(Boolean).join(' · '))
+  else if (g.has_side_vents) {
     row('Moteurs déjà en place', yn(g.has_existing_side_vent_motors))
     if (g.has_existing_side_vent_motors) {
       row('Marque des moteurs', g.side_vent_motor_brand)
@@ -1676,21 +1723,21 @@ function GreenhouseAnswers({ g, idx, form, permission, root, grouped = false, on
           tr({ per_motor: 'un par moteur', per_two: 'un pour deux moteurs', unknown: 'nombre inconnu' }[g.side_inverter_ratio])].filter(Boolean).join(', ')
         : null)
     }
-    row('Hauteur des côtés', g.side_vent_height_range === 'up_to_6' ? '6 pi et moins' : feet(g.side_vent_height))
+    if (!(g.has_existing_side_vent_motors && g.side_has_inverters === true)) row('Hauteur des côtés', g.side_vent_height_range === 'up_to_6' ? '6 pi et moins' : feet(g.side_vent_height))
     row('Tuyau de côté', choice('greenhouse.side_pipe_type_options', g.side_pipe_type))
     // La seconde plage d'acier est stockée à sa mesure maximale : le résumé montre la plage.
     row('Diamètre du tuyau', g.side_pipe_diameter === '1 1/2"' ? 'Entre 1 5/16 po et 1 1/2 po' : g.side_pipe_diameter?.replace(/^Autre:\s*/, ''))
-    row('Tuyaux guides', { present: 'Déjà présents', needed: 'Fournis par Orisha' }[g.guide_pipes_state] || choice('greenhouse.guide_pipes_options', g.guide_pipes_state))
-    row('Diamètre des guides', g.guide_pipe_diameter?.replace(/^Autre:\s*/, ''))
+    if (!g.has_existing_side_vent_motors) row('Tuyaux guides', { present: 'Déjà présents', needed: 'Fournis par Orisha' }[g.guide_pipes_state] || choice('greenhouse.guide_pipes_options', g.guide_pipes_state))
+    if (!g.has_existing_side_vent_motors) row('Diamètre des guides', g.guide_pipe_diameter?.replace(/^Autre:\s*/, ''))
     if (g.wants_compatible_guide_pipes) row('Guides compatibles', 'À fournir')
   }
   const limit = greenhouseLimits(root.form_options, idx, cardPermission)
   // Toile thermique : mêmes lignes que le toit, section à part.
-  for (const [lim, sec, rec, one, many] of [[limit.roofs, 'roofs', g, 'Toit ouvrant', 'Nombre de toits ouvrants'], [limit.screens, 'screens', screenRec(g, limit.screens), 'Toile thermique', 'Nombre de toiles thermiques']]) {
+  for (const [lim, sec, rec, one, many] of [[limit.roofs, 'roofs', roofRec(g, limit), 'Toit ouvrant', 'Nombre de toits ouvrants'], [limit.screens, 'screens', screenRec(g, limit.screens), 'Toile thermique', 'Nombre de toiles thermiques']]) {
     if (!lim) continue
     const g = rec, limit = { roofs: lim }
     const roofTotal = g.has_roof_vents === true ? Number(g.num_roof_vents) || 0 : 0
-    row(one, roofTotal ? 'Oui' : yn(g.has_roof_vents), sec)
+    row(one, roofTotal ? 'Oui' : sec === 'roofs' && g.has_roof_vents === false ? 'Aucun' : yn(g.has_roof_vents), sec)
     if (roofTotal) {
       if (limit.roofs > 1) row(many, roofTotal, sec)
       // Un bloc par toit : « Inverseur déjà présent · #2 »…
@@ -1713,7 +1760,9 @@ function GreenhouseAnswers({ g, idx, form, permission, root, grouped = false, on
   }
   if (!helperOnly) {
     row('Louvres', g.has_louvers === false ? 'Aucune' : g.louvers?.length || null, 'louvers')
-    row('Ventilateurs', filled(g.num_fans) && Number(g.num_fans) === 0 ? 'Aucun' : g.num_fans, 'fans')
+    // Sous l'en-tête « Ventilateurs », l'absence se lit seule : « Aucun ».
+    if (grouped && filled(g.num_fans) && Number(g.num_fans) === 0) rows.push([null, tr('Aucun'), 'fans'])
+    else row('Ventilateurs', filled(g.num_fans) && Number(g.num_fans) === 0 ? 'Aucun' : g.num_fans, 'fans')
     if (Number(g.num_fans) === 2) {
       const hpRange = fansHpRangeValue(g)
       row('Puissance des ventilateurs', FANS_HP_RANGE_OPTIONS.find(o => o.value === hpRange)?.label || (filled(hpRange) ? hpRange : null), 'fans')
@@ -1769,7 +1818,7 @@ function GreenhouseAnswers({ g, idx, form, permission, root, grouped = false, on
   return (
     <div className="rounded-lg bg-slate-50 p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="font-medium text-slate-900"><GreenhouseTitle idx={idx} permission={cardPermission} /></p>
+        <p className="font-medium text-slate-900"><GreenhouseTitle idx={idx} permission={cardPermission} name={g.name} /></p>
         {onEdit && !grouped && <EditLink onClick={() => onEdit(idx, 'sides')} />}
       </div>
       {grouped ? <div className="mt-3 space-y-3">
@@ -1782,7 +1831,9 @@ function GreenhouseAnswers({ g, idx, form, permission, root, grouped = false, on
               {onEdit && <EditLink onClick={() => onEdit(idx, id)} />}
             </div>
             <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
-              {items.map(([label, value], i) => <Fragment key={i}><dt className="min-w-0 break-words">{label}</dt><dd className="min-w-0 break-words">{value}</dd></Fragment>)}
+              {items.map(([label, value], i) => label == null
+                ? <dd key={i} className="col-span-2 min-w-0 break-words">{value}</dd>
+                : <Fragment key={i}><dt className="min-w-0 break-words">{label}</dt><dd className="min-w-0 break-words">{value}</dd></Fragment>)}
             </dl>
             {details}
           </section>

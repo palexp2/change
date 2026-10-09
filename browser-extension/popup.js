@@ -46,3 +46,38 @@ document.getElementById('opts').addEventListener('click', (e) => {
   e.preventDefault()
   chrome.runtime.openOptionsPage()
 })
+
+// ── Envoyer ce document ──────────────────────────────────────────────────────
+const doc = document.getElementById('doc')
+const docOut = document.getElementById('docOut')
+
+function paintDoc(d) {
+  if (!d) return
+  const running = !!d.running && Date.now() - (d.at || 0) < STALE_MS
+  doc.disabled = running
+  doc.textContent = running ? 'Envoi…' : 'Envoyer ce document à l’extracteur'
+  docOut.textContent = ''
+  docOut.className = d.error ? 'erreur' : 'ok'
+  if (running) return
+  if (d.error) { docOut.textContent = `✕ ${d.error}`; return }
+  docOut.append(d.status === 'duplicate' ? '✓ Déjà dans l’extracteur ' : '✓ Envoyé ')
+  if (d.link) {
+    const a = document.createElement('a')
+    a.href = d.link; a.target = '_blank'; a.textContent = 'Ouvrir'
+    docOut.append(a)
+  }
+}
+
+chrome.storage.local.get('lastDoc').then(({ lastDoc }) => {
+  if (lastDoc && Date.now() - (lastDoc.at || 0) < 120000) paintDoc(lastDoc)
+})
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.lastDoc) paintDoc(changes.lastDoc.newValue)
+})
+
+doc.addEventListener('click', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  paintDoc({ running: true, at: Date.now() })
+  const res = await chrome.runtime.sendMessage({ type: 'send-document', tabId: tab?.id }).catch(e => ({ ok: false, error: e.message }))
+  if (!res?.ok) paintDoc({ running: false, error: res?.error || 'le module n’a pas répondu' })
+})

@@ -1,15 +1,19 @@
-import { normalizeDiscoveryOptions, greenhouseLimits, greenhouseMaterials, greenhouseSensors, MATERIAL_KEYS, SENSOR_ROLES, GREENHOUSE_SENSOR_KEYS } from './discoveryFormOptions.js'
+import { normalizeDiscoveryOptions, greenhouseLimits, greenhouseMaterials, greenhouseSensors, greenhouseHasTempSensor, MATERIAL_KEYS, SENSOR_ROLES, GREENHOUSE_SENSOR_KEYS } from './discoveryFormOptions.js'
 import { JWT_ROLES, EQUIPMENT_LABELS, INVERTER_EXTRA_ROLES, inverterExtraRole } from '../../../client/src/lib/discoveryEquipmentCatalog.js'
 import { roofVentAnswers, thermalScreen } from '../../../client/src/lib/discoveryRoofs.js'
+import { sideVentOther } from '../../../client/src/lib/discoveryFormSchema.js'
 
 // Règles de dimensionnement du System Builder. Délibérément sans DB : elles
 // restent testables et ne permettent jamais de mutualiser un module entre deux
 // serres.
 
-export const OUTPUT_ROLES = ['louver_spring_loaded', 'louver_open_close', 'louver_with_fan']
+// Capteurs logés dans le boîtier météo (la sonde de sol va en serre).
+const WEATHER_SENSOR_ROLES = ['outdoor_temperature_sensor', 'solar_sensor', 'rain_sensor', 'wind_sensor']
+
+export const OUTPUT_ROLES =['louver_spring_loaded', 'louver_open_close', 'louver_with_fan']
 export const EQUIPMENT_ROLES = [
   ...JWT_ROLES,
-  ...['110', '24', '12'].flatMap(v => ['louver_spring_loaded', ...(v === '110' ? ['louver_with_fan'] : ['louver_open_close'])].map(type => `${type}_${v}`)),
+  ...['110', '24', '12'].flatMap(v => ['louver_spring_loaded', ...(v === '110' ? ['louver_with_fan'] : ['louver_open_close'])].map(type => `${type}_${v}`)), 'louver_time_delay_box',
   'humidity_valve', 'humidity_haf',
   'activation_v2', 'side_vent_module', 'side_vent_controller_24v', 'side_vent_motor_left', 'side_vent_motor_right', 'side_pipe_adapter', 'guide_pipe', 'guide_pipe_hanging_kit', 'roof_inverter_ridder', 'roof_inverter_wire', 'side_inverter_wire',
   'fan_box_110v', 'valve', 'mobile_controller_ca', 'mobile_controller_us', 'central_controller', 'coax_antenna_kit', ...SENSOR_ROLES, ...GREENHOUSE_SENSOR_KEYS, 'weather_box', 'temp_humidity_sensor', ...INVERTER_EXTRA_ROLES,
@@ -32,6 +36,8 @@ function responseCountry(response) {
 // associés dans l'éditeur de formulaire. Filage d'inverseur de côté : même câble
 // inverseur → module que celui des toits, tant qu'aucun produit propre n'est associé.
 const LEGACY_PRODUCT_ROLE = { mobile_controller_ca: 'mobile_controller', mobile_controller_us: 'mobile_controller', side_inverter_wire: 'roof_inverter_wire' }
+
+export const MANUAL_ROLE = 'product:'
 
 function add(items, role, qty, greenhouse, note = '') {
   if (!qty) return
@@ -69,12 +75,17 @@ export function greenhouseSideVentsOnly(greenhouse, response) {
   return (greenhouse?.permission_level || response?.permission_level) === 'helper'
 }
 
+export function hasChiefGrower(response) {
+  return (response?.greenhouses || []).some(g => (g.permission_level || response?.permission_level) === 'chief_grower')
+}
+
 export function calculateDiscoveryEquipment(response, rules = {}) {
   const options = normalizeDiscoveryOptions(response?.form_options)
   const products = Object.entries(rules?.products || {})
     .filter(([, id]) => typeof id === 'string' && id)
     .reduce((acc, [role, product_id]) => ({ ...acc, [role]: product_id }), {})
-  const productFor = role => products[role] || products[LEGACY_PRODUCT_ROLE[role]] || null
+  // `product:<id>` : produit choisi à la main sur la fiche (côté ouvrant « Autre »).
+  const productFor = role => (role.startsWith(MANUAL_ROLE) ? role.slice(MANUAL_ROLE.length) : products[role] || products[LEGACY_PRODUCT_ROLE[role]] || null)
   // Inverseur déjà chez le client : le produit associé à son modèle, un par
   // inverseur. Rien n'est associé → rien à envoyer, sans avertissement.
   function addInverterExtras(items, kind, model, qty, greenhouse, note) {
@@ -183,7 +194,9 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
           continue
         }
         addControlled(`${type}_${louvre.voltage}`, 1, type, note)
-        if (louvre.control_type === 'open_close' && louvre.has_fan) {
+        // 24 V + ventilateur : boîtier de louvre avec time delay, en plus du boîtier 24 V.
+        if (type === 'louver_open_close' && louvre.has_fan && louvre.voltage === '24') add(items, 'louver_time_delay_box', 1, greenhouse, note)
+        else if (louvre.control_type === 'open_close' && louvre.has_fan) {
           outputsUnknown = true
           warnings.push({ greenhouse, code: 'louver_review', message: `${note} : le contrôle séparé du ventilateur associé à une louvre open/close n’est pas proposé par Orisha. Configuration à vérifier.` })
         }
@@ -198,7 +211,21 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
       useSlots(EQUIPMENT_LABELS[role], 1, 1)
     }
 
-    if (g.has_side_vents) {
+    if (sideVentOther(g)) {
+      // Côté ouvrant « Autre » : rien n'est déduit. Orisha choisit sur la fiche
+      // le matériel à envoyer et les sorties V2 qu'il prend ; sans ce nombre,
+      // la commande attend.
+      const manual = g.side_vent_manual || {}
+      for (const it of Array.isArray(manual.items) ? manual.items : []) {
+        if (it?.product_id) add(items, `${MANUAL_ROLE}${it.product_id}`, Math.max(0, Number(it.qty) || 0), greenhouse, 'Côtés ouvrants')
+      }
+      const manualSlots = manual.slots === '' || manual.slots == null ? NaN : Number(manual.slots)
+      if (Number.isInteger(manualSlots) && manualSlots >= 0) useSlots('Côtés ouvrants · autre', 1, manualSlots)
+      else {
+        outputsUnknown = true
+        warnings.push({ greenhouse, code: 'side_vent_manual', message: 'Côtés ouvrants « Autre » : choisissez le matériel à envoyer et le nombre de sorties V2.' })
+      }
+    } else if (g.has_side_vents) {
       // Moteurs du client déjà en place avec inverseurs : chaque inverseur prend
       // 2 sorties d'un module d'activation. Sans inverseur, règle habituelle :
       // contrôleur 24 V par moteur au-delà de 200 pi, sinon un module pour 2 moteurs.
@@ -224,10 +251,11 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
         // Tuyau d'acier entre 1 5/16 et 1 1/2 po : un adaptateur par moteur.
         if (g.side_pipe_diameter === '1 1/2"') add(items, 'side_pipe_adapter', motors, greenhouse, 'Tuyau 1 5/16 à 1 1/2 po')
       }
-      if (g.guide_pipes_state === 'needed') {
+      // Moteurs déjà en place : leurs tuyaux guides aussi (la question n'est plus posée).
+      if (g.has_existing_side_vent_motors !== true && g.guide_pipes_state === 'needed') {
         add(items, 'guide_pipe', motors, greenhouse)
         add(items, 'guide_pipe_hanging_kit', motors, greenhouse)
-      } else if (g.guide_pipes_state === 'unknown') {
+      } else if (g.has_existing_side_vent_motors !== true && g.guide_pipes_state === 'unknown') {
         warnings.push({ greenhouse, code: 'guide_pipes_call_client', message: 'Tuyaux guides « Je ne sais pas » — appeler le client pour savoir s’il faut les fournir.' })
       }
     }
@@ -271,9 +299,10 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
       if ((g.permission_level || response?.permission_level) === 'chief_grower') add(items, 'jwt_disease_prevention', 1, greenhouse, note)
     }
     // Un capteur de température et d'humidité par serre, Helper comme Chef de
-    // culture — remplacé (pas doublé) par le capteur avancé s'il est choisi.
+    // culture — remplacé (pas doublé) par le capteur avancé s'il est choisi,
+    // omis si la serre a déjà sa sonde.
     const sensors = greenhouseSensors(options, index)
-    if (['helper', 'chief_grower'].includes(g.permission_level || response?.permission_level) && !sensors.includes('advanced_temperature_sensor')) add(items, 'temp_humidity_sensor', 1, greenhouse)
+    if (['helper', 'chief_grower'].includes(g.permission_level || response?.permission_level) && !sensors.includes('advanced_temperature_sensor') && !greenhouseHasTempSensor(options, index)) add(items, 'temp_humidity_sensor', 1, greenhouse)
     for (const role of sensors) add(items, role, 1, greenhouse)
     perGreenhouse.push({ greenhouse, slots: known ? slots : null, activation_modules: known ? Math.ceil(slots / 4) : null, slots_partial: partial, slot_sources: known ? slotSources : [], items })
   }
@@ -306,10 +335,12 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
   }
   for (const role of SENSOR_ROLES) add(siteItems, role, options.sensors[role], null)
   // Au moins une serre Chef de culture : un capteur de vent et un boîtier météo
-  // pour le site, en plus des capteurs achetés.
-  if ((response?.greenhouses || []).some(g => (g.permission_level || response?.permission_level) === 'chief_grower')) {
-    add(siteItems, 'wind_sensor', 1, null, 'Chef de culture')
-    add(siteItems, 'weather_box', 1, null, 'Chef de culture')
+  // pour le site, en plus des capteurs achetés. Site existant : le capteur de
+  // vent seulement si le client a répondu qu'il en a besoin (ou n'a pas répondu).
+  // Le boîtier météo n'accompagne qu'au moins un capteur météo envoyé.
+  if (hasChiefGrower(response)) {
+    if (!(response.is_new_site === 'add_to_existing' && response.needs_wind_sensor === false)) add(siteItems, 'wind_sensor', 1, null, 'Chef de culture')
+    if (siteItems.some(i => WEATHER_SENSOR_ROLES.includes(i.role))) add(siteItems, 'weather_box', 1, null, 'Chef de culture')
   }
   const items = [...perGreenhouse.flatMap(x => x.items), ...siteItems]
   // Une ligne de commande par produit : trois louvres identiques donnent qty 3,

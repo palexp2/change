@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { nextModalZ, registerOverlay } from '../lib/overlayLayers.js'
@@ -32,8 +32,32 @@ export function hasOpenModal() { return openModals > 0 }
 // `lib/overlayLayers.js`) : panneau latéral, pile de panneaux empilés, ou autre
 // modale. C'est ce qui garantit qu'une confirmation reste visible même ouverte
 // depuis le troisième panneau d'une pile.
-export function Modal({ isOpen, onClose, title, children, size = 'md', zIndex }) {
+//
+// `draggable` : la barre de titre sert de poignée pour déplacer la fenêtre,
+// comme une fenêtre de bureau. Position remise au centre à chaque ouverture.
+export function Modal({ isOpen, onClose, title, children, size = 'md', zIndex, draggable = false }) {
   const contentRef = useRef(null)
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const dragRef = useRef(null)
+  useEffect(() => { if (!isOpen) setOffset({ x: 0, y: 0 }) }, [isOpen])
+
+  const onHeaderPointerDown = (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return
+    const rect = contentRef.current?.getBoundingClientRect()
+    if (!rect) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { sx: e.clientX, sy: e.clientY, ox: offset.x, oy: offset.y, rect }
+  }
+  const onHeaderPointerMove = (e) => {
+    const d = dragRef.current
+    if (!d) return
+    // Garde au moins 40 px de la barre de titre dans l'écran.
+    const dx = Math.min(window.innerWidth - 40 - d.rect.left, Math.max(40 - d.rect.right, e.clientX - d.sx))
+    const dy = Math.min(window.innerHeight - 40 - d.rect.top, Math.max(-d.rect.top, e.clientY - d.sy))
+    setOffset({ x: d.ox + dx, y: d.oy + dy })
+  }
+  const onHeaderPointerUp = () => { dragRef.current = null }
   // Plan figé à l'ouverture : recalculer à chaque rendu ferait sauter la modale
   // d'un plan à l'autre au gré des couches qui s'ouvrent/se ferment ailleurs.
   const zRef = useRef(null)
@@ -90,6 +114,10 @@ export function Modal({ isOpen, onClose, title, children, size = 'md', zIndex })
     if (!isOpen) return
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
+        // Échap déjà consommé par un contrôle interne (liste déroulante,
+        // suggestions de formule, cellule en édition) : il ferme ce contrôle
+        // seulement, pas la modale — comme Airtable.
+        if (e.defaultPrevented) return
         e.stopPropagation()
         onClose?.()
         return
@@ -141,9 +169,19 @@ export function Modal({ isOpen, onClose, title, children, size = 'md', zIndex })
         className="fixed inset-0 bg-black/50"
         onClick={onClose}
       />
-      <div ref={contentRef} className={`relative bg-white rounded-2xl shadow-2xl w-full ${sizes[size]} max-h-[90vh] flex flex-col`}>
+      <div
+        ref={contentRef}
+        className={`relative bg-white rounded-2xl shadow-2xl w-full ${sizes[size]} max-h-[90vh] flex flex-col`}
+        style={draggable && (offset.x || offset.y) ? { transform: `translate(${offset.x}px, ${offset.y}px)` } : undefined}
+      >
         {title && (
-          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0">
+          <div
+            className={`flex items-center justify-between px-6 py-4 border-b border-slate-200 flex-shrink-0${draggable ? ' cursor-move select-none touch-none' : ''}`}
+            onPointerDown={draggable ? onHeaderPointerDown : undefined}
+            onPointerMove={draggable ? onHeaderPointerMove : undefined}
+            onPointerUp={draggable ? onHeaderPointerUp : undefined}
+            onPointerCancel={draggable ? onHeaderPointerUp : undefined}
+          >
             <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
             <button
               onClick={onClose}

@@ -111,6 +111,13 @@ export async function watchDriveStatements({ force = false, reconcile = true, tr
         report.push({ account: name, error: e.message })
       }
     }
+    // Un relevé ajouté au Drive à la main compte aussi pour la liste du mois.
+    try {
+      const { syncStatementsTask, invalidateDriveCache, fileRecentUploads } = await import('./bankStatementDriveFiling.js')
+      invalidateDriveCache()
+      await fileRecentUploads('veille du matin')
+      await syncStatementsTask()
+    } catch (e) { report.push({ account: 'liste du mois', error: e.message }) }
     const lu = report.filter((r) => r.upload_id).length
     logSystemRun(DRIVE_WATCH_AUTOMATION_ID, {
       status: report.some((r) => r.error) ? 'error' : 'success',

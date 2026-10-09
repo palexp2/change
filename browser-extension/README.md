@@ -30,7 +30,7 @@ interface d'extension.
 Télécharger à nouveau « Module de navigateur » depuis l'ERP, décompresser
 l'archive et remplacer les fichiers du dossier déjà chargé. Dans
 `chrome://extensions` ou `edge://extensions`, cliquer sur le bouton de
-rechargement de la carte Orisha. Vérifier la version 1.1.2 et accepter
+rechargement de la carte Orisha. Vérifier la version 1.9.1 et accepter
 l'accès au site ERP si le navigateur le demande. Les réglages restent
 enregistrés lorsque le même dossier est utilisé.
 
@@ -54,3 +54,12 @@ L'envoi automatique se coupe dans les réglages du module.
 Le module dit portail par portail ce qui est parti, et l'ERP enchaîne les
 tournées l'une après l'autre. Quand une session meurt, l'ERP le signale et il
 suffit de se reconnecter au portail puis de recliquer.
+
+## Envoyer un document à l'extracteur
+
+Facture ouverte dans un onglet (PDF, image ou page web) : icône du module →
+**« Envoyer ce document à l'extracteur »**, ou clic droit → « Envoyer à
+l'extracteur Orisha », ou **Alt+Maj+E**. Elle apparaît dans les reçus, en
+lecture. Une page web est imprimée en PDF en entier (bandeau « débogage » une
+seconde, normal). Pour un PDF local (`file://`), activer « Autoriser l'accès
+aux URL de fichier » sur la carte du module.

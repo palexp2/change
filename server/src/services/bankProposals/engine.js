@@ -10,7 +10,9 @@
  *   2. doc_match       — l'ERP possède déjà la pièce ;
  *   3. paie_debit, debt_payment, aga_repartition — une sortie connue d'avance ;
  *   4. payment_clear   — un paiement émis vient de passer ;
- *   5. vendor_expense  — dernier recours : aucune pièce nulle part, mais le
+ *   5. qb_habit        — le libellé a toujours été passé de la même façon
+ *                        dans QuickBooks (virement, dépôt) ;
+ *   6. vendor_expense  — dernier recours : aucune pièce nulle part, mais le
  *                        dossier est complet.
  *
  * Rien ici n'écrit dans la comptabilité : le moteur PROPOSE. Deux natures
@@ -26,14 +28,14 @@ import { dedupeClaims } from './model.js'
 import { reconcileAndPersist } from './store.js'
 import {
   producePaymentClears, producePaieDebits, produceDebtPayments,
-  produceDocMatches, produceAgaRepartition, produceVendorExpenses,
+  produceDocMatches, produceAgaRepartition, produceVendorExpenses, produceQbHabits,
 } from './producers.js'
 import { invalidateBankLabelCache } from '../scrapers/vendorFromBankLabel.js'
 import { invalidateBankRulesCache } from '../bankRules/store.js'
 
 export const ENGINE_KINDS = [
   'doc_match', 'paie_debit', 'debt_payment', 'aga_repartition',
-  'payment_clear', 'vendor_expense',
+  'payment_clear', 'qb_habit', 'vendor_expense',
 ]
 
 const accountsOf = (accountId) => (accountId
@@ -95,6 +97,17 @@ export async function runBankEngine({ accountId = null, dryRun = false, kinds = 
   for (const account of accounts) {
     await step('payment_clear', async () => producePaymentClears({ accountName: account.name, accountId: account.id }))
   }
+  // Ce que QuickBooks a toujours fait de ce libellé (virement, dépôt). Les
+  // formes manquantes sont lues d'abord — un échec n'arrête pas le passage.
+  if (wanted.has('qb_habit') && !dryRun) {
+    try {
+      const { fillQbShapes } = await import('../bankQbHabit.js')
+      await fillQbShapes({ max: 400 })
+    } catch (e) { errors.push(`qb_habit (lecture QuickBooks): ${e.message}`) }
+  }
+  for (const account of accounts) {
+    await step('qb_habit', () => produceQbHabits(account.id))
+  }
   // Le dernier recours ne s'exécute que s'il reste de la place : mieux vaut
   // vingt propositions qu'on regarde que deux cents qu'on ignore.
   if (room > 0) {
@@ -140,5 +153,6 @@ const KIND_LABEL = {
   debt_payment: 'versements de dette',
   aga_repartition: 'assurance collective',
   payment_clear: 'paiements passés',
+  qb_habit: 'comme d\'habitude',
   vendor_expense: 'dépenses prêtes',
 }

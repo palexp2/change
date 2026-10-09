@@ -101,6 +101,24 @@ export function getSessionCookie() {
   return { sessionid, dsUserId }
 }
 
+/**
+ * Enregistre la session. Rend `true` si le sessionid a changé — c'est le signal
+ * d'une vraie reconnexion (le pont de session renvoie le même témoin chaque
+ * heure : celui-là ne doit rien relancer).
+ */
+export function saveSessionCookie({ sessionid, dsUserId = '' }) {
+  const before = getSessionCookie().sessionid
+  const put = db.prepare(`
+    INSERT INTO connector_config (connector, key, value) VALUES ('instagram', ?, ?)
+    ON CONFLICT(connector, key) DO UPDATE SET value = excluded.value
+  `)
+  db.transaction(() => {
+    put.run('sessionid', sessionid)
+    put.run('ds_user_id', dsUserId)
+  })()
+  return !!sessionid && sessionid !== before
+}
+
 export function hasSessionCookie() { return getSessionCookie().sessionid.length >= 20 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -371,6 +389,24 @@ export function postInvolvesUs(post, ours) {
  * `ownUsernames` — signe qu'on a déjà répondu publiquement à cette personne,
  * donc qu'elle n'a pas besoin d'être recontactée.
  */
+/** Commentaires bruts d'Instagram (une page de `comments`) → forme interne. */
+export function flattenComments(rawComments, ownUsernames) {
+  const out = []
+  for (const c of rawComments || []) {
+    const replies = c.preview_child_comments || []
+    const ourReply = replies.find(r => ownUsernames.has(normalizeUsername(r.user?.username)?.toLowerCase()))
+    out.push({
+      ...normalizeComment(c), is_reply: false,
+      repliedByUs: !!ourReply,
+      repliedAt: ourReply?.created_at ? new Date(ourReply.created_at * 1000).toISOString() : null,
+    })
+    for (const r of replies) {
+      out.push({ ...normalizeComment(r), is_reply: true, repliedByUs: false, repliedAt: null })
+    }
+  }
+  return out
+}
+
 async function fetchComments(mediaId, session, ownUsernames) {
   const out = []
   let minId = null
@@ -379,18 +415,7 @@ async function fetchComments(mediaId, session, ownUsernames) {
     if (minId) url += `&min_id=${encodeURIComponent(minId)}`
     const payload = await igGet(url, session)
     if (!payload) break
-    for (const c of payload.comments || []) {
-      const replies = c.preview_child_comments || []
-      const ourReply = replies.find(r => ownUsernames.has(normalizeUsername(r.user?.username)?.toLowerCase()))
-      out.push({
-        ...normalizeComment(c), is_reply: false,
-        repliedByUs: !!ourReply,
-        repliedAt: ourReply?.created_at ? new Date(ourReply.created_at * 1000).toISOString() : null,
-      })
-      for (const r of replies) {
-        out.push({ ...normalizeComment(r), is_reply: true, repliedByUs: false, repliedAt: null })
-      }
-    }
+    out.push(...flattenComments(payload.comments, ownUsernames))
     minId = payload.next_min_id
     if (!minId) break
   }
@@ -418,6 +443,58 @@ function normalizeComment(c) {
     text: String(c.text || ''),
     created_at: c.created_at ? new Date(c.created_at * 1000).toISOString() : null,
   }
+}
+
+/**
+ * Range les commentaires de publications déjà retenues. Commun à la tournée du
+ * serveur et à la lecture faite par le navigateur (module Orisha) : seule la
+ * façon d'obtenir les commentaires change (`commentsOf`).
+ */
+export async function ingestPostComments(withComments, { cfg, own, commentsOf }) {
+  let scanned = 0, matched = 0, created = 0, updated = 0, duplicates = 0, repliedByUsCount = 0
+  const toPush = new Set()
+  for (const post of withComments) {
+    const postUrl = post.code ? `https://www.instagram.com/p/${post.code}/` : null
+    for (const c of await commentsOf(post)) {
+      scanned++
+      if (!c.username || own.has(c.username.toLowerCase())) continue
+      // `keywords` ne FILTRE plus rien (tous les commentaires sont captés) :
+      // il sert seulement à étiqueter/prioriser (has_keyword), avec
+      // tolérance aux fautes de frappe (detectKeyword).
+      const keyword = detectKeyword(c.text, cfg.keywords || 'coach')
+      matched++
+
+      const res = ingestManychatEvent({
+        flow: 'comment',
+        event_id: c.pk ? `scrape:${c.pk}` : undefined,
+        ig_username: c.username,
+        ig_user_id: c.user_id,
+        full_name: c.full_name,
+        comment_text: c.text,
+        occurred_at: c.created_at,
+        post_url: postUrl,
+        keyword,
+        source: 'scrape',
+      })
+      if (!res.ok) continue
+
+      // Le signal « réponse publique » s'applique MÊME si le commentaire est
+      // déjà connu (dédupliqué) : une fiche créée avant que ce signal existe,
+      // ou lue une semaine puis répondue la suivante, doit être rattrapée —
+      // pas seulement les commentaires tout juste ingérés.
+      if (c.repliedByUs && res.prospect?.id && !res.prospect.contacted) {
+        markContacted(res.prospect.id, 'public_reply', c.repliedAt)
+        repliedByUsCount++
+        toPush.add(res.prospect.id)
+      }
+
+      if (res.duplicate) { duplicates++; continue }
+      if (res.is_new) created++; else updated++
+      if (res.prospect?.id) toPush.add(res.prospect.id)
+    }
+  }
+
+  return { scanned, matched, created, updated, duplicates, repliedByUsCount, toPush }
 }
 
 /**
@@ -480,48 +557,10 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
     const skippedPosts = allPosts.length - posts.length
     const withComments = posts.filter(p => p.comment_count)
 
-    let scanned = 0, matched = 0, created = 0, updated = 0, duplicates = 0, repliedByUsCount = 0
-    const toPush = new Set()
-    for (const post of withComments) {
-      const postUrl = post.code ? `https://www.instagram.com/p/${post.code}/` : null
-      for (const c of await fetchComments(post.pk, web, own)) {
-        scanned++
-        if (!c.username || own.has(c.username.toLowerCase())) continue
-        // `keywords` ne FILTRE plus rien (tous les commentaires sont captés) :
-        // il sert seulement à étiqueter/prioriser (has_keyword), avec
-        // tolérance aux fautes de frappe (detectKeyword).
-        const keyword = detectKeyword(c.text, cfg.keywords || 'coach')
-        matched++
-
-        const res = ingestManychatEvent({
-          flow: 'comment',
-          event_id: c.pk ? `scrape:${c.pk}` : undefined,
-          ig_username: c.username,
-          ig_user_id: c.user_id,
-          full_name: c.full_name,
-          comment_text: c.text,
-          occurred_at: c.created_at,
-          post_url: postUrl,
-          keyword,
-          source: 'scrape',
-        })
-        if (!res.ok) continue
-
-        // Le signal « réponse publique » s'applique MÊME si le commentaire est
-        // déjà connu (dédupliqué) : une fiche créée avant que ce signal existe,
-        // ou lue une semaine puis répondue la suivante, doit être rattrapée —
-        // pas seulement les commentaires tout juste ingérés.
-        if (c.repliedByUs && res.prospect?.id && !res.prospect.contacted) {
-          markContacted(res.prospect.id, 'public_reply', c.repliedAt)
-          repliedByUsCount++
-          toPush.add(res.prospect.id)
-        }
-
-        if (res.duplicate) { duplicates++; continue }
-        if (res.is_new) created++; else updated++
-        if (res.prospect?.id) toPush.add(res.prospect.id)
-      }
-    }
+    const counts = await ingestPostComments(withComments, {
+      cfg, own, commentsOf: post => fetchComments(post.pk, web, own),
+    })
+    const { scanned, matched, created, updated, duplicates, repliedByUsCount, toPush } = counts
 
     // Garde-fou : des publications qui portent des commentaires mais pas un
     // seul commentaire lu = Instagram nous a fermé la porte (cookie mort,
@@ -611,5 +650,81 @@ export function previewCommentScrape() {
       (cfg.run_weekday === '1' && cfg.run_hour === '0' ? ' — soit minuit dans la nuit de dimanche à lundi' : ''),
     semaine_courante: isoWeekKey(localDay()),
     prospects: counts,
+  }
+}
+
+// ── Lecture par le navigateur (module Orisha) ───────────────────────────────
+//
+// Depuis le serveur, Instagram refuse vite la lecture du fil. Depuis un onglet
+// instagram.com ouvert chez Charles, c'est une visite ordinaire : le module lit
+// les publications et leurs commentaires, puis les dépose ici.
+
+const BROWSER_SCRAPE_EVERY_MS = 3 * 3600_000
+
+/** Ce que le module doit lire, et s'il est temps de le faire. */
+export function browserScrapePlan() {
+  const cfg = loadConfig()
+  const last = db.prepare(`
+    SELECT MAX(created_at) AS at FROM automation_logs WHERE automation_id = ? AND status = 'success'
+  `).get(INSTAGRAM_SCRAPE_AUTOMATION_ID)?.at
+  const due = !last || Date.now() - new Date(last).getTime() > BROWSER_SCRAPE_EVERY_MS
+  // L'identifiant numérique de chaque compte : le module en a besoin pour lire
+  // le fil, et le redemander à Instagram coûte un appel qu'il limite vite.
+  const accounts = splitAccounts(cfg.accounts)
+  const session = getSessionCookie()
+  const idOf = db.prepare(`
+    SELECT ig_user_id AS id FROM instagram_dm_threads WHERE lower(username) = lower(?) AND ig_user_id IS NOT NULL
+    UNION ALL
+    SELECT ig_user_id FROM instagram_prospects WHERE lower(ig_username) = lower(?) AND ig_user_id IS NOT NULL
+    LIMIT 1
+  `)
+  const ids = {}
+  accounts.forEach((a, i) => {
+    const id = idOf.get(a, a)?.id || (i === 0 ? session.dsUserId : null)
+    if (id) ids[a] = String(id)
+  })
+  return {
+    due,
+    accounts,
+    ids,
+    doc_id: PROFILE_POSTS_DOC_ID,
+    lookback_days: Math.min(60, Math.max(1, Number(cfg.lookback_days) || 7)),
+  }
+}
+
+/**
+ * Range ce que le navigateur a lu. `posts` = publications brutes du fil
+ * (pk, code, taken_at, comment_count, user, coauthor_producers…), chacune avec
+ * ses commentaires bruts dans `comments`.
+ */
+export async function ingestBrowserScrape(posts, { trigger = 'navigateur', errors = [] } = {}) {
+  const t0 = Date.now()
+  const cfg = loadConfig()
+  try {
+    const lookback = Math.min(60, Math.max(1, Number(cfg.lookback_days) || 7))
+    const sinceTs = Math.floor(Date.now() / 1000) - lookback * 86400
+    const own = new Set(String(cfg.own_accounts || '').split(',').map(x => normalizeUsername(x)?.toLowerCase()).filter(Boolean))
+    const ours = new Set(String(cfg.our_accounts || '').split(',').map(x => normalizeUsername(x)?.toLowerCase()).filter(Boolean))
+    const byMedia = new Map()
+    for (const p of posts || []) {
+      if (!p?.pk || (p.taken_at && p.taken_at < sinceTs)) continue
+      if (!byMedia.has(String(p.pk))) byMedia.set(String(p.pk), p)
+    }
+    const all = [...byMedia.values()]
+    const kept = all.filter(p => postInvolvesUs(p, ours))
+    const withComments = kept.filter(p => p.comment_count)
+    const counts = await ingestPostComments(withComments, { cfg, own, commentsOf: p => flattenComments(p.comments, own) })
+    for (const id of counts.toPush) { try { await pushToAirtable(id) } catch {} }
+
+    const summary = `navigateur · ${lookback} j · ${kept.length} publication(s) à nous, ${withComments.length} avec commentaires · ` +
+      `${counts.scanned} commentaire(s) lus → ${counts.created} nouveau(x), ${counts.updated} mis à jour, ${counts.duplicates} déjà connu(s)` +
+      (counts.repliedByUsCount ? ` · ${counts.repliedByUsCount} déjà répondu(s) publiquement` : '')
+    if (!kept.length) throw new Throttled(`Le navigateur n’a renvoyé aucune publication${errors.length ? ` (${errors.slice(0, 5).join(' ; ')})` : ''} — lecture à reprendre.`)
+    recordSessionStatus('instagram', { status: 'ok', detail: `lu par le navigateur le ${new Date().toISOString().slice(0, 10)}` })
+    logSystemRun(INSTAGRAM_SCRAPE_AUTOMATION_ID, { status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger }, result: summary })
+    return { ok: true, ...counts, toPush: undefined, posts: kept.length, summary }
+  } catch (e) {
+    logSystemRun(INSTAGRAM_SCRAPE_AUTOMATION_ID, { status: 'error', duration_ms: Date.now() - t0, triggerData: { trigger }, error: e })
+    return { error: e.message }
   }
 }

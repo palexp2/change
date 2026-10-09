@@ -1653,7 +1653,8 @@ export default function OrderDetail({ recordId, onClose }) {
     // colonne `linkChips` plus bas et components/LinkChipsCell.jsx. Ce render
     // ne sert plus qu'aux rendus hors mode tableur.
     product_id: item => (
-      <div className="flex items-center min-w-0">
+      <div className="flex items-center gap-1 min-w-0">
+        {item.product_image && <img src={item.product_image} alt="" loading="lazy" className="h-5 w-5 shrink-0 rounded object-cover" />}
         {item.product_id
           ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="chip-record">{item.product_name || 'Produit inconnu'}</Link>
           : <span className="chip-record">{item.product_name || 'Produit inconnu'}</span>}
@@ -1736,6 +1737,7 @@ export default function OrderDetail({ recordId, onClose }) {
         // pastille s'affiche sans attendre la résolution réseau du lien.
         linkChipLabel: item => item.product_name,
         linkChipHref: item => (item.product_id ? `/products/${item.product_id}` : null),
+        linkChipImage: item => item.product_image || null,
       }
       : {}),
     ...(meta.id === 'item_type'
@@ -2152,7 +2154,7 @@ export default function OrderDetail({ recordId, onClose }) {
                     <div className="text-xl font-bold text-slate-900">{fmtMoney(revenue)}</div>
                     {overrideActive
                       ? <div className="text-xs text-amber-600 mt-0.5">Override · calculé {fmtMoney(p.revenue_computed ?? 0)}</div>
-                      : <div className="text-xs text-slate-400 mt-0.5">{order.is_subscription ? '1re facture × 38 (HT)' : 'Factures liées (HT)'}</div>}
+                      : <div className="text-xs text-slate-400 mt-0.5">{(p.revenue_is_subscription ?? order.is_subscription) ? '1re facture × 38 (HT)' : 'Factures liées (HT)'}</div>}
                   </div>
                   <div>
                     {/* Libellé en enfant DIRECT du bloc : c'est le crochet des règles

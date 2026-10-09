@@ -249,6 +249,7 @@ export const api = {
   contacts: {
     list: (params = {}) => get('/contacts?' + new URLSearchParams(params)),
     lookup: () => get('/contacts/lookup'),
+    language: (email) => get(`/contacts/language?email=${encodeURIComponent(email)}`),
     duplicates: (params = {}) => get('/contacts/duplicates?' + new URLSearchParams(params)),
     get: (id) => get(`/contacts/${id}`),
     create: (data) => post('/contacts', data),
@@ -424,6 +425,8 @@ export const api = {
     updateUser: (id, data) => put(`/admin/users/${id}`, data),
     resetPassword: (id, new_password) => post(`/admin/users/${id}/reset-password`, { password: new_password }),
     deleteUser: (id) => del(`/admin/users/${id}`),
+    userSignatures: (id) => getFresh(`/admin/users/${id}/signatures`),
+    updateUserSignatures: (id, data) => patch(`/admin/users/${id}/signatures`, data),
     health: () => get('/admin/health'),
     trash: () => get('/admin/trash'),
     restoreTrash: (table, id) => post(`/admin/trash/${table}/${id}/restore`, {}),
@@ -507,6 +510,7 @@ export const api = {
     checkSession: (connector) => post('/connectors/session-health/check', { connector }),
     disconnect: (id) => del(`/connectors/accounts/${id}`),
     saveConfig: (connector, data) => put(`/connectors/config/${connector}`, data),
+    slackMe: () => getFresh('/connectors/slack/me'),
     syncGmail: () => post('/connectors/sync/gmail'),
     gmailAccounts: () => get('/connectors/gmail/accounts'),
     gmailMyMailbox: () => getFresh('/connectors/google/my-mailbox'),
@@ -624,7 +628,9 @@ export const api = {
   quickbooks: {
     accounts: (params = {}) => get('/connectors/quickbooks/accounts?' + new URLSearchParams(params)),
     vendors: () => get('/connectors/quickbooks/vendors'),
+    payees: (currency) => get('/connectors/quickbooks/payees?' + new URLSearchParams(currency ? { currency } : {})),
     taxCodes: () => get('/connectors/quickbooks/tax-codes'),
+    taxCodeRates: id => get(`/connectors/quickbooks/tax-codes/${encodeURIComponent(id)}/rates`),
     syncAchats: () => post('/connectors/sync/qb-achats'),
   },
 
@@ -1015,14 +1021,15 @@ export const api = {
     setDayStatus: (id, data) => patch(`/timesheets/day/${id}/status`, data),
     deleteDay: (id) => del(`/timesheets/day/${id}`),
     addEntry: (dayId, data) => post(`/timesheets/day/${dayId}/entries`, data),
+    setDayRd: (dayId, data) => put(`/timesheets/day/${dayId}/rd`, data),
     updateEntry: (id, data) => patch(`/timesheets/entries/${id}`, data),
     deleteEntry: (id) => del(`/timesheets/entries/${id}`),
     getPreferences: (params = {}) => get('/timesheets/preferences?' + new URLSearchParams(params)),
     updatePreferences: (data) => patch('/timesheets/preferences', data),
-    // Mode semaine : un seul total par semaine (clé = lundi ISO, déduit de `date`)
-    getWeek: (params = {}) => get('/timesheets/week?' + new URLSearchParams(params)),
-    listWeeks: (params = {}) => get('/timesheets/weeks?' + new URLSearchParams(params)),
-    saveWeek: (data) => put('/timesheets/week', data),
+    copyPreviousDay: (data) => post('/timesheets/day/copy-previous', data),
+    // Vue « Mois » : la grille de l'onglet de la feuille R&D du Drive
+    rdMonth: (params = {}) => get('/timesheets/rd-month?' + new URLSearchParams(params)),
+    saveRdDay: (data) => put('/timesheets/rd-day', data),
   },
 
   activityCodes: {
@@ -1265,6 +1272,7 @@ export const api = {
     statements: {
       upload: (formData) => uploadRequest('/bank/statements/upload', formData),
       list: () => getFresh('/bank/statements'),
+      checklist: (month) => getFresh(`/bank/statements/checklist?month=${encodeURIComponent(month)}`),
       // getFresh : l'aperçu est interrogé en boucle pendant la lecture.
       get: (id) => getFresh(`/bank/statements/${id}`),
       setAccount: (id, accountId) => patch(`/bank/statements/${id}`, { account_id: accountId }),
@@ -1288,9 +1296,11 @@ export const api = {
     qbAccounts: () => get('/bank/qb-accounts'),
     // Robot « Rapprocher » : coche les lignes vertes dans QuickBooks, enregistre
     // pour plus tard (jamais « Terminer »). POST lance, GET relit le résultat.
-    qbReconcileRun: (accountId) => post(`/bank/accounts/${accountId}/qb-reconcile`, {}),
+    qbReconcileRun: (accountId, opts = {}) => post(`/bank/accounts/${accountId}/qb-reconcile`, opts),
     qbReconcileLast: (accountId) => getFresh(`/bank/accounts/${accountId}/qb-reconcile`),
     monthClose: () => getFresh('/bank/month-close'),
+    // Feuille de rapprochement du mois : relevé ↔ QuickBooks, ligne contre ligne.
+    reconcileSheet: (accountId, month) => getFresh(`/bank/accounts/${accountId}/reconcile-sheet${month ? `?mois=${month}` : ''}`),
     suggestions: (txnId) => get(`/bank/transactions/${txnId}/suggestions`),
     // Vue QuickBooks : le geste qu'attend chaque ligne du compte (virement,
     // appariement, publication), en un seul appel.
@@ -1311,14 +1321,23 @@ export const api = {
     invoiceSearch: (txnId, q) => get(`/bank/transactions/${txnId}/invoice-search?q=${encodeURIComponent(q)}`),
     receiptSearch: (txnId, q) => get(`/bank/transactions/${txnId}/receipt-search?q=${encodeURIComponent(q)}`),
     // « Ajouter » : comptabiliser une ligne qui n'aura jamais de facture.
-    addDefaults: (txnId) => get(`/bank/transactions/${txnId}/add-defaults`),
+    addDefaults: (txnId, vendor) => get(`/bank/transactions/${txnId}/add-defaults${vendor ? `?vendor=${encodeURIComponent(vendor)}` : ''}`),
+    standingDoc: (txnId, body) => post(`/bank/transactions/${txnId}/standing-doc`, body),
     taxCodeRate: (taxCodeId) => get(`/bank/tax-code-rate/${taxCodeId}`),
     addExpense: (txnId, data) => post(`/bank/transactions/${txnId}/add-expense`, data),
+    depositDefaults: (txnId) => get(`/bank/transactions/${txnId}/deposit-defaults`),
+    addDeposit: (txnId, data) => post(`/bank/transactions/${txnId}/add-deposit`, data),
+    payBill: (txnId, data) => post(`/bank/transactions/${txnId}/pay-bill`, data),
+    qbTransfer: (txnId, data) => post(`/bank/transactions/${txnId}/qb-transfer`, data),
     // « Transfert » : les deux moitiés d'un mouvement interne.
     transferCandidates: (txnId) => get(`/bank/transactions/${txnId}/transfer-candidates`),
     transfer: (txnId, data) => post(`/bank/transactions/${txnId}/transfer`, data),
     unlinkTransfer: (txnId) => del(`/bank/transactions/${txnId}/transfer`),
     reconcile: (ids, unreconcile = false) => post('/bank/transactions/reconcile', { ids, unreconcile }),
+    groupTxns: (ids, parentId = null) => post('/bank/transactions/group', { ids, parent_id: parentId }),
+    ungroupTxn: (id) => post(`/bank/transactions/${id}/ungroup`),
+    regroupTxn: (id) => post(`/bank/transactions/${id}/regroup`),
+    qbFeedUndo: (id) => post(`/bank/transactions/${id}/qb-feed-undo`),
     // L'écriture QuickBooks de la ligne, mise en forme comme QuickBooks
     // l'affiche — pour confirmer l'appariement sans ouvrir QBO.
     qbEntry: (txnId) => getFresh(`/bank/transactions/${txnId}/qb-entry`),
@@ -1432,6 +1451,8 @@ export const api = {
     addHours: (data) => post('/month-end/hours', data),
     updateHours: (id, data) => put(`/month-end/hours/${id}`, data),
     deleteHours: (id) => del(`/month-end/hours/${id}`),
+    hoursYear: (fy) => get(`/month-end/hours-year/${fy}`),
+    hoursDays: (month) => get(`/month-end/hours-days/${month}`),
     // Déboursés de pièces : calcul depuis QuickBooks, fichier Drive, message Slack
     pieces: (month) => get(`/month-end/pieces/${month}`),
     piecesCompute: (month) => post(`/month-end/pieces/${month}/compute`, {}),
@@ -1689,6 +1710,7 @@ export const api = {
   // Automations
   automations: {
     runtimeStatus: () => get('/automations/runtime/status'),
+    slackChannels: () => get('/automations/slack-channels'),
     list: () => get('/automations'),
     get: (id) => get(`/automations/${id}`),
     create: (data) => post('/automations', data),
@@ -1707,6 +1729,7 @@ export const api = {
     fires: (id, limit = 100) => get(`/automations/${id}/fires?limit=${limit}`),
     resetFires: (id) => post(`/automations/${id}/reset-fires`, {}),
     test: (id, body = {}) => post(`/automations/${id}/test`, body),
+    runNow: (id, body = {}) => post(`/automations/${id}/run-now`, body),
     runDateRule: (id) => post(`/automations/${id}/run-date-rule`, {}),
     rotateToken: (id) => post(`/automations/${id}/rotate-token`, {}),
     fieldRuleTables: () => get('/automations/field-rule/tables'),
@@ -1794,6 +1817,12 @@ export const api = {
     listPrompts:   (params = {}) => getFresh('/travaux/prompts' + (Object.keys(params).length ? '?' + new URLSearchParams(params) : '')),
     createPrompt:  (data)      => post('/travaux/prompts', data),
     spellfix:      (text)      => post('/travaux/spellfix', { text }),
+    // Captures d'écran d'une demande → { paths } (chemins absolus cités dans le prompt).
+    uploadCaptures:(files)     => {
+      const fd = new FormData()
+      files.forEach(f => fd.append('files', f, f.name || 'capture.png'))
+      return uploadRequest('/travaux/captures', fd)
+    },
     updatePrompt:  (id, data)  => patch(`/travaux/prompts/${id}`, data),
     deletePrompt:  (id)        => del(`/travaux/prompts/${id}`),
     reorderPrompts:(ids)       => post('/travaux/prompts/reorder', { ids }),
@@ -1938,8 +1967,47 @@ export const api = {
     upload: (formData) => uploadRequest('/public-files/upload', formData),
     // Remplace le contenu d'un fichier en conservant son lien public (token).
     replace: (id, formData) => uploadRequest(`/public-files/${id}/replace`, formData),
+    // Pages avec acceptation : toutes les acceptations.
+    allAcceptances: () => getFresh('/public-files/acceptances'),
+    getAcceptance: (id) => getFresh(`/public-files/acceptances/${id}`),
+    deleteAcceptance: (id) => del(`/public-files/acceptances/${id}`),
   },
 
+  // Catalogue de vente : produits et prix Stripe
+  stripeCatalog: {
+    list: () => getFresh('/stripe-catalog'),
+    sync: () => post('/stripe-catalog/sync', {}),
+    get: (id) => getFresh(`/stripe-catalog/${id}`),
+    update: (id, data) => patch(`/stripe-catalog/${id}`, data),
+    createOffer: (data) => post('/stripe-catalog/offers', data),
+    getOffer: (id) => getFresh(`/stripe-catalog/offers/${id}`),
+    pushOffer: (id) => post(`/stripe-catalog/offers/${id}/push`, {}),
+    linkOffer: (id, data) => post(`/stripe-catalog/offers/${id}/link`, data),
+    adopt: (stripeId) => post(`/stripe-catalog/stripe/${stripeId}/adopt`, {}),
+    updateOffer: (id, data) => patch(`/stripe-catalog/offers/${id}`, data),
+    setOfferActive: (id, active) => post(`/stripe-catalog/offers/${id}/active`, { active }),
+    addPrice: (id, data) => post(`/stripe-catalog/${id}/prices`, data),
+    setPriceActive: (priceId, active) => patch(`/stripe-catalog/prices/${priceId}`, { active }),
+  },
+  emailTemplates: {
+    list: () => getFresh('/email-templates'),
+    get: (id) => getFresh(`/email-templates/${id}`),
+    create: (data) => post('/email-templates', data),
+    update: (id, data) => patch(`/email-templates/${id}`, data),
+    duplicate: (id) => post(`/email-templates/${id}/duplicate`, {}),
+    remove: (id) => del(`/email-templates/${id}`),
+  },
+
+  // Marketing → Rendez-vous (pages de réservation publiques /rdv/:slug)
+  meetings: {
+    types: () => get('/meetings/types'),
+    getType: (id) => getFresh(`/meetings/types/${id}`),
+    createType: (data) => post('/meetings/types', data),
+    updateType: (id, data) => patch(`/meetings/types/${id}`, data),
+    removeType: (id) => del(`/meetings/types/${id}`),
+    bookings: () => getFresh('/meetings/bookings'),
+    cancelBooking: (id) => post(`/meetings/bookings/${id}/cancel`, {}),
+  },
   marketingForms: {
     list: () => get('/marketing-forms'),
     get: (id) => get(`/marketing-forms/${id}`),

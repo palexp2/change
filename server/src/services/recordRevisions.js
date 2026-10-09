@@ -10,11 +10,13 @@
 // dans record_revisions. Une réécriture à l'identique (sync Airtable) ne
 // produit rien.
 //
-// Auteur : activity_log (l'action attribuée de la route) à ±5 s ; sinon
-// l'écriture vient d'une sync ou d'une automation → « Système ».
+// Auteur : activity_log (l'action attribuée de la route) à ±5 s, sinon
+// l'utilisateur de la requête qui a écrit ; sans utilisateur, l'automatisation
+// qui a écrit (services/writeOrigin.js) → « Système » + son nom.
 
 import db from '../db/database.js'
 import { resolveRecordKeys } from './recordLinks.js'
+import { installWriteOriginTriggers, takeWriteOrigin } from './writeOrigin.js'
 
 // Tables qui ont une fiche. `exclude` : colonnes lourdes ou techniques.
 export const REVISION_TABLES = {
@@ -25,6 +27,7 @@ export const REVISION_TABLES = {
   products: { exclude: ['tech_info_fields'] },
   sale_receipts: { exclude: ['raw_data'] },
   marketing_forms: { exclude: ['fields_json'] },
+  achats_fournisseurs: {},
 }
 
 // Entité activity_log de chaque table (attribution de l'auteur).
@@ -35,6 +38,7 @@ const ENTITY = {
   returns: 'return', purchases: 'purchase', soumissions: 'soumission',
   fournitures: 'fourniture', ops_issues: 'ops_issue', products: 'product',
   sale_receipts: 'sale_receipt', marketing_forms: 'marketing_form',
+  achats_fournisseurs: 'achat_fournisseur',
 }
 
 // Colonnes de mécanique (horodatages de sync, de vérification…) : jamais une
@@ -150,22 +154,28 @@ export function processRecord(table, id, changeType, at) {
   const prev = db.prepare('SELECT data FROM record_snapshots WHERE table_name = ? AND record_id = ?').get(table, String(id))
   const before = prev ? JSON.parse(prev.data) : null
   const row = changeType === 'delete' ? null : db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id)
-  const insertRev = db.prepare(`INSERT INTO record_revisions (table_name, record_id, kind, changes, user_id, changed_at) VALUES (?, ?, ?, ?, ?, ?)`)
+  const origin = takeWriteOrigin(table, String(id))
+  // Auteur : l'action attribuée, sinon l'origine notée à l'écriture.
+  const insertRev = (kind, changes) => {
+    const user = actorFor(table, id, at) || origin?.user || null
+    db.prepare(`INSERT INTO record_revisions (table_name, record_id, kind, changes, user_id, changed_at, source) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(table, String(id), kind, changes, user, at, user ? null : origin?.source || null)
+  }
 
   if (!row) {
     if (before) {
-      insertRev.run(table, String(id), 'deleted', null, actorFor(table, id, at), at)
+      insertRev('deleted', null)
       db.prepare('DELETE FROM record_snapshots WHERE table_name = ? AND record_id = ?').run(table, String(id))
     }
     return
   }
   const after = snapshotOf(table, row)
   if (!before) {
-    insertRev.run(table, String(id), 'created', null, actorFor(table, id, at), at)
+    insertRev('created', null)
   } else {
     const changes = diff(before, after)
     if (!changes.length) return
-    insertRev.run(table, String(id), 'updated', JSON.stringify(changes), actorFor(table, id, at), at)
+    insertRev('updated', JSON.stringify(changes))
   }
   db.prepare('INSERT OR REPLACE INTO record_snapshots (table_name, record_id, data) VALUES (?, ?, ?)')
     .run(table, String(id), JSON.stringify(after))
@@ -217,6 +227,7 @@ let timer = null
 export async function startRecordRevisions() {
   // Curseur posé AVANT l'instantané initial : ce qui bouge pendant qu'on le
   // prend sera diffé ensuite.
+  try { installWriteOriginTriggers(TABLE_LIST()) } catch (e) { console.error('[revisions] origine des écritures', e.message) }
   if (getState('cursor') == null) setState('cursor', db.prepare('SELECT MAX(id) AS m FROM change_log').get()?.m || 0)
   try { pruneNoise('v1') } catch (e) { console.error('[revisions] nettoyage', e.message) }
   for (const t of TABLE_LIST()) {
@@ -233,8 +244,10 @@ export async function startRecordRevisions() {
 // records liés.
 export function listRevisions(table, id, { limit = 300 } = {}) {
   const revs = db.prepare(`
-    SELECT r.id, r.kind, r.changes, r.changed_at, r.user_id, u.name AS user_name
+    SELECT r.id, r.kind, r.changes, r.changed_at, r.user_id, u.name AS user_name,
+           r.source, a.name AS source_name
     FROM record_revisions r LEFT JOIN users u ON u.id = r.user_id
+    LEFT JOIN automations a ON a.id = r.source
     WHERE r.table_name = ? AND r.record_id = ?
     ORDER BY r.id DESC LIMIT ?
   `).all(table, String(id), limit).reverse()
@@ -256,6 +269,7 @@ export function listRevisions(table, id, { limit = 300 } = {}) {
   }
   const data = parsed.map(r => ({
     id: r.id, kind: r.kind, changed_at: r.changed_at, user_name: r.user_name || null,
+    source: r.source || null, source_name: r.source ? r.source_name || r.source : null,
     changes: r.changes.map(ch => {
       const lists = keyList(ch.o) || keyList(ch.n)
       return {

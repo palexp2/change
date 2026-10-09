@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Apparier et règle</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f7;--s:#fff;--soft:#f7f8fa;--line:#eceef0;--line2:#d9dde2;--ink:#1f2328;--ink2:#4a5058;--ink3:#767d86;--ink4:#a6abb2;--g:#2ca01c;--gd:#1d7f12;--gs:#eef7ec;--b:#0a6fbf;--bs:#eaf3fb;--a:#b86e00;--as:#fdf5e6;--r:#d1362a;--rs:#fcefee;--sh:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.08)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#343a41;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#343a41;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1500px;margin:0 auto}
+h2{font-size:18px;margin:40px 0 14px}
+h2:first-child{margin-top:0}
+.row{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:22px;align-items:start}
+.lbl{font-weight:700;color:var(--b);margin:0 0 8px;font-size:14px}
+.p{background:var(--s);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
+.top{padding:20px 22px 14px;text-align:center;border-bottom:1px solid var(--line)}
+.top .who{font-size:15px;font-weight:600}
+.top .amt{font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;margin:2px 0}
+.m{color:var(--ink3);font-size:12px}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--ink3)}
+.body{padding:16px 22px 20px;display:flex;flex-direction:column;gap:12px}
+.cta{height:42px;border-radius:999px;border:0;background:var(--g);color:#fff;font:inherit;font-weight:600;font-size:14px;width:100%;cursor:pointer}
+.cta.b{background:var(--b)}
+.link{color:var(--b);font-size:12px;text-align:center;cursor:pointer}
+.r{font-variant-numeric:tabular-nums;white-space:nowrap}
+.ok{color:var(--gd)}.wa{color:var(--a)}.no{color:var(--r)}
+/* M1 */
+.vs{display:grid;grid-template-columns:70px 1fr 18px 1fr;border:1px solid var(--line2);border-radius:10px;overflow:hidden}
+.vs>div{padding:9px 10px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vs>div:nth-last-child(-n+4){border-bottom:0}
+.vs .h{background:var(--soft);font-size:11.5px;color:var(--ink3);font-weight:600}
+.vs .k{color:var(--ink3);font-size:12px}
+.vs .c{text-align:center;padding-left:0;padding-right:0}
+.flag{display:flex;gap:8px;align-items:center;border-radius:10px;padding:9px 12px;background:var(--as);color:var(--a);font-weight:500}
+/* M2 */
+.doc{display:flex;gap:12px;align-items:center;border:1.5px solid var(--g);background:var(--gs);border-radius:12px;padding:12px}
+.th{width:34px;height:44px;border-radius:4px;background:var(--s);border:1px solid var(--line2);flex:none;position:relative}
+.th:after{content:"";position:absolute;left:6px;right:6px;top:9px;height:16px;background:repeating-linear-gradient(var(--line2) 0 2px,transparent 2px 5px)}
+.doc .n{font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border-radius:999px;padding:3px 10px;font-size:12px;font-weight:500;background:var(--gs);color:var(--gd)}
+.chip.wa{background:var(--as);color:var(--a)}
+.alt{display:flex;align-items:center;gap:10px;padding:8px 2px;border-top:1px solid var(--line);color:var(--ink2)}
+.alt span:first-child{flex:1}
+/* M3 */
+.cand{display:grid;grid-template-columns:18px 1fr auto;gap:2px 10px;align-items:center;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;cursor:pointer}
+.cand.on{border-color:var(--g);background:var(--gs)}
+.radio{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--ink4)}
+.cand.on .radio{border:4.5px solid var(--g)}
+.bar{grid-column:2/-1;height:4px;border-radius:2px;background:var(--line)}
+.bar i{display:block;height:100%;border-radius:2px;background:var(--g)}
+.bar.wa i{background:var(--a)}
+/* bannière */
+.ban{border-top:1px solid var(--line);padding:12px 22px;display:flex;align-items:center;gap:10px}
+.ban.old{background:#eef4ff}
+.ban .dots{display:flex;gap:2px;min-width:0;overflow:hidden}
+.ban .dots i{width:4px;height:14px;border-radius:2px;background:var(--b);opacity:.75}
+.ban .dots i.now{background:var(--r);opacity:1}
+.sbtn{height:30px;padding:0 14px;border-radius:999px;border:0;background:var(--b);color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.sbtn.gh{background:none;color:var(--ink3);padding:0 6px}
+.whitebar{height:16px;background:#fff;border-top:1px solid var(--line)}
+/* règle */
+.qa{border:1px solid var(--line2);border-radius:12px;overflow:hidden}
+.qa .w{display:flex;gap:10px;padding:12px;align-items:flex-start}
+.qa .w+.w{border-top:1px solid var(--line)}
+.qa .tag{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--s);background:var(--ink2);border-radius:5px;padding:2px 7px;flex:none;margin-top:2px}
+.qa .tag.th2{background:var(--g)}
+.tok{display:inline-block;border:1px solid var(--line2);border-radius:6px;padding:2px 8px;margin:2px 3px 2px 0;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.tok.off{opacity:.35;text-decoration:line-through}
+.kv{display:grid;grid-template-columns:76px 1fr;gap:6px 10px;font-size:12.5px}
+.kv .k{color:var(--ink3)}
+.kv b{font-weight:500}
+.ai{font-size:10.5px;color:#7b4fd6}
+.cal{display:grid;grid-template-columns:repeat(18,1fr);gap:3px}
+.cal i{height:18px;border-radius:3px;background:var(--gs);border:1px solid color-mix(in srgb,var(--g) 40%,transparent)}
+.cal i.todo{background:var(--rs);border-color:var(--r)}
+.sw{width:34px;height:20px;border-radius:999px;background:var(--g);position:relative;flex:none}
+.sw:after{content:"";position:absolute;right:2px;top:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+.sw.off{background:var(--line2)}.sw.off:after{right:auto;left:2px}
+.slip>div{display:grid;grid-template-columns:90px 1fr auto;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);align-items:center}
+.slip>div:last-child{border-bottom:0}
+.slip .k{color:var(--ink3);font-size:12px}
+.slip .v{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pen{color:var(--ink4);font-size:12px}
+.big{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
+.tk{display:flex;flex-wrap:wrap;gap:4px}
+.tk span{border:1px solid var(--line2);border-radius:6px;padding:2px 8px;font-family:ui-monospace,Menlo,monospace;font-size:12px;cursor:pointer}
+.tk span.off{opacity:.35;text-decoration:line-through}
+.mini{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line)}
+.mini:last-child{border-bottom:0}
+.cb{width:15px;height:15px;border-radius:4px;background:var(--g);flex:none;position:relative}
+.cb:after{content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.mo{display:grid;grid-template-columns:repeat(6,1fr);gap:4px}
+.mo span{text-align:center;font-size:10.5px;border-radius:5px;padding:4px 0;background:var(--gs);color:var(--gd)}
+.mo span.now{background:var(--rs);color:var(--r);font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:4px 12px;background:var(--bs);color:var(--b);font-weight:600;font-size:12px;cursor:pointer}
+.ruleh{background:var(--bs);padding:14px 22px;display:flex;align-items:center;gap:12px}
+.ruleh .big{color:var(--b)}
+.seg{display:flex;border:1px solid var(--line2);border-radius:999px;overflow:hidden}
+.seg span{flex:1;text-align:center;padding:6px 0;font-size:12px;color:var(--ink3)}
+.seg span.on{background:var(--ink);color:var(--s);font-weight:600}
+.seg3{display:grid;grid-template-columns:repeat(3,1fr);background:var(--soft);border-radius:999px;padding:3px;gap:3px}
+.seg3 span{text-align:center;padding:7px 0;border-radius:999px;font-weight:500;color:var(--ink3);cursor:pointer}
+.seg3 span.on{background:var(--s);color:var(--ink);box-shadow:0 1px 3px rgb(0 0 0/.12);font-weight:600}
+.spl{border:1px solid var(--line2);border-radius:10px;overflow:hidden}
+.spl .ln{display:grid;grid-template-columns:1fr 64px 18px;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line)}
+.spl .ln:last-child{border-bottom:0}
+.spl .hd{background:var(--soft);font-size:11.5px;color:var(--ink3)}
+.spl .pc{border:1px solid var(--line2);border-radius:6px;padding:3px 6px;text-align:right;font-variant-numeric:tabular-nums}
+.tg{display:inline-flex;border:1px solid var(--line2);border-radius:6px;overflow:hidden;font-size:11px}
+.tg span{padding:1px 7px}.tg span.on{background:var(--ink);color:var(--s)}
+.stack{display:flex;height:26px;border-radius:8px;overflow:hidden;font-size:11px;font-weight:600;color:#fff}
+.stack span{display:flex;align-items:center;justify-content:center;position:relative}
+.stack span+span{border-left:3px solid var(--s)}
+.empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:18px 0;color:var(--ink3)}
+.empty .ic{width:42px;height:42px;border-radius:50%;background:var(--soft);display:flex;align-items:center;justify-content:center;font-size:20px}
+</style><style>
+.n-sent{font-size:15px;line-height:2.3;color:var(--ink2)}
+.n-sent .f{display:inline-flex;align-items:center;gap:4px;border-bottom:2px solid var(--b);color:var(--ink);font-weight:600;padding:0 2px;cursor:pointer;line-height:1.3}
+.n-sent .f.g{border-color:var(--g)}.n-sent .f.v{border-color:#7b4fd6}
+.n-sent .f:after{content:"▾";font-size:9px;color:var(--ink4)}
+.qbo{font-size:12.5px}
+.qbo .sec{padding:14px 18px;border-bottom:1px solid var(--line)}
+.qbo .sec:last-child{border-bottom:0}
+.qbo .t{font-weight:700;margin-bottom:8px;font-size:13px}
+.qbo .g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.qbo .g3{display:grid;grid-template-columns:1.1fr .9fr 1.4fr 18px;gap:6px;align-items:center;margin-bottom:6px}
+.inp{border:1px solid var(--line2);border-radius:4px;height:30px;padding:0 8px;display:flex;align-items:center;justify-content:space-between;background:var(--s);white-space:nowrap;overflow:hidden}
+.inp.sel:after{content:"▾";color:var(--ink4);font-size:10px}
+.qbo .lab{font-size:11px;color:var(--ink3);margin-bottom:3px}
+.qbo table{width:100%;border-collapse:collapse}
+.qbo td,.qbo th{padding:6px 6px;border-bottom:1px solid var(--line);text-align:left}
+.qbo th{font-size:11px;color:var(--ink3);font-weight:500}
+.radio2{display:inline-flex;gap:14px}
+.radio2 span{display:inline-flex;gap:6px;align-items:center}
+.radio2 i{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--ink4)}
+.radio2 i.on{border:4px solid var(--g)}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.tile{border:1.5px solid var(--line2);border-radius:12px;padding:14px 6px;text-align:center;cursor:pointer}
+.tile .ic{font-size:22px;margin-bottom:4px}
+.tile.on{border-color:var(--g);background:var(--gs);font-weight:600}
+.step{display:flex;gap:10px;align-items:flex-start}
+.step .n{width:22px;height:22px;border-radius:50%;background:var(--ink);color:var(--s);font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+.step .n.off{background:var(--line2)}
+.hits{border:1px solid var(--line);border-radius:8px;font-size:12px}
+.hits div{display:flex;justify-content:space-between;padding:5px 10px;border-bottom:1px solid var(--line)}
+.hits div:last-child{border-bottom:0}
+.je{display:grid;grid-template-columns:1fr auto auto;gap:4px 14px;font-size:12.5px;font-variant-numeric:tabular-nums}
+.je .h{font-size:11px;color:var(--ink3)}
+.je .ind{padding-left:16px}
+.arrow{display:flex;align-items:center;justify-content:center;color:var(--ink4);font-size:20px}
+.sheet{width:100%;border-collapse:collapse;font-size:12.5px}
+.sheet th{background:var(--soft);font-size:11px;color:var(--ink3);font-weight:600;text-align:left;padding:7px 8px;border:1px solid var(--line2)}
+.sheet td{padding:7px 8px;border:1px solid var(--line);white-space:nowrap}
+.sheet tr.sub td{background:var(--soft);color:var(--ink2)}
+.sheet td.ed{box-shadow:inset 0 0 0 2px var(--b)}
+.chipx{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:600}
+.c-d{background:var(--gs);color:var(--gd)}.c-v{background:var(--bs);color:var(--b)}.c-e{background:var(--soft);color:var(--ink3)}
+</style></head><body><div class="wrap">
+<h2>Règle</h2>
+<div class="row" style="grid-template-columns:repeat(auto-fill,minmax(420px,1fr))">
+
+<div><div class="lbl">N1 · Une phrase</div><div class="p"><div class="body" style="padding:22px">
+ <div class="n-sent">
+  Quand le relevé dit <span class="f">vidéotron</span><br>
+  <span class="f g">comptabiliser une dépense</span> chez <span class="f">Vidéotron</span><br>
+  <span class="f v">70 %</span> en <span class="f">Télécom</span> et <span class="f v">30 %</span> en <span class="f">Bureau</span><br>
+  taxe <span class="f">TPS/TVQ</span> · mémo <span class="f" style="color:var(--ink4);font-weight:400">—</span>
+ </div>
+ <div class="m" style="margin:6px 0 14px">12 lignes · 1 à faire</div>
+ <button class="cta">Créer</button>
+</div></div></div>
+
+<div><div class="lbl">N2 · Comme QuickBooks</div><div class="p qbo">
+ <div class="sec"><div class="g2"><div><div class="lab">Nom</div><div class="inp">Vidéotron</div></div><div><div class="lab">Pour</div><div class="inp sel">Sorties · tous les comptes</div></div></div></div>
+ <div class="sec"><div class="t">Si <span class="radio2" style="font-weight:400;margin-left:8px"><span><i class="on"></i>toutes</span><span><i></i>une</span></span></div>
+  <div class="g3"><div class="inp sel">Libellé</div><div class="inp sel">contient</div><div class="inp">vidéotron</div><span class="m">✕</span></div>
+  <div class="g3"><div class="inp sel">Montant</div><div class="inp sel">moins de</div><div class="inp">200,00</div><span class="m">✕</span></div>
+  <span class="link" style="font-size:12px">+ condition</span></div>
+ <div class="sec"><div class="t">Alors</div>
+  <div class="radio2" style="margin-bottom:10px"><span><i class="on"></i>Dépense</span><span><i></i>Virement</span><span><i></i>Exclure</span></div>
+  <div class="g2" style="margin-bottom:8px"><div><div class="lab">Fournisseur</div><div class="inp sel">Vidéotron</div></div><div><div class="lab">Taxe</div><div class="inp sel">TPS/TVQ QC</div></div></div>
+  <table><tr><th>Compte</th><th style="width:70px;text-align:right">% <span class="m">| $</span></th><th style="width:18px"></th></tr>
+   <tr><td><div class="inp sel">Télécommunications</div></td><td><div class="inp" style="justify-content:flex-end">70</div></td><td class="m">✕</td></tr>
+   <tr><td><div class="inp sel">Frais de bureau</div></td><td><div class="inp" style="justify-content:flex-end">30</div></td><td class="m">✕</td></tr></table>
+  <div style="display:flex;justify-content:space-between;margin-top:6px"><span class="link" style="font-size:12px">+ ligne</span><span class="ok">100 %</span></div>
+  <div class="lab" style="margin-top:8px">Mémo</div><div class="inp"></div></div>
+ <div class="sec" style="display:flex;align-items:center;gap:10px"><span class="sw"></span><span style="flex:1">Confirmer seul</span><button class="sbtn" style="background:var(--g)">Enregistrer</button></div>
+</div></div>
+
+<div><div class="lbl">N3 · Trois tuiles</div><div class="p"><div class="body" style="gap:16px">
+ <div class="step"><span class="n">1</span><div style="flex:1"><div class="tk" style="margin-bottom:6px"><span>vidéotron</span><span class="off">ltée</span><span class="off">mtl</span></div>
+  <div class="hits"><div><span>28 sept.</span><span>120,00 $</span></div><div><span>28 août</span><span>120,00 $</span></div><div class="m" style="justify-content:center">+ 10</div></div></div></div>
+ <div class="step"><span class="n">2</span><div class="tiles" style="flex:1"><div class="tile on"><div class="ic">🧾</div>Dépense</div><div class="tile"><div class="ic">⇄</div>Virement</div><div class="tile"><div class="ic">⊘</div>Exclure</div></div></div>
+ <div class="step"><span class="n">3</span><div style="flex:1">
+  <div class="stack" style="margin-bottom:8px"><span style="flex:70;background:var(--b)">Télécom 70 %</span><span style="flex:30;background:#7b4fd6">Bureau 30 %</span></div>
+  <div class="m">Vidéotron · TPS/TVQ · <span class="link">+ mémo</span></div></div></div>
+ <button class="cta">Créer</button>
+</div></div></div>
+
+<div><div class="lbl">N4 · Ce que ça écrit dans QB</div><div class="p"><div class="body" style="gap:14px">
+ <div style="display:grid;grid-template-columns:1fr 26px 1.4fr;gap:8px;align-items:center">
+  <div style="border:1px solid var(--line2);border-radius:10px;padding:10px"><div class="mono">VIDEOTRON LTEE</div><div style="font-weight:600;font-size:16px" class="r">−120,00 $</div></div>
+  <div class="arrow">→</div>
+  <div style="border:1.5px solid var(--g);border-radius:10px;padding:10px"><div class="je">
+   <span class="h">Dépense · Vidéotron</span><span class="h"></span><span class="h"></span>
+   <span class="ind">Télécom</span><span class="m">70 %</span><span>73,07</span>
+   <span class="ind">Bureau</span><span class="m">30 %</span><span>31,31</span>
+   <span class="ind">TPS/TVQ</span><span></span><span>15,62</span>
+  </div></div>
+ </div>
+ <div class="m" style="text-align:center">Clique une ligne pour la changer · <span class="link">+ compte</span> · <span class="link">+ mémo</span></div>
+ <div class="seg3"><span class="on">Dépense</span><span>Virement</span><span>Exclure</span></div>
+ <button class="cta">Chaque fois pareil · 12 lignes</button>
+</div></div></div>
+
+<div style="grid-column:1/-1"><div class="lbl">N5 · Une ligne du tableau des règles</div><div class="p" style="padding:14px;overflow-x:auto">
+ <table class="sheet"><tr><th>Si le libellé contient</th><th>Action</th><th>Fournisseur</th><th>Compte</th><th style="text-align:right">Part</th><th>Taxe</th><th>Mémo</th><th>Lignes</th></tr>
+  <tr><td class="mono" style="color:var(--ink)">vidéotron</td><td><span class="chipx c-d">Dépense</span></td><td>Vidéotron</td><td class="ed">Télécommunications</td><td class="r">70 %</td><td>TPS/TVQ QC</td><td class="m"></td><td class="r">12</td></tr>
+  <tr class="sub"><td></td><td></td><td></td><td>Frais de bureau</td><td class="r">30 %</td><td></td><td></td><td></td></tr>
+  <tr><td class="mono" style="color:var(--ink)">paiement mastercard</td><td><span class="chipx c-v">Virement</span></td><td colspan="3">→ MasterCard BNC</td><td></td><td class="m"></td><td class="r">14</td></tr>
+  <tr><td class="mono" style="color:var(--ink)">virement interac</td><td><span class="chipx c-e">Exclure</span></td><td colspan="5" class="m">moins de 100 $</td><td class="r">6</td></tr>
+ </table>
+</div></div>
+
+</div>
+</div>
+<script>
+const s=document.createElement('button');s.textContent='◐';s.style.cssText='position:fixed;top:12px;right:14px;border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);color:var(--ink3);cursor:pointer';
+s.onclick=()=>{const d=document.documentElement;d.dataset.theme=d.dataset.theme==='dark'?'light':'dark'};document.body.appendChild(s)
+</script>
+</body></html>

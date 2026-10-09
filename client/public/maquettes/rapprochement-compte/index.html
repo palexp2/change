@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rapprocher le compte</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f5f6f7; --surface: #fff; --soft: #f8f9fa; --line: #eceef0; --line2: #dfe2e5;
+  --ink: #1f2328; --ink2: #4a5058; --ink3: #7a8089; --ink4: #a6abb2;
+  --qb: #2ca01c; --qb-d: #1d7f12; --qb-soft: #eef7ec; --blue: #0a6fbf; --blue-soft: #eaf3fb;
+  --amber: #c27a00; --amber-soft: #fdf5e6; --red: #d1362a; --red-soft: #fcefee;
+  --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 12px 32px rgb(0 0 0 / .06);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111315; --surface: #181b1e; --soft: #1d2024; --line: #262a2f; --line2: #30353b;
+  --ink: #eceef0; --ink2: #c3c8ce; --ink3: #8e959d; --ink4: #646b73;
+  --qb: #45b934; --qb-d: #6ccf5c; --qb-soft: #1a2a18; --blue: #5cb0ef; --blue-soft: #16222d;
+  --amber: #f0b04a; --amber-soft: #2e2617; --red: #ff7a6e; --red-soft: #33201e;
+}}
+:root[data-theme="dark"] {
+  --bg: #111315; --surface: #181b1e; --soft: #1d2024; --line: #262a2f; --line2: #30353b;
+  --ink: #eceef0; --ink2: #c3c8ce; --ink3: #8e959d; --ink4: #646b73;
+  --qb: #45b934; --qb-d: #6ccf5c; --qb-soft: #1a2a18; --blue: #5cb0ef; --blue-soft: #16222d;
+  --amber: #f0b04a; --amber-soft: #2e2617; --red: #ff7a6e; --red-soft: #33201e;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13.5px/1.45 Inter, system-ui, sans-serif; padding: 24px 16px 60px; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wrap { max-width: 1200px; margin: 0 auto; }
+h1.page { font-size: 20px; margin: 0 0 4px; }
+.sec { margin: 34px 0 10px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.sec h2 { margin: 0; font-size: 16px; }
+.sec p { margin: 0; color: var(--ink3); }
+.pick { display: inline-flex; gap: 4px; background: var(--surface); border: 1px solid var(--line2); border-radius: 999px; padding: 3px; margin-left: auto; }
+.pick button { padding: 4px 12px; border-radius: 999px; color: var(--ink3); font-weight: 500; }
+.pick button.on { background: var(--ink); color: var(--surface); }
+.theme { position: fixed; top: 12px; right: 14px; color: var(--ink3); border: 1px solid var(--line2); border-radius: 999px; padding: 4px 10px; background: var(--surface); font-size: 12px; z-index: 50; }
+.screen { background: var(--surface); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; position: relative; }
+
+/* tête Transactions */
+.hd { display: flex; align-items: flex-end; gap: 28px; padding: 22px 28px 16px; flex-wrap: wrap; }
+.hd small.t { display: block; font-size: 12px; color: var(--ink3); }
+.hd .acct { font-size: 24px; font-weight: 600; letter-spacing: -.02em; }
+.kpi { display: flex; gap: 26px; }
+.kpi div { display: flex; flex-direction: column; }
+.kpi small { font-size: 11.5px; color: var(--ink3); }
+.kpi b { font-size: 15px; font-weight: 500; }
+.kpi .bad { color: var(--red); }
+.kpi .click { cursor: pointer; border-bottom: 1px dashed currentColor; }
+.sp { flex: 1; }
+.btn { height: 34px; padding: 0 16px; border-radius: 999px; font-weight: 500; border: 1px solid var(--line2); background: var(--surface); color: var(--ink2); display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.btn.g { background: var(--qb); border-color: var(--qb); color: #fff; }
+.btn.dk { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.btn.sm { height: 28px; padding: 0 12px; font-size: 12.5px; }
+.btn[disabled] { opacity: .4; pointer-events: none; }
+.badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--amber); color: #fff; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+.nav { display: flex; gap: 26px; padding: 0 28px; border-bottom: 1px solid var(--line); }
+.nav span { padding: 11px 0; color: var(--ink3); font-weight: 500; }
+.nav span.on { color: var(--ink); border-bottom: 2px solid var(--ink); margin-bottom: -1px; }
+.ghostrows div { display: grid; grid-template-columns: 90px 1fr 120px; gap: 12px; padding: 11px 28px; border-bottom: 1px solid var(--line); color: var(--ink3); }
+.ghostrows div b { color: var(--ink2); font-weight: 500; }
+.tabs { display: flex; gap: 2px; padding: 0 20px; background: var(--soft); border-top: 1px solid var(--line); }
+.tabs span { padding: 9px 14px; color: var(--ink3); font-size: 12.5px; border-top: 2px solid transparent; }
+.tabs span.on { background: var(--surface); color: var(--ink); border-top-color: var(--qb); font-weight: 500; }
+.strip { display: flex; align-items: center; gap: 10px; margin: 0 28px 14px; padding: 10px 14px; border-radius: 10px; background: var(--qb-soft); color: var(--qb-d); }
+.strip.amb { background: var(--amber-soft); color: var(--amber); }
+
+/* rapprochement */
+.rc-hd { display: flex; align-items: center; gap: 14px; padding: 18px 28px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.rc-hd .back { color: var(--ink3); font-size: 18px; }
+.rc-hd .ttl { font-size: 18px; font-weight: 600; }
+.rc-hd .ttl small { font-weight: 400; color: var(--ink3); font-size: 13px; margin-left: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--soft); color: var(--ink3); font-size: 12px; }
+.chip.ok { background: var(--qb-soft); color: var(--qb-d); }
+
+.hero { display: grid; grid-template-columns: 1fr auto; gap: 24px; padding: 26px 28px; align-items: center; }
+.eq { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.eq .f small { display: block; font-size: 11.5px; color: var(--ink3); }
+.eq .f b { font-size: 22px; font-weight: 500; }
+.eq .op { color: var(--ink4); font-size: 20px; }
+.diff { text-align: center; padding: 14px 26px; border-radius: 14px; background: var(--red-soft); color: var(--red); transition: background .3s, color .3s; min-width: 190px; }
+.diff small { display: block; font-size: 11.5px; opacity: .8; }
+.diff b { font-size: 28px; font-weight: 600; }
+.diff.ok { background: var(--qb-soft); color: var(--qb-d); }
+
+.auto { display: flex; gap: 8px; padding: 0 28px 18px; flex-wrap: wrap; }
+.auto .chip b { color: var(--ink); font-weight: 600; }
+
+.ex { margin: 0 28px 22px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.ex .h { padding: 10px 16px; background: var(--soft); color: var(--ink3); font-size: 12px; font-weight: 600; display: flex; }
+.exr { display: grid; grid-template-columns: 28px 70px 1fr 110px 220px; gap: 12px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); transition: opacity .3s, background .3s; }
+.exr .ico { width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.ico.b { background: var(--blue-soft); color: var(--blue); }
+.ico.q { background: var(--amber-soft); color: var(--amber); }
+.exr .d { color: var(--ink3); }
+.exr .l b { font-weight: 500; display: block; }
+.exr .l small { color: var(--ink3); }
+.exr .acts { display: flex; gap: 6px; justify-content: flex-end; }
+.exr.done { opacity: .45; background: var(--soft); }
+.exr.done .acts { display: none; }
+.exr .okm { display: none; color: var(--qb-d); justify-self: end; font-weight: 500; }
+.exr.done .okm { display: block; }
+.foot { display: flex; align-items: center; gap: 12px; padding: 14px 28px; border-top: 1px solid var(--line); }
+.foot .muted { color: var(--ink3); font-size: 12.5px; }
+
+/* R2 mois */
+.months { display: grid; grid-template-columns: 200px 1fr; }
+.acc-list { border-right: 1px solid var(--line); padding: 12px 0; }
+.acc-list button { display: flex; width: 100%; align-items: center; gap: 8px; padding: 9px 18px; text-align: left; color: var(--ink2); }
+.acc-list button.on { background: var(--soft); color: var(--ink); font-weight: 600; box-shadow: inset 3px 0 var(--qb); }
+.acc-list .dot { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; }
+.tl { padding: 22px 28px; }
+.tl-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-bottom: 22px; }
+.m { border: 1px solid var(--line); border-radius: 12px; padding: 12px; text-align: center; cursor: pointer; }
+.m small { display: block; color: var(--ink3); font-size: 11.5px; }
+.m b { display: block; font-size: 14px; margin-top: 4px; font-weight: 500; }
+.m.closed { background: var(--qb-soft); border-color: transparent; color: var(--qb-d); }
+.m.ready { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
+.m.open { border-style: dashed; color: var(--ink4); }
+.m.sel { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* R3 cochage */
+.cols { display: grid; grid-template-columns: 1fr 1fr; }
+.cols > div { padding: 0 0 8px; }
+.cols > div + div { border-left: 1px solid var(--line); }
+.cols .ch { padding: 10px 18px; font-size: 12px; font-weight: 600; color: var(--ink3); background: var(--soft); border-bottom: 1px solid var(--line); display: flex; }
+.li { display: grid; grid-template-columns: 22px 54px 1fr 96px; gap: 10px; padding: 9px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+.li .d { color: var(--ink3); }
+.li.pair { background: transparent; color: var(--ink4); }
+.li.miss { background: var(--blue-soft); }
+.li.qbo { background: var(--amber-soft); }
+.li.empty { color: var(--ink4); font-style: italic; }
+.cb { width: 16px; height: 16px; border-radius: 4px; border: 1.5px solid var(--line2); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
+.cb.on { background: var(--qb); border-color: var(--qb); color: #fff; }
+.fold { padding: 10px 18px; color: var(--ink3); border-bottom: 1px solid var(--line); cursor: pointer; }
+.sticky { position: sticky; bottom: 0; display: flex; gap: 22px; align-items: center; padding: 12px 28px; background: var(--surface); border-top: 1px solid var(--line2); }
+.sticky .f small { display: block; font-size: 11px; color: var(--ink3); }
+.sticky .f b { font-weight: 500; }
+
+/* drawer */
+.drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 560px; background: var(--surface); border-left: 1px solid var(--line2); box-shadow: -16px 0 40px rgb(0 0 0 / .08); transform: translateX(105%); transition: transform .25s ease; overflow: auto; }
+.screen.peek .drawer { transform: none; }
+.drawer .hero { grid-template-columns: 1fr; padding: 20px 24px; }
+.drawer .eq .f b { font-size: 17px; }
+.drawer .exr { grid-template-columns: 24px 1fr 96px; }
+.drawer .exr .d, .drawer .exr .acts-wide { display: none; }
+.drawer .ex, .drawer .auto { margin-left: 24px; margin-right: 24px; padding-left: 0; padding-right: 0; }
+.drawer .exr .acts { grid-column: 2 / -1; justify-content: flex-start; }
+
+@media (max-width: 760px) {
+  .hero { grid-template-columns: 1fr; }
+  .exr { grid-template-columns: 24px 1fr; }
+  .exr .d, .exr .num { display: none; }
+  .exr .acts { grid-column: 1 / -1; justify-content: flex-start; }
+  .months { grid-template-columns: 1fr; }
+  .acc-list { display: flex; overflow: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .tl-row { grid-template-columns: repeat(3, 1fr); }
+  .cols { grid-template-columns: 1fr; }
+  .drawer { width: 100%; }
+}
+</style>
+</head>
+<body>
+<button class="theme" onclick="toggleTheme()">◐</button>
+<div class="wrap">
+  <h1 class="page">Rapprocher le compte</h1>
+
+  <!-- ========== BOUTON ========== -->
+  <div class="sec">
+    <h2>Le bouton</h2><p>Sur la page Transactions, dans le compte ouvert.</p>
+    <div class="pick" data-group="btn">
+      <button class="on" data-v="B1">B1 · bouton</button>
+      <button data-v="B2">B2 · l'écart</button>
+      <button data-v="B3">B3 · bandeau</button>
+    </div>
+  </div>
+  <div class="screen" id="tx">
+    <div class="hd">
+      <div><small class="t">Opérations bancaires</small><div class="acct">BNC CAD</div></div>
+      <div class="kpi">
+        <div><small>Banque</small><b class="num">58 484,91 $</b></div>
+        <div><small>QuickBooks</small><b class="num">56 713,18 $</b></div>
+        <div><small>Écart</small><b class="num bad" id="ecart">1 771,73 $</b></div>
+      </div>
+      <div class="sp"></div>
+      <button class="btn g">↻ Mettre à jour</button>
+      <button class="btn dk" id="b1" onclick="openRec()">Rapprocher <span class="badge">2</span></button>
+      <button class="btn">⋯</button>
+    </div>
+    <div class="strip amb" id="b3" style="display:none">
+      <b>Relevé du 30 sept. reçu</b><span>· 2 lignes à régler</span><span class="sp"></span>
+      <button class="btn sm dk" onclick="openRec()">Rapprocher</button>
+    </div>
+    <div class="nav"><span class="on">Pour révision 14</span><span>Catégorisées 402</span><span>Exclues 9</span></div>
+    <div class="ghostrows">
+      <div><span>03 oct.</span><b>Hydro-Québec</b><span class="num">−412,77 $</span></div>
+      <div><span>02 oct.</span><b>Stripe · virement</b><span class="num">2 184,50 $</span></div>
+      <div><span>01 oct.</span><b>Loyer Inverness</b><span class="num">−3 450,00 $</span></div>
+    </div>
+    <div class="tabs"><span class="on">BNC CAD</span><span>BNC USD</span><span>Desjardins CAD</span><span>Desjardins USD</span><span>MasterCard</span><span>Visa</span></div>
+    <div class="drawer" id="drawer"></div>
+  </div>
+
+  <!-- ========== ÉCRAN ========== -->
+  <div class="sec">
+    <h2>L'écran</h2><p>S'ouvre directement sur le compte.</p>
+    <div class="pick" data-group="rec">
+      <button class="on" data-v="R1">R1 · seulement les écarts</button>
+      <button data-v="R2">R2 · les mois</button>
+      <button data-v="R3">R3 · relevé ↔ QB</button>
+      <button data-v="R4">R4 · panneau</button>
+    </div>
+  </div>
+  <div class="screen" id="rec"></div>
+</div>
+
+<script>
+const fmt = (v) => (v < 0 ? '−' : '') + Math.abs(v).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $'
+const FIN = 58484.91
+const ITEMS = [
+  { id: 1, k: 'b', d: '30 sept.', who: 'Stripe · virement', sub: 'Banque seulement', amt: 2184.50, acts: [['Créer le dépôt', 'g'], ['Apparier', '']] },
+  { id: 2, k: 'q', d: '1 oct.', who: 'Hydro-Québec', sub: 'Daté du 1 oct. dans QB', amt: -412.77, acts: [['Inclure', 'g'], ['Laisser', '']] },
+]
+let done = new Set()
+const diff = () => ITEMS.filter(i => !done.has(i.id)).reduce((s, i) => s + i.amt, 0)
+
+function toggleTheme() {
+  const r = document.documentElement
+  const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
+  r.dataset.theme = dark ? 'light' : 'dark'
+}
+
+function resolve(id) { done.add(id); renderAll() }
+function reset() { done = new Set(); renderAll() }
+
+function heroHTML() {
+  const d = diff()
+  const ok = Math.abs(d) < .005
+  return `
+  <div class="hero">
+    <div class="eq">
+      <div class="f"><small>Solde du relevé</small><b class="num">${fmt(FIN)}</b></div>
+      <span class="op">−</span>
+      <div class="f"><small>Coché dans QB</small><b class="num">${fmt(FIN - d)}</b></div>
+    </div>
+    <div class="diff ${ok ? 'ok' : ''}"><small>Différence</small><b class="num">${ok ? '0,00 $ ✓' : fmt(d)}</b></div>
+  </div>`
+}
+function autoHTML() {
+  return `<div class="auto">
+    <span class="chip ok">✓ Relevé PDF lu · Drive</span>
+    <span class="chip ok">✓ <b>131</b>&nbsp;lignes cochées seules</span>
+    <span class="chip">⏸ Chèque 1043 · 1 250,00 $ reporté</span>
+  </div>`
+}
+function exHTML() {
+  return `<div class="ex">
+    <div class="h">À régler<span class="sp"></span>${done.size ? '<button onclick="reset()" style="color:var(--ink3)">↺</button>' : ''}</div>
+    ${ITEMS.map(i => `
+      <div class="exr ${done.has(i.id) ? 'done' : ''}">
+        <span class="ico ${i.k}">${i.k === 'b' ? 'B' : 'Q'}</span>
+        <span class="d">${i.d}</span>
+        <span class="l"><b>${i.who}</b><small>${i.sub}</small></span>
+        <span class="num" style="text-align:right">${fmt(i.amt)}</span>
+        <span class="acts">${i.acts.map(([t, c], n) => `<button class="btn sm ${c}" onclick="resolve(${i.id})">${t}</button>`).join('')}</span>
+        <span class="okm">✓</span>
+      </div>`).join('')}
+  </div>`
+}
+function footHTML() {
+  const ok = Math.abs(diff()) < .005
+  return `<div class="foot">
+    <span class="muted">${ok ? 'Prêt — le robot coche dans QuickBooks' : ''}</span>
+    <span class="sp"></span>
+    <button class="btn">Enregistrer pour plus tard</button>
+    <button class="btn g" ${ok ? '' : 'disabled'}>Terminer dans QuickBooks</button>
+  </div>`
+}
+function headHTML(back) {
+  return `<div class="rc-hd">
+    ${back ? '<button class="back" onclick="closeRec()">←</button>' : ''}
+    <div class="ttl">BNC CAD<small>relevé au 30 sept. 2026</small></div>
+    <span class="sp"></span>
+    <span class="chip">Août ✓</span>
+  </div>`
+}
+
+const R = {
+  R1: () => headHTML(true) + heroHTML() + autoHTML() + exHTML() + footHTML(),
+
+  R2: () => {
+    const accts = [['BNC CAD', 'var(--amber)'], ['BNC USD', 'var(--qb)'], ['Desjardins CAD', 'var(--qb)'], ['Desjardins USD', 'var(--amber)'], ['MasterCard', 'var(--ink4)'], ['Visa', 'var(--qb)'], ['Marge Desjardins', 'var(--qb)']]
+    const ms = [['Mai', 'closed', '✓'], ['Juin', 'closed', '✓'], ['Juil.', 'closed', '✓'], ['Août', 'closed', '✓'], ['Sept.', 'ready sel', Math.abs(diff()) < .005 ? 'Prêt' : fmt(diff())], ['Oct.', 'open', '—']]
+    return headHTML(true) + `<div class="months">
+      <div class="acc-list">${accts.map(([n, c], i) => `<button class="${i === 0 ? 'on' : ''}">${n}<span class="dot" style="background:${c}"></span></button>`).join('')}</div>
+      <div class="tl">
+        <div class="tl-row">${ms.map(([m, c, v]) => `<div class="m ${c}"><small>${m}</small><b class="num">${v}</b></div>`).join('')}</div>
+        <div style="margin:0 -28px">${heroHTML()}${exHTML()}</div>
+      </div>
+    </div>` + footHTML()
+  },
+
+  R3: () => {
+    const pairs = 131
+    const left = [
+      ['b', '30 sept.', 'STRIPE TRANSFER ST-K2Q9', 2184.50, 1],
+      ['p', '29 sept.', 'PAIEMENT MASTERCARD', -6210.33],
+      ['p', '29 sept.', 'DEPOT MOBILE · Ferme L\'Apogée', 4890.00],
+      ['p', '28 sept.', 'HYDRO-QUEBEC', -412.77, 2, true],
+    ]
+    const right = [
+      ['e', '', '— rien —', null, 1],
+      ['p', '29 sept.', 'Paiement carte MasterCard', -6210.33],
+      ['p', '29 sept.', 'Dépôt · Ferme L\'Apogée', 4890.00],
+      ['q', '1 oct.', 'Hydro-Québec · facture', -412.77, 2],
+      ['x', '27 sept.', 'Chèque 1043 · Groupe Horticole', -1250.00],
+    ]
+    const row = ([k, d, l, a, id, onlyBank]) => {
+      const isDone = id && done.has(id)
+      const cls = k === 'b' ? 'miss' : k === 'q' ? 'qbo' : k === 'e' ? 'empty' : k === 'x' ? '' : 'pair'
+      const checked = k === 'p' || isDone
+      const act = !isDone && id ? `<button class="btn sm g" onclick="resolve(${id})" style="grid-column:1/-1;justify-self:end;height:24px">${k === 'b' ? 'Créer le dépôt' : k === 'q' ? 'Inclure' : ''}</button>` : ''
+      if (k === 'e') return `<div class="li empty ${isDone ? '' : 'miss'}"><span></span><span></span><span>${isDone ? 'Dépôt Stripe créé ✓' : '— rien —'}</span><span></span></div>`
+      if (onlyBank) return `<div class="li pair"><span class="cb on">✓</span><span class="d">${d}</span><span>${l}</span><span class="num" style="text-align:right">${fmt(a)}</span></div>`
+      return `<div class="li ${isDone ? 'pair' : cls}"><span class="cb ${checked ? 'on' : ''}">${checked ? '✓' : ''}</span><span class="d">${d}</span><span>${l}</span><span class="num" style="text-align:right">${fmt(a)}</span>${act}</div>`
+    }
+    const d = diff(), ok = Math.abs(d) < .005
+    return headHTML(true) + `<div class="cols">
+      <div><div class="ch">Relevé BNC<span class="sp"></span>${left.length + pairs - 1}</div>
+        <div class="fold">▸ ${pairs} lignes appariées</div>${left.map(row).join('')}</div>
+      <div><div class="ch">QuickBooks<span class="sp"></span>${right.length + pairs - 1}</div>
+        <div class="fold">▸ ${pairs} lignes appariées</div>${right.map(row).join('')}</div>
+    </div>
+    <div class="sticky">
+      <div class="f"><small>Relevé</small><b class="num">${fmt(FIN)}</b></div>
+      <div class="f"><small>Coché</small><b class="num">${fmt(FIN - d)}</b></div>
+      <div class="f"><small>Différence</small><b class="num" style="color:${ok ? 'var(--qb-d)' : 'var(--red)'}">${ok ? '0,00 $ ✓' : fmt(d)}</b></div>
+      <span class="sp"></span>
+      <button class="btn g" ${ok ? '' : 'disabled'}>Terminer dans QuickBooks</button>
+    </div>`
+  },
+
+  R4: () => `<div style="padding:40px 28px;text-align:center;color:var(--ink3)">
+      <button class="btn dk" onclick="openRec(true)">Rapprocher <span class="badge">2</span></button>
+    </div>`,
+}
+
+let btnV = 'B1', recV = 'R1'
+function renderTx() {
+  document.getElementById('b1').style.display = btnV === 'B1' ? '' : 'none'
+  document.getElementById('b3').style.display = btnV === 'B3' ? '' : 'none'
+  const e = document.getElementById('ecart')
+  e.className = 'num bad' + (btnV === 'B2' ? ' click' : '')
+  e.onclick = btnV === 'B2' ? () => openRec() : null
+  e.title = btnV === 'B2' ? 'Rapprocher' : ''
+}
+function renderAll() {
+  document.getElementById('rec').innerHTML = R[recV]()
+  const dr = document.getElementById('drawer')
+  dr.innerHTML = headHTML(true) + heroHTML() + autoHTML() + exHTML() + footHTML()
+}
+function openRec(drawer) {
+  if (recV === 'R4' || drawer) { document.getElementById('tx').classList.add('peek'); return }
+  document.getElementById('rec').scrollIntoView({ behavior: 'smooth' })
+}
+function closeRec() { document.getElementById('tx').classList.remove('peek') }
+
+document.querySelectorAll('.pick').forEach(p => p.addEventListener('click', (ev) => {
+  const b = ev.target.closest('button'); if (!b) return
+  p.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b))
+  if (p.dataset.group === 'btn') { btnV = b.dataset.v; renderTx() }
+  else { recV = b.dataset.v; closeRec(); renderAll() }
+}))
+renderTx(); renderAll()
+</script>
+</body>
+</html>

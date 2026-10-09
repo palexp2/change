@@ -12,6 +12,9 @@ import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 //
 // Monté par RecordPeekDrawer pour toute fiche ouverte en panneau, et par les
 // fiches pleine page (variant="page").
+//
+// showSource : une révision « Système » nomme l'automatisation qui l'a faite.
+// Activé par fiche via `historySource` dans lib/recordPeekRoutes.jsx.
 
 // Premier segment de l'URL d'une fiche → table SQL.
 const RESOURCE_TABLE = {
@@ -49,7 +52,7 @@ function ago(iso) {
   return 'à l’instant'
 }
 
-export default function RecordRevisionHistory({ table, id, variant = 'drawer' }) {
+export default function RecordRevisionHistory({ table, id, variant = 'drawer', showSource = false }) {
   const [open, setOpen] = useState(false)
   const [state, setState] = useState(null)
   const listRef = useRef(null)
@@ -102,7 +105,7 @@ export default function RecordRevisionHistory({ table, id, variant = 'drawer' })
       <div ref={listRef} className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
         {!state && <Spinner size="xs" />}
         {state && !count && <div className="text-sm text-slate-400">Aucun changement</div>}
-        {state?.data?.map(rev => <Revision key={rev.id} rev={rev} table={table} fields={state.fields} />)}
+        {state?.data?.map(rev => <Revision key={rev.id} rev={rev} table={table} fields={state.fields} showSource={showSource} />)}
       </div>
     </div>
   )
@@ -110,12 +113,15 @@ export default function RecordRevisionHistory({ table, id, variant = 'drawer' })
 
 const VERB = { created: 'a créé', deleted: 'a supprimé', updated: 'a modifié' }
 
-function Revision({ rev, table, fields }) {
+function Revision({ rev, table, fields, showSource }) {
+  const source = showSource && !rev.user_name && rev.source_name
   return (
     <div>
       <div className="flex items-baseline gap-2 text-xs text-slate-500 mb-1.5">
         <span className="flex-1 truncate">
-          <span className="font-medium text-slate-700">{rev.user_name || 'Système'}</span> {VERB[rev.kind] || rev.kind}
+          <span className="font-medium text-slate-700">{rev.user_name || 'Système'}</span>
+          {source && <> · <span className="font-medium text-slate-700" title="Automatisation">{source}</span></>}
+          {' '}{VERB[rev.kind] || rev.kind}
         </span>
         <span className="tabular-nums" title={ago(rev.changed_at)}>{fmtDateTime(rev.changed_at)}</span>
       </div>

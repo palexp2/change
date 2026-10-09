@@ -1,11 +1,10 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Eye, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare, Plus, Pin, MousePointerClick } from 'lucide-react'
+import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare, Plus, Pin, ChevronDown } from 'lucide-react'
 import { fmtDateTime, fmtTime, localISODate } from '../lib/formatDate.js'
 import { stripEmailHtml, stripEmailText } from '../lib/emailParser.js'
 import { emailDoc, emailPalette, measureEmailHeight } from '../lib/emailDoc.js'
 import EmailBodyFrame from './EmailBodyFrame.jsx'
-import { Modal } from './Modal.jsx'
 import { useIsDark } from '../lib/theme.js'
 import EmptyState from './EmptyState.jsx'
 import EmailTrackingBlock from './EmailTrackingBlock.jsx'
@@ -38,7 +37,7 @@ function dayLabel(date) {
   const yesterday = new Date()
   yesterday.setDate(yesterday.getDate() - 1)
   if (iso === localISODate(yesterday)) return 'Hier'
-  return d.toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+  return `${d.toLocaleDateString('fr-CA', { weekday: 'long' })} ${iso}`
 }
 
 function DaySeparator({ date }) {
@@ -73,12 +72,14 @@ function DirectionChip({ direction, type }) {
   )
 }
 
-// ─── Entrée du fil (aperçu compact, cliquable) ───────────────────────────────
+// ─── Entrée du fil (aperçu compact ; un clic la déplie en place) ───────────
 
-function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
+function Entry({ item, showContact, palette, onTogglePin }) {
   const isOut = item.direction === 'out'
   const Icon = TYPE_ICONS[item.type] || MessagesSquare
   const [emailClipped, setEmailClipped] = useState(false)
+  // Plus de modale : la carte se déplie dans le fil, et l'en-tête la replie.
+  const [expanded, setExpanded] = useState(false)
 
   // Body preview : full stripped message for emails, truncated transcript for
   // calls, truncated notes for meetings/notes.
@@ -98,14 +99,19 @@ function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
       </span>
 
       <div
-        onClick={() => onOpen(item)}
-        className="group relative flex-1 min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white cursor-pointer transition-colors hover:border-slate-300"
+        onClick={expanded ? undefined : () => setExpanded(true)}
+        data-expanded={expanded ? 'true' : undefined}
+        className={`group relative flex-1 min-w-0 overflow-hidden rounded-xl border bg-white transition-colors ${expanded ? 'border-slate-300' : 'border-slate-200 cursor-pointer hover:border-slate-300'}`}
       >
         {/* Filet de direction : sortant = marque, entrant = neutre */}
         <span className={`absolute inset-y-0 left-0 w-[3px] ${isOut ? 'bg-brand-400' : 'bg-slate-200'}`} aria-hidden />
 
         {/* En-tête : nature + direction à gauche, horodatage à droite */}
-        <div className="flex items-start justify-between gap-3 pl-4 pr-3 pt-2.5">
+        <div
+          onClick={expanded ? e => { e.stopPropagation(); setExpanded(false) } : undefined}
+          aria-expanded={expanded}
+          className={`flex items-start justify-between gap-3 pl-4 pr-3 pt-2.5 ${expanded ? 'cursor-pointer' : ''}`}
+        >
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
             <span className="text-xs font-semibold text-slate-700">{TYPE_LABELS[item.type] || item.type}</span>
             <DirectionChip direction={item.direction} type={item.type} />
@@ -117,16 +123,6 @@ function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
             {item.automated === 1 && (
               <span className={`${CHIP} bg-slate-100 text-slate-500`} title="Envoi automatisé">
                 <Zap size={10} />Auto
-              </span>
-            )}
-            {item.type === 'email' && isOut && item.open_count > 0 && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-green-600" title={`Ouvert ${item.open_count}×`}>
-                <Eye size={10} />{item.open_count}
-              </span>
-            )}
-            {item.type === 'email' && isOut && item.click_count > 0 && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-brand-600" title={`${item.click_count} clic(s)`}>
-                <MousePointerClick size={10} />{item.click_count}
               </span>
             )}
             {showContact && item.contact_name?.trim() && (
@@ -153,9 +149,19 @@ function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
             {item.user_name && (
               <span className="hidden sm:inline max-w-[110px] truncate" title={item.user_name}>· {item.user_name}</span>
             )}
+            <ChevronDown
+              size={13}
+              className={`transition-transform ${expanded ? 'rotate-180 text-slate-500' : 'opacity-0 group-hover:opacity-100'}`}
+              aria-hidden
+            />
           </div>
         </div>
 
+        {expanded ? (
+          <div className="pl-4 pr-3 pb-3 pt-1">
+            <ExpandedBody item={item} palette={palette} />
+          </div>
+        ) : (
         <div className={`pl-4 pr-3 ${hasBody ? 'pb-3 pt-1' : 'pb-2.5'}`}>
           {/* Sujet du courriel, titre de la réunion/note */}
           {preview.subject && (
@@ -201,7 +207,7 @@ function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
           )}
 
           {/* Enregistrement (appels seulement) */}
-          {item.call_id && (item.recording_path || item.drive_file_id) && (
+          {hasRecording && (
             <audio
               controls
               preload="none"
@@ -211,12 +217,11 @@ function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
             />
           )}
 
-          {(emailClipped || preview.truncated) && (
-            <div className="mt-1.5 text-[11px] font-medium text-brand-600 opacity-0 transition-opacity group-hover:opacity-100">
-              Ouvrir le détail
-            </div>
+          {item.type === 'email' && isOut && (
+            <div className="mt-2"><EmailTrackingBlock interactionId={item.id} item={item} /></div>
           )}
         </div>
+        )}
       </div>
     </div>
   )
@@ -256,9 +261,13 @@ function buildPreview(item) {
   return {}
 }
 
-// ─── Detail modal (all the content + metadata) ───────────────────────────────
+// ─── Contenu déplié (tout le contenu, dans la carte) ─────────────────────────
 
-function InteractionDetail({ item }) {
+// ⚠ Libellés sans `uppercase tracking-wide` : voir CHIP (grille du panneau latéral).
+const SECTION_LABEL = 'text-[11px] font-medium text-slate-400 mb-1'
+const SECTION_BOX = 'p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap break-words border border-slate-200'
+
+function ExpandedBody({ item, palette }) {
   const [showFull, setShowFull] = useState(false)
 
   const emailBody = useMemo(() => {
@@ -274,133 +283,74 @@ function InteractionDetail({ item }) {
     return null
   }, [item.type, item.body_html, item.body_text, showFull])
 
+  const notesTitle = item.meeting_title && item.meeting_title !== 'Note' ? item.meeting_title : null
+  const subject = item.type === 'email' ? item.subject : notesTitle
+  const hasRecording = Boolean(item.call_id && (item.recording_path || item.drive_file_id))
+  const hasContent = Boolean(emailBody || item.call_summary || item.call_next_steps || item.transcript_formatted || item.meeting_notes || hasRecording)
+
   return (
-    <div className="space-y-4">
-      {/* Metadata */}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-        <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Date</dt>
-        <dd className="text-slate-800">{fmtDateTime(item.timestamp)}</dd>
+    <div className="space-y-3">
+      {subject && <div className="text-sm font-medium text-slate-900 leading-snug">{subject}</div>}
 
-        {item.direction && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Direction</dt>
-          <dd className="text-slate-800">{item.direction === 'in' ? 'Entrant' : 'Sortant'}</dd>
-        </>)}
+      {/* Adresses / numéro : le reste (date, direction, contact) est dans l'en-tête */}
+      {(item.from_address || item.to_address || item.callee_number) && (
+        <div className="text-xs text-slate-500 space-y-0.5 break-all">
+          {item.type === 'email' && item.from_address && <div><span className="text-slate-400">De </span>{item.from_address}</div>}
+          {item.type === 'email' && item.to_address && <div><span className="text-slate-400">À </span>{item.to_address}</div>}
+          {item.type === 'call' && item.callee_number && <div className="font-mono">{item.callee_number}</div>}
+        </div>
+      )}
 
-        {item.contact_name?.trim() && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Contact</dt>
-          <dd>{item.contact_id
-            ? <Link to={`/contacts/${item.contact_id}`} className="link-record">{item.contact_name.trim()}</Link>
-            : <span className="text-slate-800">{item.contact_name.trim()}</span>}
-          </dd>
-        </>)}
-
-        {item.company_name && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Entreprise</dt>
-          <dd>{item.company_id
-            ? <Link to={`/companies/${item.company_id}`} className="link-record">{item.company_name}</Link>
-            : <span className="text-slate-800">{item.company_name}</span>}
-          </dd>
-        </>)}
-
-        {item.type === 'email' && item.subject && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Sujet</dt>
-          <dd className="text-slate-800 font-medium">{item.subject}</dd>
-        </>)}
-        {item.type === 'email' && item.from_address && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">De</dt>
-          <dd className="text-slate-700 text-xs font-mono">{item.from_address}</dd>
-        </>)}
-        {item.type === 'email' && item.to_address && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">À</dt>
-          <dd className="text-slate-700 text-xs font-mono">{item.to_address}</dd>
-        </>)}
-
-        {item.type === 'call' && item.callee_number && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Numéro</dt>
-          <dd className="text-slate-800 font-mono">{item.callee_number}</dd>
-        </>)}
-        {item.type === 'call' && item.duration_seconds != null && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Durée</dt>
-          <dd className="text-slate-800">{fmtDuration(item.duration_seconds)}</dd>
-        </>)}
-
-        {item.user_name && (<>
-          <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Enregistré par</dt>
-          <dd className="text-slate-800">{item.user_name}</dd>
-        </>)}
-      </dl>
-
-      {/* Audio */}
-      {item.call_id && (item.recording_path || item.drive_file_id) && (
-        <audio controls preload="none" className="w-full h-10 rounded"
+      {hasRecording && (
+        <audio controls preload="none" className="w-full h-8"
           src={`/erp/api/calls/${item.call_id}/recording?token=${localStorage.getItem('erp_token')}`} />
       )}
 
-      {/* Full body */}
       {emailBody?.kind === 'html' && (
-        <div className="rounded-lg overflow-hidden border border-slate-200 bg-white">
-          <EmailBodyFrame html={emailBody.html} />
+        <div className="rounded-lg overflow-hidden">
+          <EmailBodyFrame html={emailBody.html} palette={palette} />
         </div>
       )}
-      {emailBody?.kind === 'text' && (
-        <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
-          {emailBody.text}
-        </div>
+      {emailBody?.kind === 'text' && <div className={SECTION_BOX}>{emailBody.text}</div>}
+      {emailBody?.hasHidden && (
+        <button onClick={() => setShowFull(v => !v)} className="text-xs link-record">
+          {showFull ? 'Masquer chaîne et signature' : 'Afficher chaîne et signature'}
+        </button>
       )}
+
       {item.type === 'call' && item.call_summary && (
         <div>
-          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Résumé</div>
-          <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
-            {item.call_summary}
-          </div>
+          <div className={SECTION_LABEL}>Résumé</div>
+          <div className={SECTION_BOX}>{item.call_summary}</div>
         </div>
       )}
       {item.type === 'call' && item.call_next_steps && (
         <div>
-          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Prochaines étapes</div>
-          <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
-            {item.call_next_steps}
-          </div>
+          <div className={SECTION_LABEL}>Prochaines étapes</div>
+          <div className={SECTION_BOX}>{item.call_next_steps}</div>
         </div>
       )}
       {item.type === 'call' && item.transcript_formatted && (
         <div>
-          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Transcription</div>
-          <div className="p-3 bg-slate-50 rounded-lg text-xs text-slate-700 whitespace-pre-wrap font-mono max-h-96 overflow-y-auto border border-slate-200">
-            {item.transcript_formatted}
-          </div>
+          <div className={SECTION_LABEL}>Transcription</div>
+          <div className={`${SECTION_BOX} text-xs font-mono max-h-96 overflow-y-auto`}>{item.transcript_formatted}</div>
         </div>
       )}
-      {item.meeting_notes && (
-        <div>
-          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Notes</div>
-          <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
-            {item.meeting_notes}
-          </div>
-        </div>
-      )}
+      {item.meeting_notes && <div className={SECTION_BOX}>{item.meeting_notes}</div>}
 
-      {item.type === 'email' && item.direction === 'out' && <EmailTrackingBlock interactionId={item.id} />}
+      {!hasContent && !subject && <div className="text-sm text-slate-400 italic">Aucun contenu</div>}
 
-      {emailBody?.hasHidden && (
-        <button
-          onClick={() => setShowFull(v => !v)}
-          className="text-xs link-record"
-        >
-          {showFull ? 'Masquer chaîne et signature' : 'Afficher chaîne et signature'}
-        </button>
-      )}
+      {item.type === 'email' && item.direction === 'out' && <EmailTrackingBlock interactionId={item.id} item={item} defaultOpen />}
     </div>
   )
 }
 
-// ─── Timeline (the list + modal orchestration) ───────────────────────────────
+// ─── Timeline (the list) ───────────────────────────────
 
 // `onLog` (optionnel) : quand la page sait consigner une interaction à la main,
 // l'état vide propose l'action au lieu de rester un cul-de-sac. Les appelants
 // qui ne le passent pas gardent l'état vide sans bouton.
 export default function InteractionTimeline({ interactions, loading, total, onLoadMore, loadingMore, showContact = true, onLog, onTogglePin }) {
-  const [selected, setSelected] = useState(null)
   // Le document d'une iframe ne suit ni `.dark` ni les variables CSS du thème :
   // on relit la palette à chaque bascule et on la passe aux aperçus.
   const dark = useIsDark()
@@ -449,49 +399,38 @@ export default function InteractionTimeline({ interactions, loading, total, onLo
       elements.push(<DaySeparator key={`date-${day}`} date={item.timestamp} />)
       lastDate = day
     }
-    elements.push(<Entry key={item.id} item={item} showContact={showContact} onOpen={setSelected} palette={palette} onTogglePin={onTogglePin} />)
+    elements.push(<Entry key={item.id} item={item} showContact={showContact} palette={palette} onTogglePin={onTogglePin} />)
   }
 
   return (
-    <>
-      <div className="py-1">
-        {pinnedItems.length > 0 && (
-          <div className="mb-3">
-            <div className="flex items-center gap-1.5 pl-11 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              <Pin size={11} className="fill-current" />Épinglé
-            </div>
-            <div className="space-y-2.5">
-              {pinnedItems.map(item => (
-                <Entry key={item.id} item={item} showContact={showContact} onOpen={setSelected} palette={palette} onTogglePin={onTogglePin} />
-              ))}
-            </div>
+    <div className="py-1">
+      {pinnedItems.length > 0 && (
+        <div className="mb-3">
+          <div className="flex items-center gap-1.5 pl-11 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <Pin size={11} className="fill-current" />Épinglé
           </div>
-        )}
-        <div className="relative">
-          {/* Rail vertical : lie les entrées entre elles et pose la colonne des
-              pastilles (16 px ≈ moitié de la pastille de 32 px). */}
-          <span className="absolute left-[15.5px] top-3 bottom-3 w-px bg-slate-200" aria-hidden />
-          <div className="relative space-y-2.5">
-            {elements}
+          <div className="space-y-2.5">
+            {pinnedItems.map(item => (
+              <Entry key={item.id} item={item} showContact={showContact} palette={palette} onTogglePin={onTogglePin} />
+            ))}
           </div>
         </div>
-        {total != null && interactions.length < total && (
-          <div className="pl-11 pt-3">
-            <button onClick={onLoadMore} disabled={loadingMore} className="btn-secondary btn-sm w-full">
-              {loadingMore ? 'Chargement…' : `Charger plus (${total - interactions.length} restants)`}
-            </button>
-          </div>
-        )}
+      )}
+      <div className="relative">
+        {/* Rail vertical : lie les entrées entre elles et pose la colonne des
+            pastilles (16 px ≈ moitié de la pastille de 32 px). */}
+        <span className="absolute left-[15.5px] top-3 bottom-3 w-px bg-slate-200" aria-hidden />
+        <div className="relative space-y-2.5">
+          {elements}
+        </div>
       </div>
-
-      <Modal
-        isOpen={!!selected}
-        onClose={() => setSelected(null)}
-        title={selected ? (TYPE_LABELS[selected.type] || selected.type) : ''}
-        size="lg"
-      >
-        {selected && <InteractionDetail item={selected} />}
-      </Modal>
-    </>
+      {total != null && interactions.length < total && (
+        <div className="pl-11 pt-3">
+          <button onClick={onLoadMore} disabled={loadingMore} className="btn-secondary btn-sm w-full">
+            {loadingMore ? 'Chargement…' : `Charger plus (${total - interactions.length} restants)`}
+          </button>
+        </div>
+      )}
+    </div>
   )
 }

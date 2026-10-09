@@ -4,6 +4,10 @@ import { db, initTestDb } from '../test-helpers/testApp.js'
 import { autoLinkStripeFacture } from './stripeProjectLink.js'
 
 initTestDb()
+// Colonnes présentes en prod (custom fields), absentes d'une DB vierge.
+for (const t of ['companies', 'contacts']) { try { db.exec(`ALTER TABLE ${t} ADD COLUMN deleted_at TEXT`) } catch {} }
+;(await import('../db/migrations/122-factures-contact-id.js')).up(db)
+;(await import('../db/migrations/123-subscriptions-contact-id.js')).up(db)
 
 const facture = (id, extra = {}) => db.prepare(`
   INSERT INTO factures (id, invoice_id, company_id, project_id, subscription_id, customer_email)

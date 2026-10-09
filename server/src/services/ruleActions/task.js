@@ -50,4 +50,5 @@ export async function createTask({ rule, row, rendered }) {
     )
     VALUES (?, ?, ?, 'À faire', ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `).run(id, title, description, priority, dueDate, companyId, contactId, assignedTo)
+  return { id }
 }

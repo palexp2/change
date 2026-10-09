@@ -19,6 +19,7 @@ describe('Extraction de données : n° de compte QB dans les dropdowns', () => {
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -93,19 +94,14 @@ describe('Extraction de données : n° de compte QB dans les dropdowns', () => {
     )
   })
 
-  test("les trois sélecteurs (Fournisseur / Dépense / Paiement) s'empilent verticalement", async () => {
-    const vendorLabel  = page.locator('label:has-text("Fournisseur")').first()
-    const expenseLabel = page.locator('label:has-text("Compte de dépense")').first()
-    const paymentLabel = page.locator('label:has-text("Compte de paiement")').first()
-
-    const [vBox, eBox, pBox] = await Promise.all([
-      vendorLabel.boundingBox(),
-      expenseLabel.boundingBox(),
-      paymentLabel.boundingBox(),
+  test("Payé par, Fournisseur puis Compte s'empilent (disposition Y1)", async () => {
+    const [pBox, vBox, eBox] = await Promise.all([
+      page.getByTestId('qb-payment-select').boundingBox(),
+      page.getByTestId('qb-vendor-select').boundingBox(),
+      page.getByTestId('qb-expense-select').boundingBox(),
     ])
-    assert.ok(vBox && eBox && pBox, 'Les trois labels doivent être visibles')
-    // Empilement vertical : y strictement croissant
-    assert.ok(eBox.y > vBox.y, `Compte de dépense (${eBox.y}) doit être sous Fournisseur (${vBox.y})`)
-    assert.ok(pBox.y > eBox.y, `Compte de paiement (${pBox.y}) doit être sous Compte de dépense (${eBox.y})`)
+    assert.ok(vBox && eBox && pBox, 'Les trois sélecteurs doivent être visibles')
+    assert.ok(vBox.y > pBox.y, `Fournisseur (${vBox.y}) doit être sous Payé par (${pBox.y})`)
+    assert.ok(eBox.y > vBox.y, `Compte (${eBox.y}) doit être sous Fournisseur (${vBox.y})`)
   })
 })

@@ -50,7 +50,9 @@ describe('CustomFieldModal — indice Lookup → Rollup pour Paiements', () => {
     assert.match(hintText, /Paiements/, 'l\'indice doit mentionner la table Paiements')
 
     // Le sélecteur FK du Lookup n'offre PAS Paiements (aucune FK factures→payments).
-    const fkOptions = await page.getByTestId('cf-lookup-fk').locator('option').allTextContents()
+    await page.getByTestId('cf-lookup-fk').click()
+    const fkOptions = await page.getByTestId('cf-lookup-fk-menu').locator('button').allTextContents()
+    await page.getByTestId('cf-lookup-fk').click()
     assert.ok(
       !fkOptions.some(o => /payments|paiement/i.test(o)),
       'Paiements ne doit pas apparaître dans les colonnes FK du Lookup',
@@ -60,9 +62,10 @@ describe('CustomFieldModal — indice Lookup → Rollup pour Paiements', () => {
     await hint.getByRole('button', { name: /Rollup/ }).click()
 
     // En Rollup, la table liée Paiements est bien sélectionnable.
-    const rollupSelect = page.locator('select').filter({ has: page.locator('option', { hasText: 'Choisir une table liée' }) }).first()
+    const rollupSelect = page.getByTestId('cf-rollup-source')
     await rollupSelect.waitFor({ state: 'visible', timeout: 5000 })
-    const rollupOptions = await rollupSelect.locator('option').allTextContents()
+    await rollupSelect.click()
+    const rollupOptions = await page.getByTestId('cf-rollup-source-menu').locator('button').allTextContents()
     assert.ok(
       rollupOptions.some(o => /paiement/i.test(o)),
       'Paiements doit être sélectionnable comme table liée en Rollup',

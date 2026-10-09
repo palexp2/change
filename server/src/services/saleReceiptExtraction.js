@@ -3,13 +3,15 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawnSync } from 'child_process'
 import db from '../db/database.js'
-import { emitEntity } from './realtimeEmitters.js'
+import { emitEntity, touchBankTxns } from './realtimeEmitters.js'
 import { logSync } from './syncLog.js'
 import { buildTransportInvoice } from './transportInvoice.js'
 import { buildVendorExtractionContext, findVendorProfile, computeDueDate } from './vendorProfiles.js'
 import { TRANSACTION_TYPES, getTransactionType } from './fiscalStatus.js'
 import { resolveServicePeriod, annotateItemsWithPeriod, annotateDescriptionWithPeriod } from './servicePeriod.js'
 import { autoLinkReceiptItems } from './purchaseLiaMatch.js'
+import { aiLiaPicks } from './purchaseLiaAi.js'
+import { applyPartsAccount, allLinesAreParts, isLiaLine, resolvePartsAccountId } from './liaPartsAccount.js'
 import { applyAwsInvoice } from './awsInvoice.js'
 import { applyMealTaxCodeNames, reconcileMealAmounts, isTipLine } from './mealReceipt.js'
 import { applyMixedTaxCodeNames, stripTaxableFlags } from './lineTaxCodes.js'
@@ -121,6 +123,7 @@ RÈGLE — "service_period" (période couverte par la facture) :
   - plusieurs mois complets → « juillet–septembre 2026 » (ou « déc. 2026 – févr. 2027 ») ;
   - période à cheval sur deux mois → « 15 juil. – 14 août 2026 » ;
   - année complète → « année 2026 » ; trimestre → « T3 2026 ».
+- ATTENTION au sens : une facture datée du 1er (ou des premiers jours) d'un mois couvre souvent le mois PRÉCÉDENT (usage/consommation facturé à terme échu : infonuagique, hébergement, API, télécom, services rendus). Lis les dates de cycle imprimées : « Sep 1 – Sep 30 » sur une facture du 1er octobre → « septembre 2026 », PAS « octobre 2026 ». C'est le mois où le service a été rendu qui compte.
 - N'INVENTE PAS de période : si le document ne couvre pas une période de service (achat de matériel, pièces, repas, transport ponctuel…) ou si aucune période n'est identifiable, mets null. La date de facture seule n'est PAS une période.
 - Quand une période existe, elle doit se LIRE directement dans les descriptions, pas seulement dans "service_period" : ajoute-la en suffixe à la fin de la "general_description" ET à la fin de la "description" des articles concernés, sous la forme « … — juillet 2026 » (ex. general_description : « Abonnement téléphonie IP — juillet 2026 »). Si des lignes couvrent des périodes DIFFÉRENTES (ex. prorata du mois en cours + mois suivant d'avance), mets la période propre à chaque ligne dans SA description, et dans "service_period" la période globale couverte par la facture.
 
@@ -639,9 +642,9 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
 
     // Facture Amazon Web Services : chaque montant y est imprimé dans DEUX devises
     // (USD facturé / CAD payé). L'IA panache l'une avec l'autre — on réancre donc
-    // montants, devise, période et numéro de facture sur la colonne USD, lue
-    // déterministiquement dans le texte du PDF. Voir awsInvoice.js pour la
-    // convention comptable (toujours USD, fournisseur « Amazon Web Services - USD »).
+    // montants, devise, période et numéro de facture sur la colonne CAD (montant
+    // débité au compte canadien), lue déterministiquement dans le texte du PDF.
+    // Voir awsInvoice.js pour la convention comptable.
     let awsItems = null
     const aws = applyAwsInvoice(extracted, [], extracted._sourceText)
     if (aws.applied) {
@@ -649,7 +652,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       extracted = aws.extracted
       if (sourceText) Object.defineProperty(extracted, '_sourceText', { value: sourceText, enumerable: false })
       awsItems = aws.items
-      console.log(`Extraction ${saleReceiptId}: facture AWS ${aws.parsed.invoiceNumber} normalisée en USD — ${aws.parsed.subtotal} + ${aws.parsed.tps} + ${aws.parsed.tvq} = ${aws.parsed.total} USD (${aws.parsed.cadTotal ?? '?'} CAD au taux ${aws.parsed.fxRate ?? '?'})`)
+      console.log(`Extraction ${saleReceiptId}: facture AWS ${aws.parsed.invoiceNumber} normalisée en ${aws.parsed.currency} — ${aws.parsed.subtotal} + ${aws.parsed.tps} + ${aws.parsed.tvq} = ${aws.parsed.total} ${aws.parsed.currency} (${aws.parsed.usdTotal ?? '?'} USD au taux ${aws.parsed.fxRate ?? '?'})`)
     }
 
     // Facture de transport multi-expéditions : on reconstruit les lignes par code de
@@ -722,6 +725,15 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       // ou concordance monétaire complète). Les suggestions moins sûres restent
       // affichées sur la ligne du reçu, l'opérateur confirme d'un clic (voir aussi
       // GET /api/sale-receipts/:id/lia-matches).
+      // Lecture IA de la facture entière : indices recoupés là où les libellés diffèrent.
+      const aiPicks = await aiLiaPicks({
+        receipt: {
+          id: saleReceiptId, company, vendor_profile_id: profile?.id || null,
+          receipt_number: extracted.receipt_number, receipt_date: extracted.receipt_date,
+          order_date: extracted.order_date, general_description: extracted.general_description, notes: extracted.notes,
+        },
+        items,
+      })
       items = autoLinkReceiptItems({
         items,
         company,
@@ -729,9 +741,18 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
         receiptDate: extracted.receipt_date || null,
         orderDate: extracted.order_date || null,
         excludeReceiptId: saleReceiptId,
+        aiPicks,
       }).items
       // Fusionne les frais dans la ligne LIA quand il n'y a qu'un seul article LIA.
       items = consolidateSoleLiaItem(items)
+      // Lignes LIA → compte 14000 Stock de Pièces (cf. liaPartsAccount.js).
+      if (items.some(isLiaLine)) {
+        const partsId = await resolvePartsAccountId()
+        items = applyPartsAccount(items, partsId)
+        if (partsId && allLinesAreParts(items)) {
+          db.prepare(`UPDATE sale_receipts SET expense_account_id=? WHERE id=? AND quickbooks_id IS NULL`).run(String(partsId), saleReceiptId)
+        }
+      }
       // Crédits de proration imprimés sans signe → passés en négatif pour que la somme
       // des lignes retombe sur le sous-total imprimé.
       const signed = reconcileCreditLines(items, extracted.subtotal)
@@ -1017,6 +1038,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
         const hit = autoMatchReceipt(saleReceiptId)
         if (hit?.matched) {
           refreshStatuses(hit.accountId)
+          try { touchBankTxns([hit.txnId]) } catch { /* temps réel facultatif */ }
           console.log(`Extraction ${saleReceiptId}: débit bancaire ${hit.txnId} rattaché automatiquement`)
         }
       }

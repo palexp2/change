@@ -18,7 +18,7 @@ import QuickBooksAccountCard from '../components/QuickBooksAccountCard.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { fmtDateTime } from '../lib/formatDate.js'
+import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import Spinner from '../components/Spinner.jsx'
 import ThinkingOrb from '../components/ThinkingOrb'
@@ -345,6 +345,7 @@ const CONNECTORS = [
   { id: 'digikey',    name: 'DigiKey',     icon: Cpu,        color: 'bg-red-50 text-red-700',      apiKeyManaged: true },
   { id: 'instagram',  name: 'Instagram',   icon: Instagram,  color: 'bg-pink-50 text-pink-600',    apiKeyManaged: true },
   { id: 'manychat',   name: 'ManyChat',    icon: MessageCircle, color: 'bg-indigo-50 text-indigo-600', apiKeyManaged: true },
+  { id: 'slack',      name: 'Slack',       icon: Send,       color: 'bg-violet-50 text-violet-700',  apiKeyManaged: true },
 ]
 
 /**
@@ -461,15 +462,9 @@ function InstagramConfig() {
           </button>
         </div>
 
-        <ol className="text-xs text-slate-500 space-y-1 list-decimal list-inside">
-          <li>Ouvrir <code>instagram.com</code> connecté au compte <strong>@orisha_auto</strong>.</li>
-          <li>
-            Avec l'extension <strong>Cookie-Editor</strong> : cliquer son icône, chercher <code>sessionid</code>, copier sa valeur.
-            <span className="text-slate-400"> Sans extension : ⌥⌘I (Mac) ou F12 → <strong>Application</strong> → <strong>Cookies</strong> → <code>https://www.instagram.com</code>.</span>
-          </li>
-          <li>Coller dans le champ ci-dessus, puis faire de même avec <code>ds_user_id</code>.</li>
-          <li>Enregistrer, puis <strong>Vérifier</strong>.</li>
-        </ol>
+        <p className="text-xs text-slate-500">
+          Module Orisha installé : se connecter à <code>instagram.com</code> (<strong>@orisha_auto</strong>) suffit.
+        </p>
         <p className="text-xs text-slate-400">
           Vérifié tous les matins ; une connexion morte part en alerte Slack et se voit ici et sur{' '}
           <Link to="/instagram" className="underline hover:text-slate-600">Instagram</Link>.
@@ -486,6 +481,46 @@ function InstagramConfig() {
  * contrôle anti-robot que seul un vrai navigateur franchit. L'utilisateur se
  * connecte chez lui, exporte les témoins avec Cookie-Editor, et les colle ici.
  */
+/**
+ * Slack — jeton personnel (xoxp-…) : les messages privés de Boréal à une
+ * personne (liste Instagram à Phil, rappels à Guillaume, budget à Émilie…)
+ * partent alors de ce compte, et non de l'app « ERP Orisha ».
+ */
+function SlackConfig() {
+  const { addToast } = useToast()
+  const [me, setMe] = useState(null)
+  const [token, setToken] = useState('')
+  const [saving, setSaving] = useState(false)
+  const load = useCallback(() => { api.connectors.slackMe().then(setMe).catch(() => {}) }, [])
+  useEffect(() => { load() }, [load])
+  const save = async (value) => {
+    setSaving(true)
+    try {
+      await api.connectors.saveConfig('slack', { user_token: value })
+      setToken('')
+      addToast({ message: value ? 'Compte Slack branché' : 'Compte Slack retiré', type: 'success' })
+      load()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+  return (
+    <div className="mt-4 flex flex-col gap-2">
+      <div className="text-sm">
+        {me?.configured
+          ? (me.error ? <span className="text-amber-700">{me.error}</span>
+            : <span className="text-emerald-700">Messages privés envoyés par {me.name}</span>)
+          : <span className="text-slate-500">Messages privés envoyés par l’app « ERP Orisha »</span>}
+      </div>
+      <div className="flex items-center gap-2">
+        <input type="password" value={token} onChange={e => setToken(e.target.value)} aria-label="Jeton Slack personnel"
+          className="input input-sm flex-1 font-mono" />
+        <button disabled={saving || !token.trim()} onClick={() => save(token.trim())} className="btn-primary btn-sm">Enregistrer</button>
+        {me?.configured && <button disabled={saving} onClick={() => save(null)} className="btn-secondary btn-sm"><Trash2 size={14} /></button>}
+      </div>
+    </div>
+  )
+}
+
 function ManychatConfig() {
   const { addToast } = useToast()
   const [state, setState] = useState(null)
@@ -561,7 +596,7 @@ function ManychatConfig() {
           <button onClick={importSession} disabled={busy || !payload.trim()} className="btn-primary btn-sm">
             Importer la session
           </button>
-          {state?.session_at && <span className="text-xs text-slate-400">Dernière session : {new Date(state.session_at).toLocaleDateString('fr-CA')}</span>}
+          {state?.session_at && <span className="text-xs text-slate-400">Dernière session : {fmtDate(state.session_at)}</span>}
         </div>
 
         <ol className="text-xs text-slate-500 space-y-1 list-decimal list-inside">
@@ -2507,6 +2542,7 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
             <HubSpotConfig configured={hubspotConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
           {connector.id === 'manychat' && <ManychatConfig />}
+          {connector.id === 'slack' && <SlackConfig />}
           {connector.id === 'instagram' && (
             <InstagramConfig />
           )}

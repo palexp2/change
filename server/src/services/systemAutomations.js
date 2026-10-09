@@ -2,6 +2,7 @@ import db from '../db/database.js'
 import { sendInstallationFollowups } from './installationFollowup.js'
 import { getAutomationFrom } from './postmarkConfig.js'
 import { syncAndPushStripePayouts } from './quickbooks.js'
+import { migratePartnershipToBlocks, seedPartnershipLostFlow } from './subscriptionProductTrigger.js'
 
 // Registry of system automations that can be invoked manually from the UI
 // (dry-run to preview, or run-now to execute). Omit an id here to keep it
@@ -11,6 +12,11 @@ import { syncAndPushStripePayouts } from './quickbooks.js'
 // Each handler receives { dryRun } and returns a plain object that will be
 // serialized into the automation_logs `result` field verbatim.
 export const MANUAL_RUNNERS = {
+  // dry-run = contacts qui seraient mis à jour ; run-now = envoi, échecs compris.
+  sys_partnership_hubspot: async ({ dryRun }) => {
+    const { runPartnershipHubspot } = await import('./partnershipHubspot.js')
+    return runPartnershipHubspot({ dryRun: !!dryRun, retryErrors: true })
+  },
   sys_treasury_sheet_mirror: async ({ dryRun }) => {
     const { syncTreasuryMirror } = await import('./treasurySheetMirror.js')
     return syncTreasuryMirror({ dryRun: !!dryRun, trigger: 'manual' })
@@ -21,6 +27,10 @@ export const MANUAL_RUNNERS = {
       summary: `${out.total} éligible(s) · ${out.sent} envoyé(s) · ${out.skipped} dry-run · ${out.errors} erreur(s)`,
       details: out.details,
     }
+  },
+  sys_meeting_reminders: async ({ dryRun }) => {
+    const { runMeetingReminders } = await import('./meetings.js')
+    return runMeetingReminders({ dryRun: !!dryRun })
   },
   sys_stripe_weekly_payout_push: async ({ dryRun }) => {
     return await syncAndPushStripePayouts({ dryRun })
@@ -146,6 +156,11 @@ export const MANUAL_RUNNERS = {
   // n'existe pas vraiment ici : la recherche ne touche que le lien QuickBooks
   // et le statut, jamais un montant ni une écriture comptable. On lance donc le
   // passage dans les deux cas ; « Simuler » sert juste à le voir tourner.
+  // Passe de nuit du rapprochement : « Simuler » liste sans rien corriger.
+  sys_bank_reconcile_nightly: async ({ dryRun }) => {
+    const { runNightlyReconcile } = await import('./bankReconcileNightly.js')
+    return runNightlyReconcile({ dryRun: !!dryRun, trigger: 'manuel', force: true, log: false })
+  },
   sys_bank_qb_verify: async () => {
     const { scheduledQbVerify } = await import('./bankQbVerify.js')
     const out = await scheduledQbVerify({ trigger: 'manuel', force: true })
@@ -332,6 +347,12 @@ export const MANUAL_RUNNERS = {
     const { prepareMonthEnd } = await import('./monthEndAutomation.js')
     return await prepareMonthEnd({ dryRun: !!dryRun, trigger: 'manuel' })
   },
+  // Feuille de temps → lignes des paies ouvertes (Airtable) : dry-run = ce qui
+  // serait recopié, sans rien écrire.
+  sys_timesheet_paie_sync: async ({ dryRun }) => {
+    const { syncTimesheetsToPaies } = await import('./timesheetPaieSync.js')
+    return await syncTimesheetsToPaies({ dryRun: !!dryRun, trigger: 'manuel' })
+  },
   // Budget marketing : dry-run = rien n'est écrit, on rapporte l'état de la
   // file ; run-now = sync GL immédiate (les nouvelles dépenses arrivent « à
   // valider » dans la page Budget marketing).
@@ -502,6 +523,20 @@ export const SYSTEM_AUTOMATIONS = [
       ar_usd_acctnum: '12100',
     },
     configurable: true,
+  },
+  {
+    id: 'sys_stripe_customer_link_by_email',
+    name: 'Stripe client inconnu → entreprise par courriel',
+    description:
+      "Quand un webhook Stripe porte un client que Boréal ne connaît pas (paiement fait sur le site web), " +
+      "son courriel est cherché dans les contacts : le client est rattaché à l'entreprise principale du contact (créée s'il n'en a pas). " +
+      "Sinon le courriel des entreprises. Sinon un contact et une entreprise sont créés.",
+    trigger_config: {
+      kind: 'webhook',
+      source: 'POST /api/stripe-webhooks',
+      event: '*',
+      summary: 'Tout webhook Stripe dont le client est inconnu',
+    },
   },
   {
     id: 'sys_stripe_charge_refunded',
@@ -923,6 +958,22 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_bank_reconcile_nightly',
+    name: 'Rapprochement bancaire : passe de nuit',
+    description:
+      "Chaque nuit, refait le rapprochement de tous les comptes, pour chaque mois terminé depuis « since » (AAAA-MM). " +
+      "Ne corrige SEUL qu'un cas sûr à 100 % : la date QuickBooks d'un paiement ou d'un virement entre deux de nos comptes, quand les deux relevés s'accordent sur une autre date (1 à 5 jours d'écart), écriture pas encore rapprochée dans QuickBooks. Montants, comptes et taxes ne changent jamais. " +
+      "Tout le reste (écart du mois, lignes sans vis-à-vis) est listé dans le journal, sans rien toucher. « Simuler » liste sans corriger.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron 0 7 * * * (index.js) → services/bankReconcileNightly.js",
+      summary: 'Chaque nuit à 7 h UTC (3 h à Montréal), après le passage profond',
+    },
+    action_config: { since: '2026-06' },
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_bank_qb_verify',
     name: 'Rapprochement bancaire : vérification QuickBooks',
     description:
@@ -979,6 +1030,23 @@ export const SYSTEM_AUTOMATIONS = [
       kind: 'schedule',
       source: 'cron 40 6 * * * (index.js) → services/bankStatementDriveWatch.js',
       summary: 'Tous les matins à 6 h 40 UTC',
+    },
+    action_config: {},
+    default_active: 1,
+  },
+  {
+    id: 'sys_bank_statement_drive_filing',
+    name: 'Relevés déposés → rangés au Drive',
+    description:
+      "Quand un fichier déposé dans « Déposer » (rapprochement) est un relevé mensuel complet d'un compte — PDF, soldes vérifiés, " +
+      "fin de période au jour de clôture du compte — Boréal le range dans le dossier Drive du compte, sous-dossier d'exercice (avril → mars), " +
+      "au nom habituel du dossier (BNC_CAD_2026-09-30.pdf, CARTCRED_CREDCARD_4807_20261015.pdf, Venn Main CAD Statement - 2026-09.pdf…). " +
+      "Jamais deux fois : un fichier identique ou un relevé de même date déjà dans le dossier suffit, le dépôt y est relié. " +
+      "Le travail récurrent d'Antoine « Télécharger les relevés bancaires sur le Drive » montre les comptes qui manquent et se coche seul quand tout y est.",
+    trigger_config: {
+      kind: 'event',
+      source: 'routes/bankStatements.js (fin de lecture d\'un dépôt) → services/bankStatementDriveFiling.js',
+      summary: 'À chaque relevé déposé',
     },
     action_config: {},
     default_active: 1,
@@ -1133,7 +1201,7 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_plaid_silence_alert',
     name: 'Alerte : le solde bancaire ne se relit plus',
     description:
-      "Vérifie trois fois par jour que le solde bancaire lu au compte — celui dont vit la projection de trésorerie — a bien été rafraîchi récemment, et prévient dans Boréal (cloche de notification, plus Slack si un canal est configuré) quand il est figé depuis plus longtemps que le seuil. " +
+      "Vérifie trois fois par jour que le solde bancaire lu au compte — celui dont vit la projection de trésorerie — a bien été rafraîchi récemment, et prévient dans Boréal (cloche de notification, plus Slack en message privé à Antoine Lambert — plus dans le canal comptabilité depuis le 2026-10-06) quand il est figé depuis plus longtemps que le seuil. " +
       "POURQUOI : un solde qui ne se relit plus ne fait aucun bruit — le dernier montant connu reste affiché comme s'il était d'aujourd'hui, et la projection comme l'écart de solde s'appuient dessus. " +
       "CE QUI N'EST PLUS SURVEILLÉ : la livraison des TRANSACTIONS par la banque connectée. Elle est coupée volontairement depuis le 12 septembre 2026 (le rapprochement est alimenté par le fichier TRX_Orisha) ; l'alerte criait pour un silence voulu. Décision de Charles le 2026-09-29. " +
       "Une autorisation expirée (la banque redemande de se connecter) est signalée à part et en priorité : elle ne se répare jamais toute seule, et plus rien n'est lu tant qu'elle dure. " +
@@ -1149,7 +1217,7 @@ export const SYSTEM_AUTOMATIONS = [
       stale_hours: '8',
       repeat_hours: '24',
       notify_roles: 'admin',
-      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+      slack_webhook_env: 'SLACK_WEBHOOK_PERSO',
     },
     configurable: true,
     default_active: 1,
@@ -1364,6 +1432,22 @@ export const SYSTEM_AUTOMATIONS = [
       google_account_email: 'michel@orisha.io',
       contractors: 'Antoine Ratheau',
     },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_timesheet_paie_sync',
+    name: 'Feuille de temps → heures des paies ouvertes (Airtable)',
+    description:
+      "Recopie les heures payables saisies dans la feuille de temps de Boréal (journées et semaines) dans la ligne de chaque employé des paies pas encore « Envoyés », puis dans Airtable (Items paie, Heures régulières). " +
+      "Seuls les employés sans horaire fixe et qui ont saisi quelque chose dans Boréal sur la période sont touchés : les autres gardent les heures entrées dans Airtable. " +
+      "Une ligne corrigée à la main dans Airtable depuis la dernière recopie est laissée telle quelle (signalée dans l'historique).",
+    trigger_config: {
+      kind: 'event',
+      source: '30 s après une saisie dans la feuille de temps → services/timesheetPaieSync.js',
+      summary: '30 secondes après une saisie dans la feuille de temps',
+    },
+    action_config: {},
     configurable: true,
     default_active: 1,
   },
@@ -1680,24 +1764,24 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_missing_invoice_request',
     name: 'Factures manquantes : demande envoyée sur Slack',
     description:
-      "Dans Transactions (/rapprochement), cocher des lignes du relevé et cliquer « Facture manquante » les inscrit dans la liste des factures demandées. " +
-      "Le panneau « Factures demandées » montre cette liste ; le bouton « Envoyer sur Slack » publie un message qui dit aux collègues quelles factures Charles cherche (date, fournisseur, montant, compte). " +
+      "Dans Transactions (/rapprochement), cocher des lignes du relevé et cliquer « Facture manquante » les inscrit dans la liste des factures manquantes. Une ligne en sort toute seule dès qu'une pièce lue par l'extracteur s'y rattache. " +
+      "Le panneau « Factures manquantes » montre cette liste ; le bouton « Envoyer sur Slack » publie un message qui dit aux collègues quelles factures Charles cherche (date, fournisseur, montant, compte). " +
       "ENVOI 100 % MANUEL : rien ne part tout seul, aucun planificateur n'est branché dessus. " +
       "Décocher une facture dans le panneau la sort du message SANS la sortir de la liste. " +
-      "DESTINATAIRE : « slack_channel » (« #information-importante ») passe par le bot Slack de l'ERP ; sinon l'URL de webhook entrant de « slack_webhook_url », ou le nom d'une variable d'environnement dans « slack_webhook_env ». " +
+      "DESTINATAIRE : « slack_channel » (« #questions-importantes ») passe par le bot Slack de l'ERP ; sinon l'URL de webhook entrant de « slack_webhook_url », ou le nom d'une variable d'environnement dans « slack_webhook_env ». " +
       "« intro » accepte {n} (nombre de factures), {s} (pluriel) et {total} ; « outro » est la dernière ligne du message. " +
-      "Désactiver cette automation coupe l'envoi, pas la liste : les factures demandées restent visibles dans le relevé.",
+      "Désactiver cette automation coupe l'envoi, pas la liste : les factures manquantes restent visibles dans le relevé.",
     trigger_config: {
       kind: 'app_event',
       source: 'pages/RapprochementBancaire.jsx → POST /bank/invoice-requests/send',
-      summary: 'Clic sur « Envoyer sur Slack » dans le panneau des factures demandées',
+      summary: 'Clic sur « Envoyer sur Slack » dans le panneau des factures manquantes',
     },
     action_config: {
-      slack_channel: '',
+      slack_channel: '#questions-importantes',
       slack_webhook_url: '',
       slack_webhook_env: '',
-      intro: 'Je cherche {n} facture{s} ({total}) pour fermer les livres.',
-      outro: 'Si vous en avez une, répondez ici ou envoyez-la à factures@orisha.io — merci !',
+      intro: 'Je cherche {n} facture{s} pour fermer les livres.',
+      outro: '',
     },
     configurable: true,
     default_active: 1,
@@ -1814,6 +1898,39 @@ export const SYSTEM_AUTOMATIONS = [
     configurable: true,
   },
   {
+    id: 'sys_meeting_booking',
+    name: 'Rendez-vous — confirmation au visiteur',
+    description:
+      "Quand un visiteur réserve, déplace ou annule un rendez-vous depuis une page publique (Marketing → Rendez-vous, lien /erp/rdv/<page>), " +
+      "un courriel part de la boîte Gmail du propriétaire de la page : confirmation avec date, durée, lieu (lien Google Meet le cas échéant) et lien « Déplacer ou annuler ». " +
+      "L'événement Google Agenda (avec invitation Google au visiteur) est créé, déplacé ou supprimé dans tous les cas quand le propriétaire a branché son agenda (Paramètres → Gmail) ; " +
+      "sans agenda branché, le propriétaire reçoit le courriel en copie cachée. Désactivée : plus aucun courriel de confirmation, la réservation et l'agenda continuent.",
+    trigger_config: {
+      kind: 'manual',
+      source: 'POST /api/public/meetings/:slug/book · /booking/:token/reschedule · /booking/:token/cancel → services/meetings.js',
+      summary: 'Réservation, déplacement ou annulation par le visiteur (ou annulation depuis l’ERP)',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_meeting_reminders',
+    name: 'Rendez-vous — rappels automatiques',
+    description:
+      "Chaque minute, envoie au visiteur le rappel des rendez-vous à venir selon les délais réglés sur chaque page (ex. 24 h et 1 h avant). " +
+      "Un seul courriel par passage et par rendez-vous ; un rappel dont l'heure était déjà passée au moment de réserver n'est jamais envoyé. " +
+      "Envoi depuis la boîte Gmail du propriétaire de la page. « Simuler » liste les rappels dus sans rien envoyer.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 60 s (index.js) → services/meetings.js runMeetingReminders',
+      summary: 'Toutes les minutes',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_ups_return_label',
     name: 'Étiquette de retour (RMA) — achat UPS',
     description:
@@ -1843,7 +1960,7 @@ export const SYSTEM_AUTOMATIONS = [
   },
   {
     id: 'sys_return_instructions_email',
-    name: 'Instructions de retour au client (Postmark)',
+    name: 'Instructions de retour au client (Gmail)',
     description:
       "Envoie l'un des 6 templates HubSpot réels (US/CAN-FR/CAN-EN × immédiat/différé — sélection par pays, langue du contact " +
       "et raison du retour) avec l'étiquette de retour et l'aide-mémoire en pièces jointes. Même mécanique que " +
@@ -1937,13 +2054,44 @@ export const SYSTEM_AUTOMATIONS = [
     description:
       "Quand un item de retour est marqué reçu (date + réceptionniste renseignés), écrit les instructions au réceptionniste " +
       "et met à jour le statut du numéro de série selon la raison du retour (À analyser / À reconditionner). Alerte Slack pour " +
-      "un changement d'idée client / fin d'abonnement, et pour un retour sans raison reconnue. Idempotent via " +
-      "return_items.reception_processed_at.",
+      "un changement d'idée client / fin d'abonnement, et pour un retour sans raison reconnue — UNE alerte par retour, même s'il " +
+      "compte plusieurs articles reçus ensemble. Destinataire : « slack_channel » (message privé à Pierre-Alexandre par défaut). " +
+      "Idempotent via return_items.reception_processed_at.",
     trigger_config: {
       kind: 'db_change',
       source: 'change_log(return_items) → returnItemReceivedWatcher (poll 5s)',
       summary: "Déclenché quand un item de retour passe reçu (received_at + received_by renseignés)",
     },
+    action_config: {
+      slack_channel: 'pap@orisha.io',
+      slack_webhook_url: '',
+      slack_webhook_env: '',
+    },
+    configurable: true,
+  },
+  {
+    id: 'sys_partnership_hubspot',
+    name: 'Programme partenaire : date dans HubSpot',
+    description:
+      "Quand un contact est associé à un abonnement qui contient le produit « Orisha partnership program », la fiche HubSpot du contact reçoit la date et l'heure du moment dans « subscribed_to_partnership_at ». " +
+      "Peu importe comment le lien naît : synchro Stripe, contact choisi à la main, ou produit ajouté plus tard à l'abonnement. " +
+      "Un seul envoi par couple abonnement/contact ; un échec reste dans l'historique et « Exécuter maintenant » le retente. " +
+      "Le contact HubSpot est trouvé par son id HubSpot, sinon par son courriel. " +
+      "Le signataire d'une page avec acceptation (noté sur la ligne du produit) est inscrit aussi, s'il diffère du contact de l'abonnement. " +
+      "Plusieurs produits déclencheurs : ids Stripe (product_stripe_id) et noms (product_name) séparés par des virgules ; chaque id couvre aussi les versions du même produit dans les autres langues du Catalogue de vente. " +
+      "Désactivée : rien n'est envoyé ; les liens faits pendant la pause partent à la réactivation.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'partnershipHubspot (passe toutes les 30 s)',
+      summary: 'Abonnement avec « Orisha partnership program » + contact associé',
+    },
+    action_config: {
+      product_name: 'Orisha partnership program',
+      product_stripe_id: 'prod_VJBPMtzzB2oUxF',
+      hubspot_property: 'subscribed_to_partnership_at',
+    },
+    configurable: true,
+    default_active: 1,
   },
   {
     id: 'sys_facture_paid_slack',
@@ -1951,15 +2099,17 @@ export const SYSTEM_AUTOMATIONS = [
     description:
       "Quand une facture passe à « Payé » — quelle qu'en soit l'origine : Stripe, paiement saisi dans l'ERP, sync QuickBooks ou Airtable — envoie un message Slack (canal #paiements par défaut) qui demande de lier la facture au projet, avec le lien vers la fiche de la facture. " +
       "Les factures d'ABONNEMENT sont ignorées, SAUF le premier paiement de l'abonnement (aucune autre facture payée, de montant non nul, plus ancienne sur le même abonnement). " +
+      "Elles sont aussi annoncées quand un client approuve un ajout à son abonnement (contrat signé ou soumission) : le message commence alors par « upgrade_prefix ». " +
       "Une facture d'abonnement dont l'abonnement n'est pas encore synchronisé attend : elle sera tranchée à sa prochaine mise à jour. " +
       "Une facture à 0 $ n'envoie rien (skip_zero_amount=0 pour l'inclure). " +
+      "Une facture dont TOUTES les lignes sont des produits exclus (excluded_products) n'envoie rien. " +
       "Chaque facture n'est tranchée qu'une fois (envoyée, ignorée ou en erreur) ; les factures déjà payées à la mise en service n'envoient jamais rien. " +
       "Le texte est modifiable dans « message » : {lien} = lien vers la facture, {numero} = numéro de la facture. " +
       "Désactivée : aucune alerte, et les factures payées pendant la pause ne sont pas rattrapées.",
     trigger_config: {
       kind: 'db_change',
       source: 'change_log(factures) → facturePaidSlackWatcher (poll 5s)',
-      summary: 'Facture passée à « Payé », hors abonnement (sauf 1er paiement)',
+      summary: 'Facture passée à « Payé », hors abonnement (sauf 1er paiement ou ajout)',
     },
     action_config: {
       slack_channel: '#paiements',
@@ -1967,6 +2117,8 @@ export const SYSTEM_AUTOMATIONS = [
       slack_webhook_env: '',
       paid_statuses: 'Payé, Payée',
       skip_zero_amount: '1',
+      upgrade_prefix: "Ajout à l'abonnement.",
+      excluded_products: '[]',
       message:
         'Une facture a été payée.\n' +
         'SVP liez la facture au projet : {lien}\n' +
@@ -2060,6 +2212,24 @@ export const SYSTEM_AUTOMATIONS = [
     configurable: true,
     default_active: 1,
   },
+  {
+    id: 'sys_payment_failed_task',
+    name: 'Paiement refusé → tâche de suivi',
+    description:
+      "Quand la carte d'un client est refusée à l'ajout d'un produit à son abonnement existant (soumission « S'abonner » ou page avec acceptation), " +
+      "rien n'est débité ni modifié et le client voit « Paiement refusé ». Une tâche « Paiement refusé — … » (priorité haute, échéance le jour même) " +
+      "est créée pour l'utilisateur assignee_email, liée à l'entreprise et au contact, avec le message de Stripe. Une seule tâche ouverte à la fois par soumission ou acceptation.",
+    trigger_config: {
+      kind: 'app_event',
+      source: 'POST /erp/pay/…/approuver → services/paymentFailedTask.js',
+      summary: "Déclenché quand Stripe refuse la carte à l'approbation d'un ajout à l'abonnement",
+    },
+    action_config: {
+      assignee_email: 'philippe@orisha.io',
+    },
+    configurable: true,
+    default_active: 1,
+  },
 ]
 
 // System automations dont trigger_config/action_config sont partiellement
@@ -2109,6 +2279,15 @@ const RETIRED_SYSTEM_AUTOMATION_IDS = [
   // `returns.billed_at` et sur le contact du retour, deux colonnes détruites
   // par la migration 037. L'automatisation n'a jamais été activée.
   'sys_return_exchange_reminder',
+  // Règle « Escalade Hardware → Slack » : le champ Escalade des billets a été
+  // détruit définitivement (purge du 2026-09-24). Elle était déjà désactivée.
+  'sys_slack_hardware_escalade',
+  // Synchro feuille de temps ↔ feuille mensuelle du Drive : retirée à la
+  // demande de Pierre-Alexandre Papillon (2026-10-07).
+  'sys_rd_timesheet_sheet_sync',
+  // Programme partenaire → HubSpot : reconstruite en automatisation en blocs
+  // modifiable (Charles, 2026-10-09) — services/subscriptionProductTrigger.js.
+  'sys_partnership_hubspot',
 ]
 
 // Clés de réglage retirées d'une automatisation encore vivante (le passage a
@@ -2117,6 +2296,13 @@ const OBSOLETE_ACTION_KEYS = {
   // Surveillait le silence des transactions ; surveille maintenant la
   // fraîcheur du solde (2026-09-29).
   sys_plaid_silence_alert: ['silence_hours'],
+}
+
+// Anciennes valeurs par défaut retirées : vidées au démarrage seulement si
+// l'utilisateur ne les a pas modifiées.
+const RETIRED_ACTION_DEFAULTS = {
+  // Antoine Lambert, 2026-10-07 : plus de dernière ligne au message.
+  sys_missing_invoice_request: { outro: 'Si vous en avez une, répondez ici ou envoyez-la à factures@orisha.io — merci !' },
 }
 
 export function seedSystemAutomations() {
@@ -2128,7 +2314,7 @@ export function seedSystemAutomations() {
       (id, name, description, trigger_type, trigger_config, action_type, action_config, active, system, created_at, updated_at)
     VALUES (?, ?, ?, 'system', ?, 'system', ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
+      name = CASE WHEN automations.name_custom = 1 THEN automations.name ELSE excluded.name END,
       description = excluded.description,
       trigger_config = excluded.trigger_config,
       system = 1,
@@ -2140,7 +2326,7 @@ export function seedSystemAutomations() {
       (id, name, description, trigger_type, trigger_config, action_type, action_config, active, system, created_at, updated_at)
     VALUES (?, ?, ?, 'system', ?, 'system', ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
+      name = CASE WHEN automations.name_custom = 1 THEN automations.name ELSE excluded.name END,
       description = excluded.description,
       system = 1,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -2189,6 +2375,20 @@ export function seedSystemAutomations() {
     db.prepare('UPDATE automations SET action_config = ? WHERE id = ?').run(JSON.stringify(cfg), id)
   }
 
+  for (const [id, olds] of Object.entries(RETIRED_ACTION_DEFAULTS)) {
+    const row = db.prepare('SELECT action_config FROM automations WHERE id = ?').get(id)
+    if (!row) continue
+    let cfg
+    try { cfg = JSON.parse(row.action_config || '{}') } catch { continue }
+    const hit = Object.keys(olds).filter(k => cfg[k] === olds[k])
+    if (!hit.length) continue
+    for (const k of hit) cfg[k] = ''
+    db.prepare('UPDATE automations SET action_config = ? WHERE id = ?').run(JSON.stringify(cfg), id)
+  }
+
+  // Avant le retrait : l'équivalent en blocs reprend son état actif.
+  migratePartnershipToBlocks()
+  seedPartnershipLostFlow()
   for (const id of RETIRED_SYSTEM_AUTOMATION_IDS) {
     db.prepare(`
       UPDATE automations SET active = 0, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -2204,31 +2404,9 @@ export function seedSystemAutomations() {
 // Declarative field-value rules shipped as system defaults. Same `id` as the
 // original hardcoded automations so automation_logs continuity is preserved.
 // Each rule is evaluated by services/fieldRuleEngine.js when FEATURE_FIELD_RULES=true.
+// `sys_slack_hardware_escalade` (Escalade Hardware → Slack) retirée le
+// 2026-10-02 : le champ Escalade des billets a été détruit définitivement.
 export const SYSTEM_FIELD_RULES = [
-  {
-    id: 'sys_slack_hardware_escalade',
-    name: 'Escalade Hardware → Slack',
-    description:
-      "Quand le champ Escalade d'un billet devient « Hardware », envoie une notification Slack via SLACK_WEBHOOK_HARDWARE. " +
-      "Chaque billet n'est notifié qu'une seule fois (tracking dans automation_rule_fires).",
-    trigger_config: {
-      erp_table: 'tickets',
-      column: 'escalade',
-      op: 'eq',
-      value: 'Hardware',
-      fire_on: 'per_record_once',
-    },
-    action_type: 'slack',
-    action_config: {
-      webhookEnv: 'SLACK_WEBHOOK_HARDWARE',
-      // Titre, entreprise, type et statut ont été droppés (migration 040) : le
-      // gabarit ne cite plus que ce que le billet porte encore.
-      text:
-        '🔧 *Escalade Hardware*\n' +
-        'Responsable : {{responsable}}\n' +
-        '<{{app_url}}/erp/tickets/{{id}}|Voir le billet>',
-    },
-  },
 ]
 
 function seedSystemFieldRules() {
@@ -2241,7 +2419,7 @@ function seedSystemFieldRules() {
       (id, name, description, kind, trigger_type, trigger_config, action_type, action_config, active, system, created_at, updated_at)
     VALUES (?, ?, ?, 'field_rule', 'field_rule', ?, ?, ?, 1, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
+      name = CASE WHEN automations.name_custom = 1 THEN automations.name ELSE excluded.name END,
       description = excluded.description,
       kind = 'field_rule',
       trigger_type = 'field_rule',
@@ -2314,7 +2492,7 @@ export function logSystemRun(key, { status, result, error, duration_ms, triggerD
 export function logRuleRun(automationId, { status, result, error, duration_ms, triggerData } = {}) {
   try {
     const exists = db.prepare(
-      "SELECT 1 FROM automations WHERE id = ? AND kind = 'field_rule'"
+      "SELECT 1 FROM automations WHERE id = ? AND kind IN ('field_rule', 'flow')"
     ).get(automationId)
     if (!exists) return
 

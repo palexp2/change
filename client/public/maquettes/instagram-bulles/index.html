@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fil de conversation</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root { --bg:#f5f6f7; --s:#fff; --soft:#f4f5f6; --line:#eceef0; --line2:#dfe2e5; --ink:#1f2328; --ink2:#4a5058; --ink3:#7a8089; --ink4:#a6abb2; --g:#2ca01c; --gd:#1d7f12; --gs:#e9f6e6; --blue:#0a6fbf; --blues:#e8f2fb; --igb:#3797f0; }
+:root[data-theme="dark"] { --bg:#111315; --s:#181b1e; --soft:#1f2226; --line:#262a2f; --line2:#30353b; --ink:#eceef0; --ink2:#c3c8ce; --ink3:#8e959d; --ink4:#646b73; --g:#45b934; --gd:#6ccf5c; --gs:#1a2a18; --blue:#5cb0ef; --blues:#16273a; --igb:#3797f0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111315; --s:#181b1e; --soft:#1f2226; --line:#262a2f; --line2:#30353b; --ink:#eceef0; --ink2:#c3c8ce; --ink3:#8e959d; --ink4:#646b73; --g:#45b934; --gd:#6ccf5c; --gs:#1a2a18; --blue:#5cb0ef; --blues:#16273a; --igb:#3797f0; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:13.5px/1.45 Inter,system-ui,sans-serif; padding:24px 16px 60px; -webkit-font-smoothing:antialiased; }
+button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
+.top { max-width:1100px; margin:0 auto 10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.top h1 { font-size:16px; font-weight:600; margin:0 10px 0 0; }
+.opt { padding:6px 12px; border:1px solid var(--line2); border-radius:999px; background:var(--s); color:var(--ink2); font-weight:500; }
+.opt b { color:var(--gd); margin-right:5px; }
+.opt[aria-pressed="true"] { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+.opt[aria-pressed="true"] b { color:inherit; opacity:.6; }
+.lede { max-width:1100px; margin:0 auto 12px; color:var(--ink3); }
+.screen { max-width:760px; margin:0 auto; background:var(--soft); border-radius:14px; box-shadow:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.06); padding:26px 30px; display:flex; flex-direction:column; gap:10px; }
+.hide { display:none; }
+.ev { align-self:center; font-size:11.5px; color:var(--ink4); }
+.day { align-self:center; font-size:11px; font-weight:600; color:var(--ink3); background:var(--s); border:1px solid var(--line); border-radius:999px; padding:2px 10px; margin:6px 0; }
+.av { width:28px; height:28px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; }
+.av.her { background:#e9d5ff; color:#6b21a8; } .av.us { background:var(--g); color:#fff; } .av.bot { background:var(--line); color:var(--ink3); }
+/* C1 */
+.c1 .row { display:flex; gap:8px; align-items:flex-end; }
+.c1 .row.us { flex-direction:row-reverse; }
+.c1 .stack { display:flex; flex-direction:column; gap:3px; max-width:72%; }
+.c1 .row.us .stack { align-items:flex-end; }
+.c1 .who { font-size:11px; color:var(--ink3); padding:0 4px; }
+.c1 .b { padding:9px 13px; border-radius:18px; }
+.c1 .her .b { background:var(--s); border:1px solid var(--line); border-bottom-left-radius:6px; }
+.c1 .us .b { background:var(--igb); color:#fff; border-bottom-right-radius:6px; }
+.c1 .auto .b { background:transparent; color:var(--ink3); border:1px dashed var(--line2); border-bottom-right-radius:6px; }
+/* C2 */
+.c2 { gap:0; padding:8px 0; background:var(--s); }
+.c2 .m { display:flex; gap:12px; padding:12px 28px; }
+.c2 .m.us { background:var(--gs); box-shadow:inset 3px 0 0 var(--g); }
+.c2 .m.auto { opacity:.75; }
+.c2 .h { display:flex; gap:8px; align-items:baseline; } .c2 .n { font-weight:600; } .c2 .t { font-size:11.5px; color:var(--ink4); }
+.c2 .chip { font-size:10.5px; font-weight:600; padding:1px 7px; border-radius:999px; background:var(--line); color:var(--ink3); }
+.c2 .ev { padding:6px 0; }
+/* C3 */
+.c3 .grid { display:grid; grid-template-columns:1fr 64px 1fr; gap:10px 0; align-items:start; }
+.c3 .colh { font-size:11px; font-weight:600; color:var(--ink3); text-transform:uppercase; letter-spacing:.04em; padding-bottom:6px; border-bottom:1px solid var(--line); }
+.c3 .colh.r { text-align:right; }
+.c3 .tm { text-align:center; font-size:11px; color:var(--ink4); padding-top:9px; }
+.c3 .b { padding:9px 13px; border-radius:12px; }
+.c3 .her { background:var(--s); border:1px solid var(--line); }
+.c3 .us { background:var(--gs); border:1px solid #cfe9c8; color:var(--ink); }
+.c3 .auto { background:transparent; border:1px dashed var(--line2); color:var(--ink3); }
+.c3 .full { grid-column:1 / -1; text-align:center; font-size:11.5px; color:var(--ink4); }
+/* C4 */
+.c4 .row { display:flex; flex-direction:column; gap:3px; max-width:74%; }
+.c4 .row.her { align-self:flex-start; } .c4 .row.us, .c4 .row.auto { align-self:flex-end; align-items:flex-end; }
+.c4 .lab { font-size:11px; font-weight:600; display:flex; gap:6px; align-items:center; }
+.c4 .her .lab { color:#7e22ce; } .c4 .us .lab { color:var(--gd); } .c4 .auto .lab { color:var(--ink4); }
+.c4 .lab i { font-style:normal; font-weight:400; color:var(--ink4); }
+.c4 .b { padding:10px 14px; border-radius:14px; }
+.c4 .her .b { background:var(--s); border:1px solid var(--line); border-left:3px solid #a855f7; }
+.c4 .us .b { background:var(--s); border:1px solid var(--line); border-right:3px solid var(--g); }
+.c4 .auto .b { background:transparent; border:1px dashed var(--line2); color:var(--ink3); font-size:12.5px; }
+.c4 .ev { display:flex; gap:6px; align-items:center; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Fil de conversation</h1>
+  <button class="opt" data-o="1" aria-pressed="true"><b>C1</b>Comme Instagram</button>
+  <button class="opt" data-o="2"><b>C2</b>Fil type courriel</button>
+  <button class="opt" data-o="3"><b>C3</b>Deux colonnes</button>
+  <button class="opt" data-o="4"><b>C4</b>Bulles signées</button>
+</div>
+<div class="lede" id="lede">Nous en bleu à droite, elle en blanc à gauche, l’automatique en pointillé.</div>
+
+<!-- C1 -->
+<div class="screen c1" id="o1">
+  <div class="day">6 août</div>
+  <div class="ev">a commenté « Coach »</div>
+  <div class="row us auto"><div class="av bot">A</div><div class="stack"><div class="b">Thanks for taking an interest in The 40 Hour Farmer! Here's the link to join the program!</div><div class="who">Réponse automatique</div></div></div>
+  <div class="day">14 août</div>
+  <div class="ev">a cliqué le lien</div>
+  <div class="row her"><div class="av her">M</div><div class="stack"><div class="b">How do I access the 40 hour farmer using my growing for market login?</div><div class="who">meimei_robbins · 14 h 02</div></div></div>
+  <div class="row us"><div class="av us">O</div><div class="stack"><div class="b">Hey Meghan, use the promo code ORI40H</div><div class="b">Cheers! 🌱</div><div class="who">Orisha · 14 h 20</div></div></div>
+  <div class="row her"><div class="av her">M</div><div class="stack"><div class="b">Thanks I was digging about all day</div><div class="who">meimei_robbins · 14 h 31</div></div></div>
+</div>
+
+<!-- C2 -->
+<div class="screen c2 hide" id="o2">
+  <div class="m auto"><div class="av bot">A</div><div><div class="h"><span class="n">Orisha</span><span class="chip">auto</span><span class="t">6 août · 9 h 14</span></div><div>Thanks for taking an interest in The 40 Hour Farmer! Here's the link to join the program!</div></div></div>
+  <div class="ev">14 août · a cliqué le lien</div>
+  <div class="m"><div class="av her">M</div><div><div class="h"><span class="n">meimei_robbins</span><span class="t">14 août · 14 h 02</span></div><div>How do I access the 40 hour farmer using my growing for market login?</div></div></div>
+  <div class="m us"><div class="av us">O</div><div><div class="h"><span class="n">Orisha</span><span class="t">14 h 20</span></div><div>Hey Meghan, use the promo code ORI40H</div><div>Cheers! 🌱</div></div></div>
+  <div class="m"><div class="av her">M</div><div><div class="h"><span class="n">meimei_robbins</span><span class="t">14 h 31</span></div><div>Thanks I was digging about all day</div></div></div>
+</div>
+
+<!-- C3 -->
+<div class="screen c3 hide" id="o3">
+  <div class="grid">
+    <div class="colh">Elle</div><div></div><div class="colh r">Nous</div>
+    <div class="full">6 août · a commenté « Coach »</div>
+    <div></div><div class="tm">9 h 14</div><div class="b auto">Thanks for taking an interest in The 40 Hour Farmer! Here's the link to join the program!</div>
+    <div class="full">14 août · a cliqué le lien</div>
+    <div class="b her">How do I access the 40 hour farmer using my growing for market login?</div><div class="tm">14 h 02</div><div></div>
+    <div></div><div class="tm">14 h 20</div><div class="b us">Hey Meghan, use the promo code ORI40H<br>Cheers! 🌱</div>
+    <div class="b her">Thanks I was digging about all day</div><div class="tm">14 h 31</div><div></div>
+  </div>
+</div>
+
+<!-- C4 -->
+<div class="screen c4 hide" id="o4">
+  <div class="day">6 août</div>
+  <div class="ev">📝 a commenté « Coach »</div>
+  <div class="row auto"><div class="lab">Automatique <i>9 h 14</i></div><div class="b">Thanks for taking an interest in The 40 Hour Farmer! Here's the link to join the program!</div></div>
+  <div class="day">14 août</div>
+  <div class="ev">🔗 a cliqué le lien</div>
+  <div class="row her"><div class="lab">meimei_robbins <i>14 h 02</i></div><div class="b">How do I access the 40 hour farmer using my growing for market login?</div></div>
+  <div class="row us"><div class="lab">Nous <i>14 h 20</i></div><div class="b">Hey Meghan, use the promo code ORI40H<br>Cheers! 🌱</div></div>
+  <div class="row her"><div class="lab">meimei_robbins <i>14 h 31</i></div><div class="b">Thanks I was digging about all day</div></div>
+</div>
+
+<script>
+const ledes = {
+  1: 'Nous en bleu à droite, elle en blanc à gauche, l’automatique en pointillé.',
+  2: 'Une ligne par message, avec le nom ; nos messages surlignés en vert.',
+  3: 'Elle à gauche, nous à droite, l’heure au milieu.',
+  4: 'Chaque bulle dit qui parle : elle, nous, ou l’automatique.',
+}
+document.querySelectorAll('.opt').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.opt').forEach(x => x.setAttribute('aria-pressed', x === b))
+  document.querySelectorAll('.screen').forEach(s => s.classList.toggle('hide', s.id !== 'o' + b.dataset.o))
+  document.getElementById('lede').textContent = ledes[b.dataset.o]
+}))
+</script>
+</body>
+</html>

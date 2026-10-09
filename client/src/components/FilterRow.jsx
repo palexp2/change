@@ -227,9 +227,12 @@ export const OPS_BY_TYPE = {
     { value: 'is_not_empty', label: "N'est pas vide" },
   ],
   date: [
-    { value: 'equals',              label: 'Est exactement le' },
+    { value: 'equals',              label: 'Est le' },
+    { value: 'not_equals',          label: "N'est pas le" },
     { value: 'before',              label: 'Est avant le' },
     { value: 'after',               label: 'Est après le' },
+    { value: 'on_or_before',        label: 'Est le ou avant le' },
+    { value: 'on_or_after',         label: 'Est le ou après le' },
     { value: 'between',             label: 'Est entre le' },
     { value: 'last_n_days',         label: 'Il y a moins de X jours' },
     { value: 'more_than_n_days_ago', label: 'Il y a plus de X jours' },
@@ -266,7 +269,24 @@ export const VALUE_LESS_OPS = new Set([
 ])
 export const MULTI_SELECT_OPS = new Set(['is_any_of', 'is_none_of', 'has_any_of', 'has_all_of', 'has_none_of'])
 export const DAYS_OPS = new Set(['last_n_days', 'next_n_days', 'more_than_n_days_ago', 'more_than_n_days_ahead'])
-export const DATE_PICKER_OPS = new Set(['before', 'after', 'equals'])
+export const DATE_PICKER_OPS = new Set(['before', 'after', 'equals', 'not_equals', 'on_or_before', 'on_or_after'])
+
+// Repère d'une règle de date : une date fixe, ou un jour relatif résolu à
+// chaque affichage (jetons '@…', cf. resolveDateValue). Les deux derniers
+// demandent un nombre de jours ('@days_ago:N').
+const DATE_MODES = [
+  { value: '',            label: 'Date exacte' },
+  { value: '@today',      label: "Aujourd'hui" },
+  { value: '@tomorrow',   label: 'Demain' },
+  { value: '@yesterday',  label: 'Hier' },
+  { value: '@week_ago',   label: 'Il y a une semaine' },
+  { value: '@week_ahead', label: 'Dans une semaine' },
+  { value: '@month_ago',  label: 'Il y a un mois' },
+  { value: '@month_ahead', label: 'Dans un mois' },
+  { value: '@days_ago',   label: 'Il y a N jours' },
+  { value: '@days_ahead', label: 'Dans N jours' },
+]
+const DATE_MODES_WITH_DAYS = new Set(['@days_ago', '@days_ahead'])
 // Opérateurs de plage : la value est un tuple [from, to] (deux sélecteurs de date).
 export const RANGE_OPS = new Set(['between'])
 
@@ -407,7 +427,9 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
         value={filter.op}
         onChange={e => {
           const newOp = e.target.value
-          const newVal = VALUE_LESS_OPS.has(newOp) ? '' : RANGE_OPS.has(newOp) ? ['', ''] : MULTI_SELECT_OPS.has(newOp) ? [] : (Array.isArray(filter.value) ? '' : filter.value)
+          // Un jour relatif ('@today'…) n'a de sens que pour les opérateurs à date.
+          const relative = typeof filter.value === 'string' && filter.value.startsWith('@') && !DATE_PICKER_OPS.has(newOp)
+          const newVal = VALUE_LESS_OPS.has(newOp) ? '' : RANGE_OPS.has(newOp) ? ['', ''] : MULTI_SELECT_OPS.has(newOp) ? [] : (Array.isArray(filter.value) || relative ? '' : filter.value)
           onChange({ ...filter, op: newOp, value: newVal })
         }}
         className={`select ${cls} flex-1 min-w-0`}
@@ -444,7 +466,7 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
         </div>
       )}
       {needsValue && fieldType === 'date' && isDatePicker && (
-        <input type="date" value={Array.isArray(filter.value) ? '' : (filter.value ?? '')} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} />
+        <DateValueInput value={filter.value} cls={cls} onChange={v => onChange({ ...filter, value: v })} />
       )}
       {needsValue && fieldType === 'date' && isDays && (
         <input type="number" min="1" value={Array.isArray(filter.value) ? '' : (filter.value ?? '')} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} />
@@ -468,6 +490,30 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
       )}
 
       <button onClick={onRemove} className="text-slate-300 hover:text-red-500 flex-shrink-0 mt-1"><X size={14} /></button>
+    </div>
+  )
+}
+
+// Valeur d'une règle de date : repère (date exacte, aujourd'hui, dans N jours…)
+// puis, selon le repère, le sélecteur de date ou le nombre de jours.
+function DateValueInput({ value, onChange, cls }) {
+  const str = typeof value === 'string' ? value : ''
+  const [mode, days = ''] = str.startsWith('@') ? str.split(':') : ['', '']
+  return (
+    <div className="flex items-center gap-1.5 flex-1 min-w-0">
+      <select
+        value={mode}
+        onChange={e => onChange(e.target.value)}
+        className={`select ${cls} flex-1 min-w-0`}
+      >
+        {DATE_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+      </select>
+      {mode === '' && (
+        <input type="date" value={str} onChange={e => onChange(e.target.value)} className={`input ${cls} flex-1 min-w-0`} />
+      )}
+      {DATE_MODES_WITH_DAYS.has(mode) && (
+        <input type="number" min="0" value={days} onChange={e => onChange(`${mode}:${e.target.value}`)} className={`input ${cls} w-16 flex-shrink-0`} />
+      )}
     </div>
   )
 }

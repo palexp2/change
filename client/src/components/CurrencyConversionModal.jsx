@@ -74,7 +74,6 @@ export function CurrencyConversionModal({ isOpen, onClose, receipt = null, onApp
     if (!isOpen) return
     setCopied(false)
     setApplyError(null)
-    setCharged('')
     if (!receipt) return
     const priced = (receipt.items || []).filter(it => it && it.total != null)
     const subtotal = priced.length
@@ -90,6 +89,17 @@ export function CurrencyConversionModal({ isOpen, onClose, receipt = null, onApp
     setSourceCurrency(cur)
     setTargetCurrency(cur === 'CAD' ? 'USD' : 'CAD')
   }, [isOpen, receipt])
+
+  // Montant débité : repris de la sortie au relevé liée au document, quand elle
+  // est dans la devise de comptabilisation (la carte a converti elle-même).
+  const bankTxn = receipt?.bank_txn || null
+  const bankCharged = bankTxn && (bankTxn.currency || bankTxn.account_currency || 'CAD').toUpperCase() === targetCurrency
+    ? round2(Math.abs(Number(bankTxn.amount) || 0)) || null
+    : null
+  useEffect(() => {
+    if (!isOpen) return
+    setCharged(bankCharged ? String(bankCharged) : '')
+  }, [isOpen, bankCharged])
 
   // Taux Banque du Canada à la date de la facture : proposé par défaut, et
   // référence pour situer un taux saisi ou déduit d'un débit de carte.
@@ -200,7 +210,7 @@ export function CurrencyConversionModal({ isOpen, onClose, receipt = null, onApp
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Conversion de devise" size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title="Conversion de devise" size="lg" draggable>
       <p className="text-xs text-slate-500 -mt-1 mb-4">
         Comptabiliser en {targetCurrency} une facture libellée en {sourceCurrency} : chaque ligne est
         convertie au même taux, et la somme retombe au cent près sur le total converti.
@@ -263,7 +273,9 @@ export function CurrencyConversionModal({ isOpen, onClose, receipt = null, onApp
               value={charged}
               testId="conv-charged"
               onChange={setCharged}
-              hint="facultatif — si la carte a converti elle-même"
+              hint={bankCharged && parseAmount(charged) === bankCharged
+                ? `relevé du ${String(bankTxn.txn_date || '').slice(0, 10)}`
+                : 'facultatif — si la carte a converti elle-même'}
             />
           </div>
         </div>

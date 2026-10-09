@@ -21,7 +21,7 @@ import { todayIso } from '../lib/bankDays.js'
 const RECEIVED_KEY = 'cf_date_de_reception_complete'
 const COLUMNS = [
   ...TABLE_COLUMN_META.purchases.map(meta => ({ ...meta, editable: meta.field === 'emplacement' })),
-  { id: 'expense_lines', label: 'Factures', field: 'expense_lines_label', render: r => <ExpenseLineLinks info={r.expense_info} singleLine /> },
+  { id: 'expense_lines', label: 'Factures', field: 'expense_lines_label', render: r => <ExpenseLineLinks info={r.expense_info} singleLine peek /> },
   { id: 'unit_price_paid_cad', label: 'Prix payé', field: 'unit_price_paid_cad', type: 'currency' },
 ]
 // « Fournisseur » (champ lien Airtable, éditable) : le nom ouvre la fiche dès le

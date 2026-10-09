@@ -22,8 +22,10 @@ import { startShippedCostWatcher } from './services/shippedCostWatcher.js'
 import { startFifoCostWatcher } from './services/fifoCostWatcher.js'
 import { startReturnItemReceivedWatcher } from './services/returnItemReceivedWatcher.js'
 import { startFacturePaidSlackWatcher } from './services/facturePaidSlackWatcher.js'
+import { startSubscriptionProductWatcher } from './services/subscriptionProductTrigger.js'
 import { startAddressCheckWatcher } from './services/addressCheck.js'
 import { startRecordRevisions } from './services/recordRevisions.js'
+import { withOrigin } from './services/writeOrigin.js'
 import { syncAllPrepaidAccountsFromQB } from './services/prepaid.js'
 import bootstrapRouter from './routes/bootstrap.js'
 import { seedSystemAutomations, logSystemRun, touchSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
@@ -129,6 +131,13 @@ import trackRouter from './routes/track.js'
 import installationFeedbackRouter from './routes/installation-feedback.js'
 import telnyxWebhooksRouter from './routes/telnyx-webhooks.js'
 import ticketSurveysPublicRouter from './routes/ticket-surveys-public.js'
+import meetingsRouter from './routes/meetings.js'
+import meetingsPublicRouter from './routes/meetings-public.js'
+import pagesPublicRouter from './routes/pages-public.js'
+import { refreshAllAcceptFlags } from './services/hostedPages.js'
+import stripeCatalogRouter from './routes/stripe-catalog.js'
+import emailTemplatesRouter from './routes/email-templates.js'
+import { startMeetingReminders } from './services/meetings.js'
 import { publicFilesRouter, publicFileServeRouter } from './routes/public-files.js'
 import recordsRouter from './routes/records.js'
 import activityRouter from './routes/activity.js'
@@ -215,6 +224,10 @@ app.use((req, res, next) => {
       if (o.startsWith('chrome-extension://') && req.url.includes('/scrapers/session-bridge/')) {
         return cb(null, true)
       }
+      // Pages client publiques (/erp/pay/…) : leur <form method="post"> part
+      // avec « Origin: null » (Referrer-Policy no-referrer de helmet). Ces
+      // routes sont gardées par leur jeton, pas par l'origine.
+      if (o === 'null' && req.url.startsWith('/erp/pay/')) return cb(null, true)
       // Same-host (origin host matches request Host header) — accept.
       try {
         const u = new URL(o)
@@ -272,6 +285,9 @@ app.use('/api/quickbooks/webhook', express.raw({ type: () => true }), (req, res,
   next()
 }, qbWebhookRouter)
 
+// Document envoyé par le module de navigateur, en base64 : une facture PDF
+// scannée dépasse vite 10 Mo une fois encodée.
+app.use('/api/scrapers/session-bridge/document', express.json({ limit: '40mb' }))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
@@ -552,6 +568,16 @@ app.use('/api/digikey', digikeyRouter)
 app.use('/api/track', trackRouter)
 app.use('/api/public/installation-feedback', installationFeedbackRouter)
 app.use('/api/public/ticket-survey', ticketSurveysPublicRouter)
+app.use('/api/meetings', meetingsRouter)
+// Prise de rendez-vous : pages publiques /rdv/:slug (visiteur sans compte).
+app.use('/api/public/meetings', meetingsPublicRouter)
+// Pages hébergées avec acceptation (Fichiers publics) — bloc injecté
+// client/public/page-accept.js. Remplace l'outil Contrats (2026-10-09).
+app.use('/api/public/pages', pagesPublicRouter)
+// Catalogue de vente — produits et prix Stripe.
+app.use('/api/stripe-catalog', stripeCatalogRouter)
+// Modèles de courriel (Clients → Modèles de courriel).
+app.use('/api/email-templates', emailTemplatesRouter)
 app.use('/api/interaction-files', express.static(uploadsPath('interactions')))
 app.use('/api/public-files', publicFilesRouter)
 // Fichiers publics — URL non auth /erp/p/<token>/<filename>. Doit être monté
@@ -602,6 +628,13 @@ const server = app.listen(PORT, () => {
   console.log(`ERP Server running on http://localhost:${PORT}${IS_STANDBY ? ' (relais de redémarrage)' : ''}`)
   createRealtimeServer(server)
   if (IS_STANDBY) return
+  try { refreshAllAcceptFlags() } catch (e) { console.warn('[hosted-pages] flags:', e.message) }
+  // Catalogue de vente : miroir des produits/prix Stripe relu toutes les heures.
+  import('./services/stripeCatalog.js').then(({ syncStripeCatalog }) => import('./services/stripeInvoices.js').then(({ getStripeClient }) => {
+    const run = () => { try { syncStripeCatalog(getStripeClient()).catch(e => console.warn('[stripe-catalog] sync:', e.message)) } catch { /* Stripe non configuré */ } }
+    setTimeout(run, 60e3)
+    setInterval(run, 3600e3)
+  }))
   initTaskRunner()
   // File de travaux : réconcilie un item fauché par le redémarrage et relance la
   // file. Après initTaskRunner, qui a déjà repris ou clos l'exécution en cours.
@@ -653,9 +686,16 @@ const server = app.listen(PORT, () => {
   // origines confondues (Stripe, paiement saisi, sync QB/Airtable).
   startFacturePaidSlackWatcher()
 
+  // Automatisations en blocs « Quand un abonnement contient un produit » (passe 30 s),
+  // dont le programme partenaire → HubSpot.
+  startSubscriptionProductWatcher()
+
   // Historique des révisions des fiches — tail change_log, diff champ par champ
   // contre le dernier instantané (services/recordRevisions.js).
   startRecordRevisions().catch(e => console.error('[revisions] démarrage', e.message))
+
+  // Rappels des rendez-vous réservés (Marketing → Rendez-vous) — passe chaque minute.
+  startMeetingReminders()
 
   // Gmail sync — toutes les 3 minutes
   function scheduleGmailSync() {
@@ -699,7 +739,7 @@ const server = app.listen(PORT, () => {
   // Airtable fallback sync — une fois par jour (au cas où des webhooks auraient manqué des événements)
   function scheduledSync(module, fn) {
     const t0 = Date.now()
-    tracked(module, () => fn()).then(() => {
+    tracked(module, () => withOrigin('sys_airtable_fallback_sync', fn)).then(() => {
       logSync(module, 'scheduled', { status: 'success', durationMs: Date.now() - t0 })
     }).catch(e => {
       logSync(module, 'scheduled', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
@@ -1187,15 +1227,22 @@ const server = app.listen(PORT, () => {
   setTimeout(runQbVerify, 240_000)
   setInterval(runQbVerify, 60 * 60 * 1000)
 
-  // Factures « À payer » dont l'échéance est passée → « En retard ».
+  // Factures « À payer » dont l'échéance est passée, ou en « Retrying » sur
+  // Stripe → « En retard ».
   const runOverdueFactures = () => {
     import('./services/factureBalance.js')
-      .then(({ refreshOverdueFactures }) => refreshOverdueFactures())
+      .then(({ refreshStripeRetryingFactures }) => refreshStripeRetryingFactures())
       .catch(e => console.error('factures en retard:', e.message))
   }
   setTimeout(runOverdueFactures, 30_000)
   cron.schedule('5 0 * * *', runOverdueFactures)
 
+  // Passe de nuit du rapprochement, une heure après le passage profond.
+  cron.schedule('0 7 * * *', () => {
+    import('./services/bankReconcileNightly.js')
+      .then(({ runNightlyReconcile }) => runNightlyReconcile({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('rapprochement de nuit:', e.message))
+  })
   cron.schedule('0 6 * * *', () => {
     import('./services/bankQbVerify.js')
       .then(({ scheduledQbVerify }) => scheduledQbVerify({ deep: true, trigger: 'cron quotidien' }))
@@ -1292,6 +1339,19 @@ const server = app.listen(PORT, () => {
       .then(({ preparePiecesMonth }) => preparePiecesMonth({ trigger: 'cron mensuel' }))
       .catch(e => console.error('pieces disbursements cron:', e.message))
   })
+
+  // Travail récurrent « E/J mensuelle » : coché dès que les écritures de fin
+  // de mois sont dans QB. Les boutons de publication le font sur-le-champ ; ce
+  // passage rattrape le reste (publication ailleurs, démarrage).
+  const syncMonthEnd = () => import('./services/monthEndTask.js')
+    .then(m => m.syncMonthEndTask()).catch(e => console.error('monthEndTask:', e.message))
+  setTimeout(syncMonthEnd, 30_000)
+  cron.schedule('15 * * * *', syncMonthEnd)
+
+  // Même chose pour « Fournir à Gui les déboursés » : coché à l'envoi du
+  // message ; au démarrage, rattrape les mois déjà envoyés.
+  setTimeout(() => import('./services/piecesDisbursements.js')
+    .then(m => m.syncPiecesRecurringTask()).catch(e => console.error('piecesTask:', e.message)), 30_000)
 
   // Collecte des factures sur les portails fournisseurs (Amazon, Wix) : une
   // tournée quotidienne à 9h UTC = 5h à Montréal, hors des heures où quelqu'un

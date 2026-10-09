@@ -65,6 +65,7 @@ describe('extracteur — persistance du brouillon de comptabilisation', () => {
 
     browser = await chromium.launch()
     ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
   })
@@ -111,6 +112,7 @@ describe('extracteur — persistance du brouillon de comptabilisation', () => {
 
     // Force le type Purchase (le profil fournisseur peut présélectionner Bill, qui
     // masque le compte de paiement) — persisté comme brouillon, restauré en after().
+    await page.getByTestId('qb-type-menu').click()
     await page.getByTestId('qb-type-purchase').click()
     await waitForField('quickbooks_type', 'purchase', 'le type QB (purchase)')
 
@@ -122,6 +124,7 @@ describe('extracteur — persistance du brouillon de comptabilisation', () => {
     await pickOption('qb-payment-select', accountLabel(paymentTarget))
     await waitForField('payment_account_id', paymentTarget.Id, 'le compte de paiement')
     // Puis bascule le type en « Facture à payer (Bill) » — persisté aussi.
+    await page.getByTestId('qb-type-menu').click()
     await page.getByTestId('qb-type-bill').click()
     await waitForField('quickbooks_type', 'bill', 'le type QB')
 
@@ -139,6 +142,7 @@ describe('extracteur — persistance du brouillon de comptabilisation', () => {
     await assert.doesNotReject(
       page.getByTestId('qb-vendor-select').getByText(vendorTarget.DisplayName, { exact: false }).waitFor({ timeout: 10000 }),
       'le fournisseur choisi doit être restauré')
+    await page.getByTestId('qb-type-menu').click()
     assert.equal(await page.getByTestId('qb-type-bill').isChecked(), true,
       'le type « Facture à payer » doit être restauré')
 

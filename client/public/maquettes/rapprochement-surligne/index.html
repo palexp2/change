@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Surligner les liens</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f5f6f7; --surface: #fff; --soft: #f8f9fa; --line: #eceef0; --line2: #dfe2e5;
+  --ink: #1f2328; --ink2: #4a5058; --ink3: #7a8089; --ink4: #a6abb2;
+  --qb: #2ca01c; --qb-soft: #eef7ec; --red: #d1362a; --red-soft: #fcefee;
+  --a: #7c4dff; --a-soft: #f1ecff; --b: #0a8fbf; --b-soft: #e6f5fb; --n: #c27a00; --n-soft: #fdf5e6;
+  --shadow: 0 1px 2px rgb(0 0 0 / .04), 0 12px 32px rgb(0 0 0 / .06);
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111315; --surface: #181b1e; --soft: #1d2024; --line: #262a2f; --line2: #30353b;
+  --ink: #eceef0; --ink2: #c3c8ce; --ink3: #8e959d; --ink4: #646b73;
+  --qb: #45b934; --qb-soft: #1a2a18; --red: #ff7a6e; --red-soft: #33201e;
+  --a: #a98bff; --a-soft: #241d3a; --b: #4cc3ee; --b-soft: #132a33; --n: #f0b04a; --n-soft: #2e2617;
+}}
+:root[data-theme="dark"] {
+  --bg: #111315; --surface: #181b1e; --soft: #1d2024; --line: #262a2f; --line2: #30353b;
+  --ink: #eceef0; --ink2: #c3c8ce; --ink3: #8e959d; --ink4: #646b73;
+  --qb: #45b934; --qb-soft: #1a2a18; --red: #ff7a6e; --red-soft: #33201e;
+  --a: #a98bff; --a-soft: #241d3a; --b: #4cc3ee; --b-soft: #132a33; --n: #f0b04a; --n-soft: #2e2617;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13.5px/1.45 Inter, system-ui, sans-serif; padding: 24px 16px 60px; -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1100px; margin: 0 auto; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.sec { margin: 34px 0 10px; }
+.sec h2 { margin: 0; font-size: 16px; }
+.sec p { margin: 2px 0 0; color: var(--ink3); }
+.theme { position: fixed; top: 12px; right: 14px; color: var(--ink3); border: 1px solid var(--line2); border-radius: 999px; padding: 4px 10px; background: var(--surface); font: 12px Inter, sans-serif; z-index: 50; cursor: pointer; }
+.screen { position: relative; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow); overflow-x: auto; }
+.hd { display: flex; gap: 24px; align-items: baseline; padding: 16px 22px 12px; flex-wrap: wrap; }
+.hd b { font-size: 18px; }
+.hd span { color: var(--ink3); }
+table { width: 100%; min-width: 720px; border-collapse: collapse; position: relative; z-index: 1; }
+th { font-size: 11.5px; color: var(--ink3); font-weight: 500; text-align: left; padding: 6px 12px; border-bottom: 1px solid var(--line); }
+td { padding: 9px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; transition: background .15s, opacity .15s; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.gap { width: 46px; padding: 0; border-bottom: 0; }
+td.d { color: var(--ink3); width: 60px; }
+td.empty { color: var(--ink4); }
+td.chk { width: 30px; text-align: center; color: var(--qb); }
+tr { cursor: default; }
+.side { cursor: pointer; }
+/* tints */
+.t-A { background: var(--a-soft) !important; box-shadow: inset 3px 0 0 var(--a); }
+.t-B { background: var(--b-soft) !important; box-shadow: inset 3px 0 0 var(--b); }
+.t-N { background: var(--qb-soft) !important; box-shadow: inset 3px 0 0 var(--qb); }
+.dim td { opacity: .28; }
+.dim td.lit { opacity: 1; }
+svg.wires { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; overflow: visible; }
+.sum { position: absolute; z-index: 3; background: var(--ink); color: var(--surface); border-radius: 10px; padding: 7px 11px; font-size: 12.5px; pointer-events: none; white-space: nowrap; box-shadow: 0 8px 22px rgb(0 0 0 / .2); opacity: 0; transition: opacity .12s; }
+.sum.on { opacity: 1; }
+.sum .r { color: #ff9b91; font-weight: 600; }
+.sum .g { color: #8fe07f; font-weight: 600; }
+.foot { display: flex; gap: 10px; align-items: center; padding: 10px 22px 14px; min-height: 46px; color: var(--ink3); flex-wrap: wrap; }
+.chip { border-radius: 999px; padding: 3px 10px; font-size: 12.5px; font-weight: 500; }
+.chip.A { background: var(--a-soft); color: var(--a); }
+.chip.B { background: var(--b-soft); color: var(--b); }
+.chip.N { background: var(--qb-soft); color: var(--qb); }
+.chip .r { color: var(--red); }
+.tag { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; font-size: 10.5px; font-weight: 700; color: #fff; margin-right: 6px; vertical-align: -3px; }
+.tag.A { background: var(--a); } .tag.B { background: var(--b); }
+</style>
+</head>
+<body>
+<button class="theme" id="theme">☾</button>
+<div class="wrap">
+  <h1>Surligner les liens</h1>
+
+  <div class="sec"><h2>S1 · Fil</h2><p>Survole une ligne.</p></div>
+  <div class="screen" data-mode="fil"></div>
+
+  <div class="sec"><h2>S2 · Projecteur</h2><p>Survole une ligne.</p></div>
+  <div class="screen" data-mode="spot"></div>
+
+  <div class="sec"><h2>S3 · Pastilles</h2><p>Les cas bizarres marqués d'office ; survol = détail.</p></div>
+  <div class="screen" data-mode="tags"></div>
+</div>
+
+<script>
+const fmt = (n) => (n < 0 ? '−' : '+') + Math.abs(n).toLocaleString('fr-CA', { minimumFractionDigits: 2 }) + ' $'
+// Mai 2026, MasterCard BNC
+const ROWS = [
+  { b: ['05-09', 'DKC*DIGI-KEY CORP', -174.29], q: ['05-09', 'Digi-Key', -174.29], g: 'n1' },
+  { b: ['05-08', 'MOUSER ELECTRONICS INC', -961.20], q: ['05-08', 'Mouser Electronics', -1105.14], g: 'A' },
+  { b: ['05-06', 'GOOGLE *WORKSPACE ORIS', -202.40], q: ['05-06', 'Google', -202.40], g: 'n2' },
+  { b: ['05-05', 'ANTHROPIC* CLAUDE SUB', -32.19], q: ['05-05', 'Anthropic', -32.19], g: 'n3' },
+  { b: ['05-04', 'FEDEX272708328', -2.40], q: null, g: 'B' },
+  { b: ['05-03', 'MOUSER ELECTRONICS INC', -27.52], q: null, g: 'A' },
+  { b: ['05-02', 'MOUSER ELECTRONICS INC', -183.78], q: null, g: 'A' },
+  { b: ['05-01', 'FEDEX272708328', 2.40], q: null, g: 'B' },
+  { b: ['05-01', 'AMAZON.CA*NK6WK1Z81', -34.12], q: ['05-01', 'Amazon', -34.12], g: 'n4' },
+]
+const GROUPS = {
+  A: { cls: 'A', html: '3 débits <b>1 172,50 $</b> → 1 écriture <b>1 105,14 $</b> · <span class="r">écart 67,36 $</span>', chip: '3 → 1 · <span class="r">écart 67,36 $</span>' },
+  B: { cls: 'B', html: '+2,40 −2,40 = <span class="g">0</span> · aucune écriture', chip: 'Aller-retour = 0' },
+}
+const groupOf = (g) => GROUPS[g] || { cls: 'N', html: 'Apparié <span class="g">✓</span>', chip: 'Apparié ✓' }
+
+function render(screen) {
+  const mode = screen.dataset.mode
+  screen.innerHTML = `
+    <div class="hd"><b>MasterCard BNC</b><span>mai 2026</span></div>
+    <table>
+      <thead><tr><th></th><th>Relevé</th><th class="num">Montant</th><th></th><th class="gap"></th><th></th><th>QuickBooks</th><th class="num">Montant</th></tr></thead>
+      <tbody>${ROWS.map((r, i) => {
+        const tag = mode === 'tags' && GROUPS[r.g] ? `<span class="tag ${r.g}">${r.g}</span>` : ''
+        const qb = r.q
+          ? `<td class="d side" data-s="q">${r.q[0]}</td><td class="side" data-s="q">${r.q[1]}</td><td class="num side" data-s="q">${fmt(r.q[2])}</td>`
+          : '<td class="d"></td><td class="empty">—</td><td></td>'
+        return `<tr data-i="${i}" data-g="${r.g}">
+          <td class="d side" data-s="b">${r.b[0]}</td><td class="side" data-s="b">${tag}${r.b[1]}</td><td class="num side" data-s="b">${fmt(r.b[2])}</td>
+          <td class="chk">${r.q || r.g === 'B' ? '✓' : ''}</td><td class="gap"></td>${qb}</tr>`
+      }).join('')}</tbody>
+    </table>
+    <svg class="wires"></svg>
+    <div class="sum"></div>
+    <div class="foot">${mode === 'tags' ? Object.entries(GROUPS).map(([k, g]) => `<span class="chip ${k}"><span class="tag ${k}">${k}</span>${g.chip}</span>`).join('') : ''}</div>`
+
+  const rows = [...screen.querySelectorAll('tbody tr')]
+  const svg = screen.querySelector('svg')
+  const sum = screen.querySelector('.sum')
+  const foot = screen.querySelector('.foot')
+  const footIdle = foot.innerHTML
+
+  const clear = () => {
+    rows.forEach((tr) => { tr.classList.remove('dim'); tr.querySelectorAll('td').forEach((td) => td.classList.remove('t-A', 't-B', 't-N', 'lit')) })
+    svg.innerHTML = ''; sum.classList.remove('on'); foot.innerHTML = footIdle
+  }
+
+  const light = (g, ev) => {
+    clear()
+    const grp = groupOf(g)
+    const mates = rows.filter((tr) => tr.dataset.g === g)
+    const cells = (tr, s) => [...tr.querySelectorAll(`td[data-s="${s}"]`)]
+    const lit = []
+    mates.forEach((tr) => { lit.push(...cells(tr, 'b'), ...cells(tr, 'q')) })
+    lit.forEach((td) => td.classList.add('t-' + grp.cls, 'lit'))
+    if (mode === 'spot') rows.forEach((tr) => tr.classList.add('dim'))
+
+    if (mode === 'fil') {
+      const box = screen.getBoundingClientRect()
+      const color = getComputedStyle(document.documentElement).getPropertyValue(grp.cls === 'A' ? '--a' : grp.cls === 'B' ? '--b' : '--qb')
+      const right = (td) => { const r = td.getBoundingClientRect(); return [r.right - box.left + screen.scrollLeft, r.top + r.height / 2 - box.top] }
+      const left = (td) => { const r = td.getBoundingClientRect(); return [r.left - box.left + screen.scrollLeft, r.top + r.height / 2 - box.top] }
+      const qbRow = mates.find((tr) => tr.querySelector('td[data-s="q"]'))
+      const paths = []
+      if (qbRow) {
+        const end = left(qbRow.querySelector('td[data-s="q"]'))
+        mates.forEach((tr) => {
+          const s = right(cells(tr, 'b').at(-1))
+          const mx = (s[0] + end[0]) / 2
+          paths.push(`<path d="M${s[0]},${s[1]} C${mx},${s[1]} ${mx},${end[1]} ${end[0]},${end[1]}" />`)
+          paths.push(`<circle cx="${s[0]}" cy="${s[1]}" r="3.5" />`)
+        })
+        paths.push(`<circle cx="${end[0]}" cy="${end[1]}" r="3.5" />`)
+      } else {
+        // Les lignes se répondent entre elles : un arc à gauche.
+        const pts = mates.map((tr) => left(cells(tr, 'b')[0]))
+        for (let i = 1; i < pts.length; i++) {
+          const [a, b] = [pts[i - 1], pts[i]]
+          paths.push(`<path d="M${a[0]},${a[1]} C${a[0] - 26},${a[1]} ${b[0] - 26},${b[1]} ${b[0]},${b[1]}" />`)
+        }
+        pts.forEach((p) => paths.push(`<circle cx="${p[0]}" cy="${p[1]}" r="3.5" />`))
+      }
+      svg.innerHTML = `<g fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round">${paths.filter((p) => p.startsWith('<path')).join('')}</g><g fill="${color}">${paths.filter((p) => p.startsWith('<circle')).join('')}</g>`
+      foot.innerHTML = `<span class="chip ${grp.cls}">${grp.html}</span>`
+    } else {
+      sum.innerHTML = grp.html
+      const box = screen.getBoundingClientRect()
+      sum.style.left = Math.min(ev.clientX - box.left + screen.scrollLeft + 14, screen.scrollWidth - 330) + 'px'
+      sum.style.top = (ev.clientY - box.top + 16) + 'px'
+      sum.classList.add('on')
+    }
+  }
+
+  rows.forEach((tr) => {
+    tr.addEventListener('mouseenter', (ev) => light(tr.dataset.g, ev))
+    tr.addEventListener('mousemove', (ev) => { if (mode !== 'fil') light(tr.dataset.g, ev) })
+  })
+  screen.querySelector('table').addEventListener('mouseleave', clear)
+}
+
+document.querySelectorAll('.screen').forEach(render)
+document.getElementById('theme').onclick = () => {
+  const r = document.documentElement
+  const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches
+  r.dataset.theme = dark ? 'light' : 'dark'
+}
+</script>
+</body>
+</html>

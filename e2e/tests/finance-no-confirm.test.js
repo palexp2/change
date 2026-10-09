@@ -37,6 +37,7 @@ describe('Espace finance & extracteur — aucune double confirmation', () => {
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1500, height: 950 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     // Espion global : toute boîte de dialogue native ouverte pendant la suite
     // est enregistrée (et rejetée) — sa présence fait échouer les tests.

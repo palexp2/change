@@ -314,10 +314,12 @@ function reader(id) {
 
 // Seuils du garde-fou (ils départagent les comptes) — import paresseux : quotaGuard
 // importe ce module.
+// Une fonction id → seuils : chaque compte a les siens.
+const NO_FLOORS = () => ({ session: 0, week: 0 })
 async function floors() {
-  try { return (await import('./quotaGuard.js')).getQuotaFloors() } catch { return { session: 0, week: 0 } }
+  try { return (await import('./quotaGuard.js')).getQuotaFloors } catch { return NO_FLOORS }
 }
-let _floorsCache = { session: 0, week: 0 }
+let _floorsCache = NO_FLOORS
 
 /**
  * Vue agrégée : celle du compte qui a le plus de marge (la prochaine exécution part

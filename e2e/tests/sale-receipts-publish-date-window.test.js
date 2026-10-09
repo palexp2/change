@@ -23,6 +23,7 @@ describe('Extraction de données : fenêtre de date à la publication QB', () =>
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -61,7 +62,7 @@ describe('Extraction de données : fenêtre de date à la publication QB', () =>
   test('bloque la publication quand la date est dans le futur', async () => {
     const future = new Date(); future.setDate(future.getDate() + 5)
     await loadWithMockedDate(ymd(future))
-    await page.click('button:has-text("Publier sur QuickBooks")')
+    await page.click('[data-testid="qb-publish-open"]')
     const errBox = page.locator('text=/futur/i').first()
     await errBox.waitFor({ state: 'visible', timeout: 3000 })
     assert.ok(await errBox.isVisible(), 'Le message d\'erreur doit mentionner « futur »')
@@ -70,7 +71,7 @@ describe('Extraction de données : fenêtre de date à la publication QB', () =>
   test('bloque la publication quand la date est à plus de 30 jours dans le passé', async () => {
     const past = new Date(); past.setDate(past.getDate() - 45)
     await loadWithMockedDate(ymd(past))
-    await page.click('button:has-text("Publier sur QuickBooks")')
+    await page.click('[data-testid="qb-publish-open"]')
     const errBox = page.locator('text=/30 jours/i').first()
     await errBox.waitFor({ state: 'visible', timeout: 3000 })
     assert.ok(await errBox.isVisible(), 'Le message d\'erreur doit mentionner « 30 jours »')
@@ -83,7 +84,7 @@ describe('Extraction de données : fenêtre de date à la publication QB', () =>
     // publication réelle (pour ne rien créer dans QB). On regarde que le bouton
     // déclenche une validation qui dépasse la check de date (erreur sur compte
     // de dépense au lieu d'erreur sur date).
-    await page.click('button:has-text("Publier sur QuickBooks")')
+    await page.click('[data-testid="qb-publish-open"]')
     const dateErr = page.locator('text=/futur|30 jours/i')
     assert.equal(await dateErr.count(), 0, 'Aucune erreur liée à la date ne doit apparaître pour une date récente')
   })

@@ -67,7 +67,7 @@ test('System Builder crée le parent puis les articles avec leurs liens, sans ex
   assert.deepEqual(calls[1].fields.Commande, [order.airtable_id])
   assert.deepEqual(calls[1].fields.Produit, ['recProduct00000001'])
   assert.equal(calls[1].fields.Quantité, 1)
-  assert.equal(calls[1].fields.Type, 'Non facturable')
+  assert.equal(calls[1].fields.Type, 'Facturable')
   assert.equal(db.prepare("SELECT airtable_id FROM orders WHERE id='old-test-order'").get().airtable_id, null)
   assert.equal((await mirrorDiscoveryOrder(result.body.id)).status, 'success')
   assert.equal(calls.length, 2, 'les fiches déjà liées ne sont pas recréées')

@@ -6,9 +6,10 @@ import path from 'node:path'
 
 const dir = mkdtempSync(path.join(tmpdir(), 'ai-cost-'))
 process.env.DATABASE_PATH = path.join(dir, 'test.db')
-delete process.env.OPENAI_ADMIN_KEY
 const { default: db } = await import('../db/database.js')
 const meter = await import('./aiCostMeter.js')
+// Après les imports : database.js recharge le .env (override) et y remettrait la clé.
+delete process.env.OPENAI_ADMIN_KEY
 
 db.exec(`
   CREATE TABLE ai_usage_events (id INTEGER PRIMARY KEY AUTOINCREMENT,

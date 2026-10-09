@@ -24,11 +24,11 @@ export function parseDurationToMinutes(input) {
   return null
 }
 
-// "1:30" format from minutes.
+// "01:30" (hh:mm) format from minutes.
 export function formatMinutes(minutes) {
-  if (minutes == null || !Number.isFinite(minutes)) return '0:00'
+  if (minutes == null || !Number.isFinite(minutes)) return '00:00'
   const total = Math.max(0, Math.round(minutes))
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
 }
 
 // ── Durées en secondes (type de champ personnalisé « Duration ») ─────────────
@@ -72,14 +72,15 @@ export function parseDurationToSeconds(input) {
   return null
 }
 
-// Formate un nombre de secondes selon le format ('h:mm' ou 'h:mm:ss').
+// Formate un nombre de secondes selon le format ('h:mm' ou 'h:mm:ss'). Les
+// heures sont toujours sur 2 chiffres à l'écran : « 08:30 », « 01:30:00 ».
 export function formatDurationSeconds(totalSeconds, format = 'h:mm') {
   const fmt = normalizeDurationFormat(format)
   if (totalSeconds == null || !Number.isFinite(Number(totalSeconds))) {
-    return fmt === 'h:mm:ss' ? '0:00:00' : '0:00'
+    return fmt === 'h:mm:ss' ? '00:00:00' : '00:00'
   }
   const total = Math.max(0, Math.round(Number(totalSeconds)))
-  const h = Math.floor(total / 3600)
+  const h = String(Math.floor(total / 3600)).padStart(2, '0')
   const m = Math.floor((total % 3600) / 60)
   const s = total % 60
   if (fmt === 'h:mm:ss') return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`

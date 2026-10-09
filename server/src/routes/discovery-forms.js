@@ -66,6 +66,7 @@ function shapeForm(row) {
     is_new_site: row.is_new_site,
     within_central_controller_range: row.within_central_controller_range == null ? null : !!row.within_central_controller_range,
     central_controller_distance: row.central_controller_distance || null,
+    needs_wind_sensor: row.needs_wind_sensor == null ? null : !!row.needs_wind_sensor,
     farm_address: row.farm_address_json ? JSON.parse(row.farm_address_json) : null,
     shipping_same_as_farm: row.shipping_same_as_farm == null ? null : !!row.shipping_same_as_farm,
     shipping_address: row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null,

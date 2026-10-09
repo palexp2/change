@@ -8,6 +8,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { requireAdmin } from '../middleware/auth.js'
+import { makeUpload } from '../utils/upload.js'
+import { ensureUploadsDir } from '../config/uploads.js'
 import { TZ, shiftDate } from '../utils/datetime.js'
 import {
   listPrompts, getPrompt, createPrompt, updatePrompt, deletePrompt,
@@ -385,6 +387,26 @@ router.post('/spellfix', async (req, res) => {
   } catch (e) {
     res.status(502).json({ error: e.message })
   }
+})
+
+// Captures d'écran jointes à une demande (fenêtre « Modifier le système ») :
+// déposées AVANT le prompt, qui cite leur chemin absolu — l'agent les ouvre
+// lui-même (outil Read), aucun lien en base.
+const CAPTURE_EXT = ['.png', '.jpg', '.jpeg', '.gif', '.webp']
+const captureUpload = makeUpload({
+  destination: (req, file, cb) => {
+    try { cb(null, ensureUploadsDir('travaux-captures')) } catch (e) { cb(e) }
+  },
+  fileSize: 10 * 1024 * 1024,
+  allowedExt: CAPTURE_EXT,
+  rejectMessage: ext => `Image attendue (${ext || 'type inconnu'})`,
+})
+
+router.post('/captures', (req, res) => {
+  captureUpload.array('files', 8)(req, res, err => {
+    if (err) return res.status(400).json({ error: err.message })
+    res.status(201).json({ paths: (req.files || []).map(f => path.resolve(f.path)) })
+  })
 })
 
 router.post('/prompts', (req, res) => {

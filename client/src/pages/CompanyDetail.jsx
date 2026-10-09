@@ -1399,6 +1399,11 @@ export default function CompanyDetail({ recordId, onClose }) {
     }] : []),
   ]
 
+  // LoRa actifs : n° de série en service (« Opérationnel - … ») ayant une adresse.
+  const activeLoras = (company.serials || [])
+    .filter(s => s.address && String(s.status || '').startsWith('Opérationnel'))
+    .sort((a, b) => (Number(a.address) - Number(b.address)) || String(a.address).localeCompare(String(b.address)))
+
   const openRelated = related.find(r => r.key === centerView)
   const centerTabs = [
     { key: 'fil', label: 'Fil', count: interactionsTotal },
@@ -1627,7 +1632,7 @@ export default function CompanyDetail({ recordId, onClose }) {
                       </div>
                       <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition">
                         <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', address_rank: a.address_rank||'', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-brand-600 p-1" title="Modifier"><Edit2 size={13} /></button>
-                        <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1" title="Supprimer"><Trash2 size={13} /></button>
+                        <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; try { await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) } catch (err) { addToast({ message: err.message, type: 'error' }) } }} className="text-slate-400 hover:text-red-500 p-1" title="Supprimer"><Trash2 size={13} /></button>
                       </div>
                     </div>
                   ))}
@@ -1669,10 +1674,26 @@ export default function CompanyDetail({ recordId, onClose }) {
               )}
           </>
         )}
-        right={related.map(group => {
+        right={related.flatMap(group => {
           const count = group.count ?? group.rows.length
           const shown = group.rows.slice(0, RAIL_ROWS)
-          return (
+          return [
+            group.key === 'serials' && activeLoras.length > 0 && (
+              <CrmCard key="loras" title="LoRa actifs" count={activeLoras.length} testId="crm-card-loras">
+                <div className="flex flex-wrap gap-1 px-2 pb-1.5">
+                  {activeLoras.map(s => (
+                    <Link
+                      key={s.id}
+                      to={`/serials/${s.id}`}
+                      title={[s.serial, s.product_name].filter(Boolean).join(' · ')}
+                      className="px-1.5 py-0.5 rounded bg-slate-100 hover:bg-brand-50 text-xs font-mono text-slate-700 hover:text-brand-700"
+                    >
+                      {s.address}
+                    </Link>
+                  ))}
+                </div>
+              </CrmCard>
+            ),
             <CrmCard
               key={group.key}
               title={group.label}
@@ -1697,8 +1718,8 @@ export default function CompanyDetail({ recordId, onClose }) {
               {shown.length === 0 ? (
                 <div className="px-2 pb-1 text-sm text-slate-400">Aucun</div>
               ) : shown.map((row, i) => <CrmRow key={row.id ?? i} {...group.row(row)} />)}
-            </CrmCard>
-          )
+            </CrmCard>,
+          ].filter(Boolean)
         })}
       />
 
@@ -1747,7 +1768,10 @@ export default function CompanyDetail({ recordId, onClose }) {
         onClose={() => setShowEmail(false)}
         contacts={company.contacts || []}
         companyId={id}
+        companyName={company.name || ''}
         recipientSelect
+        withTemplates
+        wide
         onSent={reloadInteractions}
       />
 
@@ -1898,6 +1922,7 @@ export default function CompanyDetail({ recordId, onClose }) {
         isOpen={showCreateRetour}
         onClose={() => setShowCreateRetour(false)}
         companyId={id}
+        contacts={company.contacts || []}
         tickets={tickets}
         adresses={adresses}
         orders={company.orders || []}

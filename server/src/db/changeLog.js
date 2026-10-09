@@ -342,7 +342,13 @@ export function syncRollupTriggers(parentTable, rollups) {
       const base = `${prefix}${key}`
       db.exec(`CREATE TRIGGER "${base}_ins" AFTER INSERT ON ${child} BEGIN ${ins(`NEW.${fk}`)} END;`)
       // Ligne déplacée d'un parent à l'autre : les deux changent.
-      db.exec(`CREATE TRIGGER "${base}_upd" AFTER UPDATE ON ${child} BEGIN
+      // Écriture identique (import Airtable qui réécrit la même valeur) :
+      // rien ne change, le parent n'est pas renvoyé.
+      const changed = db.prepare(`PRAGMA table_info(${child})`).all()
+        .map(c => `"${c.name.replace(/"/g, '""')}"`)
+        .map(n => `OLD.${n} IS NOT NEW.${n}`).join(' OR ')
+      db.exec(`CREATE TRIGGER "${base}_upd" AFTER UPDATE ON ${child}
+        ${changed ? `WHEN ${changed}` : ''} BEGIN
         ${ins(`NEW.${fk}`)}
         INSERT INTO change_log_rollup (table_name, record_id)
           SELECT '${parentTable}', OLD.${fk} WHERE OLD.${fk} IS NOT NULL AND OLD.${fk} IS NOT NEW.${fk};

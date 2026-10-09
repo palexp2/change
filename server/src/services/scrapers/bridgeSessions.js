@@ -12,6 +12,23 @@ export const SESSION_ONLY_TARGETS = {
   // accounts.intuit.com porte les témoins d'authentification, app.qbo.intuit.com
   // ceux de l'application : `intuit.com` couvre les deux (sous-domaines compris).
   quickbooks: { label: 'QuickBooks', domains: ['intuit.com'], fragment: 'intuit.com' },
+  // Le sessionid part dans la config du connecteur Instagram (lecture des
+  // commentaires, prospects, liste à Philippe) : plus de cookie à recopier.
+  instagram: { label: 'Instagram', domains: ['instagram.com'], fragment: 'instagram.com', apply: applyInstagram },
+}
+
+/** @returns {Promise<boolean>} true si une reconnexion a relancé la tournée Instagram. */
+async function applyInstagram(state) {
+  const pick = name => state.cookies.find(c => c.name === name && String(c.domain || '').includes('instagram.com'))?.value || ''
+  const sessionid = String(pick('sessionid')).trim()
+  if (sessionid.length < 20) return false
+  const { saveSessionCookie } = await import('../instagramCommentScrape.js')
+  if (!saveSessionCookie({ sessionid, dsUserId: String(pick('ds_user_id')).trim() })) return false
+  // Même suite qu'un collage à la main : lecture, tri, messages, liste de la semaine.
+  const { refreshAfterReconnect } = await import('../instagramRefresh.js')
+  refreshAfterReconnect({ trigger: 'reconnexion Instagram (module navigateur)', sendDigest: true })
+    .catch(e => console.error('instagram refresh:', e.message))
+  return true
 }
 
 export const BRIDGE_PREFIX = 'bridge:'

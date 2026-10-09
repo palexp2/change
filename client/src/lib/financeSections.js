@@ -68,7 +68,7 @@ export const NAV_TAB_CLAIMS = FINANCE_SECTIONS.reduce((claims, s) => {
 // (components/FinanceHubTabs.jsx). Chaque page garde sa propre URL.
 const HUB_DEFS = [
   { label: 'Banque',            icon: ArrowLeftRight, group: 'Trésorerie', pages: [
-    ['/rapprochement', 'Transactions'], ['/rapprochement-qbo', 'Rapprochement'],
+    ['/rapprochement', 'Transactions'],
     ['/paiements-emis', 'Paiements émis'], ['/regles-bancaires', 'Règles'],
     ['/sale-receipts', 'Extraction de données'] ] },
   { label: 'Comptes & cartes',  icon: Wallet,         group: 'Trésorerie', pages: [

@@ -204,6 +204,47 @@ export function findPeriodInText(text, receiptDate = null) {
   return range ? formatPeriodRange(range.start, range.end) : null
 }
 
+// ─── Date de fin d'une période (libellé → date) ───────────────────────────────
+//
+// Le libellé est ce que porte `sale_receipts.service_period` : « septembre 2026 »,
+// « juillet–septembre 2026 », « 15 juil. – 14 août 2026 », « T3 2026 », « année 2026 »,
+// ou l'anglais lu sur la facture. Retourne la DERNIÈRE journée couverte en
+// 'YYYY-MM-DD', ou null si le libellé ne se lit pas (on n'invente pas).
+const iso = ({ y, m, d }) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+export function periodEndDate(label, refDate = null) {
+  const src = norm(label)
+  if (!src) return null
+  const years = [...src.matchAll(/\b(20\d{2})\b/g)].map(m => +m[1])
+  const year = years.length ? years[years.length - 1] : parseIsoDate(refDate)?.y
+  if (!year) return null
+  if (/\b(annee|year|fy)\b/.test(src) && !new RegExp(`\\b(${MONTH_RE})\\b`).test(src)) return `${year}-12-31`
+  const q = /\b(?:t|q)([1-4])\b/.exec(src)
+  if (q) { const m = +q[1] * 3; return iso({ y: year, m, d: daysInMonth(year, m) }) }
+  const re = new RegExp(`(?:\\b(\\d{1,2}) )?\\b(${MONTH_RE})\\b`, 'g')
+  let last = null
+  for (const m of src.matchAll(re)) last = m
+  if (!last) return null
+  const month = MONTH_INDEX.get(last[2])
+  const day = last[1] ? +last[1] : daysInMonth(year, month)
+  const end = { y: year, m: month, d: Math.min(day, daysInMonth(year, month)) }
+  return valid(end) ? iso(end) : null
+}
+
+// Facture d'un mois de service DÉJÀ ÉCOULÉ (demande de Charles, 2026-10-03) :
+// « septembre », datée du 1er octobre et débitée le 2 → elle appartient à
+// septembre. Retourne la date à laquelle la comptabiliser (fin de la période)
+// quand la période se termine avant le mois de `postingDate` — au plus 3 mois en
+// arrière, au-delà ce n'est plus une facture « du mois passé » mais un rattrapage
+// qui mérite un œil humain. Sinon null : la date habituelle tient.
+export function serviceAccrualDate(label, postingDate) {
+  const posting = parseIsoDate(postingDate)
+  const end = parseIsoDate(periodEndDate(label, postingDate))
+  if (!posting || !end) return null
+  const monthsBack = (posting.y * 12 + posting.m) - (end.y * 12 + end.m)
+  if (monthsBack < 1 || monthsBack > 3) return null
+  return iso(end)
+}
+
 // ─── 3. Cycle de facturation déclaré (/abonnements-fournisseurs) ──────────────
 
 // Abonnements actifs du fournisseur. Match sur le nom normalisé : le nom de

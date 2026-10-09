@@ -9,6 +9,8 @@ import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermission
 import { findContactDuplicates } from '../utils/duplicateMatch.js';
 import { readRelation } from '../services/customFieldsView.js'
 import { parsePage } from '../utils/pagination.js'
+import { mergeContacts } from '../services/contactMerge.js'
+import { requireAdmin } from '../middleware/auth.js'
 import { listContactEmailAttachments, downloadEmailAttachment } from '../services/gmail.js'
 import { listContactHubSpotFiles, contactHubSpotFile } from '../services/hubspotHistoryImport.js'
 
@@ -36,13 +38,31 @@ router.get('/lookup', (req, res) => {
   })))
 })
 
+// GET /api/contacts/language?email= — langue du destinataire d'un courriel
+// ('en' | 'fr' | null) : celle du contact, sinon celle de son entreprise (ou de
+// l'entreprise dont c'est l'adresse). Le composeur choisit la signature avec.
+router.get('/language', (req, res) => {
+  const email = String(req.query.email || '').trim()
+  if (!email) return res.json({ language: null })
+  const row = db.prepare(
+    `SELECT COALESCE(ct.language, co.language) AS language
+     FROM contacts ct LEFT JOIN companies co ON co.id = ct.company_id
+     WHERE ct.deleted_at IS NULL AND lower(ct.email) = lower(?)
+     ORDER BY (ct.language IS NULL) LIMIT 1`
+  ).get(email) || db.prepare(
+    `SELECT language FROM companies WHERE lower(email) = lower(?) AND language IS NOT NULL LIMIT 1`
+  ).get(email)
+  const l = String(row?.language || '').toLowerCase()
+  res.json({ language: l.startsWith('en') ? 'en' : l.startsWith('fr') ? 'fr' : null })
+})
+
 function loadCompanies(contactId) {
   return db.prepare(
     `SELECT cc.id as link_id, cc.company_id, c.name as company_name,
             cc.role, cc.is_primary, cc.created_at
      FROM contact_companies cc
      LEFT JOIN companies c ON c.id = cc.company_id
-     WHERE cc.contact_id = ?
+     WHERE cc.contact_id = ? AND c.deleted_at IS NULL
      ORDER BY cc.is_primary DESC, c.name COLLATE NOCASE`
   ).all(contactId)
 }
@@ -107,8 +127,9 @@ router.get('/:id', (req, res) => {
     `SELECT ct.*, c.name as company_name
      FROM ${readRelation('contacts')} ct
      LEFT JOIN companies c ON ct.company_id = c.id
-     WHERE ct.id = ?`
+     WHERE ct.id = ? AND ct.deleted_at IS NULL`
   ).get(req.params.id);
+  // Supprimé : fiche inaccessible, on ne le revoit que dans la corbeille (Charles, 2026-10-09).
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
   contact.companies = loadCompanies(req.params.id);
   res.json(contact);
@@ -339,6 +360,18 @@ router.put('/:id', (req, res) => {
 });
 
 // DELETE /api/contacts/:id
+// POST /merge { keepId, dropIds } — fusion de doublons (admin).
+router.post('/merge', requireAdmin, (req, res) => {
+  try {
+    const r = mergeContacts({ keepId: req.body?.keepId, dropIds: req.body?.dropIds })
+    for (const id of r.dropped) emitEntity('contact', 'deleted', id, { id }, req.user?.id)
+    emitEntity('contact', 'updated', r.keep_id, { id: r.keep_id }, req.user?.id)
+    res.json(r)
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Contact not found' });

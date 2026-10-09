@@ -256,3 +256,20 @@ test("scénario reporté : Statut=Gagné AND orders Est vide retourne le projet 
   const filtered = projects.filter(p => applyFilterGroup(p, filterGroup))
   assert.deepEqual(filtered.map(p => p.id), ['p2'])
 })
+
+test('date relative : avant / le / après aujourd\'hui, dans N jours', () => {
+  const now = new Date()
+  const at = off => { const d = new Date(now); d.setDate(d.getDate() + off); return localIso(d.getFullYear(), d.getMonth() + 1, d.getDate()) }
+  assert.equal(applyFilter({ d: at(-1) }, { field: 'd', op: 'before', value: '@today' }), true)
+  assert.equal(applyFilter({ d: at(0) }, { field: 'd', op: 'before', value: '@today' }), false)
+  assert.equal(applyFilter({ d: at(0) }, { field: 'd', op: 'equals', value: '@today' }), true)
+  assert.equal(applyFilter({ d: at(0) }, { field: 'd', op: 'on_or_after', value: '@today' }), true)
+  assert.equal(applyFilter({ d: at(-1) }, { field: 'd', op: 'on_or_after', value: '@today' }), false)
+  assert.equal(applyFilter({ d: at(1) }, { field: 'd', op: 'equals', value: '@tomorrow' }), true)
+  assert.equal(applyFilter({ d: at(3) }, { field: 'd', op: 'equals', value: '@days_ahead:3' }), true)
+  assert.equal(applyFilter({ d: at(-3) }, { field: 'd', op: 'on_or_before', value: '@days_ago:3' }), true)
+  // Nombre de jours pas encore saisi → règle inactive.
+  assert.equal(applyFilter({ d: at(5) }, { field: 'd', op: 'equals', value: '@days_ago:' }), true)
+  // Un texte commençant par @ reste littéral.
+  assert.equal(applyFilter({ e: 'x@orisha.io' }, { field: 'e', op: 'contains', value: '@orisha' }), true)
+})

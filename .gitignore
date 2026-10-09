@@ -5,6 +5,8 @@ client/dist/
 # Dossier de build temporaire et build précédent — deploy.sh construit dans
 # .dist-build puis bascule par renommage, en gardant l'ancien un cycle.
 client/.dist-build/
+client/.dist-build-*/
+client/.retained-assets-*/
 client/dist.prev/
 *.db
 *.db-shm
@@ -47,3 +49,7 @@ e2e/.tmp-verify/
 server/tmp/
 server/*-tmp.mjs
 client/.build.lock
+client/.build.last-start
+
+# Rapports de plantage Node (contiennent les variables d’environnement)
+server/report.*.json

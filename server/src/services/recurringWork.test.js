@@ -80,7 +80,7 @@ test('describeWeek : bornes lundi→dimanche et semaine courante', () => {
   assert.equal(w.end, '2026-08-09')
   assert.equal(w.is_current, true, 'le 9 août tombe dans la semaine 32')
   assert.equal(describeWeek('2026-08-12', '2026-08-09').is_current, false)
-  assert.match(w.label, /^Semaine 32 · 3 août au 9 août 2026$/)
+  assert.match(w.label, /^Semaine 32 · 2026-08-03 au 2026-08-09$/)
 })
 
 test('weekOptions : fenêtre autour de la semaine courante, ancienne semaine incluse à la demande', () => {

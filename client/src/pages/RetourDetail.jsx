@@ -1,13 +1,13 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ExternalLink, Package, PackageCheck } from 'lucide-react'
 import api from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
 import RetourActionsSection from '../components/RetourActionsSection.jsx'
-import RetourReceptionSection from '../components/RetourReceptionSection.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { Modal } from '../components/Modal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
@@ -39,6 +39,7 @@ function ItemField({ label, children, mono = false, full = false, col, edit }) {
       saving={!!edit.saving[col]}
       onSave={edit.save}
       recordId={edit.item.id}
+      isoDate
     />
   )
   return (
@@ -58,6 +59,10 @@ function itemTitle(item) {
     : (item?.product_name || 'Article')
 }
 
+// Liens de l'article (colonnes FK, id Boréal nu) : picker recherchable + lien.
+const SERIAL_LINK = { record_link_target: 'serial_numbers', record_link_identity: 'erp' }
+const PRODUCT_LINK = { record_link_target: 'products', record_link_identity: 'erp' }
+
 // Fiche d'un article : rendue DANS le side-peek du DataTable (peek.render), pas
 // dans son propre drawer. `onSave(itemId, colonne, valeur)` écrit un champ.
 function RetourItemPanel({ item, onClose, onSave }) {
@@ -73,6 +78,8 @@ function RetourItemPanel({ item, onClose, onSave }) {
   const edit = { item, fields, saving, save }
   // Bloc facultatif : montré s'il a une valeur, ou s'il peut en recevoir une.
   const shown = col => !!item[col] || (fields.get(col) && isEditableCustomField(fields.get(col)))
+  // Lien sans numéro (« …/issues/ ») : pas d'issue.
+  const issueNum = item.lien_issue_github && item.issue_github ? Math.trunc(Number(item.issue_github)) || null : null
   return (
     <div className="p-6 space-y-5">
 
@@ -80,12 +87,11 @@ function RetourItemPanel({ item, onClose, onSave }) {
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Identification</h3>
           <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
             <ItemField label="N° de série" mono>
-              {item.serial_id
-                ? <Link to={`/serials/${item.serial_id}`} className="link-record" onClick={onClose}>{item.serial_number || '—'}</Link>
-                : item.serial_number}
+              <LinkedRecordsValue field={SERIAL_LINK} value={item.serial_id} detail saving={!!saving.serial_id} onChange={v => save('serial_id', v)} />
             </ItemField>
             <ItemField label="N° de ligne" mono col="at_id" edit={edit}>{item.at_id}</ItemField>
-            <ItemField label="Statut du n° de série" col="statut_du_de_serie" edit={edit}>{item.statut_du_de_serie}</ItemField>
+            {/* Statut actuel du n° de série ; `statut_du_de_serie` n'est qu'une copie Airtable figée. */}
+            <ItemField label="Statut du n° de série">{item.serial_id ? item.serial_status : item.statut_du_de_serie}</ItemField>
           </dl>
         </section>
 
@@ -98,7 +104,9 @@ function RetourItemPanel({ item, onClose, onSave }) {
                 : item.product_name}
             </ItemField>
             <ItemField label="SKU" mono>{item.sku}</ItemField>
-            <ItemField label="Produit à recevoir">{item.product_to_receive || item.poduit_a_recevoir_fr_for_email_display}</ItemField>
+            <ItemField label="Produit à recevoir">
+              <LinkedRecordsValue field={PRODUCT_LINK} value={item.product_id} detail saving={!!saving.product_id} onChange={v => save('product_id', v)} />
+            </ItemField>
             <ItemField label="Prix de l'item" col="prix_de_l_item" edit={edit}>{item.prix_de_l_item ? fmtMoney(item.prix_de_l_item) : null}</ItemField>
           </dl>
         </section>
@@ -129,33 +137,29 @@ function RetourItemPanel({ item, onClose, onSave }) {
                 : item.analyzed_by}
             </ItemField>
             <ItemField label="Date d'analyse" col="date_d_analyse" edit={edit}>{fmtDate(item.date_d_analyse)}</ItemField>
+            {/* Fin d'abonnement / changé d'idée / erreur de commande : tous cochés → retour « Traité ». */}
+            <ItemField label="Traité" col="cf_traite" edit={edit}>{item.cf_traite ? 'Oui' : null}</ItemField>
             {shown('analysis_notes') && <ItemField label="Notes d'analyse" full col="analysis_notes" edit={edit}>{item.analysis_notes}</ItemField>}
             {shown('notes_de_retour') && <ItemField label="Notes du retour" full col="notes_de_retour" edit={edit}>{item.notes_de_retour}</ItemField>}
             {shown('instructions_pour_le_receptionniste') && <ItemField label="Instructions pour le réceptionniste" full col="instructions_pour_le_receptionniste" edit={edit}>{item.instructions_pour_le_receptionniste}</ItemField>}
           </dl>
         </section>
 
-        {(item.billets || item.commande) && (
+        {(item.billets || item.commande || issueNum) && (
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Liés</h3>
             <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
               {item.billets && <ItemField label="Billet"><LinkedRecordsValue field={{ record_link_target: 'tickets' }} value={item.billets} /></ItemField>}
+              {/* Suit l'issue du billet lié (résolue par le serveur). */}
+              {issueNum && (
+                <ItemField label="Issue GitHub">
+                  <a href={item.lien_issue_github} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 link-record" data-testid="retour-item-issue">
+                    #{issueNum} <ExternalLink size={13} />
+                  </a>
+                </ItemField>
+              )}
               {item.commande && <ItemField label="Commande de remplacement"><LinkedRecordsValue field={{ record_link_target: 'orders' }} value={item.commande} /></ItemField>}
             </dl>
-          </section>
-        )}
-
-        {item.lien_issue_github && (
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Liens</h3>
-            <a
-              href={item.lien_issue_github}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-sm link-record"
-            >
-              Issue GitHub #{item.issue_github ? Math.trunc(Number(item.issue_github)) : ''} <ExternalLink size={13} />
-            </a>
           </section>
         )}
 
@@ -187,6 +191,9 @@ const ITEM_RENDERS = {
   serial_number: item => (item.serial_id
     ? <Link to={`/serials/${item.serial_id}`} onClick={e => e.stopPropagation()} className="font-mono text-xs font-medium link-record">{item.serial_number || '—'}</Link>
     : <span className="font-mono text-xs font-medium text-slate-900">{item.serial_number || '—'}</span>),
+  lora_address: item => (item.lora_address
+    ? <span className="font-mono text-xs text-slate-700">{item.lora_address}</span>
+    : <span className="text-slate-300">—</span>),
   product_name: item => (item.product_id
     ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="font-medium link-record">{item.product_name || 'Produit'}</Link>
     : <span className="font-medium text-slate-900">{item.product_name || '—'}</span>),
@@ -206,6 +213,8 @@ const ITEM_RENDERS = {
     : (item.analyzed_by || <span className="text-slate-300">—</span>)),
 }
 const ITEM_COLUMNS = TABLE_COLUMN_META.return_items.map(meta => ({ ...meta, render: ITEM_RENDERS[meta.id] }))
+// « Traité » (champ perso de l'article) : montré d'office, il fait le statut du retour.
+const ITEM_COLUMN_PATCHES = { cf_traite: { defaultVisible: true } }
 
 export default function RetourDetail({ recordId: id }) {
   const { record: retour, setRecord: setRetour, loading, loadError, reload: load } =
@@ -218,6 +227,26 @@ export default function RetourDetail({ recordId: id }) {
 
   const { addToast } = useToast()
   const { user } = useAuth()
+  const { fields: returnFields } = useCustomFields('returns')
+  const contactField = useMemo(() => (returnFields || []).find(f => f.column_name === 'cf_contact') || null, [returnFields])
+  // Le contact ne se choisit que parmi ceux de l'entreprise du retour (portée
+  // par ses articles). Aucune entreprise / aucun contact → liste vide.
+  const companyId = retour?.items?.find(it => it.company_id)?.company_id || null
+  const [companyContactIds, setCompanyContactIds] = useState([])
+  useEffect(() => {
+    setCompanyContactIds([])
+    if (!companyId) return
+    let alive = true
+    api.companies.get(companyId)
+      .then(c => { if (alive) setCompanyContactIds((c?.contacts || []).map(ct => String(ct.id))) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [companyId])
+  const contactFilter = useMemo(() => (
+    companyContactIds.length
+      ? [{ column: 'id', op: 'is_any_of', value: companyContactIds }]
+      : [{ column: 'id', op: 'is', value: '__aucun__' }]
+  ), [companyContactIds])
 
   // Autosave des champs du retour. Seuls les champs bidirectionnels (ou sans
   // import Airtable) sont éditables — le serveur refuse les autres, dont la
@@ -241,33 +270,45 @@ export default function RetourDetail({ recordId: id }) {
       : r))
   }, [setRetour])
 
+  // Statut et compteurs du retour : calculés d'après ses articles. Relus sans
+  // recharger la fiche (un rechargement démonterait le side-peek ouvert).
+  const refreshRetourFields = useCallback(() => {
+    api.retours.get(id)
+      .then(({ items: _items, ...fresh }) => setRetour(r => (r ? { ...r, ...fresh } : r)))
+      .catch(() => {})
+  }, [id, setRetour])
+
   // Écriture d'un champ d'article : tableau (mode tableur) et side-peek.
   const saveItemValue = useCallback(async (itemId, column, value) => {
     try {
       const updated = await api.retours.updateItem(itemId, { [column]: value })
-      patchItem({ id: itemId, [column]: updated?.[column] ?? value })
+      // Libellés joints (n° de série, produit) relus avec l'article : un lien
+      // changé met aussi à jour le titre, le SKU, le statut du n° de série.
+      const joined = {}
+      for (const k of ['serial_number', 'serial_status', 'lora_address', 'product_name', 'sku', 'product_to_receive']) {
+        if (updated && k in updated) joined[k] = updated[k]
+      }
+      patchItem({ id: itemId, ...joined, [column]: updated?.[column] ?? value })
+      refreshRetourFields()
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
     }
-  }, [addToast, patchItem])
+  }, [addToast, patchItem, refreshRetourFields])
   const saveItemField = useCallback((row, col, value) => saveItemValue(row.id, col.field, value), [saveItemValue])
 
-  // Réceptionniste et date : partagés par le pistolet et par le bouton
-  // « Réceptionner » des articles cochés.
-  const [receptionPerson, setReceptionPerson] = useState(() => user?.name || '')
-  const [receptionDate, setReceptionDate] = useState(() => localISODate())
-  // Consigne d'étagère du dernier geste (scan ou « Réceptionner »).
-  const [receptionResults, setReceptionResults] = useState([])
-
+  // « Réceptionner » des articles cochés : l'utilisateur connecté, aujourd'hui.
+  const [shelfNotes, setShelfNotes] = useState([])
   const receiveItems = useCallback(async (itemIds) => {
     const r = await api.retours.receiveItems(id, {
-      item_ids: itemIds, received_by: receptionPerson, received_at: receptionDate,
+      item_ids: itemIds, received_by: user?.name || '', received_at: localISODate(),
     })
     for (const itemId of r.received || []) {
       patchItem({ id: itemId, received_at: r.received_at, received_by: r.received_by })
     }
-    setReceptionResults((r.instructions || []).map(x => ({ action: 'received', ...x })))
-  }, [id, receptionPerson, receptionDate, patchItem])
+    refreshRetourFields()
+    // Consigne d'étagère (analyse / reconditionnement), article par article.
+    setShelfNotes(r.instructions || [])
+  }, [id, user?.name, patchItem, refreshRetourFields])
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: retour, notFound: 'Retour introuvable.' })
   if (pending) return pending
@@ -279,7 +320,8 @@ export default function RetourDetail({ recordId: id }) {
             table se règlent depuis la fiche (bouton « Personnaliser les
             champs »). Les champs personnalisés de /champs/retours s'y posent
             seuls, et restent modifiables — d'où `onSaveCustom`.
-            « Statut » retiré : colonne droppée (migration serveur 041). */}
+            « Statut » retiré : colonne droppée (migration serveur 041).
+            « Date de réception » retirée à la demande (la date vit par article). */}
         <DetailFieldGrid
           entityType="retours"
           record={retour}
@@ -291,8 +333,18 @@ export default function RetourDetail({ recordId: id }) {
           <DetailField id="created_at" label="Date de création">
             <span className="text-sm text-slate-700">{fmtDate(retour.created_at)}</span>
           </DetailField>
-          <DetailField id="received_at" label="Date de réception">
-            <span className="text-sm text-slate-700">{retour.received_at ? fmtDate(retour.received_at) : '—'}</span>
+          {/* Contact du retour : fixe la langue du courriel d'instructions. */}
+          <DetailField id="cf_contact" label="Contact" saving={savingKeys.cf_contact}>
+            {contactField ? (
+              <LinkedRecordsValue
+                field={contactField}
+                value={retour.cf_contact}
+                detail
+                extraFilter={contactFilter}
+                saving={!!savingKeys.cf_contact}
+                onChange={contactField.writable === false ? null : v => saveField('cf_contact', v)}
+              />
+            ) : <span className="text-slate-400">—</span>}
           </DetailField>
         </DetailFieldGrid>
 
@@ -300,19 +352,6 @@ export default function RetourDetail({ recordId: id }) {
         <div className="card p-5 mb-4">
           <RetourActionsSection retour={retour} onDone={load} />
         </div>
-
-        {/* Réception : qui reçoit, quand, et le pistolet. Juste au-dessus des
-            articles — c'est sur eux que le scan pose la date et la personne. */}
-        <RetourReceptionSection
-          retour={retour}
-          person={receptionPerson}
-          setPerson={setReceptionPerson}
-          date={receptionDate}
-          setDate={setReceptionDate}
-          onItemReceived={patchItem}
-          results={receptionResults}
-          setResults={setReceptionResults}
-        />
 
         {/* Articles — DataTable (vues, tri, filtres, groupement, side-peek sur
             la fiche de l'article). Les articles NAISSENT du miroir Airtable
@@ -326,8 +365,9 @@ export default function RetourDetail({ recordId: id }) {
             data={retour.items || []}
             searchFields={['serial_number', 'product_name', 'sku', 'return_reason', 'action']}
             onCellEdit={saveItemField}
-            // Cases à cocher → « Réceptionner » : date et réceptionniste de
-            // la section Réception posés sur chaque article choisi.
+            columnPatches={ITEM_COLUMN_PATCHES}
+            // Cases à cocher → « Réceptionner » : date du jour et utilisateur
+            // connecté posés sur chaque article choisi.
             bulkDeleteAlways
             bulkActions={[{
               key: 'receive',
@@ -362,6 +402,28 @@ export default function RetourDetail({ recordId: id }) {
             }}
           />
         </div>
+
+        <Modal isOpen={shelfNotes.length > 0} onClose={() => setShelfNotes([])} title="Étagère" size="sm">
+          <div className="space-y-2" data-testid="reception-shelf">
+            {shelfNotes.map((n, i) => (
+              <div
+                key={n.item?.id || i}
+                className={`rounded-xl border px-3 py-2.5 text-sm font-medium ${n.shelf === 'reconditionnement'
+                  ? 'border-sky-200 bg-sky-50 text-sky-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-800'}`}
+                data-testid="reception-message"
+              >
+                <div>{n.message}</div>
+                <div className="text-xs font-normal opacity-70">
+                  {[n.item?.serial_number, n.item?.product_name].filter(Boolean).join(' · ')}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 flex justify-end">
+            <button type="button" className="btn-primary" onClick={() => setShelfNotes([])}>OK</button>
+          </div>
+        </Modal>
     </DetailShell>
   )
 }

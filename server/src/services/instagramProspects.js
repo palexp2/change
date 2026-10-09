@@ -587,7 +587,7 @@ export function coveredWeek(dayIso) {
 }
 
 /**
- * Bornes d'une semaine ISO, en clair : '2026-W35' → « du 17 au 23 août ».
+ * Bornes d'une semaine ISO, en clair : '2026-W34' → « du 2026-08-17 au 2026-08-23 ».
  * Le numéro ISO ne dit rien à personne — la date, si.
  */
 export function weekRangeLabel(weekKey) {
@@ -600,19 +600,15 @@ export function weekRangeLabel(weekKey) {
   monday.setUTCDate(jan4.getUTCDate() - ((jan4.getUTCDay() + 6) % 7) + (Number(week) - 1) * 7)
   const sunday = new Date(monday)
   sunday.setUTCDate(monday.getUTCDate() + 6)
-  const fmt = (d, withMonth) => new Intl.DateTimeFormat('fr-CA', {
-    timeZone: 'UTC', day: 'numeric', ...(withMonth ? { month: 'long' } : {}),
-  }).format(d)
-  // « du 17 au 23 août » quand c'est le même mois, « du 29 septembre au 5 octobre » sinon.
-  const sameMonth = monday.getUTCMonth() === sunday.getUTCMonth()
-  return `du ${fmt(monday, !sameMonth)} au ${fmt(sunday, true)}`
+  const fmt = d => d.toISOString().slice(0, 10)
+  return `du ${fmt(monday)} au ${fmt(sunday)}`
 }
 
 // Libellés de la ventilation par origine du message hebdomadaire : [nature,
 // singulier, pluriel]. L'ordre est celui de l'affichage.
 const CAPTURE_KIND_ORDER = [
   ['comment', 'commentaire', 'commentaires'],
-  ['follow', 'abonné', 'abonnés'],
+  ['follow', 'nouvel abonné', 'nouveaux abonnés'],
   ['dm_in', 'message privé', 'messages privés'],
   ['story_reaction', 'réaction de story', 'réactions de story'],
   ['contact', 'contact ManyChat', 'contacts ManyChat'],
@@ -627,14 +623,12 @@ const CAPTURE_KIND_ORDER = [
  * défiler, périmé dès qu'une case est cochée.
  */
 export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = null, backlogCount = 0 } = {}) {
-  // « du 7 au 13 septembre » → « 7 au 13 septembre » : le titre porte déjà le
+  // « du 2026-09-07 au 2026-09-13 » → sans « du » : le titre porte déjà le
   // contexte, l'article ne sert qu'à allonger la ligne.
   const range = weekRangeLabel(coveredWeek(dayIso || localDay())).replace(/^du /, '')
-  const links = [
-    erpUrl ? `<${erpUrl}|ERP>` : null,
-    url ? `<${url}|Airtable>` : null,
-  ].filter(Boolean)
-  const footer = links.length ? `\n${links.join(' · ')}` : ''
+  // Un seul lien : Phil travaille dans Boréal (maquette P1, Charles 2026-10-03).
+  const target = erpUrl || url
+  const footer = target ? `\n<${target}|Ouvrir dans Boréal>` : ''
   // Arriéré = prospects jamais annoncés mais captés avant la semaine couverte
   // (envoi manqué, marquage tardif...). Toujours inclus dans l'annonce et
   // compté à part pour ne pas gonfler le portrait de LA semaine.
@@ -642,7 +636,7 @@ export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = nul
 
   if (!prospects.length) {
     return [
-      `:camera_with_flash: *Prospects Instagram · ${range}*`,
+      `:camera_with_flash: *Instagram · ${range}*`,
       '• Personne de nouveau cette semaine.',
       ...backlogLine.map(l => `• ${l}`),
     ].join('\n') + footer
@@ -675,7 +669,7 @@ export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = nul
   if (activity.length) lines.push(activity.join(' · '))
 
   return [
-    `:camera_with_flash: *${prospects.length} prospect${prospects.length > 1 ? 's' : ''} · ${range}*`,
+    `:camera_with_flash: *${prospects.length} personne${prospects.length > 1 ? 's' : ''} · ${range}*`,
     ...lines.map(l => `• ${l}`),
     ...backlogLine.map(l => `• ${l}`),
   ].join('\n') + footer
@@ -750,6 +744,10 @@ export async function runWeeklyProspectDigest({ force = false, weekly = false, t
     `)
     const week = isoWeekKey(dayIso)
     db.transaction(() => { for (const p of prospects) mark.run(week, p.id) })()
+    // Le travail récurrent du samedi (« envoyer la liste à Phil ») se coche seul.
+    import('./recurringWork.js')
+      .then(({ completeFromAutomation }) => completeFromAutomation('rt-al-liste-instagram-phil', { note: `${prospects.length} personne(s) annoncée(s)` }))
+      .catch(() => {})
     for (const p of prospects) pushToAirtable(p.id).catch(() => {})
 
     // Seul l'envoi planifié porte le préfixe HEBDO <semaine> : c'est lui qui

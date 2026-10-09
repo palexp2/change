@@ -44,7 +44,9 @@ function bookedAccount(txn) {
  * @param months  profondeur de relevé examinée
  * @returns habitudes triées : les plus prêtes d'abord, puis les plus fréquentes
  */
-export function habitsFromStatement({ months = 18, limit = 120 } = {}) {
+// `pattern` : un seul libellé (la ligne ouverte au rapprochement) — on ne
+// calcule que son groupe, pas les centaines d'autres (10 s → quelques ms).
+export function habitsFromStatement({ months = 18, limit = 120, pattern: only = null } = {}) {
   const rules = activeRules()
   const txns = db.prepare(`
     SELECT id, account_id, txn_date, description, details, amount, status, matched_type, matched_id
@@ -55,9 +57,9 @@ export function habitsFromStatement({ months = 18, limit = 120 } = {}) {
   // On ne propose que ce qu'aucune règle ne couvre déjà.
   const groups = new Map()
   for (const t of txns) {
-    if (rules.some((r) => ruleSpecificity(r, t) > 0)) continue
     const key = stripBankNoise(ruleLabelOf(t))
-    if (!key) continue
+    if (!key || (only && key !== only)) continue
+    if (rules.some((r) => ruleSpecificity(r, t) > 0)) continue
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(t)
   }

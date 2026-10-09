@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { BarChart3, Table2, ArrowUpRight, ArrowDownRight, AlertTriangle, RefreshCw, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import api from '../lib/api.js'
+import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney as fmtMoneyBase, fmtNumber } from '../utils/formatters.js'
 
 /* ── Vue globale du tableau de bord ────────────────────────────────────────
@@ -595,8 +596,8 @@ function lastMondayKeys(n) {
     d.setDate(monday.getDate() - i * 7)
     out.push({
       key: d.toISOString().slice(0, 10),
-      label: `Sem. du ${d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })}`,
-      short: d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' }),
+      label: `Sem. du ${fmtDate(d)}`,
+      short: fmtDate(d).slice(5),
     })
   }
   return out
@@ -658,12 +659,27 @@ function mergeOtherExpenses(rows) {
   return out
 }
 
+// QB (en français) ne renvoie pas le bénéfice brut : « Marge brute » =
+// revenus − coût des marchandises vendues, inséré juste après le détail du CMV.
+function addGrossMargin(rows) {
+  if (rows.some(r => r.group === 'GrossProfit')) return rows
+  const top = group => rows.find(r => r.group === group && !r.depth && r.values)
+  const inc = top('Income'), cogs = top('COGS')
+  if (!inc || !cogs) return rows
+  let at = rows.indexOf(cogs) + 1
+  while (at < rows.length && (rows[at].parents || []).includes(cogs.id)) at++
+  const values = inc.values.map((v, i) => Math.round((v - (cogs.values[i] || 0)) * 100) / 100)
+  const total = Math.round((inc.total - cogs.total) * 100) / 100
+  const margin = { id: 'gross-margin', kind: 'summary', label: 'Marge brute', group: 'GrossProfit', depth: 0, parents: [], values, total }
+  return [...rows.slice(0, at), margin, ...rows.slice(at)]
+}
+
 function IncomeStatementCard({ data, error }) {
   // `null` = état par défaut : tout replié, on ne voit que les titres de
   // section (avec leur total) et le résultat net. Le détail par compte est à un clic.
   const [override, setOverride] = useState(null)
   const months = data?.months || []
-  const rows = mergeSectionTotals(mergeOtherExpenses(data?.rows || []))
+  const rows = addGrossMargin(mergeSectionTotals(mergeOtherExpenses(data?.rows || [])))
   const sections = rows.filter(r => r.collapsible)
   const collapsed = override || new Set(sections.map(r => r.id))
   const allCollapsed = sections.length > 0 && sections.every(r => collapsed.has(r.id))
@@ -687,10 +703,6 @@ function IncomeStatementCard({ data, error }) {
       <div className="mb-2 flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-[13px] font-semibold text-slate-800">État des résultats</h3>
-          <p className="truncate text-[11px] text-slate-400">
-            QuickBooks · 12 mois glissants
-            {data?.net_income ? ` · ${fmtMoneyCompact(data.net_income.total)} sur la période` : ''}
-          </p>
         </div>
         {sections.length > 0 && (
           <button
@@ -778,9 +790,6 @@ function IncomeStatementCard({ data, error }) {
 export function DashboardOverview({ data, subscriptionEvents }) {
   const [bank, setBank] = useState(null)
   const [bankError, setBankError] = useState(null)
-  const [accountBalances, setAccountBalances] = useState(null)
-  const [accountBalancesError, setAccountBalancesError] = useState(false)
-  const [accountBalancesLoading, setAccountBalancesLoading] = useState(true)
   const [history, setHistory] = useState(null)
   const [qbRevenue, setQbRevenue] = useState(null)
   const [qbRevenueError, setQbRevenueError] = useState(null)
@@ -795,17 +804,11 @@ export function DashboardOverview({ data, subscriptionEvents }) {
     api.dashboard.incomeStatement({ months: 12, ...opts })
       .then(setPnl)
       .catch(e => { setPnl(null); setPnlError(e?.message || 'Erreur QuickBooks') })
-    api.dashboard.bankAccounts(opts).then(setBank).catch(e => setBankError(e?.message || 'Erreur QuickBooks'))
     api.dashboard.bankAccountsHistory({ months: 12, ...opts }).then(setHistory).catch(() => setHistory({ months: [] }))
     api.dashboard.revenueByMonth({ months: 12, ...opts })
       .then(setQbRevenue)
       .catch(e => { setQbRevenue(null); setQbRevenueError(e?.message || 'Erreur QuickBooks') })
-    setAccountBalancesLoading(true)
-    setAccountBalancesError(false)
-    return api.dashboard.overviewBalances(opts)
-      .then(result => setAccountBalances(result.accounts))
-      .catch(() => { setAccountBalances(null); setAccountBalancesError(true) })
-      .finally(() => setAccountBalancesLoading(false))
+    return api.dashboard.bankAccounts(opts).then(setBank).catch(e => setBankError(e?.message || 'Erreur QuickBooks'))
   }
 
   useEffect(() => { loadFinance() }, [])
@@ -958,7 +961,7 @@ export function DashboardOverview({ data, subscriptionEvents }) {
               <button
                 type="button"
                 onClick={refreshFinance}
-                disabled={accountBalancesLoading}
+                disabled={reloading}
                 aria-label="Rafraîchir les soldes"
                 title="Rafraîchir les soldes"
                 className="rounded p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
@@ -987,31 +990,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
                 </p>
               </>
             )}
-            <div className="mt-3" data-testid="overview-account-balances" aria-busy={accountBalancesLoading}>
-              {accountBalancesError ? (
-                <p className="text-xs text-rose-600" role="status">Soldes indisponibles. Réessayez avec le bouton de rafraîchissement.</p>
-              ) : !accountBalances ? (
-                <p className="text-xs text-slate-400" role="status">Chargement des comptes…</p>
-              ) : (
-                <dl className={`space-y-2 ${accountBalancesLoading ? 'opacity-50' : ''}`}>
-                  {accountBalances.map(account => (
-                    <div key={account.key} className="flex items-baseline justify-between gap-3 text-[11px]">
-                      <dt className="min-w-0 text-slate-500">{account.name}</dt>
-                      <dd className="shrink-0 text-right">
-                        <div className="font-medium text-slate-700 tabular-nums">
-                          {fmtMoneyBase(account.balance, account.currency, { decimals: 2 })}
-                        </div>
-                        <div className="text-[10px] text-slate-400" title={account.as_of ? `Solde lu le ${new Date(account.as_of).toLocaleString('fr-CA')}` : undefined}>
-                          {account.source === 'plaid_live' ? 'Plaid · à jour'
-                            : account.source === 'plaid_cached' ? 'Plaid · dernier solde connu'
-                            : account.source === 'quickbooks' ? 'QuickBooks' : 'Indisponible'}
-                        </div>
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
-              )}
-            </div>
           </div>
           <div>
             <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Évolution — 12 derniers mois</p>
@@ -1145,9 +1123,7 @@ export function DashboardOverview({ data, subscriptionEvents }) {
         <div className="card p-3" data-testid="overview-bank-accounts">
           <div className="mb-2 flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <h3 className="truncate text-[13px] font-semibold text-slate-800">
-                <Link to="/dashboard/soldes-bancaires" className="hover:text-brand-700 hover:underline">Soldes par compte</Link>
-              </h3>
+              <h3 className="truncate text-[13px] font-semibold text-slate-800">Soldes par compte</h3>
               <p className="truncate text-[11px] text-slate-400">QuickBooks · converti en CAD</p>
             </div>
           </div>

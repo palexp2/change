@@ -55,6 +55,7 @@ export const TABLE_LABELS = {
   achats_fournitures: 'Achats de fournitures',
   fournitures:    'Fournitures',
   fourniture_achats: 'Achats (fourniture)',
+  timesheet_hours: 'Heures par jour',
   product_movements: "Mouvements de stock (produit)",
   product_purchases: 'Achats (pièce)',
   product_used_in: 'Utilisé dans (pièce)',
@@ -62,6 +63,13 @@ export const TABLE_LABELS = {
   journal_entries: 'Écritures de journal',
   stripe_payouts: 'Versements Stripe',
   marketing_forms: 'Formulaires',
+  meeting_types: 'Pages de rendez-vous',
+  meeting_bookings: 'Rendez-vous',
+  page_acceptances: 'Acceptations',
+  stripe_products: 'Catalogue de vente',
+  catalogue_offers: 'Produits de soumission',
+  stripe_prices:  'Prix',
+  email_templates: 'Modèles de courriel',
   marketing_form_submissions: 'Soumissions (formulaire)',
   marketing_form_script_runs: 'Déclenchements (formulaire)',
   stripe_invoice_items: 'Items vendus',
@@ -121,6 +129,7 @@ export const TABLE_RECORD_LABELS = {
   employees:      'Employé',
   users:          'Utilisateur',
   ops_issues:     'Problème',
+  email_templates: 'Modèle de courriel',
 }
 
 export const LINKED_RECORD_TYPE_LABELS = {
@@ -189,6 +198,7 @@ export const TABLE_COLUMN_META = {
   travaux_prompts: [
     { id: 'etat',            label: 'État',     field: 'etat', width: 130 },
     { id: 'title',           label: 'Titre',    field: 'title', width: 420 },
+    { id: 'type',            label: 'Type',     field: 'type', type: 'single_select', options: ['Implémentation', 'Question'], width: 130 },
     { id: 'created_by_name', label: 'Par',      field: 'created_by_name', width: 150 },
     { id: 'page',            label: 'Page',     field: 'page', width: 160 },
     { id: 'model',           label: 'Modèle',   field: 'model_label', width: 100 },
@@ -223,7 +233,7 @@ export const TABLE_COLUMN_META = {
     { id: 'name',         label: 'Nom',          field: 'name' },
     { id: 'shared_with',  label: 'Partagé avec', field: 'shared_with', sortable: false, groupable: false, filterable: false },
     { id: 'payable',      label: 'Payable',      field: 'payable',      type: 'boolean' },
-    { id: 'rsde_default', label: 'RSDE',         field: 'rsde_default', type: 'boolean' },
+    { id: 'rsde_project', label: 'Projet R&D',   field: 'rsde_project' },
     { id: 'active',       label: 'Actif',        field: 'active',       type: 'boolean' },
     { id: 'created_at',   label: 'Créé le',      field: 'created_at',   type: 'date', defaultVisible: false },
   ],
@@ -536,6 +546,8 @@ export const TABLE_COLUMN_META = {
   // affichait n'existe plus.
   return_items: [
     { id: 'serial_number',  label: 'N° de série',   field: 'serial_number', mappingColumn: 'serial_id' },
+    // Adresse LoRa : lue sur le n° de série (serial_numbers.address), lecture seule.
+    { id: 'lora_address',   label: 'Adresse LoRa',  field: 'lora_address' },
     { id: 'product_name',   label: 'Produit reçu',  field: 'product_name' },
     { id: 'sku',            label: 'SKU',           field: 'sku' },
     { id: 'return_reason',  label: 'Raison',        field: 'return_reason' },
@@ -554,6 +566,7 @@ export const TABLE_COLUMN_META = {
     { id: 'document_number',       label: 'N° document',       field: 'document_number' },
     { id: 'invoice_id',            label: 'ID Stripe/source',  field: 'invoice_id',            defaultVisible: false },
     { id: 'company_name',          label: 'Entreprise',        field: 'company_name'  },
+    { id: 'contact_name',          label: 'Contact',           field: 'contact_name' },
     { id: 'customer_email',        label: 'Courriel client',   field: 'customer_email',        defaultVisible: false },
     { id: 'project_name',          label: 'Projet',            field: 'project_name',          defaultVisible: false  },
     { id: 'order_number',          label: 'Commande',          field: 'order_number',          defaultVisible: false  },
@@ -587,9 +600,13 @@ export const TABLE_COLUMN_META = {
 
   abonnements: [
     { id: 'company_name', label: 'Entreprise', field: 'company_name'  },
+    { id: 'contact_name', label: 'Contact',    field: 'contact_name' },
     { id: 'status',       label: 'Statut',     field: 'status', type: 'single_select', options: ['active', 'trialing', 'past_due', 'canceled', 'Actif', 'Inactif', 'Suspendu', 'Annulé', 'Expiré'] },
     { id: 'rachat',       label: 'Rachat',     field: 'rachat', defaultVisible: false },
     { id: 'amount_cad',   label: 'Montant (CAD)', field: 'amount_cad', type: 'number' },
+    // Devise de facturation Stripe (synchronisée, non modifiable : Stripe la fige).
+    { id: 'currency',     label: 'Devise',     field: 'currency', type: 'single_select', options: ['CAD', 'USD'] },
+    { id: 'interval_type', label: 'Intervalle', field: 'interval_type', type: 'single_select', options: ['month', 'year', 'week'] },
     { id: 'start_date',   label: 'Début',      field: 'start_date', type: 'date' },
     { id: 'start_month',  label: 'Mois de début', field: 'start_month' },
     { id: 'end_date',     label: 'Fin',        field: 'end_date',   type: 'date', defaultVisible: false },
@@ -1165,6 +1182,78 @@ export const TABLE_COLUMN_META = {
     { id: 'hs_created_at',      label: 'Créé',                field: 'hs_created_at', type: 'date', defaultVisible: false },
   ],
 
+  meeting_types: [
+    { id: 'name',           label: 'Nom',           field: 'name', width: 260 },
+    { id: 'owner_name',     label: 'Avec',          field: 'owner_name', width: 160 },
+    { id: 'durations',      label: 'Durées',        field: 'durations', width: 140, sortable: false },
+    { id: 'upcoming_count', label: 'À venir',       field: 'upcoming_count', type: 'number' },
+    { id: 'booking_count',  label: 'Réservations',  field: 'booking_count', type: 'number', defaultVisible: false },
+    { id: 'calendar',       label: 'Agenda',        field: 'calendar', type: 'boolean', width: 90 },
+    { id: 'active',         label: 'Active',        field: 'active', type: 'boolean', width: 80 },
+    { id: 'public_url',     label: 'Lien',          field: 'public_url', width: 80, sortable: false },
+  ],
+
+  email_templates: [
+    { id: 'name',            label: 'Nom',      field: 'name', width: 260 },
+    { id: 'subject',         label: 'Objet',    field: 'subject', width: 320 },
+    { id: 'language',        label: 'Langue',   field: 'language', type: 'single_select', options: ['fr', 'en'], width: 80 },
+    { id: 'created_by_name', label: 'Créé par', field: 'created_by_name', width: 140, defaultVisible: false },
+    { id: 'updated_at',      label: 'Modifié',  field: 'updated_at', type: 'date', width: 130 },
+  ],
+
+  stripe_products: [
+    { id: 'name',        label: 'Produit', field: 'name', width: 300 },
+    { id: 'prices',      label: 'Prix',    field: 'price_label', width: 360, sortable: false },
+    { id: 'active',      label: 'Actif',   field: 'active', width: 80 },
+    { id: 'description', label: 'Description', field: 'description', width: 260, defaultVisible: false },
+    { id: 'id',          label: 'Stripe',  field: 'id', width: 200, defaultVisible: false },
+  ],
+
+  catalogue_offers: [
+    { id: 'sku',               label: 'SKU',          field: 'sku', width: 100 },
+    { id: 'name_fr',           label: 'Produit',      field: 'name_fr', width: 280 },
+    { id: 'price_cad',         label: 'Achat CAD',    field: 'price_cad', type: 'number', width: 110 },
+    { id: 'price_usd',         label: 'Achat USD',    field: 'price_usd', type: 'number', width: 110 },
+    { id: 'monthly_price_cad', label: 'Mensuel CAD',  field: 'monthly_price_cad', type: 'number', width: 115 },
+    { id: 'monthly_price_usd', label: 'Mensuel USD',  field: 'monthly_price_usd', type: 'number', width: 115 },
+    { id: 'offer_legacy',      label: 'Soumission',   field: 'in_quotes', type: 'boolean', width: 100 },
+    { id: 'name_en',           label: 'Nom EN',       field: 'name_en', width: 220, defaultVisible: false },
+  ],
+
+  stripe_prices: [
+    { id: 'lang',        label: 'Langue',     field: 'lang', width: 80 },
+    { id: 'unit_amount', label: 'Montant',    field: 'unit_amount', type: 'number', width: 130 },
+    { id: 'currency',    label: 'Devise',     field: 'currency', width: 80 },
+    { id: 'interval',    label: 'Fréquence',  field: 'interval', width: 110 },
+    { id: 'active',      label: 'Actif',      field: 'active', width: 80 },
+    { id: 'created',     label: 'Créé',       field: 'created_iso', type: 'date', width: 120 },
+    { id: 'actions',     label: '',           field: 'id', width: 90, sortable: false },
+  ],
+
+  page_acceptances: [
+    { id: 'at',    label: 'Quand',     field: 'at', type: 'date', width: 170 },
+    { id: 'page_name', label: 'Page',  field: 'page_name', width: 240 },
+    { id: 'contact', label: 'Contact', field: 'contact_name', width: 220 },
+    { id: 'text',  label: 'Texte signé', field: 'text', width: 280, sortable: false },
+    { id: 'name',  label: 'Nom signé', field: 'name', width: 200, defaultVisible: false },
+    { id: 'ip',    label: 'IP',        field: 'ip', width: 130 },
+    { id: 'hash',  label: 'Empreinte', field: 'hash', width: 130, defaultVisible: false },
+  ],
+
+  meeting_bookings: [
+    { id: 'start_at',         label: 'Quand',      field: 'start_at', type: 'date', width: 170 },
+    { id: 'invitee_name',     label: 'Visiteur',   field: 'invitee_name', width: 200 },
+    { id: 'invitee_email',    label: 'Courriel',   field: 'invitee_email', width: 220, defaultVisible: false },
+    { id: 'invitee_company',  label: 'Entreprise', field: 'invitee_company', width: 160 },
+    { id: 'type_name',        label: 'Page',       field: 'type_name', width: 180 },
+    { id: 'duration_minutes', label: 'Durée',      field: 'duration_minutes', type: 'number', width: 80 },
+    { id: 'owner_name',       label: 'Avec',       field: 'owner_name', width: 140, defaultVisible: false },
+    { id: 'status',           label: 'Statut',     field: 'status', type: 'single_select', options: ['confirmed', 'cancelled'], width: 100 },
+    { id: 'meet_url',         label: 'Meet',       field: 'meet_url', width: 70, sortable: false },
+    { id: 'notes',            label: 'Notes',      field: 'notes', width: 220, defaultVisible: false },
+    { id: 'actions',          label: '',           field: 'id', width: 50, sortable: false },
+  ],
+
   marketing_form_submissions: [
     { id: 'submitted_at', label: 'Date',       field: 'submitted_at', type: 'date' },
     { id: 'name',         label: 'Nom',        field: 'last_name', width: 180 },
@@ -1222,6 +1311,7 @@ export const TABLE_COLUMN_META = {
     { id: 'num_greenhouses',      label: 'Nb serres',        field: 'num_greenhouses', type: 'number' },
     { id: 'chief_grower_count',   label: 'Chef de culture',  field: 'chief_grower_count', type: 'number' },
     { id: 'helper_count',         label: 'Helper',           field: 'helper_count', type: 'number' },
+    { id: 'generated_order',      label: 'Commande',         field: 'generated_order_number', type: 'number' },
     { id: 'submitted_at',         label: 'Soumis le',        field: 'submitted_at', type: 'date' },
     { id: 'created_at',           label: 'Créé le',          field: 'created_at', type: 'date' },
     // L'URL complète, pas le jeton : retypée « URL », la colonne doit rester cliquable.
@@ -1244,12 +1334,13 @@ export const TABLE_COLUMN_META = {
   sale_receipts: [
     { id: 'company',         label: 'Fournisseur',    field: 'company' },
     { id: 'receipt_date',    label: 'Date',           field: 'receipt_date', type: 'date' },
-    { id: 'receipt_number',  label: 'N° de reçu',     field: 'receipt_number' },
+    { id: 'receipt_number',  label: 'N°',             field: 'receipt_number' },
     { id: 'total',           label: 'Total',          field: 'total', type: 'number' },
+    { id: 'source',          label: 'Source',         field: 'source', type: 'single_select', options: ['email', 'upload', 'scraper:amazon', 'scraper:wix', 'depot_rapprochement'] },
     { id: 'currency',        label: 'Devise',         field: 'currency', type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
     { id: 'payment_method',  label: 'Mode paiement',  field: 'payment_method', defaultVisible: false },
     { id: 'status',          label: 'Statut',         field: 'status', type: 'single_select', options: ['pending', 'processing', 'done', 'error'] },
-    { id: 'quickbooks_id',   label: 'QuickBooks',     field: 'quickbooks_id' },
+    { id: 'quickbooks_id',   label: 'QuickBooks',     field: 'quickbooks_id', defaultVisible: false },
     { id: 'original_name',   label: 'Fichier',        field: 'original_name', defaultVisible: false },
     // Le fichier récupéré lui-même, rendu comme un attachement (pastille/vignette
     // cliquable, une par page). Dérivé de `pages` — aucune colonne SQL.

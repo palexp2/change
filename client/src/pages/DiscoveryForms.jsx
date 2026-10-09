@@ -65,6 +65,9 @@ const RENDERS = {
       {row.status === 'submitted' ? 'Soumis' : 'En cours'}
     </Badge>
   ),
+  generated_order: (row) => row.generated_order_id
+    ? <Link to={`/orders/${row.generated_order_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm tabular-nums">#{row.generated_order_number ?? '—'}</Link>
+    : <span className="text-slate-400">—</span>,
   submitted_at: (row) => row.submitted_at ? fmtDate(row.submitted_at) : <span className="text-slate-400">—</span>,
   created_at: (row) => fmtDate(row.created_at),
   public_link: (row) => <CopyLinkButton url={row.public_url} />,

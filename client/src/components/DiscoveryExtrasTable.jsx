@@ -5,8 +5,8 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { CountStepper } from './DiscoveryFormOptions.jsx'
 
 export const EXTRA_COLUMNS = [['furnaces', 'Chauffage'], ['valves', 'Irrigation'], ['rollups', 'Côtés ouvrants'], ['roofs', 'Toits ouvrants'], ['screens', 'Toiles thermiques']]
-// Matériel à envoyer dans la serre (oui/non), coché par Orisha.
-export const MATERIAL_COLUMNS = [['humidity_valve', 'Valve de brumisation'], ['humidity_haf', 'Boîtier 110 V HAF'], ['advanced_temperature_sensor', 'Capteur de température avancé']]
+// Matériel à envoyer dans la serre (oui/non), coché par Orisha — ou déjà en place (rien à envoyer).
+export const MATERIAL_COLUMNS = [['humidity_valve', 'Valve de brumisation'], ['humidity_haf', 'Boîtier 110 V HAF'], ['advanced_temperature_sensor', 'Capteur de température avancé'], ['existing_temp_sensor', 'Sonde de température déjà en place']]
 // Permissions oui/non : Ventilation = louvres et ventilateurs de 2 à 4.
 export const FLAG_COLUMNS = [['ventilation', 'Ventilation']]
 const BOOLEAN_COLUMNS = [...FLAG_COLUMNS, ...MATERIAL_COLUMNS]

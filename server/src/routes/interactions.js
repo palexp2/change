@@ -9,6 +9,23 @@ import { listInteractionEmailAttachments, downloadInteractionEmailAttachment, se
 import { interactionFile } from '../services/hubspotHistoryImport.js'
 import { trackEmailHtml, emailTrackingSummary } from '../services/emailTracking.js'
 
+// Réponses reçues à un courriel envoyé : messages entrants du même fil Gmail,
+// postérieurs à l'envoi et antérieurs au prochain envoi du fil (une réponse au
+// 2e message ne compte pas pour le 1er). email_tracked : parti avec le suivi.
+const REPLIES_WHERE = `
+  e2.gmail_thread_id = e.gmail_thread_id AND i2.direction = 'in' AND i2.deleted_at IS NULL
+  AND i2.timestamp > i.timestamp
+  AND NOT EXISTS (
+    SELECT 1 FROM emails e3 JOIN interactions i3 ON i3.id = e3.interaction_id
+    WHERE e3.gmail_thread_id = e.gmail_thread_id AND i3.direction = 'out' AND i3.deleted_at IS NULL
+      AND i3.timestamp > i.timestamp AND i3.timestamp < i2.timestamp
+  )`
+const EMAIL_ENGAGEMENT_SELECT = `
+  CASE WHEN i.type='email' AND i.direction='out' AND e.gmail_thread_id IS NOT NULL THEN (
+    SELECT COUNT(*) FROM emails e2 JOIN interactions i2 ON i2.id = e2.interaction_id WHERE ${REPLIES_WHERE}
+  ) END AS reply_count,
+  CASE WHEN e.open_count > 0 OR EXISTS (SELECT 1 FROM email_tracked t WHERE t.email_id = e.id) THEN 1 ELSE 0 END AS email_tracked,`
+
 // Reuse the LIST query shape (lightweight, without heavy fields) so the
 // realtime payload matches what `Interactions.jsx` consumes in its table.
 const INTERACTION_LIST_SELECT = `
@@ -27,6 +44,7 @@ const INTERACTION_LIST_SELECT = `
       ELSE NULL
     END as phone_number,
     e.subject, e.from_address, e.to_address, e.automated, e.open_count, e.click_count,
+    ${EMAIL_ENGAGEMENT_SELECT}
     m.title AS meeting_title, m.duration_minutes
   FROM interactions i
   LEFT JOIN contacts c ON i.contact_id = c.id
@@ -94,6 +112,7 @@ router.get('/', requireAuth, (req, res) => {
         ELSE NULL
       END as phone_number,
       e.subject, e.from_address, e.to_address, e.automated, e.open_count, e.click_count,
+      ${EMAIL_ENGAGEMENT_SELECT}
       ${heavySelect}
       m.title AS meeting_title, m.duration_minutes
     FROM interactions i
@@ -132,6 +151,7 @@ router.get('/:id', requireAuth, (req, res) => {
         ELSE NULL
       END as phone_number,
       e.subject, e.from_address, e.to_address, e.body_text, e.body_html, e.automated, e.open_count, e.click_count,
+      ${EMAIL_ENGAGEMENT_SELECT}
       m.title AS meeting_title, m.duration_minutes, m.notes AS meeting_notes
     FROM interactions i
     LEFT JOIN contacts c ON i.contact_id = c.id
@@ -149,9 +169,21 @@ router.get('/:id', requireAuth, (req, res) => {
 // GET /api/interactions/:id/tracking — ouvertures et clics d'un courriel
 // envoyé depuis Boréal (fiche du fil). tracked=false : courriel sans suivi.
 router.get('/:id/tracking', requireAuth, (req, res) => {
-  const email = db.prepare('SELECT e.id FROM emails e WHERE e.interaction_id = ?').get(req.params.id)
-  if (!email) return res.json({ tracked: false, opens: [], links: [] })
-  res.json(emailTrackingSummary(email.id))
+  const email = db.prepare(`
+    SELECT e.id, i.timestamp AS sent_at, i.direction FROM emails e JOIN interactions i ON i.id = e.interaction_id
+    WHERE e.interaction_id = ?
+  `).get(req.params.id)
+  if (!email) return res.json({ tracked: false, opens: [], links: [], replies: [] })
+  const replies = email.direction === 'out'
+    ? db.prepare(`
+        SELECT i2.timestamp FROM emails e JOIN interactions i ON i.id = e.interaction_id
+        JOIN emails e2 ON e.gmail_thread_id IS NOT NULL
+        JOIN interactions i2 ON i2.id = e2.interaction_id
+        WHERE e.id = ? AND ${REPLIES_WHERE}
+        ORDER BY i2.timestamp DESC
+      `).all(email.id).map(r => r.timestamp)
+    : []
+  res.json({ ...emailTrackingSummary(email.id), sent_at: email.sent_at, replies })
 })
 
 // GET /api/interactions/:id/email-body

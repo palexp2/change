@@ -87,6 +87,7 @@ function PresetSelect({ p, onPatch }) {
 }
 // L'ordre est celui des sections de la page : du plus fréquent au plus rare.
 const CADENCE_LABELS = {
+  paie: 'Paie',
   bihebdo: 'Deux fois par semaine', hebdo: 'Hebdomadaire', mensuel: 'Mensuel',
   trimestriel: 'Trimestriel', annuel: 'Annuel', adhoc: 'À faire une fois',
 }
@@ -846,6 +847,7 @@ export function QueueTab({ toast, space }) {
         section: inFile ? 'File' : 'Complété',
         ordre: inFile ? rank.get(p.id) : null,
         etat: STATUS_LABELS[pillStateOf(p)] || p.status,
+        type: p.mode === 'question' ? 'Question' : 'Implémentation',
         model_label: (p.run_model || p.model) ? modelLabel(p.run_model || p.model) : 'Auto',
         page: requestPage(p).split('?')[0],
         thread_text: (p.messages || []).map(m => m.text).join('\n'),
@@ -866,6 +868,9 @@ export function QueueTab({ toast, space }) {
           {p.suggestion_id && <Sparkles size={11} className="shrink-0 text-violet-500" />}
           {!!p.messages?.length && <span className="shrink-0 inline-flex items-center gap-0.5 text-xs text-slate-400"><MessageSquare size={11} /> {p.messages.length}</span>}
         </span>
+      ),
+      type: p => (
+        <span className={`px-1.5 py-0.5 text-xs font-medium rounded ${p.type === 'Question' ? 'bg-sky-50 text-sky-700' : 'bg-slate-100 text-slate-600'}`}>{p.type}</span>
       ),
       created_by_name: p => (
         <span className="inline-flex items-center gap-1.5 min-w-0">
@@ -1931,7 +1936,8 @@ function OccurrenceChecks({ t, onToggle }) {
             data-occurrence={`${t.id}:${o.period_key}`}
             data-occurrence-slot={o.label}
             data-done={o.done ? '1' : '0'}
-            title={o.done ? `Fait — ${o.label}` : o.is_past ? `${o.label} : créneau passé, jamais coché` : `À faire — ${o.label}`}
+            title={(o.done ? `Fait — ${o.label}` : o.is_past ? `${o.label} : créneau passé, jamais coché` : `À faire — ${o.label}`)
+              + (o.holiday ? ` (devancé : ${o.holiday})` : '')}
             className={`inline-flex items-center gap-1 pl-1 pr-1.5 py-0.5 rounded-md border text-[11px] cursor-pointer transition-colors ${style}`}
           >
             <input
@@ -1942,6 +1948,7 @@ function OccurrenceChecks({ t, onToggle }) {
               aria-label={`${t.label} — ${o.label}`}
             />
             {o.label}
+            {o.holiday && <span className="text-rose-600" data-testid="pay-holiday-moved">· férié</span>}
           </label>
         )
       })}
@@ -2003,6 +2010,105 @@ function AutoGrowNote({ value, onChange, onBlur, className = '', ...rest }) {
  * recouvre rien, ne bouge rien en apparaissant, et le panneau — libellé,
  * ouvert volontairement — se referme au clic ailleurs ou à Échap.
  */
+// « Télécharger les relevés bancaires sur le Drive » : les comptes dont le
+// relevé du mois manque encore au Drive. Ceux qui y sont disparaissent.
+const STATEMENTS_TASK_ID = 'rt-al-releves-bancaires-drive'
+function StatementsChecklist({ month }) {
+  const [items, setItems] = useState(null)
+  useEffect(() => {
+    let live = true
+    api.bank.statements.checklist(month).then(r => { if (live) setItems(r) }).catch(() => {})
+    return () => { live = false }
+  }, [month])
+  if (!items?.length) return null
+  const missing = items.filter(x => !x.done)
+  const pct = Math.round(100 * (items.length - missing.length) / items.length)
+  // Ce qui reste saute aux yeux (ambre, en gras) ; la barre dit où on en est.
+  return (
+    <div className="mt-1.5 space-y-1.5" data-testid="statements-checklist">
+      <div className="flex items-center gap-2">
+        <div className="h-1.5 w-24 rounded-full bg-slate-100 overflow-hidden">
+          <div className={`h-full ${missing.length ? 'bg-amber-400' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="text-xs text-slate-500">{items.length - missing.length}/{items.length}</span>
+      </div>
+      {missing.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs font-medium text-amber-800">Manque :</span>
+          {missing.map(x => (
+            <span key={x.account}
+              data-testid="statements-missing"
+              title={x.wrong ? `${x.file} : relevé du compte ${x.wrong}` : x.error || `attendu vers le ${fmtDate(x.expected_by)}`}
+              className={`px-2 py-0.5 text-xs font-medium rounded-md border ${x.wrong ? 'border-red-300 bg-red-50 text-red-700' : 'border-amber-300 bg-amber-50 text-amber-900'}`}
+            >{x.label}{x.wrong ? ' ✗' : ''}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Calendrier des paies (travail « Paie ») : deux mois, période de la paie
+ * affichée en fond, lundi (préparer) et mardi (Nethris) marqués.
+ */
+const WEEKDAYS = ['L', 'M', 'M', 'J', 'V', 'S', 'D']
+function addDaysIso(d, n) {
+  const [y, m, dd] = d.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, dd + n)).toISOString().slice(0, 10)
+}
+function PayCalendar({ t }) {
+  const today = new Date().toLocaleDateString('en-CA')
+  const marks = {}
+  for (const p of t.pay_calendar) for (const s of p.steps) marks[s.date] = s
+  const holidays = Object.fromEntries((t.pay_holidays || []).map(h => [h.date, h.name]))
+  const focus = t.occurrences?.[0]?.start || today
+  const shown = new Set()
+  if (t.occurrences?.length) {
+    const end = t.occurrences[0].start
+    for (let d = addDaysIso(end, -15); d <= addDaysIso(end, -2); d = addDaysIso(d, 1)) shown.add(d)
+  }
+  const months = [0, 1].map(i => {
+    const [y, m] = focus.split('-').map(Number)
+    const first = new Date(Date.UTC(y, m - 1 + i, 1))
+    const lead = (first.getUTCDay() + 6) % 7
+    const len = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate()
+    const iso = first.toISOString().slice(0, 7)
+    return {
+      key: iso,
+      name: new Intl.DateTimeFormat('fr-CA', { month: 'long', timeZone: 'UTC' }).format(first),
+      cells: [...Array(lead).fill(null), ...Array.from({ length: len }, (_, k) => `${iso}-${String(k + 1).padStart(2, '0')}`)],
+    }
+  })
+  return (
+    <div className="mt-2 flex flex-wrap gap-4" data-testid="pay-calendar">
+      {months.map(mo => (
+        <div key={mo.key} className="w-44">
+          <div className="text-[11px] font-medium text-slate-500 mb-1 capitalize">{mo.name}</div>
+          <div className="grid grid-cols-7 gap-px text-center text-[10px]">
+            {WEEKDAYS.map((w, i) => <div key={i} className="text-slate-300">{w}</div>)}
+            {mo.cells.map((d, i) => {
+              if (!d) return <div key={i} />
+              const mk = marks[d]
+              const cls = mk
+                ? mk.done ? 'bg-emerald-500 text-white'
+                  : mk.step === 1 ? 'bg-amber-400 text-white' : 'bg-slate-900 text-white'
+                : holidays[d] ? 'text-rose-600 font-semibold line-through'
+                : shown.has(d) ? 'bg-slate-100 text-slate-600' : 'text-slate-500'
+              return (
+                <div key={i} data-pay-day={mk ? mk.step : undefined} data-holiday={holidays[d] ? '1' : undefined}
+                  title={[mk && (mk.step === 1 ? 'Préparer la paie' : 'Soumettre à Nethris'), holidays[d]].filter(Boolean).join(' · ') || undefined}
+                  className={`h-5 leading-5 rounded ${cls} ${d === today ? 'ring-1 ring-brand-400' : ''}`}
+                >{Number(d.slice(8))}</div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
   const { draft, edit, flush } = useRecordDraft(
     { label: t.label, day_hint: t.day_hint || '', notes: t.notes || '', due_day: t.due_day ?? '' },
@@ -2095,6 +2201,8 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
           onChange={e => edit('notes', e.target.value)}
           onBlur={flush}
         />
+        {t.id === STATEMENTS_TASK_ID && <StatementsChecklist month={t.period_key} />}
+        {t.pay_calendar?.length > 0 && <PayCalendar t={t} />}
         {t.done && t.done_by_name && (
           <div className="text-xs text-emerald-700 mt-1">Fait par {t.done_by_name}</div>
         )}
@@ -2438,6 +2546,7 @@ function RecurringTab({ toast }) {
                     <CheckCircle2 size={14} /> Tout est fait{
                       g.cadence === 'hebdo' ? ' — la liste repart lundi'
                         : g.cadence === 'bihebdo' ? ' — les cases se rouvrent au prochain créneau (mardi, samedi)'
+                        : g.cadence === 'paie' ? ' — prochaine paie dans deux semaines'
                         : ''}.
                   </div>
                 )}

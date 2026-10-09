@@ -4,8 +4,10 @@ import { EQUIPMENT_LABELS as ROLE_LABELS, INVERTER_MODELS, JWT_ROLES, SENSOR_PRO
 import { createContext, Fragment, useContext, useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { InlineNumber, InlineText, InlineTextarea } from '../components/InlineFields.jsx'
 import { Link, useNavigate } from 'react-router-dom'
-import { ExternalLink, Trash2, ShoppingCart, Pencil, ChevronDown, ChevronRight } from 'lucide-react'
+import { ExternalLink, Trash2, ShoppingCart, Pencil, ChevronDown, ChevronRight, X } from 'lucide-react'
 import { Modal } from '../components/Modal.jsx'
+import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
+import { CreateSubscriptionModal } from '../components/CreateSubscriptionModal.jsx'
 import DiscoveryFormOptions, { CountStepper } from '../components/DiscoveryFormOptions.jsx'
 import DiscoveryExtrasTable, { additionalEquipment, EXTRA_COLUMNS, FLAG_COLUMNS, MATERIAL_COLUMNS } from '../components/DiscoveryExtrasTable.jsx'
 import { DISCOVERY_LANGS } from '../lib/discoveryFormI18n.js'
@@ -19,7 +21,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtAddress } from '../utils/formatters.js'
-import { buildForm, controllerDistanceValue, CUSTOM_SECTIONS, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
+import { buildForm, controllerDistanceValue, CUSTOM_SECTIONS, sideVentOther, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
 import { LOUVER_COMBOS, louverComboValue, louverSummary } from '../components/LouverTypeChoice.jsx'
 import { unknownAnswers } from '../lib/discoveryUnknownAnswers.js'
 
@@ -79,6 +81,15 @@ const AnswerEdit = createContext(null)
 const UnknownAnswerCount = createContext(null)
 
 const DONT_KNOW = 'Je ne sais pas'
+
+// Adresse sur une ligne, sans répéter ville, province, code postal ou pays déjà
+// tapés par le client dans la rue (« W8180 County Rd C Fort Atkinson WI 53538 US »).
+const words = s => ` ${String(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `
+const addressText = a => {
+  if (!a?.line1) return fmtAddress(a)
+  const street = words(a.line1)
+  return [a.line1, ...[a.city, a.province, a.postal_code, a.country].filter(p => p && !street.includes(words(p)))].join(', ')
+}
 // Wi-Fi que le client ne fournira pas, accepté par Orisha.
 const WIFI_NONE = 'Non fourni'
 const wifiShown = v => (v === WIFI_NONE ? 'Pas nécessaire' : v)
@@ -270,6 +281,24 @@ function greenhouseChecks(g, idx) {
   return list.map(([key, label]) => [`g${n}:${key}`, label])
 }
 
+// Côté ouvrant « Autre » : matériel choisi à la main, un produit du catalogue
+// et sa quantité par ligne. `names` : nom des produits, par rôle `product:<id>`.
+function ManualSideEquipment({ items, names, onSave }) {
+  const ctx = useContext(AnswerEdit)
+  const name = id => names[`product:${id}`] || 'Produit'
+  if (!ctx) return items.length ? <ul className="space-y-1">{items.map((it, i) => <li key={i}>{it.qty} × <Link to={`/products/${it.product_id}`} className="link-record">{name(it.product_id)}</Link></li>)}</ul> : 'Aucun'
+  const put = next => ctx.save(onSave(next.filter(it => it.product_id)))
+  const pick = (i, id, extra = {}) => put(items.map((it, j) => (j === i ? { ...it, product_id: id, ...extra } : it)))
+  return <div className="space-y-2">
+    {items.map((it, i) => <div key={i} className="flex items-center gap-2">
+      <div className="min-w-0 flex-1"><LinkedRecordField name={`side-manual-${i}`} value={it.product_id} options={[{ id: it.product_id, name: name(it.product_id) }]} searchTarget="products" getHref={p => `/products/${p.id}`} allowClear={false} saving={ctx.saving} disabled={ctx.saving} onChange={id => pick(i, id)} /></div>
+      <InlineNumber value={it.qty} min={1} className="input text-sm w-16" onSave={v => pick(i, it.product_id, { qty: Math.max(1, Number(v) || 1) })} />
+      <button type="button" onClick={() => put(items.filter((_, j) => j !== i))} disabled={ctx.saving} aria-label="Retirer" className="p-1 text-slate-400 hover:text-red-600"><X size={14} /></button>
+    </div>)}
+    <LinkedRecordField name="side-manual-new" value={null} searchTarget="products" saving={ctx.saving} disabled={ctx.saving} onChange={id => id && put([...items, { product_id: id, qty: 1 }])} />
+  </div>
+}
+
 function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, response, onCheck, saving }) {
   const perm = PERMISSION_LABELS[g.permission_level]
   const correcting = !!useContext(AnswerEdit)
@@ -314,6 +343,12 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
   // Hauteur des côtés : même lecture que le formulaire client (plage, puis la hauteur exacte au-delà de 6 pi).
   const heightRange = g.side_vent_height_range || (g.side_vent_height === DONT_KNOW ? 'unknown' : Number(g.side_vent_height) > 0 ? (Number(g.side_vent_height) > 6 ? 'over_6' : 'up_to_6') : '')
   const keepsHeight = range => (range === 'up_to_6' ? Number(g.side_vent_height) > 0 && Number(g.side_vent_height) <= 6 : range === 'over_6' && Number(g.side_vent_height) > 6)
+  // Inverseurs déjà en place : longueur, hauteur et tuyau de côté ne servent plus (le formulaire client ne demande pas la longueur).
+  const hasInverters = !!g.has_existing_side_vent_motors && g.side_has_inverters === true
+  // Côté « Autre » : questions roll-up masquées, matériel et sorties saisis par Orisha.
+  const other = sideVentOther(g)
+  const manual = g.side_vent_manual || {}
+  const manualItems = Array.isArray(manual.items) ? manual.items : []
   const diameterOptions = sideDiameterOptions(g.side_pipe_type)
   const diameterOther = typeof g.side_pipe_diameter === 'string' && g.side_pipe_diameter.startsWith('Autre:')
   const diameterExact = diameterOther ? g.side_pipe_diameter.slice('Autre:'.length).trim() : ''
@@ -340,7 +375,7 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
   return (
     <section className="card p-4 sm:p-5" aria-label={`Serre #${idx + 1}`}>
       <div className="flex items-center gap-2 mb-4">
-        <h2 className="text-sm font-semibold text-slate-900">Serre #{idx + 1}</h2>
+        <h2 className="text-sm font-semibold text-slate-900">Serre #{idx + 1}{g.name && ` · ${g.name}`}</h2>
         {perm && <Badge color={g.permission_level === 'chief_grower' ? 'green' : 'slate'} size="sm">{perm}</Badge>}
       </div>
       <div className={equipment ? 'system-greenhouse-grid' : undefined}>
@@ -350,25 +385,32 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
         <ResponseGroup title="Côtés" none={g.has_side_vents === false || (g.has_side_vents !== true && isZero(g.num_side_vent_motors))} noneEdit={sideCountEdit}>
         <div className="system-response-grid">
         <Row label="Côtés ouvrants" edit={sideCountEdit}>{g.has_side_vents === true ? (g.num_side_vent_motors || 'Oui') : yesNo(g.has_side_vents)}</Row>
-        {g.has_side_vents === true && (
+        {g.has_side_vents === true && <Row label="Type" edit={ed('select', g.side_vent_type || 'rollup', set('side_vent_type'), form.opts('greenhouse.side_vent_type_options'))}>{choiceLabel(form, 'greenhouse.side_vent_type_options', g.side_vent_type || 'rollup')}</Row>}
+        {other && <>
+          <Row label="Précision" edit={ed('text', g.side_vent_type_other, set('side_vent_type_other'))}>{g.side_vent_type_other}</Row>
+          <Row label="Sorties V2" edit={ed('number', manual.slots, v => ({ side_vent_manual: { ...manual, slots: v } }))}>{manual.slots === '' || manual.slots == null ? null : String(manual.slots)}</Row>
+          <Row label="Matériel à envoyer" wide><ManualSideEquipment items={manualItems} names={names || {}} onSave={next => ({ greenhouse: { index: idx, values: { side_vent_manual: { ...manual, items: next } } } })} /></Row>
+        </>}
+        {g.has_side_vents === true && !other && (
           <>
-            <Row label="Longueur" edit={ed('select', lengthRange, range => ({ length_range: range, length: keepsLength(range) ? g.length : '' }), form.opts('greenhouse.length_range_options'))}>{choiceLabel(form, 'greenhouse.length_range_options', lengthRange)}</Row>
-            {lengthRange === 'over_200' && <Row label="Longueur (pi)" edit={ed('number', g.length, v => ({ length_range: 'over_200', length: v }))}>{Number(g.length) > 0 ? g.length : null}</Row>}
-            <Row label="Hauteur côtés" edit={ed('select', heightRange, range => ({ side_vent_height_range: range, side_vent_height: range === 'unknown' ? DONT_KNOW : keepsHeight(range) ? g.side_vent_height : '' }), form.opts('greenhouse.side_vent_height_range_options'))}>{choiceLabel(form, 'greenhouse.side_vent_height_range_options', heightRange)}</Row>
-            {heightRange === 'over_6' && <Row label="Hauteur côtés (pi)" edit={ed('number', Number(g.side_vent_height) > 0 ? g.side_vent_height : '', v => ({ side_vent_height_range: 'over_6', side_vent_height: v }))}>{Number(g.side_vent_height) > 0 ? g.side_vent_height : null}</Row>}
-            <Row label="Tuyau de côté" edit={ed('select', g.side_pipe_type, v => ({ side_pipe_type: v, side_pipe_diameter: '' }), form.opts('greenhouse.side_pipe_type_options'))}>{choiceLabel(form, 'greenhouse.side_pipe_type_options', g.side_pipe_type, PIPE_LABELS)}</Row>
-            <Row label="Diamètre côté" edit={ed('select', diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter, v => ({ side_pipe_diameter: v === DIAMETER_OTHER ? (diameterOther ? g.side_pipe_diameter : 'Autre: ') : v }), diameterOptions)}>{diameterOptions.find(o => o.value === (diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter))?.label || g.side_pipe_diameter}</Row>
-            {diameterOther && <Row label="Diamètre précis" edit={ed('text', diameterExact, v => ({ side_pipe_diameter: `Autre: ${v}` }))}>{diameterExact}</Row>}
-            <Row label="Tuyaux guides 1 à 1 5/16 po" edit={ed('select', g.guide_pipes_state, v => ({ guide_pipes_state: v, guide_pipe_diameter: '' }), form.opts('greenhouse.guide_pipes_options'))}>{choiceLabel(form, 'greenhouse.guide_pipes_options', g.guide_pipes_state, GUIDE_LABELS)}</Row>
-            {!weShipGuides && <Row label="Diamètre guides" edit={ed('text', g.guide_pipe_diameter, set('guide_pipe_diameter'))}>{g.guide_pipe_diameter}</Row>}
+            <Row label="Moteurs" edit={ed('select', g.has_existing_side_vent_motors, set('has_existing_side_vent_motors'), [{ value: true, label: 'Déjà en place' }, { value: false, label: 'À fournir' }])}>{g.has_existing_side_vent_motors === true ? 'Déjà en place' : g.has_existing_side_vent_motors === false ? 'À fournir' : null}</Row>
+            {!hasInverters && <Row label="Longueur" edit={ed('select', lengthRange, range => ({ length_range: range, length: keepsLength(range) ? g.length : '' }), form.opts('greenhouse.length_range_options'))}>{choiceLabel(form, 'greenhouse.length_range_options', lengthRange)}</Row>}
+            {!hasInverters && lengthRange === 'over_200' && <Row label="Longueur (pi)" edit={ed('number', g.length, v => ({ length_range: 'over_200', length: v }))}>{Number(g.length) > 0 ? g.length : null}</Row>}
+            {!hasInverters && <Row label="Hauteur côtés" edit={ed('select', heightRange, range => ({ side_vent_height_range: range, side_vent_height: range === 'unknown' ? DONT_KNOW : keepsHeight(range) ? g.side_vent_height : '' }), form.opts('greenhouse.side_vent_height_range_options'))}>{choiceLabel(form, 'greenhouse.side_vent_height_range_options', heightRange)}</Row>}
+            {!hasInverters && heightRange === 'over_6' && <Row label="Hauteur côtés (pi)" edit={ed('number', Number(g.side_vent_height) > 0 ? g.side_vent_height : '', v => ({ side_vent_height_range: 'over_6', side_vent_height: v }))}>{Number(g.side_vent_height) > 0 ? g.side_vent_height : null}</Row>}
+            {!hasInverters && <Row label="Tuyau de côté" edit={ed('select', g.side_pipe_type, v => ({ side_pipe_type: v, side_pipe_diameter: '' }), form.opts('greenhouse.side_pipe_type_options'))}>{choiceLabel(form, 'greenhouse.side_pipe_type_options', g.side_pipe_type, PIPE_LABELS)}</Row>}
+            {!hasInverters && <Row label="Diamètre côté" edit={ed('select', diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter, v => ({ side_pipe_diameter: v === DIAMETER_OTHER ? (diameterOther ? g.side_pipe_diameter : 'Autre: ') : v }), diameterOptions)}>{diameterOptions.find(o => o.value === (diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter))?.label || g.side_pipe_diameter}</Row>}
+            {!hasInverters && diameterOther && <Row label="Diamètre précis" edit={ed('text', diameterExact, v => ({ side_pipe_diameter: `Autre: ${v}` }))}>{diameterExact}</Row>}
+            {g.has_existing_side_vent_motors !== true && <Row label="Tuyaux guides 1 à 1 5/16 po" edit={ed('select', g.guide_pipes_state, v => ({ guide_pipes_state: v, guide_pipe_diameter: '' }), form.opts('greenhouse.guide_pipes_options'))}>{choiceLabel(form, 'greenhouse.guide_pipes_options', g.guide_pipes_state, GUIDE_LABELS)}</Row>}
+            {g.has_existing_side_vent_motors !== true && !weShipGuides && g.guide_pipes_state !== 'unknown' && <Row label="Diamètre guides" edit={ed('text', g.guide_pipe_diameter, set('guide_pipe_diameter'))}>{g.guide_pipe_diameter}</Row>}
             {g.wants_compatible_guide_pipes && <Row label="Guides compatibles">À fournir</Row>}
           </>
         )}
-        {g.has_existing_side_vent_motors && g.side_has_inverters !== true && <Row label="Moteurs déclarés" verify={verify('motors')}>{motorText(g) || null}</Row>}
-        {g.has_existing_side_vent_motors && (typeof g.side_has_inverters === 'boolean' || g.side_has_inverters === 'unknown') && <Row label="Inverseurs" edit={ed('select', g.side_has_inverters, v => ({ side_has_inverters: v, side_inverter_ratio: '', side_inverter_model: '', side_inverter_brand_other: '', side_inverter_model_other: '', ...(v === true ? { length_range: '', length: '', side_vent_motor_choice: '', side_vent_motor_brand: '', side_vent_motor_model: '' } : {}) }), BOOL_UNKNOWN_OPTIONS)}>{g.side_has_inverters === 'unknown' ? 'Je ne sais pas' : g.side_has_inverters
+        {!other && g.has_existing_side_vent_motors && g.side_has_inverters !== true && <Row label="Moteurs déclarés" verify={verify('motors')}>{motorText(g) || null}</Row>}
+        {!other && g.has_existing_side_vent_motors && (typeof g.side_has_inverters === 'boolean' || g.side_has_inverters === 'unknown') && <Row label="Inverseurs" edit={ed('select', g.side_has_inverters, v => ({ side_has_inverters: v, side_inverter_ratio: '', side_inverter_model: '', side_inverter_brand_other: '', side_inverter_model_other: '', ...(v === true ? { length_range: '', length: '', side_vent_motor_choice: '', side_vent_motor_brand: '', side_vent_motor_model: '' } : {}) }), BOOL_UNKNOWN_OPTIONS)}>{g.side_has_inverters === 'unknown' ? 'Je ne sais pas' : g.side_has_inverters
           ? 'Oui'
           : 'Aucun'}</Row>}
-        {g.has_existing_side_vent_motors && g.side_has_inverters === true && <>
+        {!other && g.has_existing_side_vent_motors && g.side_has_inverters === true && <>
           <Row label="Répartition des inverseurs" edit={ed('select', g.side_inverter_ratio, set('side_inverter_ratio'), SIDE_INVERTER_RATIO_OPTIONS)}>{SIDE_INVERTER_RATIO_OPTIONS.find(o => o.value === g.side_inverter_ratio)?.label || DONT_KNOW}</Row>
           <Row label="Modèle de l’inverseur" verify={verify('inverters')} edit={ed('select', g.side_inverter_model, v => ({ side_inverter_model: v, side_inverter_brand_other: '', side_inverter_model_other: '' }), SIDE_INVERTER_OPTIONS)}>{SIDE_INVERTER_OPTIONS.find(o => o.value === g.side_inverter_model)?.label || g.side_inverter_model}</Row>
           {g.side_inverter_model === 'other' && <>
@@ -414,7 +456,7 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
           {!g.has_louvers || !g.louvers?.length ? <ResponseGroup title="Louvres" noneLabel="Aucune" noneEdit={louverCountEdit} none={g.has_louvers === false}>
           <Row label="Louvres" edit={louverCountEdit}>{g.louvers?.length || null}</Row>
           </ResponseGroup> : g.louvers.map((l, i) => <ResponseGroup key={i} title={`Louvre #${i + 1}`}>
-            <div className="system-response-grid"><Row label="Type de louvre" edit={ed('select', louverComboValue(l), c => louverTypeValues(i, c), form.opts('louvers.types'))}>{l.control_type === 'other' ? 'Je ne sais pas' : louverSummary(l) || null}</Row><Row label="Ventilateur associé" edit={ed('select', l.has_fan, v => louverValues(i, { has_fan: v }), BOOL_OPTIONS)}>{yesNo(l.has_fan)}</Row>{l.has_fan && l.control_type === 'open_close' && <Row label="Commande">Contrôle séparé du ventilateur non proposé — à vérifier</Row>}</div>
+            <div className="system-response-grid"><Row label="Type de louvre" edit={ed('select', louverComboValue(l), c => louverTypeValues(i, c), form.opts('louvers.types'))}>{l.control_type === 'other' ? 'Je ne sais pas' : louverSummary(l) || null}</Row><Row label="Ventilateur associé" edit={ed('select', l.has_fan, v => louverValues(i, { has_fan: v }), BOOL_OPTIONS)}>{yesNo(l.has_fan)}</Row>{l.has_fan && l.control_type === 'open_close' && <Row label="Commande">{l.voltage === '24' ? 'Boîtier time delay + boîtier 24 V' : 'Contrôle séparé du ventilateur non proposé — à vérifier'}</Row>}</div>
           </ResponseGroup>)}
         </>}
         {!helperOnly && <ResponseGroup title="Ventilateurs" noneEdit={fansEdit} none={isZero(g.num_fans)}>
@@ -462,7 +504,7 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
 const EQUIPMENT_FAMILIES = [
   ['Contrôle', r => r === 'activation_v2' || /^(central_controller|mobile_controller_|coax_antenna_kit)/.test(r)],
   ['Toits ouvrants', (r, note) => /^(roof_|inverter_extra_roof_)/.test(r) || (r === 'side_vent_controller_24v' && /^(Toit|Toile)/.test(note || ''))],
-  ['Côtés ouvrants', r => /^(side_|motor_wire_|guide_pipe|inverter_extra_side_)/.test(r)],
+  ['Côtés ouvrants', (r, note) => /^(side_|motor_wire_|guide_pipe|inverter_extra_side_)/.test(r) || (r.startsWith('product:') && note === 'Côtés ouvrants')],
   ['Louvres', r => r.startsWith('louver_')],
   ['Ventilateurs', r => r === 'fan_box_110v'],
   ['Brumisation et HAF', r => r.startsWith('humidity_')],
@@ -528,6 +570,9 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
   const [savingAnswer, setSavingAnswer] = useState(false)
   const [savingNotes, setSavingNotes] = useState(false)
   const [unknownCount, setUnknownCount] = useState(0)
+  const [subscriptions, setSubscriptions] = useState([])
+  const [openSubscription, setOpenSubscription] = useState(null)
+  const [creatingSubscription, setCreatingSubscription] = useState(false)
 
   const { record: form, setRecord, loading, loadError, reload } = useDetailRecord(
     () => api.discoveryForms.get(id), [id], { clearOnError: true },
@@ -567,6 +612,13 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
     if (!form?.company_id) return
     api.projects.list({ company_id: form.company_id, limit: 'all' }).then(r => setProjects(Array.isArray(r?.data) ? r.data : Array.isArray(r) ? r : [])).catch(() => {})
   }, [form?.company_id])
+  // Contrôleur mobile requis par les réponses mais absent du système vendu :
+  // l'abonnement de l'entreprise doit inclure ce service.
+  const mobileMissing = form?.network_access === 'mobile_controller' && !form?.form_options?.mobile_controller
+  const reloadSubscriptions = () => api.abonnements.list({ company_id: form.company_id, limit: 'all' }).then(r => setSubscriptions(r.data || [])).catch(() => {})
+  useEffect(() => {
+    if (mobileMissing && form?.company_id) reloadSubscriptions()
+  }, [mobileMissing, form?.company_id]) // eslint-disable-line react-hooks/exhaustive-deps
   const pending = detailPending({ loading, loadError, onRetry: reload, record: form, notFound: 'Système introuvable.' })
   if (pending) return pending
 
@@ -659,13 +711,15 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
     [siteOpts.extra_central_controllers, 'Contrôleur central additionnel'],
     ...SENSOR_PRODUCTS.map(([role, label]) => [siteOpts.sensors?.[role], label]),
   ].filter(([n]) => n > 0).map(([n, label]) => `${n} ${countLabel(label, n)}`).join(', ')
-  const sameShipping = form.shipping_same_as_farm === true
   // Questions hors serre, toutes sections confondues, dans l'ordre de l'éditeur.
   const formLevelCustom = CUSTOM_SECTIONS
     .filter(s => s.id !== 'greenhouse' && s.id !== 'greenhouse_chief')
     .flatMap(s => customRows(formSchema.custom(s.id), form.custom_answers, q => v => ({ custom_answers: { [q.id]: v } })))
+  const activeSubscription = subscriptions.find(a => ['active', 'trialing', 'past_due'].includes(a.status))
+  const mobileVerify = mobileMissing ? { key: 'mobile_subscription', label: 'Abonnement mis à jour', checked: !!form.verification?.mobile_subscription, box: true, onCheck: setVerification, saving: savingVerification } : null
   const answerEdit = form.generated_order_id ? null : { save: saveAnswer, saving: savingAnswer }
   const siteOptions = formSchema.opts('order_type.options').filter(o => o.value in SITE_LABELS).map(o => ({ value: o.value, label: SITE_LABELS[o.value] }))
+  const nearExisting = form.is_new_site === 'add_to_existing' && form.within_central_controller_range === true
   const wifi = !!form.wifi_ssid || !!form.wifi_password || String(form.network_access || '').startsWith('wifi')
   // Wi-Fi inconnu : on accepte de s'en passer, la commande n'attend plus.
   const wifiNone = (value, answers) => (!value || value === DONT_KNOW) && (
@@ -719,6 +773,8 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
           <Row label="Distance du contrôleur" edit={formEdit('select', 'central_controller_distance', controllerDistanceValue(form), formSchema.opts('controller_distance.options'), v => ({ within_central_controller_range: v !== 'no' }))}>{choiceLabel(formSchema, 'controller_distance.options', controllerDistanceValue(form), {}) || 'À compléter'}</Row>
           {typeof form.within_central_controller_range === 'boolean' && <Row label="Contrôleur central">{formSchema.t(form.within_central_controller_range ? 'controller_distance.near' : 'controller_distance.far')}</Row>}
         </>}
+        {form.is_new_site === 'add_to_existing' && (form.greenhouses || []).some(g => (g.permission_level || form.permission_level) === 'chief_grower') &&
+          <Row label="Capteur de vent" edit={formEdit('select', 'needs_wind_sensor', form.needs_wind_sensor, BOOL_OPTIONS)}>{typeof form.needs_wind_sensor === 'boolean' ? (form.needs_wind_sensor ? 'Oui' : 'Non') : null}</Row>}
         <Row label="Projet" wide>
           <LinkedRecordField
             name="project_id"
@@ -739,7 +795,7 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
             <LinkedRecordField
               name={`${kind}_address_id`}
               value={addressId}
-              options={addressId ? [{ id: addressId, name: fmtAddress(address) || label }] : []}
+              options={addressId ? [{ id: addressId, name: addressText(address) || label }] : []}
               searchTarget="adresses"
               searchFilter={[{ column: 'company_id', op: 'is', value: form.company_id }]}
               getHref={a => `/adresses/${a.id}`}
@@ -749,17 +805,22 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
               disabled={savingVerification || creatingOrder}
               onChange={value => saveAddress(`${kind}_address_id`, value)}
             />
-            {!addressId && fmtAddress(address) && <span>{fmtAddress(address)}</span>}
-            {kind === 'shipping' && sameShipping && <span className="text-xs text-slate-500">Même que la ferme</span>}
+            {!addressId && addressText(address) && <span>{addressText(address)}</span>}
           </Row>
         })}
       </Section>
 
-      <Section title="Réseau">
-        <Row label="Accès" edit={formEdit('select', 'network_access', form.network_access, formSchema.opts('network.options').map(o => ({ value: o.value, label: NETWORK_LABELS[o.value] || o.label })))}>{choiceLabel(formSchema, 'network.options', form.network_access, NETWORK_LABELS)}</Row>
+      {/* Serres à portée du contrôleur existant : déjà en réseau, rien à demander. */}
+      {(!nearExisting || mobileMissing) && <Section title="Réseau">
+        <Row label="Accès" verify={mobileVerify} edit={formEdit('select', 'network_access', form.network_access, formSchema.opts('network.options').map(o => ({ value: o.value, label: NETWORK_LABELS[o.value] || o.label })))}>{choiceLabel(formSchema, 'network.options', form.network_access, NETWORK_LABELS)}</Row>
+        {mobileMissing && form.company_id && <Row label="Abonnement" verify={{ ...mobileVerify, box: false }}>
+          <button type="button" className="underline hover:text-red-800" onClick={() => (activeSubscription ? setOpenSubscription(activeSubscription) : setCreatingSubscription(true))}>
+            {activeSubscription ? 'Mettre à jour l’abonnement' : 'Créer un abonnement'}
+          </button>
+        </Row>}
         {wifi && <Row label="Wi-Fi" edit={formEdit('text', 'wifi_ssid', form.wifi_ssid)} action={wifiNone(form.wifi_ssid, { wifi_ssid: WIFI_NONE, wifi_password: WIFI_NONE })}>{wifiShown(form.wifi_ssid)}</Row>}
         {wifi && form.wifi_ssid !== WIFI_NONE && <Row label="Mot de passe" edit={formEdit('text', 'wifi_password', form.wifi_password)} action={wifiNone(form.wifi_password, { wifi_password: WIFI_NONE })}>{form.wifi_password === WIFI_NONE || form.wifi_password === DONT_KNOW ? wifiShown(form.wifi_password) :form.wifi_password ? 'Configuré' : null}</Row>}
-      </Section>
+      </Section>}
 
       </div>
 
@@ -801,8 +862,12 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
     </div>
     </AnswerEdit.Provider>
     </UnknownAnswerCount.Provider>
+    {mobileMissing && form.company_id && <>
+      <AbonnementDetailModal abonnement={openSubscription} onClose={() => setOpenSubscription(null)} onChange={reloadSubscriptions} stripeButton />
+      <CreateSubscriptionModal companyId={form.company_id} isOpen={creatingSubscription} onClose={() => setCreatingSubscription(false)} onCreated={reloadSubscriptions} />
+    </>}
     <Modal isOpen={editingOptions} title="Modifier le système" onClose={() => setEditingOptions(false)}>
-      {editingOptions && <EditOptionsForm form={form} onClose={() => setEditingOptions(false)} onSaved={() => { setEditingOptions(false); reload(); setPreviewAttempt(n => n + 1) }} />}
+      {editingOptions && <EditOptionsForm form={form} onSaved={() => { reload(); setPreviewAttempt(n => n + 1) }} />}
     </Modal>
     </DetailShell>
   )
@@ -819,31 +884,48 @@ function countLabel(label, n) {
 }
 
 // Options achetées et extras par serre : ce qu'Orisha a fixé à la création.
-function EditOptionsForm({ form, onClose, onSaved }) {
+function EditOptionsForm({ form, onSaved }) {
   const { addToast } = useToast()
   const initial = form.form_options || {}
   const [options, setOptions] = useState({ ...initial, sensors: { ...(initial.sensors || {}) } })
   const cards = (form.greenhouses || []).map((g, i) => ({ key: String(i), helper: sideVentsOnly(g.permission_level || form.permission_level) }))
   const [extras, setExtras] = useState(() => Object.fromEntries(cards.map((card, i) => [card.key, { ...(initial.additional_equipment?.[i] || {}) }])))
-  const [saving, setSaving] = useState(false)
   // Ouvert d'emblée : c'est ce qu'on vient modifier.
   const [advanced, setAdvanced] = useState(true)
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      await api.discoveryForms.saveOptions(form.id, { ...options, additional_equipment: additionalEquipment(extras, cards) })
-      onSaved()
-    } catch (err) {
-      addToast({ message: err.message || 'Enregistrement impossible', type: 'error' })
-      setSaving(false)
-    }
+  // Autosave : chaque changement part 500 ms après la dernière frappe, en file
+  // (jamais deux envois croisés). La fiche n'est rechargée qu'à la fermeture —
+  // la recharger pendant l'édition démonterait la modale.
+  const pending = useRef(null)
+  const chain = useRef(Promise.resolve())
+  const changed = useRef(false)
+  const first = useRef(true)
+  const live = useRef({ form, onSaved, addToast })
+  live.current = { form, onSaved, addToast }
+  function flush() {
+    const payload = pending.current
+    if (!payload) return chain.current
+    pending.current = null
+    changed.current = true
+    chain.current = chain.current
+      .then(() => api.discoveryForms.saveOptions(live.current.form.id, payload))
+      .catch(err => live.current.addToast({ message: err.message || 'Enregistrement impossible', type: 'error' }))
+    return chain.current
   }
+  useEffect(() => {
+    if (first.current) { first.current = false; return }
+    pending.current = { ...options, additional_equipment: additionalEquipment(extras, cards) }
+    const t = setTimeout(flush, 500)
+    return () => clearTimeout(t)
+  }, [options, extras]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => {
+    flush()
+    if (changed.current) chain.current.then(() => live.current.onSaved())
+  }, [])
   // Même présentation que la modale de création ; entreprise et serres restent
   // figées (le client a pu remplir les serres).
   const chiefs = cards.filter(c => !c.helper).length
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={e => e.preventDefault()} className="space-y-4">
       <div role="radiogroup" aria-label="Langue du formulaire" className="flex justify-end">
         <div className="inline-flex rounded-md border border-slate-200 p-0.5 text-xs">
           {DISCOVERY_LANGS.map(l => (
@@ -882,13 +964,9 @@ function EditOptionsForm({ form, onClose, onSaved }) {
           {advanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}Extra
         </button>
         {advanced && <div className="mt-4 space-y-4">
-          <DiscoveryExtrasTable cards={cards} values={extras} onChange={setExtras} disabled={saving} title="Extra par serre" columns={[...EXTRA_COLUMNS, ...FLAG_COLUMNS, ...MATERIAL_COLUMNS]} helperLabel="Assistant" checkbox />
-          <DiscoveryFormOptions flat mobileQty title="Extra pour le site" value={options} onChange={setOptions} disabled={saving} />
+          <DiscoveryExtrasTable cards={cards} values={extras} onChange={setExtras} title="Extra par serre" columns={[...EXTRA_COLUMNS, ...FLAG_COLUMNS, ...MATERIAL_COLUMNS]} helperLabel="Assistant" checkbox />
+          <DiscoveryFormOptions flat mobileQty title="Extra pour le site" value={options} onChange={setOptions} />
         </div>}
-      </div>
-      <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
-        <button type="button" onClick={onClose} className="btn-ghost">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
       </div>
     </form>
   )

@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle, GripVertical, Copy, ArrowLeftToLine, ArrowRightToLine, Maximize2, Plug } from 'lucide-react'
@@ -94,6 +95,17 @@ function coerceCellValue(col, str) {
     return undefined
   }
   return s === '' ? null : s
+}
+
+// Valeur brute → texte de cellule pour copier / recopier. Une durée stockée en
+// secondes devient « 09:00 » : relue telle quelle, « 32400 » serait des minutes.
+function cellText(col, v) {
+  if (v == null) return ''
+  if (col?.type === 'duration' && v !== '' && Number.isFinite(Number(v))) {
+    const n = Number(v)
+    return formatDurationSeconds(n, n % 60 === 0 ? 'h:mm' : 'h:mm:ss')
+  }
+  return String(v)
 }
 
 // Parse un presse-papier TSV (format Excel/Sheets/Airtable) en matrice de
@@ -231,8 +243,40 @@ function SelectCellEditor({ col, value, emptyLabel, onCommit, onCancel }) {
   }, [value, multi])
   const [sel, setSel] = useState(initial)
   const rootRef = useRef(null)
+  const anchorRef = useRef(null)
+  const [pos, setPos] = useState(null)
 
-  useEffect(() => { rootRef.current?.focus() }, [])
+  // Rendu dans <body>, calé sous la cellule — ou au-dessus quand la place
+  // manque : sur une ligne du bas, le conteneur de scroll rognait la liste.
+  // Même placement que LinkCellEditor.
+  const PANEL_H = 224
+  const place = useCallback(() => {
+    const cell = anchorRef.current?.parentElement
+    if (!cell) return
+    const r = cell.getBoundingClientRect()
+    const width = Math.max(Math.round(r.width), 180)
+    const below = window.innerHeight - r.bottom
+    const down = below > PANEL_H || r.top < below
+    setPos({
+      top: down ? Math.round(r.bottom + 2) : undefined,
+      bottom: down ? undefined : Math.round(window.innerHeight - r.top + 2),
+      left: Math.round(Math.max(8, Math.min(r.left, window.innerWidth - width - 8))),
+      minWidth: width,
+      maxHeight: Math.round(Math.min(PANEL_H, Math.max(120, (down ? below : r.top) - 12))),
+    })
+  }, [])
+  useLayoutEffect(() => { place() }, [place])
+  useEffect(() => {
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [place])
+
+  const placed = pos != null
+  useEffect(() => { if (placed) rootRef.current?.focus({ preventScroll: true }) }, [placed])
 
   function commitMulti(next) { onCommit(JSON.stringify(next)) }
   function toggle(val) {
@@ -243,7 +287,7 @@ function SelectCellEditor({ col, value, emptyLabel, onCommit, onCancel }) {
     }
   }
 
-  return (
+  const panel = (
     <div
       ref={rootRef}
       tabIndex={-1}
@@ -262,7 +306,8 @@ function SelectCellEditor({ col, value, emptyLabel, onCommit, onCancel }) {
           if (multi) commitMulti(sel); else onCancel()
         }
       }}
-      className="absolute z-30 left-0 top-full min-w-[180px] max-h-56 overflow-y-auto rounded-lg border border-brand-500 bg-white shadow-lg py-1"
+      style={pos ? { position: 'fixed', top: pos.top, bottom: pos.bottom, left: pos.left, minWidth: pos.minWidth, maxHeight: pos.maxHeight } : { position: 'fixed', visibility: 'hidden' }}
+      className="z-50 overflow-y-auto rounded-lg border border-brand-500 bg-white shadow-lg py-1"
     >
       {!multi && (
         <button
@@ -308,6 +353,13 @@ function SelectCellEditor({ col, value, emptyLabel, onCommit, onCancel }) {
         </div>
       )}
     </div>
+  )
+
+  return (
+    <>
+      <span ref={anchorRef} className="hidden" aria-hidden="true" />
+      {createPortal(panel, document.body)}
+    </>
   )
 }
 
@@ -402,8 +454,9 @@ function renderCell(col, item, decimals, selectBadges) {
   // (YYYY-MM-DD, cf. fmtDate) plutôt que l'ISO brut « 2025-11-14T00:00:00.000Z ».
   // Sans ça, toute colonne type:'date' dont la page n'a pas câblé de render
   // (ex. « Créé le » / « Modifié le » du Pipeline) affichait le timestamp brut.
-  // Même règle pour une colonne « Évaluation » : des étoiles, jamais le nombre brut.
-  if (col.dynamic || col.type === 'date' || col.type === 'rating') return <DynamicCell value={value} col={col} decimals={decimals} />
+  // Même règle pour une colonne « Évaluation » : des étoiles, jamais le nombre brut,
+  // et pour une colonne Durée : hh:mm, jamais les secondes brutes.
+  if (col.dynamic || col.type === 'date' || col.type === 'rating' || col.type === 'duration') return <DynamicCell value={value} col={col} decimals={decimals} />
   if (col.type === 'number' && decimals != null) {
     const formatted = formatDecimals(value, decimals)
     if (formatted != null) return <span className="tabular-nums">{formatted}</span>
@@ -566,6 +619,7 @@ export function DataTable({
   showFormulaSyntaxHelp = true,
   showFormulaAutocompleteHint = true,
   showFormulaKeyboardHint = true,
+  defaultFieldNames = false, // opt-in : un nouveau champ laissé sans nom en reçoit un (« Date », « Calcul », lookup/rollup « … (à partir de <table>) »).
   columnPatches = null,   // { [colId]: props } — propriétés fusionnées sur une colonne de champ perso auto-gérée (ex. `linkOpenOnClick`), sans la redéfinir.
   customFieldsByColumn,   // Map<column_name, { id, name, type, decimals }> — pour right-click menu
   customFieldsLoaded,    // bool — les champs custom fournis ont-ils fini de charger ? (voir cfLoaded / auto-affichage). À fournir dès que customFieldsByColumn l'est.
@@ -579,10 +633,13 @@ export function DataTable({
   selectedSelectClickOpens = false, // opt-in : un clic sur une cellule à choix unique déjà active ouvre son éditeur.
   singleSelectEmptyLabel = '— Aucun —', // libellé du choix vide ; '' conserve une ligne vide sélectionnable.
   fullHeightCells = false, // mode tableur : chaque cellule remplit toute la hauteur de sa ligne (contenu centré), donc le cadre de la cellule active aussi.
+  dragSelectCells = false, // opt-in mode tableur : glisser la souris sélectionne un bloc de cellules, et le bloc sélectionné est surligné.
   seamlessCellInput = false, // mode tableur : le champ texte d'une cellule en édition n'a ni bordure ni fond propres — seul le cadre de la cellule active reste visible (pas de « cellule dans la cellule »).
   rowKey = 'id',          // champ servant d'identifiant unique de ligne pour le suivi d'expansion (ex. 'employee_id' quand les lignes n'ont pas d'`id`).
   openKey = null,         // valeur de rowKey à déplier et à faire défiler à l'écran (lien profond « ouvre cette ligne »). Appliqué une fois par valeur : refermer la ligne ne la rouvre pas.
   onToggleExpand,         // (item, willExpand) => void — notifié à chaque (dé)pliage, utile pour charger les détails à la demande.
+  singleExpand = false,   // bool — avec `renderExpanded` : déplier une ligne replie celle qui était ouverte.
+  onRowContextMenu,       // (item, event) => void — clic droit sur une ligne (hors table manipulable) : la page affiche son menu.
   onCellEdit,             // (row, col, value) => void|Promise — si fourni, active le mode « tableur » : navigation cellule, sélection multi-cellules, copier/coller (Ctrl+C/V), remplissage vers le bas (Ctrl+D) et édition inline. Les colonnes éditables doivent porter `editable: true`. La navigation de ligne (`peek` / `onRowClick`) reste au CLIC SIMPLE comme partout ailleurs ; seules les cellules `editable: true` gardent le clic de sélection tableur (double-clic = éditer).
   peek,                   // { title, subtitle?, to?, width?, key?, render } — si fourni, un clic simple sur une ligne ouvre un drawer latéral (side-peek à la Airtable) au lieu de naviguer. Chaque champ est soit une valeur, soit une fonction (item) => valeur ; `render(item, { close })` retourne le corps du drawer (typiquement une page *Detail.jsx en mode `embedded`). `to(item)` fournit l'URL partageable affichée pendant que le drawer est ouvert. `key` nomme la ressource sous laquelle la largeur du panneau est mémorisée (par défaut, déduite de `to`). Prend le pas sur `onRowClick`.
   onRowReorder,           // (orderedIds) => void — active une poignée de drag & drop en tête de chaque ligne pour réordonner manuellement (ordre custom persisté par le parent, ex. sort_order). Actif seulement quand l'ordre affiché == l'ordre réel des données : sans tri, groupage, recherche ni filtre.
@@ -595,6 +652,7 @@ export function DataTable({
   toolbarEnd,             // JSX — contenu de page glissé à droite de la barre de vues (après le compteur de lignes). Voir ViewToolbar.
   expandToggle = true,    // bool — avec `renderExpanded` : false retire la colonne chevron ; la ligne se déplie alors d'un clic n'importe où (déjà le geste par défaut sans `peek` ni `onRowClick`).
   skin,                   // 'ledger' | undefined — variante d'habillage (classe `dt-skin-<skin>` sur la racine, règles dans index.css). 'ledger' = le classeur papier du rapprochement bancaire.
+  pinnedColumns = null,   // string[] | null — ids de colonnes toujours affichées en tête, dans cet ordre, quelle que soit la vue enregistrée (le reste suit la vue). Le clone QuickBooks du rapprochement s'en sert.
   rowHeight = 32,         // px — hauteur d'une ligne (hors table `height="auto"`, mesurée). Le rapprochement (face à face) lit deux lignes de texte par cellule.
   selectBadges = false,   // bool — variante de cellule : une colonne NATIVE de type single_select/multi_select (déclarée dans tableDefs.js, sans render() de page) s'affiche en pastille à la couleur du choix, comme un champ custom. Sans ça, la valeur sort en texte nu et la couleur réglée sur le champ est ignorée. Opt-in par page (les colonnes custom, elles, sont déjà colorées partout).
 }) {
@@ -618,6 +676,7 @@ export function DataTable({
   // qui matche colore la ligne. Chargé depuis la pill active, persisté par
   // l'autosave de ViewToolbar (color_rules).
   const [colorRules, setColorRules] = useState([])
+  const colorRulesLoadingRef = useRef(null)
   const [colWidths, setColWidths] = useState({})
   // Cellules d'en-tête, pour mesurer la largeur affichée des colonnes fluides
   // au début d'un redimensionnement (voir handleColResizeStart).
@@ -677,7 +736,9 @@ export function DataTable({
   const [fillDrag, setFillDrag] = useState(null)
   const internalClipRef = useRef('') // fallback presse-papier intra-app (si readText refusé)
   const keyHandlerRef = useRef(null)
-  const isColEditable = useCallback((col) => gridMode && !!col?.editable, [gridMode])
+  // `editable` peut être une fonction (row) => bool : la cellule n'est éditable
+  // que sur les lignes qui la satisfont. Sans ligne, la colonne compte comme éditable.
+  const isColEditable = useCallback((col, row) => gridMode && (typeof col?.editable === 'function' ? (!row || !!col.editable(row)) : !!col?.editable), [gridMode])
   // Le clic simple ouvre la fiche PARTOUT, mode tableur inclus : c'est la même
   // règle dans toutes les tables de l'app. Seules les cellules réellement
   // éditables gardent la sémantique tableur (le clic y sélectionne la cellule,
@@ -1187,8 +1248,15 @@ export function DataTable({
   useEffect(() => {
     if (!view.configReady) return
     setVisibleCols(withAlwaysVisible(view.viewVisibleColumns))
-    const rules = view.activeView?.color_rules
-    setColorRules(Array.isArray(rules) ? rules : [])
+    // Vue « Tous » (aucune pill) : les règles n'ont pas de ligne serveur où
+    // vivre — elles sont mémorisées en localStorage, comme les colonnes.
+    let rules = view.activeView?.color_rules
+    if (!view.activeView) {
+      try { rules = JSON.parse(localStorage.getItem(`erp_allView_colors_${table}`) || '[]') } catch { rules = [] }
+    }
+    const nextRules = Array.isArray(rules) ? rules : []
+    colorRulesLoadingRef.current = nextRules
+    setColorRules(nextRules)
     if (!forceAllView) {
       const newGroupBy = normalizeGroupBy(view.viewGroupBy)
       setGroupByRaw(newGroupBy)
@@ -1222,6 +1290,18 @@ export function DataTable({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.activeViewId, view.configReady])
+
+  // Persistance des règles de couleur de la vue « Tous ». Rien ne s'écrit tant
+  // que les règles chargées ne sont pas dans l'état, sinon l'état précédent
+  // (ex. [] initial) effacerait la sauvegarde avant sa lecture.
+  useEffect(() => {
+    if (colorRulesLoadingRef.current) {
+      if (colorRules === colorRulesLoadingRef.current) colorRulesLoadingRef.current = null
+      return
+    }
+    if (!view.configReady || view.activeViewId) return
+    try { localStorage.setItem(`erp_allView_colors_${table}`, JSON.stringify(colorRules || [])) } catch { /* préférence locale seulement */ }
+  }, [colorRules, view.activeViewId, view.configReady, table])
 
   // Un champ nouvellement créé n'apparaît QUE dans la vue où il a été créé.
   //
@@ -1280,12 +1360,15 @@ export function DataTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfByColumn, cfLoaded, view.configReady])
 
+  // `pinnedColumns` : ces colonnes passent en tête, dans cet ordre, quoi que
+  // dise la vue enregistrée ; le reste suit la vue.
+  const pinnedKey = pinnedColumns ? pinnedColumns.join('|') : ''
   const visibleColumns = useMemo(
-    () => visibleCols
+    () => (pinnedColumns ? [...pinnedColumns, ...visibleCols.filter(id => !pinnedColumns.includes(id))] : visibleCols)
       .map(id => mergedColumns.find(c => c.id === id))
       .filter(Boolean)
       .filter(c => !isDisabled(c)), // colonnes dont l'import Airtable est désactivé : on les retire du rendu
-    [mergedColumns, visibleCols, isDisabled]
+    [mergedColumns, visibleCols, isDisabled, pinnedKey] // eslint-disable-line react-hooks/exhaustive-deps
   )
 
   const [dragOverCol, setDragOverCol] = useState(null)
@@ -1454,12 +1537,13 @@ export function DataTable({
     if (k == null) return
     const willExpand = !expandedKeys.has(k)
     setExpandedKeys(prev => {
+      if (singleExpand) return new Set(prev.has(k) ? [] : [k])
       const next = new Set(prev)
       next.has(k) ? next.delete(k) : next.add(k)
       return next
     })
     onToggleExpand?.(item, willExpand)
-  }, [rowKey, expandedKeys, onToggleExpand])
+  }, [rowKey, expandedKeys, onToggleExpand, singleExpand])
 
   function toggleAllVisible() {
     setSelectedIds(prev => {
@@ -1830,7 +1914,7 @@ export function DataTable({
   const startEdit = useCallback((rowId, colId, seed) => {
     const col = visibleColumns[colIndexById.get(colId)]
     const row = gridRows[rowIndexById.get(rowId)]
-    if (!row || !isColEditable(col)) return
+    if (!row || !isColEditable(col, row)) return
     const raw = row[col.field]
     // Checkbox : pas de mode édition texte — un double-clic / Enter / frappe
     // bascule directement la valeur (0 ⇄ 1) et persiste.
@@ -1909,7 +1993,7 @@ export function DataTable({
       const parts = []
       for (let c = b.minC; c <= b.maxC; c++) {
         const v = gridRows[r]?.[visibleColumns[c]?.field]
-        parts.push(v == null ? '' : String(v))
+        parts.push(cellText(visibleColumns[c], v))
       }
       lines.push(parts.join('\t'))
     }
@@ -1927,9 +2011,9 @@ export function DataTable({
       const col = visibleColumns[c]
       if (!isColEditable(col)) continue
       const src = gridRows[b.minR]?.[col.field]
-      const value = coerceCellValue(col, src == null ? '' : String(src))
+      const value = coerceCellValue(col, cellText(col, src))
       if (value === undefined) continue
-      for (let r = b.minR + 1; r <= b.maxR; r++) changes.push({ row: gridRows[r], col, value })
+      for (let r = b.minR + 1; r <= b.maxR; r++) if (isColEditable(col, gridRows[r])) changes.push({ row: gridRows[r], col, value })
     }
     applyCellChanges(changes)
   }, [gridRows, visibleColumns, isColEditable, applyCellChanges])
@@ -1947,9 +2031,9 @@ export function DataTable({
       for (let r = from; r <= to; r++) {
         const offset = ((r - b.minR) % h + h) % h
         const src = gridRows[b.minR + offset]?.[col.field]
-        const value = src != null && typeof src === 'object' ? src : coerceCellValue(col, src == null ? '' : String(src))
+        const value = src != null && typeof src === 'object' ? src : coerceCellValue(col, cellText(col, src))
         const row = gridRows[r]
-        if (value === undefined || !row || row[col.field] === value) continue
+        if (value === undefined || !row || row[col.field] === value || !isColEditable(col, row)) continue
         changes.push({ row, col, value })
       }
     }
@@ -1981,6 +2065,35 @@ export function DataTable({
     window.addEventListener('mouseup', onUp)
   }, [rowIndexById, fillTo, focusGrid])
 
+  // Sélection au glisser (dragSelectCells) : le mousedown pose l'ancre, chaque
+  // cellule survolée devient le coin opposé du bloc.
+  const startSelectDrag = useCallback((anchor) => {
+    let moved = false
+    const onMove = ev => {
+      const key = document.elementFromPoint(ev.clientX, ev.clientY)?.closest?.('[data-grid-cell]')?.getAttribute('data-grid-cell')
+      if (!key) return
+      const [rid, colId] = key.split('|')
+      const r = rowIndexById.get(rid) ?? rowIndexById.get(Number(rid))
+      const row = r != null ? gridRows[r] : null
+      if (!row || !colIndexById.has(colId)) return
+      if (!moved && row.id === anchor.rowId && colId === anchor.colId) return
+      moved = true
+      setSel(s => (s?.focus.rowId === row.id && s?.focus.colId === colId ? s : { anchor, focus: { rowId: row.id, colId } }))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (!moved) return
+      // Le clic qui suit un glisser ne doit ni ouvrir une fiche ni un éditeur.
+      selectedSelectClickRef.current = null
+      const swallow = e => { e.stopPropagation(); e.preventDefault() }
+      window.addEventListener('click', swallow, { capture: true, once: true })
+      setTimeout(() => window.removeEventListener('click', swallow, { capture: true }), 0)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [rowIndexById, colIndexById, gridRows])
+
   const pasteCells = useCallback(async (b) => {
     let text = internalClipRef.current || ''
     try { const t = await navigator.clipboard.readText(); if (t) text = t } catch {}
@@ -1992,7 +2105,7 @@ export function DataTable({
     if (single && (b.maxR > b.minR || b.maxC > b.minC)) {
       // Une seule valeur collée sur une plage → on remplit toute la plage.
       for (let r = b.minR; r <= b.maxR; r++) for (let c = b.minC; c <= b.maxC; c++) {
-        const col = visibleColumns[c]; if (!isColEditable(col)) continue
+        const col = visibleColumns[c]; if (!isColEditable(col, gridRows[r])) continue
         const value = coerceCellValue(col, grid[0][0]); if (value === undefined) continue
         changes.push({ row: gridRows[r], col, value })
       }
@@ -2000,7 +2113,7 @@ export function DataTable({
       for (let i = 0; i < grid.length; i++) for (let j = 0; j < grid[i].length; j++) {
         const r = b.minR + i, c = b.minC + j
         const row = gridRows[r], col = visibleColumns[c]
-        if (!row || !col || !isColEditable(col)) continue
+        if (!row || !col || !isColEditable(col, row)) continue
         const value = coerceCellValue(col, grid[i][j]); if (value === undefined) continue
         changes.push({ row, col, value })
       }
@@ -2015,7 +2128,7 @@ export function DataTable({
   const clearCells = useCallback((b) => {
     const changes = []
     for (let r = b.minR; r <= b.maxR; r++) for (let c = b.minC; c <= b.maxC; c++) {
-      const col = visibleColumns[c]; if (!isColEditable(col)) continue
+      const col = visibleColumns[c]; if (!isColEditable(col, gridRows[r])) continue
       changes.push({ row: gridRows[r], col, value: null })
     }
     applyCellChanges(changes)
@@ -2049,9 +2162,9 @@ export function DataTable({
     else if (k === 'Enter' || k === 'F2') { e.preventDefault(); startEdit(sel.focus.rowId, sel.focus.colId) }
     else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); clearCells(b) }
     else if (k.length === 1 && !mod && !e.altKey) {
-      if (isColEditable(visibleColumns[fC])) { e.preventDefault(); startEdit(sel.focus.rowId, sel.focus.colId, k) }
+      if (isColEditable(visibleColumns[fC], gridRows[fR])) { e.preventDefault(); startEdit(sel.focus.rowId, sel.focus.colId, k) }
     }
-  }, [gridMode, editingCell, peekItem, sel, selBounds, copyCells, pasteCells, fillDown, moveCursor, startEdit, clearCells, rowIndexById, colIndexById, visibleColumns, isColEditable])
+  }, [gridMode, editingCell, peekItem, sel, selBounds, copyCells, pasteCells, fillDown, moveCursor, startEdit, clearCells, rowIndexById, colIndexById, visibleColumns, isColEditable, gridRows])
 
   // Échap abandonne la multi-sélection d'en-têtes de colonnes.
   useEffect(() => {
@@ -2068,6 +2181,19 @@ export function DataTable({
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [gridMode])
+
+  // Clic ailleurs sur la page : la cellule sélectionnée se désélectionne.
+  // Pas pendant une édition — l'éditeur peut vivre dans un portail (liste
+  // déroulante) et se valide lui-même à la perte du focus.
+  useEffect(() => {
+    if (!sel || editingCell) return
+    const h = (e) => {
+      if (parentRef.current?.contains(e.target)) return
+      setSel(null)
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [sel, editingCell])
 
   // Tous les pathKeys actuellement matérialisés (utile pour "Tout fermer").
   // Note : avec le nested grouping, ne contient que les groupes des niveaux
@@ -2149,12 +2275,13 @@ export function DataTable({
     if (pendingEditId == null) return
     if (!gridMode) { setPendingEditId(null); return }
     if (!rowIndexById.has(pendingEditId)) return
-    const col = visibleColumns.find(c => isColEditable(c))
+    const pendingRow = gridRows[rowIndexById.get(pendingEditId)]
+    const col = visibleColumns.find(c => isColEditable(c, pendingRow))
     setPendingEditId(null)
     const di = displayIndexById.get(pendingEditId)
     if (di != null) { try { virtualizer.scrollToIndex(di, { align: 'auto' }) } catch {} }
     if (col) startEdit(pendingEditId, col.id)
-  }, [pendingEditId, gridMode, rowIndexById, displayIndexById, visibleColumns, isColEditable, startEdit, virtualizer])
+  }, [pendingEditId, gridMode, gridRows, rowIndexById, displayIndexById, visibleColumns, isColEditable, startEdit, virtualizer])
 
   if (!configReady) return null
 
@@ -2579,6 +2706,7 @@ export function DataTable({
             showFormulaSyntaxHelp={showFormulaSyntaxHelp}
             showFormulaAutocompleteHint={showFormulaAutocompleteHint}
             showFormulaKeyboardHint={showFormulaKeyboardHint}
+            defaultFieldNames={defaultFieldNames}
             isOpen={!!ownCfModal || !!fieldOverrideModal}
             onClose={() => { setOwnCfModal(null); setFieldOverrideModal(null) }}
             // Mode natif (override cosmétique) : clé de CHAMPS — la
@@ -2767,6 +2895,9 @@ export function DataTable({
                     e.preventDefault()
                     e.stopPropagation()
                     setRowMenu({ row: item, x: e.clientX, y: e.clientY })
+                  } : onRowContextMenu ? (e) => {
+                    e.preventDefault()
+                    onRowContextMenu(item, e)
                   } : undefined}
                   onDragOver={reorderActive && dragRowId ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverRowId !== item.id) setDragOverRowId(item.id) } : undefined}
                   onDrop={reorderActive && dragRowId ? (e) => { e.preventDefault(); handleRowDrop(item.id) } : undefined}
@@ -2834,7 +2965,7 @@ export function DataTable({
                     if (gridMode) {
                       const ri = rowIndexById.get(item.id)
                       const isActive = sel && sel.focus.rowId === item.id && sel.focus.colId === col.id
-                      const editable = isColEditable(col)
+                      const editable = isColEditable(col, item)
                       const opensLink = linkOpensOnClick(col)
                       const isEditing = editingCell && editingCell.rowId === item.id && editingCell.colId === col.id
                       const showSelectChevron = selectedSelectChevron && isActive && editable && !isEditing && col.type === 'single_select'
@@ -2845,6 +2976,9 @@ export function DataTable({
                       const inFill = fb && ri != null && ci >= fb.minC && ci <= fb.maxC
                         && (fillDrag.toR > fb.maxR ? ri > fb.maxR && ri <= fillDrag.toR : ri < fb.minR && ri >= fillDrag.toR)
                       const hasHandle = !editingCell && !fillDrag && gridBounds && ri === gridBounds.maxR && ci === gridBounds.maxC && editable
+                      const inSel = dragSelectCells && !isActive && gridBounds && ri != null
+                        && (gridBounds.maxR > gridBounds.minR || gridBounds.maxC > gridBounds.minC)
+                        && ri >= gridBounds.minR && ri <= gridBounds.maxR && ci >= gridBounds.minC && ci <= gridBounds.maxC
                       return (
                         <div
                           key={col.id}
@@ -2873,9 +3007,21 @@ export function DataTable({
                             // une colonne de lien : son nom ouvre la fiche,
                             // cliquer à côté sélectionne.
                             if ((!editable || opensLink) && e.target.closest?.('a[href]')) return
+                            // Cellule en lecture seule d'une ligne qui ouvre sa
+                            // fiche : le clic simple ouvre la fiche, sans laisser
+                            // de contour de sélection sur la cellule. Le clic
+                            // modifié (shift/ctrl) reste un geste de tableur.
+                            if (!editable && (peekEnabled || onRowClick || expandable)
+                              && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+                              setSel(null)
+                              return
+                            }
                             const cell = { rowId: item.id, colId: col.id }
                             if (e.shiftKey && sel) setSel(s => ({ anchor: s.anchor, focus: cell }))
-                            else setSel({ anchor: cell, focus: cell })
+                            else {
+                              setSel({ anchor: cell, focus: cell })
+                              if (dragSelectCells && !isEditing) startSelectDrag(cell)
+                            }
                             focusGrid()
                           }}
                           // Cellule éditable : le clic reste un geste de tableur
@@ -2898,7 +3044,7 @@ export function DataTable({
                             // plutôt que d'ignorer le double-clic en silence.
                             else if (col.airtablePullReadonly) { e.stopPropagation(); notifyAirtablePullReadonly(col) }
                           }}
-                          className={`relative pl-4 ${showSelectChevron ? 'pr-8' : 'pr-4'} text-sm select-none${fullHeightCells ? ' self-stretch grid grid-cols-1 items-center' : ''}${selectClickable ? ' cursor-pointer' : editable ? ' cursor-cell' : ''}${flashing ? ' dt-cell-flash' : ''}${inFill ? ' bg-brand-50/60 outline-dashed outline-1 -outline-offset-1 outline-brand-400' : ''}${isActive ? ' z-[1] ring-2 ring-inset ring-brand-500' : ''}`}
+                          className={`relative pl-4 ${showSelectChevron ? 'pr-8' : 'pr-4'} text-sm select-none${fullHeightCells ? ' self-stretch grid grid-cols-1 items-center' : ''}${selectClickable ? ' cursor-pointer' : editable ? ' cursor-cell' : ''}${flashing ? ' dt-cell-flash' : ''}${inSel ? ' bg-brand-50' : ''}${inFill ? ' bg-brand-50/60 outline-dashed outline-1 -outline-offset-1 outline-brand-400' : ''}${isActive ? ' z-[1] ring-2 ring-inset ring-brand-500' : ''}`}
                         >
                           {showSelectChevron && <ChevronDown
                             size={14}
@@ -3119,6 +3265,15 @@ export function DataTable({
               {chevronCol && <div aria-hidden />}
               {peekGutter && <div aria-hidden />}
               {visibleColumns.map(col => {
+                // `col.footer` : total fourni par la page (ex. durées h:mm),
+                // fixe — remplace le total configurable de la colonne.
+                if (col.footer !== undefined) {
+                  return (
+                    <div key={col.id} data-testid={`datatable-footer-cell-${col.id}`} className="px-4 py-1.5 text-xs font-semibold text-slate-700 tabular-nums truncate flex items-baseline justify-start">
+                      {col.footer}
+                    </div>
+                  )
+                }
                 const aggType = footerAggs[col.id]
                 const agg = footerValues.get(col.id)
                 // Préférence utilisateur, sinon décimales du champ (col.decimals,
@@ -3129,7 +3284,7 @@ export function DataTable({
                     key={col.id}
                     data-testid={`datatable-footer-cell-${col.id}`}
                     onClick={e => { e.stopPropagation(); setFooterMenu({ col, x: e.clientX, y: e.clientY }) }}
-                    className="group/foot relative px-4 py-1.5 text-xs cursor-pointer hover:bg-slate-100 transition-colors flex items-baseline justify-end gap-1.5 overflow-hidden select-none"
+                    className="group/foot relative px-4 py-1.5 text-xs cursor-pointer hover:bg-slate-100 transition-colors flex items-baseline justify-start gap-1.5 overflow-hidden select-none"
                     title={aggType
                       ? `${agg?.label} : ${formatted} — cliquer pour changer de total`
                       : 'Cliquer pour choisir un total (somme, moyenne, compte, min, max…)'}

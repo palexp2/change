@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fiche extraction — maquettes</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root{--bg:#f5f6f7;--s:#fff;--soft:#f8f9fa;--line:#eceef0;--line2:#dfe2e5;--ink:#1f2328;--ink2:#4a5058;--ink3:#7a8089;--ink4:#a6abb2;
+--g:#2ca01c;--gd:#1d7f12;--gs:#eef7ec;--b:#0a6fbf;--bs:#eaf3fb;--a:#b86e00;--as:#fdf5e6;--r:#d1362a;--rs:#fcefee;--sh:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.07)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#30353b;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#45b934;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#30353b;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#45b934;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:28px 16px 60px;-webkit-font-smoothing:antialiased}
+h2{max-width:1180px;margin:44px auto 2px;font-size:18px;letter-spacing:-.01em}h2 b{color:var(--b);margin-right:8px}
+.sub{max-width:1180px;margin:0 auto 12px;color:var(--ink3)}
+.scr{max-width:1180px;margin:0 auto;background:var(--s);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer}
+.mut{color:var(--ink3)}.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{font-size:11.5px;padding:2px 8px;border-radius:999px;white-space:nowrap;display:inline-flex;gap:5px;align-items:center;font-weight:500}
+.pg{background:var(--gs);color:var(--gd)}.pb{background:var(--bs);color:var(--b)}.pa{background:var(--as);color:var(--a)}.pr{background:var(--rs);color:var(--r)}.pn{background:var(--soft);color:var(--ink3)}
+.av{width:30px;height:30px;border-radius:8px;display:inline-grid;place-items:center;font-size:13px;font-weight:600;color:#fff;background:#d1362a;flex:none}
+.ib{width:28px;height:28px;border-radius:7px;border:1px solid var(--line2);display:inline-grid;place-items:center;color:var(--ink3);background:var(--s);font-size:13px}
+.btn{height:32px;padding:0 14px;border-radius:8px;border:1px solid var(--line2);background:var(--s);color:var(--ink2);font:inherit;font-weight:500;display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.pri{background:var(--g);border-color:var(--g);color:#fff}
+/* commun */
+.top{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line)}
+.top h1{margin:0;font-size:17px;font-weight:600;letter-spacing:-.01em}.top small{display:block;color:var(--ink3);font-size:12px;font-weight:400}
+.sp{flex:1}
+.body{display:grid;grid-template-columns:5fr 6fr;min-height:560px}
+.doc{background:var(--soft);border-right:1px solid var(--line);padding:22px;display:flex;justify-content:center}
+.paper{width:100%;max-width:380px;background:var(--s);border:1px solid var(--line2);border-radius:4px;padding:26px 24px;box-shadow:0 2px 10px rgb(0 0 0/.05);font-size:11px;color:var(--ink2);align-self:flex-start}
+.paper .lg{font-weight:700;color:#d1362a;font-size:15px;margin-bottom:14px}
+.paper .ln{height:6px;background:var(--line);border-radius:3px;margin:7px 0}
+.paper .rw{display:flex;justify-content:space-between;margin:5px 0}
+.paper .hl{background:color-mix(in srgb,var(--g) 18%,transparent);outline:1px solid color-mix(in srgb,var(--g) 50%,transparent);border-radius:3px;padding:0 3px}
+.paper .hla{background:color-mix(in srgb,var(--a) 20%,transparent);outline:1px solid color-mix(in srgb,var(--a) 55%,transparent);border-radius:3px;padding:0 3px}
+.side{padding:20px 22px;display:flex;flex-direction:column;gap:16px}
+.lbl{font-size:11.5px;color:var(--ink3);margin-bottom:4px}
+.kv{display:grid;grid-template-columns:120px 1fr;gap:9px 12px;align-items:center}
+.kv>span:nth-child(odd){color:var(--ink3);font-size:12px}
+.fld{border:1px solid var(--line2);border-radius:7px;padding:5px 9px;display:flex;justify-content:space-between;align-items:center;background:var(--s)}
+.fld i{font-style:normal;color:var(--ink4)}
+.sec{border-top:1px solid var(--line);padding-top:14px}
+.sec h4{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--ink2);display:flex;align-items:center;gap:8px}
+table{width:100%;border-collapse:collapse}td{padding:6px 0;border-bottom:1px solid var(--line);vertical-align:top}td.num{text-align:right}
+.tot td{border:0;padding:3px 0;color:var(--ink3)}.tot tr:last-child td{color:var(--ink);font-weight:600;font-size:15px;padding-top:8px}
+.foot{border-top:1px solid var(--line);padding:12px 20px;display:flex;gap:10px;align-items:center;background:var(--s)}
+/* F1 */
+.alerts{display:flex;gap:6px;flex-wrap:wrap}
+.alert{display:flex;align-items:center;gap:8px;border-radius:9px;padding:7px 10px;font-size:12.5px;flex:1 1 220px}
+.alert a{margin-left:auto;font-weight:500;color:inherit;text-decoration:underline;text-underline-offset:2px}
+.seg{display:inline-flex;background:var(--soft);border-radius:8px;padding:2px}.seg span{padding:4px 10px;border-radius:6px;font-size:12px;color:var(--ink3)}.seg .on{background:var(--s);color:var(--ink);box-shadow:0 1px 2px rgb(0 0 0/.08);font-weight:500}
+.hint{font-size:11.5px;color:var(--ink3);display:flex;gap:5px;align-items:center}
+.dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:none}
+/* F2 */
+.step{border:1px solid var(--line);border-radius:10px}
+.step .h{display:flex;align-items:center;gap:10px;padding:10px 12px}
+.step .h b{font-weight:600}.step .h .s{color:var(--ink3);font-size:12px}
+.ck{width:20px;height:20px;border-radius:50%;display:inline-grid;place-items:center;font-size:11px;font-weight:700;flex:none}
+.ck.ok{background:var(--gs);color:var(--gd)}.ck.wa{background:var(--as);color:var(--a)}.ck.td{background:var(--soft);color:var(--ink3)}
+.step.open{border-color:var(--a);box-shadow:0 0 0 3px color-mix(in srgb,var(--a) 12%,transparent)}
+.step .c{padding:2px 12px 12px 42px}
+/* F3 */
+.phrase{font-size:17px;line-height:2.1;letter-spacing:-.01em;color:var(--ink2)}
+.tk{display:inline-flex;align-items:center;gap:4px;padding:1px 9px;border-radius:7px;background:var(--soft);border:1px solid var(--line2);color:var(--ink);font-weight:500;cursor:pointer}
+.tk.w{background:var(--as);border-color:color-mix(in srgb,var(--a) 45%,transparent);color:var(--a)}
+.tk.ok{background:var(--gs);border-color:color-mix(in srgb,var(--g) 40%,transparent);color:var(--gd)}
+.pop{margin-top:6px;border:1px solid var(--line2);border-radius:10px;box-shadow:var(--sh);padding:10px;width:290px;background:var(--s);font-size:12.5px}
+.pop div{padding:5px 7px;border-radius:6px}.pop .on{background:var(--bs);color:var(--b)}
+.rail{display:flex;gap:6px;flex-wrap:wrap}
+@media(max-width:860px){.body{grid-template-columns:1fr}.doc{border-right:0;border-bottom:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<button class="theme" onclick="const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">◐</button>
+
+<!-- ============ F1 ============ -->
+<h2><b>F1</b>Épuré</h2>
+<div class="sub">Bandeaux fondus en une rangée d'alertes ; formulaire QB en lignes sobres ; actions dans ⋯.</div>
+<div class="scr">
+  <div class="top"><span class="av">D</span><div><h1>DigiKey <span class="pill pa" style="vertical-align:3px">Taxe à vérifier</span></h1><small>Facture 132580242 · 28 sept. 2026 · courriel</small></div><span class="sp"></span>
+    <span class="num" style="font-size:20px;font-weight:600">1 284,17 $</span><span class="ib">‹</span><span class="ib">›</span><span class="ib">⋯</span></div>
+  <div class="body">
+    <div class="doc"><div class="paper"><div class="lg">DigiKey</div><div class="rw"><span>Invoice</span><span>132580242</span></div><div class="ln" style="width:70%"></div><div class="ln" style="width:55%"></div><div class="ln"></div><div class="ln" style="width:80%"></div><div class="ln" style="width:60%"></div><br><div class="rw"><span>Subtotal</span><span>1 116,91</span></div><div class="rw"><span>GST</span><span>55,85</span></div><div class="rw"><span>QST</span><span>111,41</span></div><div class="rw"><b>Total</b><b>1 284,17</b></div></div></div>
+    <div class="side">
+      <div class="alerts">
+        <div class="alert" style="background:var(--as);color:var(--a)"><span class="dot" style="background:var(--a)"></span>TVQ ≠ 9,975 %<a>Voir</a></div>
+        <div class="alert" style="background:var(--gs);color:var(--gd)"><span class="dot" style="background:var(--g)"></span>Débité 30 sept. · BNC Visa<a>Ouvrir</a></div>
+      </div>
+      <div>
+        <div style="display:flex;align-items:center;margin-bottom:10px"><b style="font-size:14px">Comptabiliser</b><span class="sp"></span><div class="seg"><span class="on">Dépense payée</span><span>Facture</span><span>Crédit carte</span><span>Dépôt</span></div></div>
+        <div class="kv">
+          <span>Fournisseur</span><div class="fld">DigiKey Electronics<i>profil ✓</i></div>
+          <span>Compte</span><div class="fld">14000 · Pièces<i>3 lignes LIA</i></div>
+          <span>Payé par</span><div class="fld">BNC Visa ••4411<i>▾</i></div>
+          <span>Type · taxe</span><div class="fld">Achat taxable · TPS/TVQ<span class="pill pg">haute</span></div>
+        </div>
+        <div class="hint" style="margin-top:8px"><span class="dot" style="background:var(--ink4)"></span>Modèle : comme les 6 dernières factures DigiKey · <a style="color:var(--b)">changer</a></div>
+      </div>
+      <div class="sec"><h4>Articles <span class="mut" style="font-weight:400">3</span><span class="sp"></span><span class="mut" style="font-weight:400">+ ligne</span></h4>
+        <table><tr><td>STM32G071 ×50<div class="mut" style="font-size:11.5px">LIA-0412 · même pièce</div></td><td class="num">612,50</td></tr><tr><td>Connecteur JST ×200<div class="mut" style="font-size:11.5px">LIA-0415</div></td><td class="num">418,00</td></tr><tr><td>Transport</td><td class="num">86,41</td></tr></table></div>
+      <div class="sec"><table class="tot"><tr><td>Sous-total</td><td class="num">1 116,91</td></tr><tr><td>TPS</td><td class="num">55,85</td></tr><tr><td style="color:var(--a)">TVQ ⚠</td><td class="num" style="color:var(--a)">111,41</td></tr><tr><td>Total</td><td class="num">1 284,17 $</td></tr></table></div>
+    </div>
+  </div>
+  <div class="foot"><span class="mut">Historique · Notes</span><span class="sp"></span><button class="btn pri">Publier sur QuickBooks</button></div>
+</div>
+
+<!-- ============ F2 ============ -->
+<h2><b>F2</b>Étapes qui se replient</h2>
+<div class="sub">Lu → Vérifié → Classé → Publié ; ce qui est bon se ferme en une ligne.</div>
+<div class="scr">
+  <div class="top"><span class="av">D</span><div><h1>DigiKey</h1><small>132580242 · 28 sept.</small></div><span class="sp"></span><span class="num" style="font-size:20px;font-weight:600">1 284,17 $</span><span class="ib">‹</span><span class="ib">›</span><span class="ib">⋯</span></div>
+  <div class="body">
+    <div class="doc"><div class="paper"><div class="lg">DigiKey</div><div class="rw"><span>Invoice</span><span class="hl">132580242</span></div><div class="ln" style="width:70%"></div><div class="ln"></div><div class="ln" style="width:60%"></div><br><div class="rw"><span>Subtotal</span><span class="hl">1 116,91</span></div><div class="rw"><span>GST</span><span class="hl">55,85</span></div><div class="rw"><span>QST</span><span class="hla">111,41</span></div><div class="rw"><b>Total</b><b class="hl">1 284,17</b></div></div></div>
+    <div class="side" style="gap:10px">
+      <div class="step"><div class="h"><span class="ck ok">✓</span><b>Lu</b><span class="s">Fournisseur, date, 3 articles</span><span class="sp"></span><span class="mut">▸</span></div></div>
+      <div class="step open"><div class="h"><span class="ck wa">!</span><b>Vérifier</b><span class="s">1 point</span><span class="sp"></span><span class="mut">▾</span></div>
+        <div class="c"><table class="tot"><tr><td>Sous-total</td><td class="num">1 116,91</td></tr><tr><td>TPS 5 %</td><td class="num">55,85 ✓</td></tr><tr><td style="color:var(--a)">TVQ lue ≠ 9,975 % du sous-total</td><td class="num" style="color:var(--a)">⚠</td></tr></table>
+        <div style="display:flex;gap:8px;margin-top:10px"><button class="btn">C'est bon</button><button class="btn">Corriger</button><span class="sp"></span><span class="pill pn">pas un doublon ✓</span></div></div></div>
+      <div class="step"><div class="h"><span class="ck ok">✓</span><b>Classé</b><span class="s">Dépense payée · 14000 Pièces · TPS/TVQ</span><span class="sp"></span><span class="mut">▸</span></div></div>
+      <div class="step"><div class="h"><span class="ck ok">✓</span><b>Payé</b><span class="s">BNC Visa · 30 sept. · 1 284,17 $</span><span class="sp"></span><span class="mut">▸</span></div></div>
+      <div class="step"><div class="h"><span class="ck td">4</span><b>Publier</b><span class="s">QuickBooks</span><span class="sp"></span><button class="btn pri" disabled style="opacity:.5">Publier</button></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ F3 ============ -->
+<h2><b>F3</b>Une phrase</h2>
+<div class="sub">L'écriture se lit comme une phrase ; chaque mot se clique pour changer.</div>
+<div class="scr">
+  <div class="top"><span class="av">D</span><div><h1>DigiKey</h1><small>132580242 · 28 sept.</small></div><span class="sp"></span><span class="ib">‹</span><span class="ib">›</span><span class="ib">⋯</span></div>
+  <div class="body">
+    <div class="doc"><div class="paper"><div class="lg">DigiKey</div><div class="rw"><span>Invoice</span><span>132580242</span></div><div class="ln" style="width:70%"></div><div class="ln"></div><div class="ln" style="width:60%"></div><br><div class="rw"><span>Subtotal</span><span>1 116,91</span></div><div class="rw"><span>GST</span><span>55,85</span></div><div class="rw"><span>QST</span><span class="hla">111,41</span></div><div class="rw"><b>Total</b><b>1 284,17</b></div></div></div>
+    <div class="side">
+      <div class="phrase">
+        <span class="tk">Dépense payée</span> de <span class="tk">1 284,17 $</span> à <span class="tk">DigiKey</span>,
+        en <span class="tk">14000 Pièces</span>, payée par <span class="tk ok">BNC Visa le 30 sept.</span>,
+        taxe <span class="tk w">TPS/TVQ ⚠</span>
+        <div class="pop"><div class="mut" style="padding:0 7px 4px">TVQ lue ≠ 9,975 % du sous-total</div><div class="on">TPS/TVQ — conforme au profil</div><div>TPS seulement</div><div>Détaxé</div></div>
+      </div>
+      <div class="rail"><span class="pill pn">3 articles ▸</span><span class="pill pn">Montants ▸</span><span class="pill pn">6 factures passées ▸</span><span class="pill pn">Historique ▸</span></div>
+    </div>
+  </div>
+  <div class="foot"><span class="sp"></span><button class="btn pri">Publier sur QuickBooks</button></div>
+</div>
+</body>
+</html>

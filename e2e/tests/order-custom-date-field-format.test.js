@@ -3,7 +3,8 @@
 // La config est stockée dans `options.format` du champ custom, au même titre
 // que le format d'un champ duration. On bascule le champ RÉEL "Date du
 // dernier envoi" (colonne Airtable adoptée en champ custom) sur le format
-// "Locale — date seule" et on vérifie que le rendu change dans le tableau,
+// "ISO + heure 24 h" et on vérifie que le rendu reste AAAA-MM-JJ (toutes les
+// dates de l'app le sont ; l'ancien format « local » n'est plus proposé),
 // SANS modifier la moindre donnée de commande — seule la config d'affichage
 // du champ est temporairement changée, puis restaurée en DB dans after().
 
@@ -18,15 +19,10 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 const DB_PATH = process.env.ERP_DB_PATH || '/home/ec2-user/erp/server/data/erp.db'
 
-const MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
-
-// Reproduit le format "Locale — date seule" pour une valeur date-only
-// (YYYY-MM-DD ou minuit UTC encodé Airtable), sans dépendre du fuseau du
-// navigateur qui exécute le test.
-function expectedLocalDate(isoValue) {
-  const m = isoValue.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  const [, y, mo, d] = m
-  return `${parseInt(d, 10)} ${MONTHS_FR[parseInt(mo, 10) - 1]} ${y}`
+// Une valeur date-only (YYYY-MM-DD ou minuit UTC encodé Airtable) n'a pas
+// d'heure : en « + heure » elle s'affiche en date seule AAAA-MM-JJ.
+function expectedIsoDate(isoValue) {
+  return isoValue.match(/^(\d{4}-\d{2}-\d{2})/)[1]
 }
 
 describe('Orders — format d\'affichage du champ custom "Date du dernier envoi"', () => {
@@ -74,7 +70,7 @@ describe('Orders — format d\'affichage du champ custom "Date du dernier envoi"
     await browser?.close()
   })
 
-  test('changer le format en "Locale — date seule" met à jour le rendu du tableau, sans toucher aux données', async () => {
+  test('le format choisi garde le rendu AAAA-MM-JJ, sans toucher aux données', async () => {
     await page.goto(`${URL}/orders`, { waitUntil: 'domcontentloaded' })
     await page.waitForLoadState('networkidle')
 
@@ -108,28 +104,30 @@ describe('Orders — format d\'affichage du champ custom "Date du dernier envoi"
     await assert.doesNotReject(() => isoRadio.waitFor({ state: 'attached', timeout: 5000 }))
     assert.equal(await isoRadio.isChecked(), true, 'le format par défaut doit être ISO — date seule')
 
-    // Bascule sur "Locale — date seule" — autosave immédiat (pas de bouton Enregistrer).
-    await page.locator('[data-testid="cf-date-format-local_date"]').click()
+    // Le format « local » n'est plus proposé.
+    assert.equal(await page.locator('[data-testid="cf-date-format-local_date"]').count(), 0)
+
+    // Bascule sur "ISO + heure 24 h" — autosave immédiat (pas de bouton Enregistrer).
+    await page.locator('[data-testid="cf-date-format-iso_24h"]').click()
     await page.waitForSelector('text=Enregistré', { timeout: 5000 })
 
     // Vérifie la persistance en DB.
     await page.waitForTimeout(300)
     const savedRow = db.prepare('SELECT options FROM custom_fields WHERE id=?').get(fieldId)
     const savedOpts = JSON.parse(savedRow.options)
-    assert.equal(savedOpts.format, 'local_date', 'le format doit être persisté en DB')
+    assert.equal(savedOpts.format, 'iso_24h', 'le format doit être persisté en DB')
 
     await page.locator('button.btn-secondary', { hasText: 'Fermer' }).click()
 
-    // Le tableau doit maintenant afficher la date au format local (ex: "26 août 2026")
-    // au lieu du format ISO (ex: "2026-08-26") — la donnée sous-jacente n'a pas changé.
-    const expected = expectedLocalDate(rawDate)
+    // Le tableau affiche toujours la date en AAAA-MM-JJ (ex: "2026-08-26").
+    const expected = expectedIsoDate(rawDate)
     await page.waitForFunction(
       ({ sel, text }) => document.querySelector(sel)?.textContent?.includes(text),
       { sel: `[data-row-id="${orderId}"]`, text: expected },
       { timeout: 8000 },
     )
     const rowText = await row.textContent()
-    assert.ok(rowText.includes(expected), `la ligne doit afficher "${expected}" (format local), reçu: ${rowText}`)
+    assert.ok(rowText.includes(expected), `la ligne doit afficher "${expected}", reçu: ${rowText}`)
 
     // La donnée brute en DB n'a pas bougé — seule sa présentation a changé.
     const untouched = db.prepare('SELECT date_du_dernier_envoi FROM orders WHERE id=?').get(orderId)

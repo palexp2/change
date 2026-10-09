@@ -2,7 +2,9 @@ import '../test-helpers/testEnv.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { apiFetch, buildTestApp, closeServer, createTestUser, db, initTestDb, listen } from '../test-helpers/testApp.js'
-import retoursRouter from './retours.js'
+// retours.js prépare ses requêtes au chargement : schéma d'abord.
+initTestDb()
+const { default: retoursRouter } = await import('./retours.js')
 
 const cols = t => new Set(db.pragma(`table_info(${t})`).map(c => c.name))
 const addCols = (t, list) => { const have = cols(t); for (const c of list) if (!have.has(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} TEXT`) }
@@ -22,6 +24,7 @@ test('« Créer un retour » : articles, échange immédiat et # de série rempl
   db.prepare("INSERT INTO order_items (id, order_id, product_id, qty, date_de_l_envoi) VALUES ('oi1', 'o1', 'pN', 5, '2025-01-01')").run()
   db.prepare("INSERT INTO tickets (id, airtable_id) VALUES ('tk1', 'recTK1')").run()
   db.prepare("INSERT INTO adresses (id, line1, company_id) VALUES ('ad1', '1 rang', 'co1')").run()
+  db.prepare("INSERT INTO contacts (id, first_name, last_name, company_id) VALUES ('ct1', 'Marie', 'Roy', 'co1')").run()
 
   const { token } = createTestUser()
   const { server, base } = await listen(buildTestApp({ '/api/retours': retoursRouter }))
@@ -32,11 +35,14 @@ test('« Créer un retour » : articles, échange immédiat et # de série rempl
   assert.deepEqual(cand.body.serials.map(s => s.id), ['sn1'])
   assert.deepEqual(cand.body.items.map(i => i.id), ['oi1'])
 
-  const refused = await apiFetch(base, token, 'POST', '/api/retours/create', { company_id: 'co1', items: [{ serial_id: 'sn3', reason: 'x' }] })
+  const refused = await apiFetch(base, token, 'POST', '/api/retours/create', { company_id: 'co1', contact_id: 'ct1', items: [{ serial_id: 'sn3', reason: 'x' }] })
   assert.equal(refused.status, 400)
 
+  const noContact = await apiFetch(base, token, 'POST', '/api/retours/create', { company_id: 'co1', items: [{ serial_id: 'sn1', reason: 'x' }] })
+  assert.equal(noContact.status, 400)
+
   const r = await apiFetch(base, token, 'POST', '/api/retours/create', {
-    company_id: 'co1', ticket_id: 'tk1',
+    company_id: 'co1', contact_id: 'ct1', ticket_id: 'tk1',
     items: [
       { serial_id: 'sn1', reason: 'Retour de garantie avec échange immédiat', notes: 'Écran', substitute_product_id: 'pR' },
       { order_item_id: 'oi1', qty: 2, reason: 'Erreur de commande' },

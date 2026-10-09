@@ -35,6 +35,7 @@ describe('Relevé mensuel prépayé — enregistrement de la facture au ledger',
 
     browser = await chromium.launch()
     ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
   })
@@ -67,6 +68,7 @@ describe('Relevé mensuel prépayé — enregistrement de la facture au ledger',
       })
     })
 
+    await page.getByTestId('prepaid-statement-chip').click()
     await page.getByTestId('prepaid-statement-attach').click()
 
     // Toast confirmant l'attachement ET l'enregistrement au solde prépayé

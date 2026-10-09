@@ -121,7 +121,9 @@ test('classification IA invalide (clé inconnue) ignorée sans casser', () => {
     { company: 'Acme Parts Co', currency: 'USD', subtotal: 200, extracted_transaction_type: 'type_inexistant' },
     { profile: null, history: null },
   )
-  assert.equal(d.transaction_type, null)
+  // La clé inconnue est écartée ; seule la règle « étranger sans taxe » répond.
+  assert.equal(d.transaction_type, 'achat_pieces_etranger_fournisseur')
+  assert.equal(d.source, 'regles')
 })
 
 test('deux signaux concordants → confiance haute', () => {
@@ -148,7 +150,7 @@ test('heuristique seule = confiance basse', () => {
 test('aucun signal compatible → null, conflits exposés', () => {
   // Profil « achat local taxable » mais document sans aucune taxe : rien de fiable.
   const d = resolveFiscalDetection(
-    { company: 'Mystère Corp', currency: 'USD', subtotal: 80 },
+    { company: 'Mystère Corp', currency: 'CAD', subtotal: 80 },
     { profile: { default_transaction_type: 'achat_local_taxable' }, history: null },
   )
   assert.equal(d.transaction_type, null)

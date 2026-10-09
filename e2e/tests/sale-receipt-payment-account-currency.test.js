@@ -32,6 +32,7 @@ before(async () => {
 
   browser = await chromium.launch()
   ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
   page = await ctx.newPage()
   await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
 })

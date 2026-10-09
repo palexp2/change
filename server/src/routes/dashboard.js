@@ -6,6 +6,7 @@ import { diffSnapshots, enrichItemsWithErpProductId } from '../services/subscrip
 import { qbGet, onQbMutation } from '../connectors/quickbooks.js';
 import { round2 } from '../utils/money.js'
 import { shippedCostSql, pieceUnitCostSql } from '../services/shippedCost.js'
+import { orderRevenueSql, orderIsSubscriptionSql } from '../services/orderRevenue.js'
 import { fetchLiveItemBalances, listItems as listPlaidItems } from '../connectors/plaid.js'
 import { loadOverviewBalances } from '../services/overviewBalances.js'
 
@@ -160,7 +161,7 @@ router.get('/', (req, res) => {
       SELECT
         o.id AS order_id,
         o.project_id,
-        o.is_subscription,
+        CASE WHEN ${orderIsSubscriptionSql('o.id', 'o.project_id', 'o.is_subscription')} THEN 1 ELSE 0 END AS is_subscription,
         o.revenue_override_cad,
         o.cogs_override_cad,
         date(
@@ -182,25 +183,7 @@ router.get('/', (req, res) => {
       SELECT so.order_id,
         -- L'override manuel (revenue_override_cad) prime sur le calcul factures.
         CASE WHEN so.revenue_override_cad IS NOT NULL THEN so.revenue_override_cad
-        WHEN so.is_subscription = 1 THEN
-          COALESCE((
-            SELECT f.amount_before_tax_cad * 38
-            FROM factures f
-            WHERE (f.order_id = so.order_id
-                OR (so.project_id IS NOT NULL AND f.project_id = so.project_id))
-              -- HT après rabais : un 1er mois offert (rabais 100 %) ne doit pas
-              -- ramener la valeur projetée de l'abonnement à 0.
-              AND COALESCE(f.amount_before_tax_cad, 0) > 0
-            ORDER BY COALESCE(f.document_date, f.created_at) ASC
-            LIMIT 1
-          ), 0)
-        ELSE
-          COALESCE((
-            SELECT SUM(f.amount_before_tax_cad)
-            FROM factures f
-            WHERE (f.order_id = so.order_id
-                OR (so.project_id IS NOT NULL AND f.project_id = so.project_id))
-          ), 0)
+        ELSE ${orderRevenueSql('so.order_id', 'so.project_id', 'so.is_subscription')}
         END AS revenue
       FROM shipped_orders so
     ),
@@ -234,29 +217,14 @@ router.get('/', (req, res) => {
       GROUP BY oi.order_id
     )
     SELECT
-      o.id, o.order_number, o.is_subscription, o.status, o.project_id,
+      o.id, o.order_number, o.status, o.project_id,
+      CASE WHEN ${orderIsSubscriptionSql('o.id', 'o.project_id', 'o.is_subscription')} THEN 1 ELSE 0 END AS is_subscription,
       c.name AS company_name, o.company_id,
       MAX(s.shipped_at) AS last_shipped_at,
       -- Revenu HT (amount_before_tax_cad) — taxes exclues, voir weeklyProfitability ci-dessus.
       -- L'override manuel (revenue_override_cad) prime sur le calcul factures.
       CASE WHEN o.revenue_override_cad IS NOT NULL THEN o.revenue_override_cad
-      WHEN o.is_subscription = 1 THEN
-        COALESCE((
-          SELECT f.amount_before_tax_cad * 38
-          FROM factures f
-          WHERE (f.order_id = o.id
-              OR (o.project_id IS NOT NULL AND f.project_id = o.project_id))
-            AND COALESCE(f.amount_before_tax_cad, 0) > 0
-          ORDER BY COALESCE(f.document_date, f.created_at) ASC
-          LIMIT 1
-        ), 0)
-      ELSE
-        COALESCE((
-          SELECT SUM(f.amount_before_tax_cad)
-          FROM factures f
-          WHERE (f.order_id = o.id
-              OR (o.project_id IS NOT NULL AND f.project_id = o.project_id))
-        ), 0)
+      ELSE ${orderRevenueSql('o.id', 'o.project_id', 'o.is_subscription')}
       END AS revenue,
       -- L'override manuel (cogs_override_cad) prime sur le calcul articles.
       COALESCE(o.cogs_override_cad, cogs.cogs, 0) AS cogs

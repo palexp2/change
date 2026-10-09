@@ -51,6 +51,7 @@ describe('statut fiscal — vérification avant publication', () => {
 
     browser = await chromium.launch()
     ctx = await browser.newContext()
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
   })
@@ -83,15 +84,12 @@ describe('statut fiscal — vérification avant publication', () => {
 
     // Choisit « Produits alimentaires de base » → statut attendu Détaxé.
     await pickOption('qb-txtype-select', 'Produits alimentaires de base', { exact: false })
-    const expected = page.getByTestId('qb-fiscal-expected')
-    await expected.waitFor({ state: 'visible', timeout: 5000 })
-    await assert.doesNotReject(expected.getByText('Détaxé', { exact: false }).first().waitFor({ timeout: 5000 }),
-      'le statut attendu Détaxé doit s’afficher')
-
-    // Code de taxe non conforme (TPS/TVQ QC) → bannière d’écart rouge.
+    // Code de taxe non conforme (TPS/TVQ QC) → écart rouge qui nomme le code attendu.
     await pickOption('qb-taxcode-select', 'TPS/TVQ QC - 9,975')
-    await assert.doesNotReject(page.getByTestId('qb-fiscal-mismatch').waitFor({ state: 'visible', timeout: 5000 }),
+    const mismatch = page.getByTestId('qb-fiscal-mismatch')
+    await assert.doesNotReject(mismatch.waitFor({ state: 'visible', timeout: 5000 }),
       'l’écart fiscal doit être signalé')
+    assert.match(await mismatch.textContent(), /Détaxé/, 'le statut attendu Détaxé doit s’afficher')
 
     // Code conforme (Détaxé) → bannière verte de conformité.
     await pickOption('qb-taxcode-select', 'Détaxé')

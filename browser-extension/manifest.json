@@ -1,14 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Orisha — Pont de session",
-  "version": "1.4.0",
-  "description": "Envoie à l'ERP Orisha les sessions ouvertes des portails fournisseurs, puis lance la collecte des factures. Fonctionne dans Edge comme dans Chrome.",
+  "version": "1.9.1",
+  "description": "Envoie à l'ERP Orisha les sessions ouvertes des portails fournisseurs et d'Instagram, lance la collecte des factures, et envoie le document affiché à l'extracteur. Fonctionne dans Edge comme dans Chrome.",
   "permissions": [
     "cookies",
     "storage",
     "alarms",
     "scripting",
-    "tabs"
+    "tabs",
+    "activeTab",
+    "debugger",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://customer.orisha.io/*",
@@ -21,7 +24,8 @@
     "https://*.fedex.com/*",
     "https://*.pishop.ca/*",
     "https://*.newark.com/*",
-    "https://*.intuit.com/*"
+    "https://*.intuit.com/*",
+    "https://*.instagram.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -34,5 +38,13 @@
   },
   "optional_host_permissions": [
     "https://*/*"
-  ]
+  ],
+  "commands": {
+    "send-document": {
+      "suggested_key": {
+        "default": "Alt+Shift+E"
+      },
+      "description": "Envoyer ce document à l'extracteur"
+    }
+  }
 }

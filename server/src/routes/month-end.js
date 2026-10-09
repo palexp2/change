@@ -11,9 +11,11 @@ import {
   correctProvisionMonth,
 } from '../services/monthEnd.js'
 import { importRdHours, timesheetFileName } from '../services/rdTimesheetImport.js'
+import { rdMonthDays } from '../services/rdTimesheetSheetSync.js'
 import { monthEndChecks } from '../services/monthEndChecks.js'
 import { monthEndAutomationConfig } from '../services/monthEndAutomation.js'
 import { buildFpaMonth } from '../services/prepaid.js'
+import { syncMonthEndTask } from '../services/monthEndTask.js'
 import {
   listReceipts, addReceipt, updateReceipt, deleteReceipt,
   subsidyReconciliation, regularizeSubsidy, detectBankReceipts,
@@ -87,7 +89,9 @@ router.put('/provisions/:id/months/:month', (req, res) => {
 router.post('/provisions/:id/months/:month/publish', async (req, res) => {
   if (!isMonth(req.params.month)) return res.status(400).json({ error: 'month invalide (YYYY-MM)' })
   try {
-    res.json(await publishProvisionMonth(req.params.id, req.params.month, { userId: req.user.id }))
+    const out = await publishProvisionMonth(req.params.id, req.params.month, { userId: req.user.id })
+    syncMonthEndTask()
+    res.json(out)
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -171,6 +175,46 @@ router.post('/hours/:month/import', async (req, res) => {
   if (!isMonth(req.params.month)) return res.status(400).json({ error: 'month invalide (YYYY-MM)' })
   try {
     res.json(await importRdHours(req.params.month, monthEndAutomationConfig()))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Tableau annuel « Heures R&D » (année financière avril → mars, comme l'ancien
+// fichier R&D_Suivi) : une ligne par personne, une colonne par mois.
+// `fy` = année du mois d'avril (2026 → avril 2026 à mars 2027).
+router.get('/hours-year/:fy', (req, res) => {
+  const fy = parseInt(req.params.fy, 10)
+  if (!(fy > 2000 && fy < 2100)) return res.status(400).json({ error: 'année invalide' })
+  const months = Array.from({ length: 12 }, (_, i) => {
+    const m = 4 + i
+    return m <= 12 ? `${fy}-${String(m).padStart(2, '0')}` : `${fy + 1}-${String(m - 12).padStart(2, '0')}`
+  })
+  const rows = db.prepare(`
+    SELECT * FROM rd_month_hours WHERE month >= ? AND month <= ? AND deleted_at IS NULL
+  `).all(months[0], months[11])
+  const people = new Map()
+  for (const r of rows) {
+    const key = `${r.contractor ? 1 : 0}|${r.employee_name}`
+    if (!people.has(key)) people.set(key, { employee_name: r.employee_name, contractor: !!r.contractor, months: {} })
+    let projects = null
+    try { projects = r.project_hours ? JSON.parse(r.project_hours) : null } catch { projects = null }
+    people.get(key).months[r.month] = { id: r.id, hours: Number(r.hours) || 0, source: r.source, projects }
+  }
+  const list = [...people.values()].sort((a, b) =>
+    (a.contractor - b.contractor) || a.employee_name.localeCompare(b.employee_name, 'fr'))
+  // Taux horaire des sous-traitants (ancien fichier : 50 $) — porté par la
+  // config de la provision R&D, éditable depuis le tableau.
+  const rdProvision = listProvisions({ includeInactive: true }).find(p => p.kind === 'rd_credit') || null
+  const rate = Number(rdProvision?.config?.contractor_hourly_rate)
+  res.json({ fy, months, people: list, contractor_hourly_rate: Number.isFinite(rate) ? rate : 50, rd_provision_id: rdProvision?.id || null })
+})
+
+// Détail du tableau annuel : heures R&D de chaque jour du mois, par personne.
+router.get('/hours-days/:month', async (req, res) => {
+  if (!isMonth(req.params.month)) return res.status(400).json({ error: 'month invalide (YYYY-MM)' })
+  try {
+    res.json(await rdMonthDays(req.params.month))
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

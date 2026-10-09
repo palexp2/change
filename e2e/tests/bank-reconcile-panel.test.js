@@ -43,7 +43,7 @@ describe('Rapprochement bancaire — panneau de rapprochement automatique', () =
 
   test('le panneau affiche solde du relevé, solde QuickBooks et écart', async () => {
     await page.goto(URL + '/rapprochement', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('h1:has-text("Rapprochement bancaire")', { timeout: 20000 })
+    await page.waitForSelector('text=Opérations bancaires', { timeout: 20000 })
     await page.waitForSelector('[data-testid="reconcile-panel"]', { timeout: 20000 })
 
     // Le solde du relevé est calculé côté serveur à partir des lignes importées.

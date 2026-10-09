@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import db from '../db/database.js'
-import { pairDuplicates, mergeSheetDuplicates, countSheetDuplicates } from './plaidSync.js'
+import { pairDuplicates, mergeSheetDuplicates, countSheetDuplicates, plaidBalanceSkipReason } from './plaidSync.js'
 
 const ACC = 'test-plaid-merge-account'
 
@@ -106,4 +106,10 @@ test('mergeSheetDuplicates : compte sans Plaid = rien à fusionner', () => {
   } finally {
     db.prepare('DELETE FROM bank_accounts WHERE id=?').run(plainAcc)
   }
+})
+
+test('plaidBalanceSkipReason : banque muette depuis 24 h = solde en cache, pas noté', () => {
+  const now = Date.parse('2026-10-03T23:00:00Z')
+  assert.equal(plaidBalanceSkipReason('2026-09-28T19:23:37Z', { now }), 'stale')
+  assert.equal(plaidBalanceSkipReason(null, { now }), null, 'date inconnue : ancien comportement')
 })

@@ -883,11 +883,10 @@ export function TreasuryProjectionSection() {
                       const beyond = awEndDate && d.date > awEndDate
                       const dt = new Date(`${d.date}T12:00:00`)
                       const weekday = dt.toLocaleDateString('fr-CA', { weekday: 'short' })
-                      const dayMonth = `${dt.getDate()} ${dt.toLocaleDateString('fr-CA', { month: 'long' })}`
                       return (
                         <tr key={d.date} className={`border-b border-slate-50 last:border-0 align-top hover:bg-slate-50/60 ${beyond ? 'opacity-50' : ''}`}>
                           <td className="py-2 pl-3 pr-2 whitespace-nowrap text-slate-500 w-36">
-                            <span className="text-slate-400 mr-1">{weekday.replace('.', '')}</span>{dayMonth}
+                            <span className="text-slate-400 mr-1">{weekday.replace('.', '')}</span>{d.date}
                           </td>
                           <td className="py-2 px-2">{d.events.map((e, i) => renderEvent(e, d.date, i))}</td>
                           <td className={`py-2 pl-2 pr-3 text-right tabular-nums font-semibold whitespace-nowrap w-28 ${d.balance < 0 ? 'text-rose-600' : d.balance < proj.threshold ? 'text-amber-600' : 'text-slate-700'}`}>
@@ -1825,173 +1824,6 @@ function AuditCard() {
   )
 }
 
-// ── Plafond des cartes de crédit ─────────────────────────────────────────────
-// Question complémentaire du rappel « payer les cartes » : la carte a-t-elle
-// encore de la place ? Scan-first — trois chiffres, le reste replié.
-
-function CardCeilingRow({ card, onChanged }) {
-  const [open, setOpen] = useState(false)
-  const [form, setForm] = useState(card)
-  useEffect(() => { setForm(card) }, [card])
-
-  // Autosave au blur : pas de bouton « Enregistrer » (règle de design).
-  // Comparaison String() : les valeurs viennent d'inputs (chaînes) alors que
-  // la fiche stocke des nombres.
-  const { save, saving } = useAutosave(card, patch => api.treasury.cardCeilings.update(card.id, patch), {
-    compare: (a, b) => String(a ?? '') === String(b ?? ''),
-    onSaved: () => onChanged(),
-    onError: () => setForm(card),
-  })
-
-  const tone = card.over_limit ? 'rose' : card.over_ceiling ? 'amber' : 'emerald'
-  const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30'
-  const field = (k, label, props = {}) => (
-    <div>
-      <label className="label">{label}</label>
-      <input
-        className={inputCls}
-        value={form[k] ?? ''}
-        onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
-        onBlur={e => save(k, e.target.value)}
-        {...props}
-      />
-    </div>
-  )
-
-  return (
-    <div className="py-3 first:pt-0 last:pb-0" data-testid="card-ceiling-row">
-      <div className="flex items-baseline justify-between gap-3">
-        <p className="text-sm font-semibold text-slate-800 truncate" data-testid="card-ceiling-name">{card.name}</p>
-        <span className="text-[11px] text-slate-400 shrink-0">
-          {saving ? 'Enregistrement…' : card.draft_date ? `prélèvement le ${fmtDate(card.draft_date)}` : 'aucun prélèvement configuré'}
-        </span>
-      </div>
-
-      {card.qb_error && (
-        <p className="mt-1 text-xs text-rose-600 flex items-center gap-1.5" data-testid="card-ceiling-error">
-          <AlertTriangle size={12} /> QuickBooks : {card.qb_error}
-        </p>
-      )}
-
-      {/* Les trois chiffres qui décident : où on en est, ce qu'il reste, ce qu'il faut payer. */}
-      <div className="mt-2 grid grid-cols-3 divide-x divide-slate-100">
-        <Stat label="Solde projeté" value={fmtCad(card.projected)} tone={tone} testId="card-ceiling-projected"
-          sub={card.ceiling ? `plafond ${fmtCad(card.ceiling)}` : 'sans plafond'} />
-        <Stat label="Marge restante" value={card.room == null ? '—' : fmtCad(card.room)}
-          tone={card.room != null && card.room < 0 ? 'rose' : 'slate'} testId="card-ceiling-room"
-          sub={card.credit_limit ? `limite ${fmtCad(card.credit_limit)}` : null} />
-        <Stat label="Paiement recommandé" value={card.recommended > 0 ? fmtCad(card.recommended) : '—'}
-          tone={card.recommended > 0 ? 'amber' : 'slate'} testId="card-ceiling-recommended"
-          sub={card.recommended > 0 && card.pay_date ? `à payer le ${fmtDate(card.pay_date)}` : 'sous le plafond'} />
-      </div>
-
-      <button type="button" onClick={() => setOpen(o => !o)} data-testid="card-ceiling-toggle"
-        className="mt-2 flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700">
-        <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
-        {fmtCad(card.posted, 2)} comptabilisé · {fmtCad(card.pending, 2)} en attente
-        {card.bank_owed != null && ` · ${fmtCad(card.bank_owed, 2)} à la banque`}
-      </button>
-
-      {open && (
-        <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-3" data-testid="card-ceiling-detail">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
-            <span>Comptabilisé dans QuickBooks</span>
-            <span className="text-right tabular-nums" data-testid="card-ceiling-posted">{fmtCad(card.posted, 2)}</span>
-            <span>En attente de comptabilisation ({card.pending_count})</span>
-            <span className="text-right tabular-nums" data-testid="card-ceiling-pending">{fmtCad(card.pending, 2)}</span>
-            <span className="font-medium text-slate-800">Solde projeté</span>
-            <span className="text-right tabular-nums font-medium text-slate-800">{fmtCad(card.projected, 2)}</span>
-            {/* Le chiffre de la banque, quand la carte est connectée : la
-                réponse directe, là où le solde projeté est une reconstitution.
-                Il ne remplace pas le calcul, il permet de le recouper. */}
-            {card.bank_owed != null && (
-              <>
-                <span className="text-slate-500">Dû selon la banque</span>
-                <span className="text-right tabular-nums text-slate-500" data-testid="card-ceiling-bank">
-                  {fmtCad(card.bank_owed, 2)}
-                  {card.bank_available != null && ` · ${fmtCad(card.bank_available, 2)} de place`}
-                </span>
-              </>
-            )}
-          </div>
-          {card.bank_owed != null && Math.abs(card.bank_owed - card.projected) >= 1 && (
-            <p className="text-[11px] text-amber-700" data-testid="card-ceiling-bank-gap">
-              {fmtCad(Math.abs(card.bank_owed - card.projected), 2)} d'écart entre la banque et le solde projeté
-              {card.bank_read_at ? ` (banque lue ${formatRelativeTime(card.bank_read_at)})` : ''} :
-              {' '}des achats manquent au rapprochement, ou un paiement n'y est pas encore.
-            </p>
-          )}
-          {card.pending_stale_count > 0 && (
-            <p className="text-[11px] text-slate-400" data-testid="card-ceiling-stale">
-              {card.pending_stale_count} transaction(s) plus ancienne(s) que le {fmtDate(card.pending_since)}
-              {' '}({fmtCad(card.pending_stale_amount, 2)}) ne sont pas comptées : leur relevé est payé depuis longtemps.
-            </p>
-          )}
-          {card.pay_date && card.pay_date !== card.draft_date && (
-            <p className="text-[11px] text-amber-700">
-              Le prélèvement du {fmtDate(card.draft_date)} tombe {card.pay_reason === 'holiday' ? `un férié (${card.pay_holiday})` : 'une fin de semaine'} :
-              {' '}payer le {fmtDate(card.pay_date)}.
-            </p>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            {field('credit_limit', 'Limite de crédit ($)', { inputMode: 'decimal', 'data-testid': 'card-ceiling-limit-input' })}
-            {field('ceiling', 'Plafond cible ($)', { inputMode: 'decimal', 'data-testid': 'card-ceiling-ceiling-input' })}
-            {field('draft_day', 'Jour du prélèvement', { inputMode: 'numeric', 'data-testid': 'card-ceiling-draft-day-input' })}
-            {field('qb_acctnum', 'Compte QuickBooks (n°)', { 'data-testid': 'card-ceiling-acctnum-input' })}
-          </div>
-          <p className="text-[11px] text-slate-400">
-            {card.qb_account_name ? `QuickBooks : ${card.qb_account_name}` : 'Compte QuickBooks non résolu'}
-            {card.bank_account_name ? ` · relevé : ${card.bank_account_name}` : ''}
-          </p>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function CardCeilingsCard() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const { addToast } = useToast()
-
-  const load = useCallback(async (refresh = false) => {
-    setLoading(true)
-    try {
-      setData(await api.treasury.cardCeilings.list({ refresh }))
-    } catch (e) {
-      addToast({ message: `Soldes de cartes : ${e.message}`, type: 'error' })
-      setData({ cards: [] })
-    } finally {
-      setLoading(false)
-    }
-  }, [addToast])
-
-  useEffect(() => { load() }, [load])
-
-  const cards = data?.cards || []
-  return (
-    <Card
-      title="Plafond des cartes"
-      description="Solde QuickBooks + achats pas encore comptabilisés, confrontés au plafond cible et au prélèvement pré-programmé."
-      icon={Wallet}
-      iconClass="bg-indigo-50 text-indigo-600"
-      testId="compta-card-ceilings"
-      actions={(
-        <button onClick={() => load(true)} disabled={loading} title="Relire les soldes dans QuickBooks"
-          className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50 flex items-center gap-1.5">
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Actualiser
-        </button>
-      )}
-    >
-      {data === null && <p className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
-      {data && cards.length === 0 && <p className="text-xs text-slate-400">Aucune carte suivie.</p>}
-      <div className="divide-y divide-slate-100">
-        {cards.map(c => <CardCeilingRow key={c.id} card={c} onChanged={() => load(true)} />)}
-      </div>
-    </Card>
-  )
-}
-
 export default function ComptaDashboard() {
   return (
     <Layout>
@@ -2008,10 +1840,8 @@ export default function ComptaDashboard() {
         <TreasuryProjectionSection />
 
         <div className="grid gap-6 lg:grid-cols-2 items-start">
-          <CardCeilingsCard />
           <AnomaliesCard />
           <AuditCard />
-          <PaieComptabilisationCard />
           <AgaRepartitionCard />
 
           <Card

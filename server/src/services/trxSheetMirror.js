@@ -24,7 +24,7 @@ import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import {
   findHeader, mapColumns, tabDescending, specForTab, parseTrxDate, parseTrxAmount,
-  getTrxSheetConfig,
+  getTrxSheetConfig, hasExplicitYear, anchorYear,
 } from './bankTrxSheet.js'
 import { plaidBalanceFor } from './plaidSync.js'
 import { round2 } from '../utils/money.js'
@@ -98,8 +98,9 @@ export function sameFill(a, b) {
 
 // Ne garder que les lignes dont la couleur CHANGE. Sans ça, chaque passage
 // repeignait un millier de lignes déjà bonnes et épuisait le quota d'écriture.
+// `orig` = la ligne avant insertions (les couleurs lues sont celles d'avant).
 export function paintsToApply(paint, currentFills) {
-  return paint.filter((p) => !sameFill(currentFills.get(p.rowIndex), STATUS_FILL[p.status]))
+  return paint.filter((p) => !sameFill(currentFills.get(p.orig ?? p.rowIndex), STATUS_FILL[p.status]))
 }
 
 // Les lignes du fichier, avec leur numéro de ligne réel — on a besoin de
@@ -119,6 +120,21 @@ export function monthFirstOf(grid, cols) {
   return monthVotes > dayVotes
 }
 
+// Une date sans année (« 30 SEP30 Septembre » des Desjardins) prend l'année la
+// plus récente qui n'est pas future — donc le 30 septembre 2025 d'un vieux bloc
+// devenait le 30 septembre 2026, s'appariait aux frais de 2026, et l'intérêt de
+// 2026 était réinséré à chaque passage. Même ancrage que la lecture entrante :
+// une date qui sort de l'ordre de l'onglet appartient à l'année d'à côté.
+export function anchorYears(list, rawDateOf) {
+  const descending = tabDescending(list.map((x) => x.txn_date))
+  let prev = null
+  for (const x of list) {
+    if (!hasExplicitYear(rawDateOf(x))) x.txn_date = anchorYear(x.txn_date, prev, descending)
+    prev = x.txn_date
+  }
+  return list
+}
+
 export function readTabRows(grid, cols, spec, { todayIso } = {}) {
   const today = todayIso || new Date().toISOString().slice(0, 10)
   const monthFirst = monthFirstOf(grid, cols)
@@ -134,10 +150,12 @@ export function readTabRows(grid, cols, spec, { todayIso } = {}) {
     // `alt_amount` les reconnaît, sinon le miroir les réécrirait en double
     // dans le fichier de Michel.
     const alt = legacyAmountOfRow(row, cols, spec)
-    if (amount == null && alt == null) continue
     out.push({ rowIndex: r, txn_date: date, amount, alt_amount: alt !== amount ? alt : null })
   }
-  return out
+  // L'ancrage voit toutes les lignes datées, montant ou pas : c'est l'ordre de
+  // l'onglet qui donne l'année.
+  return anchorYears(out, (x) => (grid[x.rowIndex] || [])[cols.date])
+    .filter((x) => x.amount != null || x.alt_amount != null)
 }
 
 // La convention d'avant : les intérêts d'une marge comptaient comme un
@@ -445,6 +463,137 @@ export function paintRuns(paints, sheetId, width) {
       },
     })
     i = j + 1
+  }
+  return out
+}
+
+// ── Toutes les lignes datées, bloc par bloc ─────────────────────────────────
+//
+// Un onglet empile plusieurs collages, chacun sous SES entêtes : BNC USD a
+// « Montant » en 2026 mais « Retraits / Dépôts / Solde » en 2025. Lues avec les
+// seules colonnes du haut, les lignes de dépôt d'avant n'avaient pas de montant
+// et restaient blanches. Ici chaque ligne datée garde les colonnes de son bloc,
+// montant ou pas.
+export function datedRows(grid, headerIdx, cols, { todayIso } = {}) {
+  const monthFirst = monthFirstOf(grid.slice(headerIdx + 1), cols)
+  let current = cols
+  const out = []
+  for (let r = headerIdx + 1; r < grid.length; r++) {
+    const row = Array.from(grid[r] || [])
+    if (findHeader([row]) === 0) {
+      const c = mapColumns(row)
+      if (c.date != null) current = c
+      continue
+    }
+    const date = parseTrxDate(row[current.date], { todayIso, monthFirst })
+    if (date) out.push({ rowIndex: r, txn_date: date, cols: current })
+  }
+  return anchorYears(out, (x) => (grid[x.rowIndex] || [])[x.cols.date])
+}
+
+// ── Format « Finance » des montants (Charles, 2026-10-06) ───────────────────
+//
+// Les montants du fichier mélangeaient trois écritures : le format Finance des
+// collages, le format automatique des lignes écrites par Boréal (« -161.51 »,
+// « 4141.76 ») et du TEXTE resté des collages en locale française
+// (« 4 133,76 »). Toutes les cellules de montant et de solde des lignes datées
+// prennent le format Finance ; le texte chiffré redevient un nombre.
+export const FINANCE_PATTERN = '#,##0.00;(#,##0.00)'
+const MONEY_ROLES = ['amount', 'debit', 'credit', 'balance', 'interest', 'advance', 'remb']
+
+// Un montant resté en TEXTE : « 4 133,76 », « -2 004,12 », « $4,00 »,
+// « (2,004,12) ». Toujours deux décimales derrière la dernière ponctuation ;
+// avant elle, des groupes de trois chiffres. Rien d'autre n'est touché.
+export function textAmount(raw) {
+  let s = String(raw ?? '').replace(/[\s\u00a0\u202f$]/g, '').replace(/[\u2010-\u2015\u2212]/g, '-')
+  let negative = false
+  if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1) }
+  if (s.startsWith('-')) { negative = !negative; s = s.slice(1) }
+  const m = /^(\d{1,3}(?:[.,]\d{3})*|\d+)[.,](\d{2})$/.exec(s)
+  if (!m) return null
+  const n = Number(`${m[1].replace(/[.,]/g, '')}.${m[2]}`)
+  return negative ? -n : n
+}
+
+// `cells(rowIndex, col)` → { text, number, pattern } de la cellule.
+export function financeFixes(dated, cells) {
+  const formats = []
+  const numbers = []
+  for (const d of dated) {
+    const seen = new Set()
+    for (const role of MONEY_ROLES) {
+      const c = d.cols[role]
+      if (c == null || seen.has(c)) continue
+      seen.add(c)
+      const cell = cells(d.rowIndex, c) || {}
+      const n = cell.text != null ? textAmount(cell.text) : null
+      if (n != null) numbers.push({ row: d.rowIndex, col: c, value: n })
+      if (cell.pattern !== FINANCE_PATTERN) formats.push({ row: d.rowIndex, col: c })
+    }
+  }
+  return { formats, numbers }
+}
+
+// Une requête par plage de lignes voisines d'une même colonne.
+export function financeFormatRuns(formats, sheetId) {
+  const byCol = new Map()
+  for (const f of formats) {
+    if (!byCol.has(f.col)) byCol.set(f.col, [])
+    byCol.get(f.col).push(f.row)
+  }
+  const out = []
+  for (const [col, rows] of byCol) {
+    rows.sort((a, b) => a - b)
+    for (let i = 0; i < rows.length;) {
+      let j = i
+      while (j + 1 < rows.length && rows[j + 1] === rows[j] + 1) j++
+      out.push({
+        repeatCell: {
+          range: { sheetId, startRowIndex: rows[i], endRowIndex: rows[j] + 1, startColumnIndex: col, endColumnIndex: col + 1 },
+          cell: { userEnteredFormat: { numberFormat: { type: 'NUMBER', pattern: FINANCE_PATTERN } } },
+          fields: 'userEnteredFormat.numberFormat',
+        },
+      })
+      i = j + 1
+    }
+  }
+  return out
+}
+
+const DATE_PATTERNS = { ISO: 'yyyy-mm-dd', 'M/D/YYYY': 'm/d/yyyy', 'D/M/YYYY': 'd/m/yyyy' }
+export function dateFormatFill(sheetId, rowIndex, col, shape) {
+  if (col == null) return []
+  return [{
+    repeatCell: {
+      range: { sheetId, startRowIndex: rowIndex, endRowIndex: rowIndex + 1, startColumnIndex: col, endColumnIndex: col + 1 },
+      cell: { userEnteredFormat: { numberFormat: { type: 'DATE', pattern: DATE_PATTERNS[shape] || DATE_PATTERNS.ISO } } },
+      fields: 'userEnteredFormat.numberFormat',
+    },
+  }]
+}
+
+// ── Statut d'une carte d'après son dernier relevé mensuel ───────────────────
+//
+// Un relevé de carte ne liste que des opérations passées : tout ce qui est
+// daté au plus tard de sa date de relevé est « Autorisée » (Charles,
+// 2026-10-06 : chaque ligne doit porter son statut). Au-delà, c'est l'export
+// du portail ou la capture déposée qui le dit, ligne par ligne.
+export function lastCardStatementDate(account) {
+  const a = db.prepare('SELECT MAX(statement_date) d FROM card_statements WHERE account_name=?').get(account.name)?.d
+  const b = db.prepare(
+    "SELECT MAX(period_end) d FROM bank_statement_uploads WHERE account_id=? AND source LIKE 'pdf%'",
+  ).get(account.id)?.d
+  return [a, b].filter(Boolean).sort().pop() || null
+}
+
+export function statementStateCells(dated, grid, cutoff, title, skipRows) {
+  if (!cutoff) return []
+  const out = []
+  for (const d of dated) {
+    const col = d.cols.status
+    if (col == null || d.txn_date > cutoff || skipRows.has(d.rowIndex)) continue
+    if (String((grid[d.rowIndex] || [])[col] ?? '').trim()) continue
+    out.push({ range: `${title}!${colLetter(col)}${d.rowIndex + 1}`, values: [[stateWord('autorise', 'card')]] })
   }
   return out
 }
@@ -788,7 +937,7 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   const res = await sheets.spreadsheets.get({
     spreadsheetId,
     ranges: [`${title}!A1:Z100000`],
-    fields: 'sheets(data(rowMetadata(pixelSize),rowData(values(formattedValue,effectiveFormat/backgroundColor))))',
+    fields: 'sheets(data(rowMetadata(pixelSize),rowData(values(formattedValue,effectiveValue,userEnteredFormat/numberFormat,effectiveFormat/backgroundColor))))',
   })
   const rowHeights = (res.data.sheets?.[0]?.data?.[0]?.rowMetadata || []).map((m) => m.pixelSize)
   const rowData = res.data.sheets?.[0]?.data?.[0]?.rowData || []
@@ -798,6 +947,11 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
     const bg = r.values?.[0]?.effectiveFormat?.backgroundColor
     if (bg) currentFills.set(i, bg)
   })
+  const cellAt = (r, c) => {
+    const v = rowData[r]?.values?.[c]
+    if (!v) return null
+    return { text: v.effectiveValue?.stringValue ?? null, pattern: v.userEnteredFormat?.numberFormat?.pattern ?? null }
+  }
   const headerIdx = findHeader(grid)
   if (headerIdx < 0) return { tab: title, skipped: 'entêtes introuvables' }
   const cols = mapColumns(Array.from(grid[headerIdx] || []))
@@ -805,6 +959,7 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
 
   const fileRows = readTabRows(grid.slice(headerIdx + 1), cols, spec)
     .map((r) => ({ ...r, rowIndex: r.rowIndex + headerIdx + 1 }))
+  const dated = datedRows(grid, headerIdx, cols)
   // On APPARIE tout l'historique que l'ERP connaît — c'est ce qui permet de
   // colorier les lignes d'avant la fenêtre — mais on n'AJOUTE que les lignes de
   // la fenêtre : l'ancien du fichier reste tel quel.
@@ -820,6 +975,8 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   // réécrire : relevé avant toute insertion, car les insertions décalent les
   // numéros de ligne (et donc l'index dans `grid`).
   for (const p of paint) {
+    // `orig` : la ligne AVANT insertions, celle dont on connaît la couleur.
+    p.orig = p.rowIndex
     const gridRow = grid[p.rowIndex] || []
     p.current = {
       status: cols.status != null ? gridRow[cols.status] : null,
@@ -846,6 +1003,8 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   // la plus ancienne, pour que les positions restent valides.
   const placements = placeMissing(fileRows, writable, descending, headerIdx, grid.length)
   const rowHeight = dataRowHeight(fileRows, rowHeights)
+  const insertedAt = []
+  const moneyCols = [...new Set(MONEY_ROLES.map((k) => cols[k]).filter((c) => c != null))]
   for (const { at, txn } of placements) {
     await withRetry(() => sheets.spreadsheets.batchUpdate({
       spreadsheetId,
@@ -864,6 +1023,11 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
           // statut ne couvrira ensuite que les colonnes de données.
           ...blankRowFill(sheetId, at),
           ...rowHeightFill(sheetId, at, rowHeight),
+          ...financeFormatRuns(moneyCols.map((col) => ({ row: at, col })), sheetId),
+          // La date s'écrit en date de tableur : sans format posé, elle prend
+          // celui de sa voisine (« 30-Sep », sans année), ne se relit plus, et
+          // la ligne était réinsérée à chaque passage (Desj USD, 2026-10-06).
+          ...dateFormatFill(sheetId, at, cols.date, shape),
         ],
       },
     }))
@@ -874,9 +1038,12 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
       requestBody: { values: [rowForTab(txn, cols, spec, shape, account.kind)] },
     }))
     for (const p of paint) if (p.rowIndex >= at) p.rowIndex += 1
+    insertedAt.push(at)
     // `fresh` : la ligne vient d'être écrite en entier, ses cellules sont déjà bonnes.
-    paint.push({ rowIndex: at, status: txn.status, txn, fresh: true })
+    paint.push({ rowIndex: at, orig: -1, status: txn.status, txn, fresh: true })
   }
+  // Où se trouve MAINTENANT une ligne lue avant les insertions.
+  const shift = (r) => insertedAt.reduce((x, at) => (x >= at ? x + 1 : x), r)
   const ordered = placements
 
   // L'état à la banque sur les lignes déjà au fichier.
@@ -887,6 +1054,33 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   const comments = syncComments(paint, cols, title)
   cells.push(...comments.cells)
   if (comments.toErp.length || reviews.toErp.length) touchBankTxns([...new Set([...comments.toErp, ...reviews.toErp])])
+  if (account.kind === 'card') {
+    const stated = new Set(paint.filter((p) => stateWord(p.txn?.bank_state, 'card')).map((p) => p.orig))
+    const fromStatement = statementStateCells(dated, grid, lastCardStatementDate(account), title, stated)
+    for (const c of fromStatement) {
+      const [, col, row] = /!([A-Z]+)(\d+)$/.exec(c.range)
+      c.range = `${title}!${col}${shift(Number(row) - 1) + 1}`
+    }
+    cells.unshift(...fromStatement)
+  }
+
+  // Format Finance et texte chiffré redevenu nombre — AVANT la passe de solde,
+  // qui a le dernier mot sur ses propres cellules.
+  const finance = financeFixes(dated, cellAt)
+  const formatReqs = financeFormatRuns(finance.formats.map((f) => ({ ...f, row: shift(f.row) })), sheetId)
+  for (let i = 0; i < formatReqs.length; i += 500) {
+    await withRetry(() => sheets.spreadsheets.batchUpdate({
+      spreadsheetId, requestBody: { requests: formatReqs.slice(i, i + 500) },
+    }))
+  }
+  const numberCells = finance.numbers.map((n) => ({
+    range: `${title}!${colLetter(n.col)}${shift(n.row) + 1}`, values: [[n.value]],
+  }))
+  for (let i = 0; i < numberCells.length; i += 200) {
+    await withRetry(() => sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId, requestBody: { valueInputOption: 'RAW', data: numberCells.slice(i, i + 200) },
+    }))
+  }
 
   // Puis le solde. Il se calcule sur le fichier TEL QU'IL EST après insertion
   // (les nouvelles lignes ont décalé les numéros), donc on le relit.
@@ -918,10 +1112,12 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   // reconnaît pas. Elles ne reçoivent QUE la couleur — aucune cellule écrite,
   // aucune marque de relecture : le fichier reste le seul à savoir ce qu'elles
   // disent.
-  const known = new Set(paint.map((p) => p.rowIndex))
+  // Toutes les lignes datées, montant ou pas : une ligne de dépôt d'un ancien
+  // bloc « Retraits / Dépôts » restait blanche faute de montant lisible.
+  const known = new Set(paint.map((p) => p.orig))
   const closed = cfg.green_before
-    ? fileRows.filter((r) => !known.has(r.rowIndex) && r.txn_date < cfg.green_before)
-      .map((r) => ({ rowIndex: r.rowIndex, status: 'rapproche' }))
+    ? dated.filter((r) => !known.has(r.rowIndex) && r.txn_date < cfg.green_before)
+      .map((r) => ({ rowIndex: shift(r.rowIndex), orig: r.rowIndex, status: 'rapproche' }))
     : []
 
   const todo = paintsToApply([...paint, ...closed], currentFills)
@@ -934,6 +1130,7 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   return {
     tab: title, added: ordered.length, painted: todo.length,
     cells: cells.length, in_file: fileRows.length, review_adopted: adopted,
+    formatted: finance.formats.length, numbers_fixed: numberCells.length,
     comments_to_file: comments.cells.length, comments_to_erp: comments.toErp.length,
   }
 }

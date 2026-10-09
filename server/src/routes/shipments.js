@@ -155,7 +155,7 @@ router.get('/:id', (req, res) => {
   // unit_cost est ici une projection du coût produit pour la déclaration
   // douanière, pas un champ stocké/configurable des articles de commande.
   let order_items = db.prepare(`
-    SELECT oi.*, ${pieceUnitCostSql('oi')} AS unit_cost, pr.name_fr as product_name, pr.sku, pr.weight_lbs
+    SELECT oi.*, ${pieceUnitCostSql('oi')} AS unit_cost, pr.name_fr as product_name, pr.sku, pr.weight_lbs, pr.image_url AS product_image
     FROM order_items oi
     LEFT JOIN products pr ON oi.product_id = pr.id
     WHERE oi.shipment_id = ?
@@ -169,7 +169,7 @@ router.get('/:id', (req, res) => {
   if (order_items.length === 0 && row.order_id) {
     items_fallback = true
     order_items = db.prepare(`
-      SELECT oi.*, ${pieceUnitCostSql('oi')} AS unit_cost, pr.name_fr as product_name, pr.sku, pr.weight_lbs
+      SELECT oi.*, ${pieceUnitCostSql('oi')} AS unit_cost, pr.name_fr as product_name, pr.sku, pr.weight_lbs, pr.image_url AS product_image
       FROM order_items oi
       LEFT JOIN products pr ON oi.product_id = pr.id
       WHERE oi.order_id = ?

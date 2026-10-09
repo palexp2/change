@@ -1,3 +1,4 @@
+import { linkSubscriptionContact } from './stripeProjectLink.js'
 import { decryptCredentials } from '../utils/encryption.js'
 import { companyIdForStripeCustomer } from './stripeCustomerCompany.js'
 import Stripe from 'stripe'
@@ -256,6 +257,7 @@ export async function syncStripeSubscriptions() {
         intervalCount, intervalType,
         existingRow.id
       )
+      linkSubscriptionContact(existingRow.id)
       // Seulement si la ligne a bougé : la sync repasse tous les abonnements.
       const next = db.prepare('SELECT * FROM subscriptions WHERE id=?').get(existingRow.id)
       if (Object.keys(next).some(k => next[k] !== prev[k])) emitSubscription('updated', existingRow.id)
@@ -274,6 +276,7 @@ export async function syncStripeSubscriptions() {
         stripeUrl, customerId, customerEmail,
         intervalCount, intervalType
       )
+      linkSubscriptionContact(newId)
       emitSubscription('created', newId)
       // Si le sub arrive déjà annulé (import legacy, sub annulé immédiatement),
       // on n'enregistre aucun event — il n'y a pas de mouvement MRR à tracer.

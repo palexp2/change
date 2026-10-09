@@ -84,29 +84,26 @@ describe('Cédule « À payer » — lien vers la facture sur chaque ligne', () 
     await openSchedule()
     await page.waitForSelector(`[data-testid="schedule-item-${billId}"]`, { timeout: 25000 })
 
-    const link = page.locator(`a[data-testid="schedule-bill-${billId}"]`)
+    // Le n° de facture ouvre la fiche dans l'ERP (plus QuickBooks).
+    const link = page.locator(`a[data-testid="schedule-qb-${billId}"]`)
     await link.waitFor({ timeout: 20000 })
     const href = await link.getAttribute('href')
     assert.ok(href.endsWith(`/fournisseurs/achats?id=${billId}`), `href inattendu : ${href}`)
-    // Le n° de facture, lui, ouvre QuickBooks : la fiche ERP est portée par
-    // l'icône à sa gauche (deux destinations, deux affordances).
-    const num = page.locator(`[data-testid="schedule-qb-${billId}"]`)
-    await num.waitFor({ timeout: 20000 })
-    assert.equal((await num.textContent()).trim(), INVOICE_NO)
+    assert.equal(await link.getAttribute('target'), null)
+    assert.equal((await link.textContent()).trim(), INVOICE_NO)
   })
 
-  test('le clic ouvre la fiche de CETTE facture, pas la liste brute', async () => {
+  test('le clic ouvre la fiche de CETTE facture en panneau, sans quitter la cédule', async () => {
     await openSchedule()
-    await page.waitForSelector(`a[data-testid="schedule-bill-${billId}"]`, { timeout: 25000 })
-    await page.click(`a[data-testid="schedule-bill-${billId}"]`)
+    await page.waitForSelector(`a[data-testid="schedule-qb-${billId}"]`, { timeout: 25000 })
+    await page.click(`a[data-testid="schedule-qb-${billId}"]`)
 
-    await page.waitForURL(u => u.toString().includes(`/fournisseurs/achats?id=${billId}`), { timeout: 20000 })
-    // La liste charge par pages : la fiche s'ouvre dès que la facture est là.
     const dialog = page.locator('[role="dialog"]')
     await dialog.waitFor({ timeout: 40000 })
     const text = await dialog.textContent()
     assert.ok(text.includes(INVOICE_NO) || text.includes(VENDOR),
       `la fiche ouverte ne semble pas être la bonne facture : ${text.slice(0, 300)}`)
+    assert.ok(page.url().includes('/paiements-emis'), `la page a changé : ${page.url()}`)
   })
 
   test('le lien « Facture réglée » d\'un paiement émis mène aussi à la fiche', async () => {

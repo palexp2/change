@@ -4,12 +4,22 @@
 # les onglets ouverts perdaient leurs modules (« Failed to fetch dynamically
 # imported module »). Les builds simultanés passent l'un après l'autre.
 # Un --outDir explicite (deploy.sh) garde l'ancien comportement.
+# Builds fusionnés : une demande arrivée pendant qu'un build tournait attend le
+# verrou ; si un build PARTI APRÈS elle a réussi entre-temps, il contenait déjà
+# ses modifications — elle s'arrête là au lieu de rebâtir pour rien.
 set -e
 cd "$(dirname "$0")/.."
 VITE=node_modules/.bin/vite
 case " $* " in *" --outDir"*) exec "$VITE" build "$@" ;; esac
+requested=$(date +%s%N)
 exec 9>.build.lock
 flock 9
+last=$(cat .build.last-start 2>/dev/null || echo 0)
+if [ "$last" -gt "$requested" ] 2>/dev/null; then
+  echo "✓ Déjà inclus dans le build qui vient de se terminer."
+  exit 0
+fi
+started=$(date +%s%N)
 tmp=".dist-build-$$"
 rm -rf "$tmp"
 "$VITE" build --outDir "$tmp" --emptyOutDir "$@"
@@ -17,3 +27,4 @@ if [ ! -f "$tmp/index.html" ]; then rm -rf "$tmp"; echo "❌ Build sans index.ht
 rm -rf dist.prev
 [ -d dist ] && mv dist dist.prev
 mv "$tmp" dist
+echo "$started" > .build.last-start

@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Panneau de transaction</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f7;--s:#fff;--soft:#f7f8fa;--line:#eceef0;--line2:#d9dde2;--ink:#1f2328;--ink2:#4a5058;--ink3:#767d86;--ink4:#a6abb2;--g:#2ca01c;--gd:#1d7f12;--gs:#eef7ec;--b:#0a6fbf;--bs:#eaf3fb;--a:#b86e00;--as:#fdf5e6;--r:#d1362a;--rs:#fcefee;--y:#fff8db;--sh:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.08);--ai:#7b4fd6;--ais:#f3eefd}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#343a41;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--y:#2a2717;--ai:#b597ff;--ais:#241c35}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#343a41;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--y:#2a2717;--ai:#b597ff;--ais:#241c35}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:20px;margin:0 0 10px}
+h2{font-size:18px;margin:46px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--b)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer;z-index:9}
+.cases{position:sticky;top:0;z-index:5;background:var(--bg);padding:8px 0;display:flex;gap:6px;flex-wrap:wrap}
+.case{border:1px solid var(--line2);background:var(--s);border-radius:999px;padding:5px 12px;font:inherit;font-size:12.5px;cursor:pointer;color:var(--ink2)}
+.case.on{border-color:var(--ink);background:var(--ink);color:var(--s);font-weight:600}
+.scr{background:var(--s);border-radius:14px;box-shadow:var(--sh);overflow:hidden;display:grid;grid-template-columns:1fr 480px;min-height:560px}
+.scr.wide{grid-template-columns:1fr 620px}
+@media (max-width:900px){.scr,.scr.wide{grid-template-columns:1fr}.list{display:none}}
+.list{opacity:.55;pointer-events:none;border-right:1px solid var(--line2)}
+table{width:100%;border-collapse:collapse}
+th{font-size:11.5px;font-weight:500;color:var(--ink3);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line2)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.m{color:var(--ink3);font-size:12px}
+.v{font-weight:500}.v small{display:block;font-weight:400;color:var(--ink3);font-size:11.5px}
+tr.t-a td{background:var(--rs)}tr.t-c td{background:var(--y)}tr.t-r td{background:var(--gs)}
+tr.sel td{box-shadow:inset 0 0 0 9999px color-mix(in srgb,var(--b) 10%,transparent)}
+.pane{display:flex;flex-direction:column;background:var(--s);min-width:0}
+.btn{height:34px;padding:0 16px;border-radius:999px;border:0;background:var(--g);color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn.sq{border-radius:8px}
+.btn.sm{height:28px;padding:0 12px;font-size:12px}
+.ghost{background:none;border:1px solid var(--line2);color:var(--ink2);font-weight:500}
+.link{color:var(--b);cursor:pointer}
+.x{color:var(--ink3);cursor:pointer;font-size:18px;line-height:1}
+.lab{font-size:11.5px;color:var(--ink3);margin-bottom:3px;display:block}
+.inp{border:1px solid var(--line2);border-radius:6px;height:34px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;background:var(--s);min-width:0}
+.inp>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inp .car{color:var(--ink4);font-size:10px}
+.inp.auto{border-color:color-mix(in srgb,var(--ai) 45%,var(--line2));background:color-mix(in srgb,var(--ai) 4%,var(--s))}
+.inp.warn{border-color:var(--a);background:var(--as)}
+.spark{color:var(--ai);font-size:11px}
+.ok{color:var(--gd);font-weight:700}
+.tabs{display:flex;gap:22px;border-bottom:1px solid var(--line2);padding:0 20px}
+.tab{padding:11px 0 9px;color:var(--ink3);font-weight:500;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-1px;white-space:nowrap}
+.tab.on{color:var(--ink);border-color:var(--g);font-weight:600}
+.doc{display:flex;gap:10px;align-items:center;border:1px solid var(--line2);border-radius:8px;padding:8px 10px}
+.th{width:30px;height:38px;border-radius:3px;background:var(--soft);border:1px solid var(--line2);flex:none;position:relative}
+.th:after{content:"";position:absolute;left:5px;right:5px;top:8px;height:14px;background:repeating-linear-gradient(var(--line2) 0 2px,transparent 2px 5px)}
+.foot{margin-top:auto;border-top:1px solid var(--line);padding:12px 20px;display:flex;align-items:center;gap:10px}
+.grow{flex:1}
+.kbd{font-size:10.5px;color:var(--ink4);border:1px solid var(--line2);border-radius:4px;padding:0 4px}
+/* Q */
+.q-head{padding:16px 20px 12px;display:flex;gap:12px;align-items:flex-start}
+.q-head .who{font-size:16px;font-weight:600}
+.q-head .raw{color:var(--ink3);font-size:11.5px;font-family:ui-monospace,Menlo,monospace;margin-top:2px}
+.q-amt{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right;margin-left:auto}
+.q-amt small{display:block;font-size:11.5px;font-weight:400;color:var(--ink3)}
+.q-body{padding:16px 20px;display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}
+.q-body .full{grid-column:1/-1}
+.q-split{grid-column:1/-1;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.q-split table td,.q-split table th{padding:7px 10px;font-size:12px}
+.q-split tr:last-child td{border-bottom:0}
+.cand{border:1px solid var(--line2);border-radius:8px;padding:10px 12px;display:grid;grid-template-columns:18px 1fr auto;gap:2px 10px;align-items:center}
+.cand.on{border-color:var(--g);background:var(--gs)}
+.radio{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--ink4)}
+.cand.on .radio{border:4.5px solid var(--g)}
+/* F */
+.f-top{padding:22px 24px 16px;text-align:center;border-bottom:1px solid var(--line)}
+.f-top .who{font-size:15px;font-weight:600}
+.f-top .amt{font-size:30px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.01em;margin:4px 0 2px}
+.f-rows{padding:6px 24px}
+.f-row{display:grid;grid-template-columns:96px 1fr auto;gap:10px;align-items:center;padding:11px 0;border-bottom:1px solid var(--line)}
+.f-row:last-child{border-bottom:0}
+.f-row .k{color:var(--ink3);font-size:12px}
+.f-row .val{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.f-row .val small{font-weight:400;color:var(--ink3)}
+.f-row .ed{color:var(--ink4);font-size:12px;cursor:pointer;visibility:hidden}
+.f-row:hover .ed{visibility:visible}
+.f-row.warn .val{color:var(--a)}
+.f-sum{margin:6px 24px 0;background:var(--soft);border-radius:10px;padding:10px 14px;display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-variant-numeric:tabular-nums;font-size:12.5px}
+.f-sum b{font-weight:600}
+.f-cta{padding:16px 24px 20px;display:flex;flex-direction:column;gap:8px}
+.f-cta .btn{height:42px;font-size:14px;width:100%}
+.f-alt{display:flex;justify-content:center;gap:16px;font-size:12px}
+/* D */
+.d-head{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}
+.d-cols{display:grid;grid-template-columns:1fr 26px 1fr;flex:1}
+.d-col{padding:14px 18px;display:flex;flex-direction:column;gap:2px}
+.d-col h4{margin:0 0 8px;font-size:11.5px;color:var(--ink3);font-weight:600;letter-spacing:.02em;display:flex;align-items:center;gap:6px}
+.d-mid{display:flex;flex-direction:column;align-items:center;padding-top:44px;gap:0;color:var(--ink4)}
+.d-mid div{height:47px;display:flex;align-items:center}
+.d-f{height:47px;display:flex;flex-direction:column;justify-content:center;border-bottom:1px dashed var(--line)}
+.d-f .k{font-size:11px;color:var(--ink3)}
+.d-f .val{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.d-f.ed .val{border:1px solid var(--line2);border-radius:6px;padding:3px 8px;margin-left:-9px}
+.d-f.ed.auto .val{border-color:color-mix(in srgb,var(--ai) 45%,var(--line2));background:color-mix(in srgb,var(--ai) 4%,var(--s))}
+.d-f.ed.warn .val{border-color:var(--a);background:var(--as)}
+.bank-ic,.qb-ic{width:18px;height:18px;border-radius:5px;display:inline-grid;place-items:center;font-size:10px;font-weight:700;color:#fff}
+.bank-ic{background:#e31837}.qb-ic{background:var(--g)}
+/* A — bouton À faire */
+.alist{background:var(--s);border-radius:14px;box-shadow:var(--sh);overflow:hidden}
+.agrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media (max-width:900px){.agrid{grid-template-columns:1fr}}
+.acard h3{font-size:14px;margin:0;padding:12px 14px;border-bottom:1px solid var(--line2)}
+.acard h3 b{color:var(--b);margin-right:6px}
+.acard td{padding:9px 12px;height:50px}
+.cat{display:flex;align-items:center;gap:6px;min-width:0}
+.cat .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act{color:var(--b);font-weight:600;cursor:pointer;white-space:nowrap}
+.sb{display:inline-flex;border-radius:999px;overflow:hidden;border:1px solid var(--g)}
+.sb span{padding:4px 11px;color:var(--gd);font-weight:600;font-size:12px}
+.sb i{font-style:normal;border-left:1px solid var(--g);padding:4px 7px;color:var(--gd);font-size:9px;display:flex;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:7px;max-width:100%;height:28px;padding:0 4px 0 10px;border-radius:999px;border:1px solid var(--line2);background:var(--s);font-size:12px}
+.chip .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip .go{width:22px;height:22px;border-radius:50%;background:var(--g);color:#fff;display:grid;place-items:center;font-size:12px;flex:none}
+.chip.am{border-color:var(--a);background:var(--as)}
+.chip.am .go{background:var(--a)}
+.chip.bl .go{background:var(--b)}
+.dot{width:7px;height:7px;border-radius:50%;flex:none}
+.done{color:var(--ink4)}
+.verb{display:inline-flex;align-items:center;gap:8px;min-width:0}
+.verb .btn{height:26px;padding:0 11px;font-size:12px;border-radius:6px}
+.verb .t{color:var(--ink2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.note{color:var(--ink3);font-size:12px;margin:8px 2px 0}
+</style></head>
+<body>
+<button class="theme" onclick="const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">◐</button>
+<div class="wrap">
+<h1>Panneau de transaction</h1>
+<div class="cases" id="cases"></div>
+
+<h2><b>P1</b> QuickBooks <span>onglets · champs pré-remplis · Ajouter</span></h2>
+<div class="scr"><div class="list" data-list></div><div class="pane" id="p1"></div></div>
+
+<h2><b>P2</b> Le reçu <span>une colonne, on lit de haut en bas, un gros bouton</span></h2>
+<div class="scr"><div class="list" data-list></div><div class="pane" id="p2"></div></div>
+
+<h2><b>P3</b> Banque → QuickBooks <span>ce que la banque dit, ce qui sera écrit</span></h2>
+<div class="scr wide"><div class="list" data-list></div><div class="pane" id="p3"></div></div>
+
+<h2><b>A</b> Bouton « À faire »</h2>
+<div class="agrid">
+  <div class="alist acard"><h3><b>A1</b>QuickBooks</h3><table id="a1"></table></div>
+  <div class="alist acard"><h3><b>A2</b>Pastille + ›</h3><table id="a2"></table></div>
+  <div class="alist acard"><h3><b>A3</b>Verbe + cible</h3><table id="a3"></table></div>
+</div>
+</div>
+
+<script>
+const $=(s,e=document)=>e.querySelector(s)
+const CASES={
+ exp:{tab:'Dépense',who:'Hydro-Québec',raw:'PAIEMENT FACTURE HYDRO-QUEBEC 004512',date:'28 sept. 2026',bank:'BNC CAD',amt:-412.37,
+  kind:'add',acct:'52100 · Électricité',tax:'TPS/TVQ QC',ht:358.66,tps:17.93,tvq:35.78,memo:'Électricité sept.',
+  doc:{n:'Facture HQ · sept. 2026',sub:'courriel du 14 sept. · 412,37 $'},vendor:'Hydro-Québec'},
+ split:{tab:'Habitude partagée',who:'Amazon.ca',raw:'AMAZON.CA*R43K19 AMAZON.CA',date:'25 sept. 2026',bank:'MasterCard BNC',amt:-86.21,
+  kind:'add',acct:'54200 · Fournitures de bureau',tax:'TPS/TVQ QC',ht:74.98,tps:3.75,tvq:7.48,memo:'',warnAcct:true,
+  doc:null,vendor:'Amazon.ca',alts:['54200 · Fournitures de bureau','51300 · Pièces','52900 · Petit outillage']},
+ match:{tab:'Facture trouvée',who:'DigiKey',raw:'DIGI-KEY ELECTRONICS 218-681-6674',date:'24 sept. 2026',bank:'BNC CAD',amt:-1284.50,
+  kind:'match',cands:[{n:'Facture 132580242',d:'19 sept. · DigiKey',a:-1284.50,on:true},{n:'Facture 132571190',d:'2 sept. · DigiKey',a:-1290.10}]},
+ xfer:{tab:'Virement',who:'Virement → MasterCard',raw:'PAIEMENT CARTE MC 4410',date:'5 sept. 2026',bank:'BNC CAD',amt:-5000,
+  kind:'xfer',to:'MasterCard BNC 4410',other:'Paiement reçu · 5 sept. · 5 000,00 $'},
+ dep:{tab:'Dépôt',who:'Stripe',raw:'STRIPE TRANSFER ST-V7R2L1',date:'22 sept. 2026',bank:'BNC CAD',amt:2318.04,
+  kind:'match',cands:[{n:'Dépôt Stripe · versement po_1Q8…',d:'22 sept. · 7 paiements',a:2318.04,on:true}]},
+}
+let cur='exp'
+const fm=n=>Math.abs(n).toLocaleString('fr-CA',{minimumFractionDigits:2,maximumFractionDigits:2})+' $'
+const sg=n=>(n<0?'−':'+')+fm(n)
+const verbOf=c=>c.kind==='match'?'Apparier':c.kind==='xfer'?'Transférer':'Ajouter'
+
+function list(){
+  const rows=[['28 sept.','Hydro-Québec','−412,37 $','a','exp'],['25 sept.','Amazon.ca','−86,21 $','a','split'],['24 sept.','DigiKey','−1 284,50 $','c','match'],['22 sept.','Stripe','+2 318,04 $','c','dep'],['5 sept.','Virement → MasterCard','−5 000,00 $','a','xfer'],['3 sept.','Bell Canada','−148,02 $','r',''],['2 sept.','Loyer Inverness','−3 450,00 $','r','']]
+  return `<table><tr><th>Date</th><th>Fournisseur</th><th class="r">Montant</th></tr>${rows.map(r=>`<tr class="t-${r[3]} ${r[4]===cur?'sel':''}"><td class="m">${r[0]}</td><td class="v">${r[1]}</td><td class="r">${r[2]}</td></tr>`).join('')}</table>`
+}
+const inp=(l,v,cls='',full)=>`<div class="${full?'full':''}"><span class="lab">${l}</span><div class="inp ${cls}"><span>${v}</span>${cls.includes('auto')?'<span class="spark">✦</span>':'<span class="car">▾</span>'}</div></div>`
+const docBox=c=>c.doc?`<div class="doc"><div class="th"></div><div style="min-width:0;flex:1"><div class="v">${c.doc.n}</div><div class="m">${c.doc.sub}</div></div><span class="ok">✓</span></div>`:`<div class="doc" style="border-style:dashed;color:var(--ink3)"><div class="th" style="opacity:.4"></div><div style="flex:1">Aucun reçu · <span class="link">joindre</span> · <span class="link">demander</span></div></div>`
+
+/* P1 — QuickBooks */
+function p1(c){
+  const tabs=[['add','Catégoriser'],['match','Trouver une correspondance'],['xfer','Transfert']]
+  let body=''
+  if(c.kind==='add'){
+    body=`<div class="q-body">
+      ${inp('Bénéficiaire',c.vendor,'auto')}
+      ${inp('Date',c.date,'')}
+      ${inp('Catégorie',c.acct,c.warnAcct?'warn':'auto',true)}
+      ${c.warnAcct?`<div class="full" style="margin-top:-6px;display:flex;gap:6px;flex-wrap:wrap">${c.alts.slice(1).map(a=>`<span class="case" style="padding:2px 9px;font-size:11.5px">${a}</span>`).join('')}</div>`:''}
+      ${inp('Taxe',c.tax,'auto')}
+      ${inp('Montant',fm(c.amt),'')}
+      ${inp('Mémo',c.memo||'&nbsp;',c.memo?'auto':'',true)}
+      <div class="full">${docBox(c)}</div>
+      <div class="full m"><span class="link">+ Diviser</span> &nbsp;·&nbsp; <span class="link">Créer une règle</span></div>
+    </div>`
+  }else if(c.kind==='match'){
+    body=`<div class="q-body"><div class="full" style="display:flex;flex-direction:column;gap:8px">${c.cands.map(d=>`<div class="cand ${d.on?'on':''}"><span class="radio"></span><span class="v">${d.n}</span><span class="r v">${fm(d.a)}</span><span></span><span class="m">${d.d}</span><span class="r m">${Math.abs(d.a)===Math.abs(c.amt)?'<span class="ok">= montant</span>':'écart '+fm(Math.abs(d.a)-Math.abs(c.amt))}</span></div>`).join('')}</div>
+    <div class="full m"><span class="link">Chercher autre chose…</span></div></div>`
+  }else{
+    body=`<div class="q-body">${inp('De',c.bank,'')}${inp('Vers',c.to,'auto')}${inp('Date',c.date,'')}${inp('Montant',fm(c.amt),'')}
+    <div class="full"><div class="doc"><span class="ok">✓</span><div class="m" style="flex:1">Contrepartie trouvée : ${c.other}</div></div></div></div>`
+  }
+  return `<div class="q-head"><div style="min-width:0"><div class="who">${c.who}</div><div class="raw">${c.raw}</div><div class="m">${c.date} · ${c.bank}</div></div><div class="q-amt">${sg(c.amt)}<small>${c.amt<0?'Dépense':'Dépôt'}</small></div><span class="x">×</span></div>
+  <div class="tabs">${tabs.map(t=>`<span class="tab ${t[0]===c.kind?'on':''}">${t[1]}</span>`).join('')}</div>
+  ${body}
+  <div class="foot"><span class="link m">Exclure</span><span class="grow"></span><button class="btn ghost sm">Annuler</button><button class="btn">${c.kind==='match'?'Apparier':c.kind==='xfer'?'Transférer':'Ajouter'}</button></div>`
+}
+
+/* P2 — Le reçu */
+function p2(c){
+  const row=(k,v,cls='')=>`<div class="f-row ${cls}"><span class="k">${k}</span><span class="val">${v}</span><span class="ed">✎</span></div>`
+  let rows='',sum=''
+  if(c.kind==='add'){
+    rows=row('Fournisseur',c.vendor)+row('Compte',c.warnAcct?c.acct+' <small>· à vérifier</small>':c.acct,c.warnAcct?'warn':'')+row('Taxe',c.tax)+(c.memo?row('Mémo',c.memo):'')+`<div class="f-row"><span class="k">Reçu</span><span class="val">${c.doc?`${c.doc.n} <span class="ok">✓</span>`:'<span class="link">Joindre</span> · <span class="link">Demander</span>'}</span><span></span></div>`
+    sum=`<div class="f-sum"><span>Avant taxes</span><span class="r">${fm(c.ht)}</span><span class="m">TPS</span><span class="r m">${fm(c.tps)}</span><span class="m">TVQ</span><span class="r m">${fm(c.tvq)}</span></div>`
+  }else if(c.kind==='match'){
+    const d=c.cands[0]
+    rows=row('Va avec',`${d.n} <small>· ${d.d}</small>`)+row('Montant',`${fm(d.a)} <span class="ok">✓</span>`)+(c.cands.length>1?`<div class="f-row"><span class="k"></span><span class="val link" style="font-weight:400">${c.cands.length-1} autre possible</span><span></span></div>`:'')
+  }else{
+    rows=row('De',c.bank)+row('Vers',c.to)+row('Contrepartie',c.other+' <span class="ok">✓</span>')
+  }
+  return `<div style="display:flex;justify-content:flex-end;padding:10px 14px 0"><span class="x">×</span></div>
+  <div class="f-top" style="padding-top:4px"><div class="who">${c.who}</div><div class="amt">${sg(c.amt)}</div><div class="m">${c.date} · ${c.bank}</div></div>
+  <div class="f-rows">${rows}</div>${sum}
+  <div class="f-cta" style="margin-top:auto"><button class="btn">${verbOf(c)} <span style="opacity:.7;font-weight:400;font-size:12px">↵</span></button>
+  <div class="f-alt"><span class="link">${c.kind==='add'?'Apparier plutôt':'Ajouter plutôt'}</span><span class="link">${c.kind==='xfer'?'Ce n\'est pas un virement':'Virement'}</span><span class="link" style="color:var(--ink3)">Exclure</span></div></div>`
+}
+
+/* P3 — Banque → QuickBooks */
+function p3(c){
+  const L=(k,v)=>`<div class="d-f"><span class="k">${k}</span><span class="val">${v}</span></div>`
+  const R=(k,v,cls='auto')=>`<div class="d-f ed ${cls}"><span class="k">${k}</span><span class="val">${v}</span></div>`
+  let right='',mid=4
+  if(c.kind==='add'){
+    right=R('Bénéficiaire',c.vendor)+R('Compte',c.acct,c.warnAcct?'warn':'auto')+R('Taxe',`${c.tax} <span class="m">· ${fm(c.tps+c.tvq)}</span>`)+R('Mémo',c.memo||'—',c.memo?'auto':'')
+  }else if(c.kind==='match'){
+    const d=c.cands[0]
+    right=R('Document',d.n)+R('Fournisseur',d.d.split('· ')[1]||c.who)+R('Date',d.d.split(' ·')[0])+R('Montant',fm(d.a)+' <span class="ok">✓</span>')
+  }else{
+    right=R('Type','Transfert')+R('Vers',c.to)+R('Date',c.date)+R('Montant',fm(c.amt)+' <span class="ok">✓</span>')
+  }
+  return `<div class="d-head"><div class="v" style="font-size:15px">${c.who}</div><span class="grow"></span>
+    <div class="tabs" style="border:0;padding:0;gap:14px">${[['add','Écriture'],['match','Apparier'],['xfer','Transfert']].map(t=>`<span class="tab ${t[0]===c.kind?'on':''}" style="padding:4px 0">${t[1]}</span>`).join('')}</div><span class="x" style="margin-left:10px">×</span></div>
+  <div class="d-cols">
+    <div class="d-col" style="background:var(--soft)"><h4><span class="bank-ic">B</span>Banque</h4>${L('Libellé',`<span style="font-family:ui-monospace,Menlo,monospace;font-size:11.5px">${c.raw}</span>`)}${L('Compte',c.bank)}${L('Date',c.date)}${L('Montant',sg(c.amt))}</div>
+    <div class="d-mid">${'<div>→</div>'.repeat(mid)}</div>
+    <div class="d-col"><h4><span class="qb-ic">qb</span>QuickBooks</h4>${right}</div>
+  </div>
+  ${c.kind==='add'?`<div style="padding:0 18px 12px">${docBox(c)}</div>`:''}
+  <div class="foot"><span class="link m">Exclure</span><span class="link m">Règle</span><span class="grow"></span><button class="btn">${verbOf(c)}</button></div>`
+}
+
+/* A — bouton À faire */
+const AROWS=[
+ {d:'28 sept.',w:'Hydro-Québec',a:'−412,37',k:'add',t:'Électricité',st:'a'},
+ {d:'25 sept.',w:'Amazon.ca',a:'−86,21',k:'add',t:'Fournitures ?',st:'a',warn:1},
+ {d:'24 sept.',w:'DigiKey',a:'−1 284,50',k:'match',t:'Facture 132580242',st:'c'},
+ {d:'5 sept.',w:'MasterCard',a:'−5 000,00',k:'xfer',t:'MC 4410',st:'a'},
+ {d:'3 sept.',w:'Bell Canada',a:'−148,02',k:'done',t:'Téléphone',st:'r'},
+]
+const V={add:'Ajouter',match:'Apparier',xfer:'Transférer'}
+function arow(r,cell){return `<tr class="t-${r.st}"><td class="v" style="max-width:110px"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.w}</span><small>${r.d}</small></td><td style="max-width:190px">${cell(r)}</td><td class="r">${r.a}</td></tr>`}
+function aTables(){
+  $('#a1').innerHTML=AROWS.map(r=>arow(r,r=>r.k==='done'?`<span class="done">✓ ${r.t}</span>`:`<div style="display:flex;align-items:center;gap:8px;justify-content:space-between"><span class="cat"><span class="n ${r.warn?'':''}" style="${r.warn?'color:var(--a)':''}">${r.t}</span></span><span class="sb"><span>${V[r.k]}</span><i>▾</i></span></div>`)).join('')
+  $('#a2').innerHTML=AROWS.map(r=>arow(r,r=>r.k==='done'?`<span class="done">✓ ${r.t}</span>`:`<span class="chip ${r.warn?'am':r.k!=='add'?'bl':''}"><span class="n">${r.t}</span><span class="go">›</span></span>`)).join('')
+  $('#a3').innerHTML=AROWS.map(r=>arow(r,r=>r.k==='done'?`<span class="done">✓ ${r.t}</span>`:`<span class="verb"><button class="btn ${r.warn?'ghost':''}" style="${r.warn?'border-color:var(--a);color:var(--a)':r.k!=='add'?'background:var(--b)':''}">${r.warn?'Vérifier':V[r.k]}</button><span class="t">${r.t.replace(' ?','')}</span></span>`)).join('')
+}
+
+function render(){
+  $('#cases').innerHTML=Object.entries(CASES).map(([k,c])=>`<button class="case ${k===cur?'on':''}" data-k="${k}">${c.tab}</button>`).join('')
+  document.querySelectorAll('[data-list]').forEach(e=>e.innerHTML=list())
+  const c=CASES[cur]
+  $('#p1').innerHTML=p1(c);$('#p2').innerHTML=p2(c);$('#p3').innerHTML=p3(c)
+}
+$('#cases').onclick=e=>{const k=e.target.dataset.k;if(k){cur=k;render()}}
+render();aTables()
+</script>
+</body></html>

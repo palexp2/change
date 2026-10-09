@@ -13,7 +13,8 @@ App **single-tenant** dédiée aux opérations d'Orisha, entreprise d'IoT & auto
   de la page : mono-thread, il la faisait attendre derrière tout ce qu'il avait
   en cours (mesuré : 4,78 s pour un index.html de 1,6 ko).
   Les préfixes encore proxiés vers Express : `/erp/api/`, `/erp/ws`, `/erp/p/`,
-  `/erp/pay`. **Toute nouvelle route montée sous `/erp/` dans
+  `/erp/pay`. Exception : `/erp/p/<jeton>` (fichiers publics : images, pages HTML) est servi par nginx depuis
+  `server/uploads/public-served/<jeton>/f.<ext>` (copie tenue par Node à chaque dépôt), repli sur Node sinon (PDF, ZIP). **Toute nouvelle route montée sous `/erp/` dans
   `server/src/index.js` doit recevoir sa `location` nginx**, sinon elle tombe
   dans le fallback SPA et renvoie index.html.
 

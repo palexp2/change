@@ -96,14 +96,14 @@ describe('FeuilleDeTemps — rapport RSDE mensuel', () => {
     const table = report.locator('[data-testid="rsde-table"]')
     await table.waitFor({ timeout: 5000 })
 
-    // Une ligne par jour du mois courant (28 à 31 selon le mois)
-    const [y, m] = setup.today.split('-').map(Number)
-    const daysInMonth = new Date(y, m, 0).getDate()
+    // Une ligne par jour de la période de paie courante (14 jours dès le dimanche, ancre 2026-08-30)
     const dataRows = table.locator('tbody tr')
-    assert.equal(await dataRows.count(), daysInMonth, `${daysInMonth} lignes attendues (une par jour du mois)`)
+    assert.equal(await dataRows.count(), 14, '14 lignes attendues (une par jour de la période)')
+    const offset = Math.round((Date.parse(setup.today + 'T00:00:00Z') - Date.parse('2026-08-30T00:00:00Z')) / 86400000)
+    const dayIdx = ((offset % 14) + 14) % 14
 
     // Ligne du jour courant : 2 entrées agrégées
-    const todayRow = dataRows.nth(parseInt(setup.today.slice(8, 10), 10) - 1)
+    const todayRow = dataRows.nth(dayIdx)
     const cells = await todayRow.locator('td').allTextContents()
     assert.equal(cells[0].trim(), setup.today, `Date attendue "${setup.today}", reçue "${cells[0]}"`)
     assert.equal(cells[1].trim(), '2,00', `Durée agrégée attendue "2,00" (1:30 + 0:30), reçue "${cells[1]}"`)
@@ -111,7 +111,7 @@ describe('FeuilleDeTemps — rapport RSDE mensuel', () => {
     assert.equal(cells[2].trim(), expectedDesc, `Description agrégée attendue "${expectedDesc}", reçue "${cells[2]}"`)
 
     // Une ligne sans heures RSDE : durée "0,00" et description vide
-    const otherDayIndex = parseInt(setup.today.slice(8, 10), 10) === 1 ? 1 : 0
+    const otherDayIndex = dayIdx === 0 ? 1 : 0
     const otherRow = dataRows.nth(otherDayIndex)
     const otherCells = await otherRow.locator('td').allTextContents()
     assert.equal(otherCells[1].trim(), '0,00', `Durée pour journée sans RSDE attendue "0,00", reçue "${otherCells[1]}"`)
@@ -122,43 +122,18 @@ describe('FeuilleDeTemps — rapport RSDE mensuel', () => {
     assert.equal(totalCells[1].trim(), '2,00', `Total attendu "2,00", reçu "${totalCells[1]}"`)
   })
 
-  test('navigation : mois précédent → toujours toutes les journées, toutes à zéro', async () => {
+  test('navigation : période de paie précédente → 14 journées', async () => {
     const report = page.locator('[data-testid="rsde-report"]')
-    await report.locator('button[aria-label="Mois précédent"]').click()
+    await report.locator('button[aria-label="Période précédente"]').click()
     const table = report.locator('[data-testid="rsde-table"]')
     await table.waitFor({ timeout: 3000 })
-    const dataRows = table.locator('tbody tr')
-    const count = await dataRows.count()
-    assert.ok(count >= 28 && count <= 31, `un mois précédent doit toujours afficher 28-31 lignes, reçu ${count}`)
-    const totalCells = await table.locator('tfoot tr td').allTextContents()
-    assert.equal(totalCells[1].trim(), '0,00', `Total mois sans RSDE attendu "0,00", reçu "${totalCells[1]}"`)
-    // Retour au mois courant
-    await report.locator('button[aria-label="Mois suivant"]').click()
+    assert.equal(await table.locator('tbody tr').count(), 14, 'une période de paie = 14 lignes')
+    // Retour à la période courante
+    await report.locator('button[aria-label="Période suivante"]').click()
   })
 
-  test('bouton Copier → TSV sans en-tête, toutes les journées du mois', async () => {
+  test('plus de bouton Copier', async () => {
     const report = page.locator('[data-testid="rsde-report"]')
-    await report.locator('[data-testid="rsde-copy"]').click()
-    const text = await page.evaluate(() => navigator.clipboard.readText())
-    const lines = text.split('\n')
-    const today = new Date().toISOString().slice(0, 10)
-    const [y, m] = today.split('-').map(Number)
-    const daysInMonth = new Date(y, m, 0).getDate()
-    assert.equal(lines.length, daysInMonth, `doit contenir ${daysInMonth} lignes (une par jour du mois)`)
-    // Aucune en-tête : la 1re ligne doit être une vraie date du mois
-    assert.match(lines[0], /^\d{4}-\d{2}-01\t/, 'la 1re ligne TSV doit commencer par le 1er du mois (pas d\'en-tête)')
-    // Ligne du jour courant
-    const todayLine = lines.find(l => l.startsWith(today))
-    assert.ok(todayLine, `une ligne pour ${today} doit exister dans le TSV`)
-    const parts = todayLine.split('\t')
-    assert.equal(parts.length, 3, 'la ligne TSV doit avoir 3 colonnes : date, durée, description')
-    assert.equal(parts[1], '2,00', `Durée TSV pour aujourd'hui attendue "2,00", reçue "${parts[1]}"`)
-    assert.equal(parts[2], `${codeName} — Prototype shaper ; ${codeName} — Tests bench`, `Description TSV agrégée`)
-    // Une ligne d'un jour sans RSDE : "DATE\t0,00\t" (3 champs, le dernier vide)
-    const emptyLine = lines.find(l => l !== todayLine && !l.startsWith(today))
-    const emptyParts = emptyLine.split('\t')
-    assert.equal(emptyParts.length, 3, 'une journée sans RSDE doit toujours avoir 3 colonnes')
-    assert.equal(emptyParts[1], '0,00', `Durée d'un jour sans RSDE attendue "0,00", reçue "${emptyParts[1]}"`)
-    assert.equal(emptyParts[2], '', `Description d'un jour sans RSDE doit être vide, reçue "${emptyParts[2]}"`)
+    assert.equal(await report.locator('[data-testid="rsde-copy"]').count(), 0, 'le bouton Copier a été retiré')
   })
 })

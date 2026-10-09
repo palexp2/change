@@ -10,6 +10,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Badge } from '../components/Badge.jsx'
+import TableThumb, { TABLE_THUMB_CLASS } from '../components/TableThumb.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
@@ -40,9 +41,14 @@ const FULFILLMENT_COLORS = {
 // les lignes s'éditent sur la fiche commande.
 const ITEM_RENDERS = {
   // Colonne « Produit » : le champ est `product_id` (comme sur la fiche commande),
-  // affiché par le nom du produit, cliquable vers sa fiche.
+  // affiché par la vignette + le nom du produit, cliquable vers sa fiche.
   product_id: item => (item.product_id
-    ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="font-medium link-record">{item.product_name || 'Produit'}</Link>
+    ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-2 font-medium link-record">
+        {item.product_image
+          ? <TableThumb src={item.product_image} alt="" fit="contain" className="border border-slate-200 shrink-0" />
+          : <span className={`${TABLE_THUMB_CLASS} rounded border border-slate-200 bg-slate-100 shrink-0`} />}
+        <span>{item.product_name || 'Produit'}</span>
+      </Link>
     : <span className="font-medium text-slate-900">{item.product_name || '—'}</span>),
   sku: item => item.sku
     ? <span className="font-mono text-xs text-slate-500">{item.sku}</span>

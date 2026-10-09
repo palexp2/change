@@ -43,12 +43,30 @@ export function matchedDocState(txn) {
 export async function publishMatchedDoc(txn) {
   const doc = matchedDocState(txn)
   if (!doc) return { quickbooks_id: null, already: false, error: null, field: null }
-  if (doc.booked) return { quickbooks_id: null, already: true, error: null, field: null }
+  if (doc.booked) {
+    // Reçu comptabilisé au mois du service : son paiement attendait le débit.
+    if (doc.type === 'receipt') {
+      try { await (await import('./quickbooks.js')).settleAccruedReceipt(doc.id) } catch (e) {
+        return { quickbooks_id: null, already: true, error: `Paiement de la facture non publié : ${e.message}`, field: null }
+      }
+    }
+    return { quickbooks_id: null, already: true, error: null, field: null }
+  }
   if (doc.blocked) return { quickbooks_id: null, already: false, error: 'Document pas encore lu — publication impossible', field: null }
   try {
     const qb = await import('./quickbooks.js')
     let quickbooks_id = null
-    if (doc.type === 'achat') quickbooks_id = await qb.pushAchatToQB(doc.id)
+    if (doc.type === 'achat') {
+      // Achat sans code ni taxe : le code à taux zéro du statut fiscal (celui que
+      // le panneau du rapprochement affiche) est posé avant la publication.
+      const a = db.prepare('SELECT vendor, currency, tax_code_id, tax_cad, total_cad FROM achats_fournisseurs WHERE id=?').get(doc.id)
+      if (a && !a.tax_code_id && !(a.tax_cad > 0)) {
+        const { zeroRateTaxCodeFor } = await import('./bankTaxCode.js')
+        const z = await zeroRateTaxCodeFor({ vendor: a.vendor, currency: a.currency, amount: a.total_cad })
+        if (z) db.prepare('UPDATE achats_fournisseurs SET tax_code_id=? WHERE id=?').run(z.id, doc.id)
+      }
+      quickbooks_id = await qb.pushAchatToQB(doc.id)
+    }
     else if (doc.type === 'receipt') quickbooks_id = await qb.pushSaleReceiptToQB(doc.id)
     else if (doc.type === 'stripe_payout') quickbooks_id = await qb.pushDepositFromPayout(doc.key)
     return { quickbooks_id, already: false, error: null, field: null }

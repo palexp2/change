@@ -283,8 +283,10 @@ function validDecimalPreferences(obj) {
 }
 
 // Signature de courriel (HTML nettoyé), ajoutée en bas de la fenêtre d'envoi.
-function readEmailSignature(userId) {
-  return db.prepare('SELECT email_signature FROM users WHERE id = ?').get(userId)?.email_signature || '';
+// Deux signatures : française (par défaut) et anglaise (contacts anglophones).
+function readEmailSignatures(userId) {
+  const r = db.prepare('SELECT email_signature, email_signature_en FROM users WHERE id = ?').get(userId);
+  return { email_signature: r?.email_signature || '', email_signature_en: r?.email_signature_en || '' };
 }
 
 // GET /api/auth/preferences — préférences UI de l'utilisateur courant
@@ -296,13 +298,13 @@ router.get('/preferences', requireAuth, (req, res) => {
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
     peek_widths: readPeekWidths(req.user.id),
-    email_signature: readEmailSignature(req.user.id),
+    ...readEmailSignatures(req.user.id),
   });
 });
 
 // PATCH /api/auth/preferences — maj des préférences UI (menu de gauche, décimales, largeur side-peek, etc.)
 router.patch('/preferences', requireAuth, (req, res) => {
-  const { nav_hidden, nav_order, nav_bookmarks, decimal_preferences, peek_width, peek_widths, email_signature } = req.body || {};
+  const { nav_hidden, nav_order, nav_bookmarks, decimal_preferences, peek_width, peek_widths, email_signature, email_signature_en } = req.body || {};
   if (nav_hidden !== undefined) {
     if (!Array.isArray(nav_hidden) || !nav_hidden.every((k) => typeof k === 'string')) {
       return res.status(400).json({ error: 'nav_hidden doit être un tableau de chaînes' });
@@ -351,6 +353,12 @@ router.patch('/preferences', requireAuth, (req, res) => {
     }
     db.prepare('UPDATE users SET email_signature = ? WHERE id = ?').run(sanitizeSignatureHtml(email_signature) || null, req.user.id);
   }
+  if (email_signature_en !== undefined) {
+    if (email_signature_en !== null && (typeof email_signature_en !== 'string' || email_signature_en.length > 50000)) {
+      return res.status(400).json({ error: 'email_signature_en doit être une chaîne (50 000 caractères max)' });
+    }
+    db.prepare('UPDATE users SET email_signature_en = ? WHERE id = ?').run(sanitizeSignatureHtml(email_signature_en) || null, req.user.id);
+  }
   res.json({
     nav_hidden: readNavHidden(req.user.id),
     nav_order: readNavOrder(req.user.id),
@@ -358,7 +366,7 @@ router.patch('/preferences', requireAuth, (req, res) => {
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
     peek_widths: readPeekWidths(req.user.id),
-    email_signature: readEmailSignature(req.user.id),
+    ...readEmailSignatures(req.user.id),
   });
 });
 

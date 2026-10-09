@@ -39,7 +39,7 @@ export function findBestVendorMatch(company, vendors) {
   if (targetTokens.length === 0) return null
   const targetSet = new Set(targetTokens)
 
-  let best = null, bestScore = 0
+  let best = null, bestScore = 0, bestJaccard = 0
   for (const v of vendors) {
     const vNorm = normalizeVendor(v.DisplayName)
     const vt = vendorTokens(v.DisplayName)
@@ -52,8 +52,15 @@ export function findBestVendorMatch(company, vendors) {
     const shorter = vNorm.length <= target.length ? vNorm : target
     const longer = vNorm.length <= target.length ? target : vNorm
     const contained = shorter.length >= 4 && longer.includes(shorter)
-    const score = Math.max(jaccard, contained ? 0.8 : 0)
-    if (score > bestScore) { bestScore = score; best = v }
+    // Marque courte (« DHL », « UPS », « GLS ») suivie d'un qualificatif : « DHL
+    // (Douanes) » doit retrouver le vendor « DHL ». Trop court pour le containment de
+    // chaîne (« ups » ⊂ « groups »), on l'accepte en MOTS ENTIERS : tous les mots du
+    // nom court figurent tels quels dans le nom long.
+    const [fewT, manyT] = vt.length <= targetTokens.length ? [vt, targetTokens] : [targetTokens, vt]
+    const tokenContained = fewT.every(t => t.length >= 2 && manyT.includes(t))
+    const score = Math.max(jaccard, contained || tokenContained ? 0.8 : 0)
+    // À score égal, le nom le plus proche en mots l'emporte (« DHL » avant « DHL Express »).
+    if (score > bestScore || (score === bestScore && jaccard > bestJaccard)) { bestScore = score; bestJaccard = jaccard; best = v }
   }
   return bestScore >= 0.6 ? best : null
 }

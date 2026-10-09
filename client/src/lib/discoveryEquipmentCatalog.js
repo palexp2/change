@@ -53,10 +53,12 @@ export const EQUIPMENT_PRODUCT_GROUPS = [
       // Louvre + ventilateur : 110 V seulement, les autres voltages ne sont pas proposés.
       ...(voltage === '110' ? [[`louver_with_fan_${voltage}`, `Louvre spring loaded + ventilateur · ${voltage} V`]] : []),
     ]),
+    // Louvre open/close 24 V + ventilateur : envoyé en plus du boîtier 24 V.
+    ['louver_time_delay_box', 'Boîtier de louvre avec time delay · 24 V + ventilateur'],
   ] },
   { label: 'Brumisation et HAF', products: [['humidity_valve', 'Valve de brumisation'], ['humidity_haf', 'Boîtier 110 V pour HAF']] },
   // Chef de culture : un capteur de vent et un boîtier météo par commande, en plus des capteurs achetés.
-  { label: 'Capteurs', products: [...SENSOR_PRODUCTS, ['advanced_temperature_sensor', 'Capteur de température avancé'], ['weather_box', 'Boîtier météo'], ['temp_humidity_sensor', 'Capteur de température et d’humidité']], help: 'Chef de culture : 1 capteur de vent + 1 boîtier météo ajoutés d’office. 1 capteur de température et d’humidité par serre (Helper ou Chef de culture), sauf si le capteur avancé le remplace.' },
+  { label: 'Capteurs', products: [...SENSOR_PRODUCTS, ['advanced_temperature_sensor', 'Capteur de température avancé'], ['weather_box', 'Boîtier météo'], ['temp_humidity_sensor', 'Capteur de température et d’humidité']], help: 'Chef de culture : 1 capteur de vent ajouté d’office, + 1 boîtier météo s’il y a au moins un capteur météo. 1 capteur de température et d’humidité par serre (Helper ou Chef de culture), sauf si le capteur avancé le remplace ou si la serre a déjà sa sonde.' },
 ]
 export const EQUIPMENT_PRODUCTS = EQUIPMENT_PRODUCT_GROUPS.flatMap(g => g.products)
 export const EQUIPMENT_LABELS = Object.fromEntries(EQUIPMENT_PRODUCTS)

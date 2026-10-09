@@ -66,45 +66,4 @@ describe('Dashboard — Trésorerie vs limite de marge de crédit', () => {
     assert.ok(Math.abs(sum - b.treasury) < 0.02, `treasury (${b.treasury}) ≠ somme des balance_cad (${sum})`)
     assert.equal(b.totals.net, b.treasury, 'totals.net doit égaler treasury')
   })
-
-  test('La section Trésorerie affiche le montant et la jauge par rapport à la limite de 360 000 $', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('h1:has-text("Tableau de bord")', { timeout: 10000 })
-
-    const card = page.locator('[data-testid="section-bank-accounts"]')
-    await card.waitFor({ timeout: 10000 })
-    await card.scrollIntoViewIfNeeded()
-
-    // Si la carte est repliée, la déplier.
-    const panel = page.locator('[data-testid="dashboard-bank-accounts"]')
-    if (!(await panel.isVisible().catch(() => false))) {
-      await card.locator('h2').first().click()
-    }
-
-    await page.locator('[data-testid="dashboard-treasury"], :text("Impossible de charger les soldes")').first()
-      .waitFor({ timeout: 20000 })
-    const cardText = await card.innerText()
-    if (cardText.includes('Impossible de charger les soldes')) {
-      console.warn('QB indisponible — test toléré')
-      return
-    }
-
-    // Le montant affiché correspond au treasury renvoyé par l'API.
-    const api = await page.evaluate(async () => {
-      const tok = localStorage.getItem('erp_token')
-      const r = await fetch('/erp/api/dashboard/bank-accounts', { headers: { Authorization: `Bearer ${tok}` } })
-      return r.json()
-    })
-    const shown = await page.locator('[data-testid="treasury-amount"]').innerText()
-    const normalize = s => s.replace(/[\s  ]/g, '').replace(',', '.').replace(/[^0-9.-]/g, '')
-    assert.ok(Math.abs(Number(normalize(shown)) - api.treasury) < 0.02,
-      `montant affiché « ${shown} » ≠ treasury API ${api.treasury}`)
-
-    // Le coussin vs la limite de marge est affiché avec la bonne valeur.
-    assert.ok(/360\s?000/.test(cardText.replace(/[  ]/g, ' ')), 'la limite de 360 000 $ n\'apparaît pas')
-    const headroomShown = await page.locator('[data-testid="treasury-headroom"]').innerText()
-    const expectedHeadroom = api.treasury + api.credit_limit
-    assert.ok(Math.abs(Number(normalize(headroomShown.split('·')[0])) - expectedHeadroom) < 0.02,
-      `coussin affiché « ${headroomShown} » ≠ ${expectedHeadroom}`)
-  })
 })

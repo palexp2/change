@@ -1,5 +1,6 @@
 import { runInNewContext } from 'node:vm'
 import { parseDurationToSeconds, formatDurationSeconds } from './duration.js'
+import { TZ, localDay } from '../utils/datetime.js'
 
 // ───────────────────────────────────────────────────────────────────────────
 // Bibliothèque de fonctions de formule — parité Airtable.
@@ -35,6 +36,41 @@ function toDate(v) {
   if (v == null || v === '') return null
   const d = v instanceof Date ? v : new Date(v)
   return Number.isNaN(d.getTime()) ? null : d
+}
+// Heure locale (Québec) : les dates restent stockées en UTC, mais tout ce qui
+// LIT un calendrier (année, mois, jour, heure, semaine, format) le fait dans le
+// fuseau de l'entreprise. Une date seule « YYYY-MM-DD » n'a pas d'heure : elle
+// n'est jamais décalée. L'instant renvoyé porte l'heure locale dans ses champs
+// UTC, d'où les getUTC* inchangés plus bas.
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+const isDateOnly = (v) => typeof v === 'string' && DATE_ONLY.test(v)
+const offsetFmt = new Intl.DateTimeFormat('en-US', { timeZone: TZ, timeZoneName: 'shortOffset' })
+const offsetCache = new Map()
+function zoneOffsetMs(d) {
+  // Les changements d'heure tombent pile sur l'heure : cache par heure exact.
+  const key = Math.floor(d.getTime() / 3600000)
+  let off = offsetCache.get(key)
+  if (off == null) {
+    const name = offsetFmt.formatToParts(d).find(p => p.type === 'timeZoneName')?.value || ''
+    const m = name.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/)
+    off = m ? (m[1] === '+' ? 1 : -1) * (+m[2] * 60 + (+m[3] || 0)) * 60000 : 0
+    if (offsetCache.size > 50000) offsetCache.clear()
+    offsetCache.set(key, off)
+  }
+  return off
+}
+function toLocal(v) {
+  const d = toDate(v)
+  if (!d || isDateOnly(v)) return d
+  return new Date(d.getTime() + zoneOffsetMs(d))
+}
+// TODAY() est appelé une fois par ligne de VUE : un formateur Intl par appel
+// coûte ~0,1 ms, soit des secondes sur une table de milliers de lignes.
+let todayCache = { until: 0, value: null }
+function todayLocal() {
+  const now = Date.now()
+  if (now >= todayCache.until) todayCache = { until: now + 60000, value: localDay(new Date(now)) }
+  return todayCache.value
 }
 const pad = (n, w = 2) => String(Math.abs(n)).padStart(w, '0')
 
@@ -84,9 +120,8 @@ function dateDiff(a, b, units) {
 }
 
 function datetimeFormat(d, fmt, { weekTokens = false } = {}) {
-  // Sous-ensemble des tokens Moment/Airtable les plus courants. Toujours en UTC
-  // (cohérent avec le stockage ISO-Z de l'app). Format par défaut : ISO.
-  if (!fmt) return d.toISOString()
+  // Sous-ensemble des tokens Moment/Airtable les plus courants. `d` arrive déjà
+  // ramené à l'heure locale (toLocal) ; sans format, l'appelant rend l'ISO UTC.
   const tokens = {
     YYYY: d.getUTCFullYear(),
     YY: pad(d.getUTCFullYear() % 100),
@@ -212,23 +247,28 @@ const F = [
   { name: 'FALSE', category: 'Logique', sig: 'FALSE()', hint: 'Faux (0)', impl: () => 0 },
 
   // — Dates —
-  { name: 'YEAR', category: 'Date', sig: 'YEAR(date)', hint: 'Année', impl: (d) => { const x = toDate(d); return x && x.getUTCFullYear() } },
-  { name: 'MONTH', category: 'Date', sig: 'MONTH(date)', hint: 'Mois (1-12)', impl: (d) => { const x = toDate(d); return x && x.getUTCMonth() + 1 } },
-  { name: 'DAY', category: 'Date', sig: 'DAY(date)', hint: 'Jour du mois', impl: (d) => { const x = toDate(d); return x && x.getUTCDate() } },
-  { name: 'HOUR', category: 'Date', sig: 'HOUR(date)', hint: 'Heure', impl: (d) => { const x = toDate(d); return x ? x.getUTCHours() : null } },
-  { name: 'MINUTE', category: 'Date', sig: 'MINUTE(date)', hint: 'Minute', impl: (d) => { const x = toDate(d); return x ? x.getUTCMinutes() : null } },
-  { name: 'SECOND', category: 'Date', sig: 'SECOND(date)', hint: 'Seconde', impl: (d) => { const x = toDate(d); return x ? x.getUTCSeconds() : null } },
+  { name: 'YEAR', category: 'Date', sig: 'YEAR(date)', hint: 'Année', impl: (d) => { const x = toLocal(d); return x && x.getUTCFullYear() } },
+  { name: 'MONTH', category: 'Date', sig: 'MONTH(date)', hint: 'Mois (1-12)', impl: (d) => { const x = toLocal(d); return x && x.getUTCMonth() + 1 } },
+  { name: 'DAY', category: 'Date', sig: 'DAY(date)', hint: 'Jour du mois', impl: (d) => { const x = toLocal(d); return x && x.getUTCDate() } },
+  { name: 'HOUR', category: 'Date', sig: 'HOUR(date)', hint: 'Heure', impl: (d) => { const x = toLocal(d); return x ? x.getUTCHours() : null } },
+  { name: 'MINUTE', category: 'Date', sig: 'MINUTE(date)', hint: 'Minute', impl: (d) => { const x = toLocal(d); return x ? x.getUTCMinutes() : null } },
+  { name: 'SECOND', category: 'Date', sig: 'SECOND(date)', hint: 'Seconde', impl: (d) => { const x = toLocal(d); return x ? x.getUTCSeconds() : null } },
   { name: 'WEEKDAY', category: 'Date', sig: 'WEEKDAY(date, [débutSemaine])', hint: 'Jour de la semaine (0-6)',
-    impl: (d, start) => { const x = toDate(d); if (!x) return null; const w = x.getUTCDay(); return String(start || '').toLowerCase().startsWith('mon') ? (w + 6) % 7 : w } },
-  { name: 'WEEKNUM', category: 'Date', sig: 'WEEKNUM(date)', hint: 'Numéro de semaine ISO', impl: (d) => { const x = toDate(d); return x ? isoWeek(x) : null } },
+    impl: (d, start) => { const x = toLocal(d); if (!x) return null; const w = x.getUTCDay(); return String(start || '').toLowerCase().startsWith('mon') ? (w + 6) % 7 : w } },
+  { name: 'WEEKNUM', category: 'Date', sig: 'WEEKNUM(date)', hint: 'Numéro de semaine ISO', impl: (d) => { const x = toLocal(d); return x ? isoWeek(x) : null } },
   { name: 'DATEADD', category: 'Date', sig: "DATEADD(date, n, 'days'|'months'|'years'…)", hint: 'Décale une date',
-    impl: (d, n, u) => { const x = toDate(d); if (!x) return null; const r = addToDate(x, toNum(n) ?? 0, u); return r ? r.toISOString() : null } },
+    impl: (d, n, u) => {
+      const x = toDate(d); if (!x) return null
+      const r = addToDate(x, toNum(n) ?? 0, u); if (!r) return null
+      // Une date seule décalée en jours/semaines/mois reste une date seule.
+      return isDateOnly(d) && /^(day|d$|week|month|quarter|year)/i.test(String(u || 'days')) ? r.toISOString().slice(0, 10) : r.toISOString()
+    } },
   { name: 'DATEDIFF', category: 'Date', sig: "DATEDIFF(a, b, 'days')", hint: 'Différence a − b',
     impl: (a, b, u) => { const x = toDate(a), y = toDate(b); return (x && y) ? dateDiff(x, y, u) : null } },
   { name: 'DATETIME_DIFF', category: 'Date', sig: "DATETIME_DIFF(a, b, 'days')", hint: 'Différence a − b',
     impl: (a, b, u) => { const x = toDate(a), y = toDate(b); return (x && y) ? dateDiff(x, y, u) : null } },
   { name: 'DATETIME_FORMAT', category: 'Date', sig: "DATETIME_FORMAT(date, 'YYYY-MM-DD')", hint: 'Formate une date',
-    impl: (d, fmt) => { const x = toDate(d); return x ? datetimeFormat(x, fmt) : null } },
+    impl: (d, fmt) => { if (!fmt) return toDate(d)?.toISOString() ?? null; const x = toLocal(d); return x ? datetimeFormat(x, fmt) : null } },
   { name: 'DATETIME_PARSE', category: 'Date', sig: 'DATETIME_PARSE(texte)', hint: 'Parse une date → ISO',
     impl: (s) => { const x = toDate(s); return x ? x.toISOString() : null } },
   { name: 'IS_BEFORE', category: 'Date', sig: 'IS_BEFORE(a, b)', hint: 'a < b → 1/0',
@@ -240,7 +280,7 @@ const F = [
   { name: 'IS_SAME', category: 'Date', sig: 'IS_SAME(a, b)', hint: 'a == b → 1/0',
     impl: (a, b) => { const x = toDate(a), y = toDate(b); return (x && y) ? (x.getTime() === y.getTime() ? 1 : 0) : null } },
   { name: 'NOW', category: 'Date', sig: 'NOW()', hint: 'Date+heure courante', deterministic: false, impl: () => new Date().toISOString() },
-  { name: 'TODAY', category: 'Date', sig: 'TODAY()', hint: 'Date du jour', deterministic: false, impl: () => new Date().toISOString().split('T')[0] },
+  { name: 'TODAY', category: 'Date', sig: 'TODAY()', hint: 'Date du jour', deterministic: false, impl: () => todayLocal() },
   { name: 'FROMUNIXTIMESTAMP', category: 'Date', sig: 'FROMUNIXTIMESTAMP(secondes)', hint: 'Timestamp Unix → ISO',
     impl: (n) => { const x = toNum(n); return x == null ? null : new Date(x * 1000).toISOString() } },
   { name: 'TIMESTAMPTOTEXT', category: 'Date', sig: 'TIMESTAMPTOTEXT(date)', hint: 'Date → texte ISO',
@@ -274,7 +314,8 @@ function coerceReturn(v) {
 export function registerFormulaFunctions(db) {
   // Variante interne activée par la compilation des formules de la table cible.
   const weekFormat = { name: '_DATETIME_FORMAT_WEEKS', impl: (d, fmt) => {
-    const x = toDate(d)
+    if (!fmt) return toDate(d)?.toISOString() ?? null
+    const x = toLocal(d)
     return x ? datetimeFormat(x, fmt, { weekTokens: true }) : null
   } }
   for (const f of [...F, weekFormat]) {

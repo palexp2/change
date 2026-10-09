@@ -16,7 +16,7 @@ import { TAX_REGIMES, isCanada, suggestTaxRegime } from '../services/taxes.js'
 import { logSync } from '../services/syncLog.js'
 import { APP_URL } from '../config/appUrl.js'
 import { cleanDiscounts, pendingInvoiceTotals, discountsBreakdown } from '../services/invoiceDiscount.js'
-import { soumissionDiscounts, purchasePct } from '../services/soumissionTotals.js'
+import { soumissionDiscounts, purchasePct, discountLines } from '../services/soumissionTotals.js'
 import { trackEmailHtml } from '../services/emailTracking.js'
 
 const router = Router()
@@ -69,7 +69,7 @@ router.get('/soumissions/:id/items', (req, res) => {
     discount = { kind: 'percent', value: purchasePct(disc[0]), name: disc[0].name || '' }
   } else if (disc.length) {
     const sub = items.reduce((t, it) => t + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0)
-    const off = disc.reduce((t, d) => t + sub * purchasePct(d) / 100 + (Number(d.amount) || 0), 0)
+    const off = discountLines(disc, 0, sub).reduce((t, l) => t + l.amount, 0)
     if (off > 0) discount = { kind: 'amount', value: Math.round(off * 100) / 100, name: disc.map(d => d.name).filter(Boolean).join(', ') }
   }
   res.json({ data: items, discount })

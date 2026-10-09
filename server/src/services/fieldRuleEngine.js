@@ -1,9 +1,11 @@
 import db from '../db/database.js'
 import { logRuleRun } from './systemAutomations.js'
+import { withOrigin } from './writeOrigin.js'
 import { sendSlack } from './ruleActions/slack.js'
 import { sendEmail } from './ruleActions/email.js'
 import { createTask } from './ruleActions/task.js'
 import { runScriptAction } from './ruleActions/script.js'
+import { runSteps } from './ruleActions/steps.js'
 import { makeRateGuard } from './ruleActions/rateGuard.js'
 import { APP_URL } from '../config/appUrl.js'
 
@@ -14,6 +16,7 @@ const ACTION_ADAPTERS = {
   email: sendEmail,
   task: createTask,
   script: runScriptAction,
+  steps: runSteps,
 }
 
 const FEATURE_ENABLED = () => process.env.FEATURE_FIELD_RULES === 'true'
@@ -337,11 +340,14 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
           continue // not fired, not failed — re-queued below so it retries when the window clears
         }
       }
-      await adapter({ rule, row, rendered })
+      const res = await withOrigin(rule.id, () => adapter({ rule, row, rendered }))
       insertFire.run(rule.id, erpTable, row.id)
       if (guard) guard.record(verdict.recipient, erpTable, row.id)
-      fired.push({ id: row.id, label: row.title || row.name || row.id })
+      fired.push({ id: row.id, label: row.title || row.name || row.id, log: res?.log })
     } catch (e) {
+      // Pas de nouvelle tentative : un échec compte comme un tir (Charles,
+      // 2026-10-09). L'historique le montre, on relance à la main au besoin.
+      insertFire.run(rule.id, erpTable, row.id)
       failed.push({ id: row.id, error: e.message })
     }
   }
@@ -352,7 +358,7 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
   // would be lost until the trigger field changed again). Clear anything we just
   // fired. INSERT OR IGNORE keeps re-enqueues idempotent across evaluations.
   enqueueDeferred(rule.id, erpTable, [...overflow.map(r => r.id), ...suppressed.map(s => s.id)])
-  dequeueDeferred(rule.id, erpTable, fired.map(f => f.id))
+  dequeueDeferred(rule.id, erpTable, [...fired, ...failed].map(f => f.id))
 
   const lines = [
     `${fired.length} tir(s), ${failed.length} échec(s)` +
@@ -361,7 +367,10 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
   ]
   if (fired.length) {
     lines.push('', 'Déclenchés :')
-    for (const f of fired) lines.push(`  • ${f.label} (${f.id})`)
+    for (const f of fired) {
+      lines.push(`  • ${f.label} (${f.id})`)
+      for (const l of f.log || []) lines.push(`      ${l}`)
+    }
   }
   if (suppressed.length) {
     lines.push('', 'Bloqués (plafond anti-spam) :')
@@ -369,7 +378,7 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
   }
   if (failed.length) {
     lines.push('', 'Échecs :')
-    for (const f of failed) lines.push(`  • ${f.id} — ${f.error}`)
+    for (const f of failed) lines.push(`  • ${f.id} — ${f.error.replace(/\n/g, '\n      ')}`)
   }
 
   // Always log a run that fired or failed. For a run that ONLY suppressed (common on
@@ -831,7 +840,7 @@ export async function runRuleActionForRecord(automationId, erpTable, recordId) {
   const label = row.title || row.name || row.company_name || row.id
   try {
     const rendered = renderActionConfig(rule.action_config, row, erpTable)
-    await adapter({ rule, row, rendered })
+    await withOrigin(rule.id, () => adapter({ rule, row, rendered }))
     logRuleRun(rule.id, {
       status: 'success',
       result: `[Bouton] Action ${rule.action_type} déclenchée sur ${label} (${row.id})`,

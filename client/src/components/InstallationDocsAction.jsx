@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Printer } from 'lucide-react'
 import api from '../lib/api.js'
+import { holdReload } from '../lib/serverStatus.js'
 
 // Documents d'installation / de remplacement d'une commande, fusionnés en un
 // PDF. Fiche Commande (tous les articles) et fiche Envoi (`shipmentId` : les
@@ -20,9 +21,13 @@ export default function InstallationDocsAction({ orderId, shipmentId, docsLang: 
       : 'Langue par défaut — aucun contact sur l\'adresse de livraison'
 
   async function handleGenerateInstallationDocs() {
+    // L'onglet de la fiche passe en arrière-plan : une nouvelle version en
+    // attente le rechargerait et couperait la génération.
+    const release = holdReload()
     // Réserver l'onglet pendant le clic pour éviter le blocage des popups.
     const preview = window.open('', '_blank')
     if (!preview) {
+      release()
       setDocsError("Autorisez les fenêtres surgissantes pour ouvrir les documents.")
       return
     }
@@ -39,6 +44,7 @@ export default function InstallationDocsAction({ orderId, shipmentId, docsLang: 
       preview.close()
       setDocsError(e.message || 'Erreur lors de la génération des documents')
     } finally {
+      release()
       setGeneratingDocs(false)
     }
   }

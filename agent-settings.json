@@ -17,7 +17,15 @@
   "queueEngineAuto": false,
   "quotaPauseResetAt": null,
   "quotaFloorPct": 30,
-  "quotaFloorWeekPct": 30,
+  "quotaFloorWeekPct": 10,
   "quotaFloorSessionPct": 30,
-  "appReviewCriteria": "Dans toute l'app, les colonnes de type attachement doivent présenter le contenu avec un thumbnail sur la ligne et ouvrir une modale montrant le document lorsque l'utilisateur clique dessus. Les lookups qui pointent vers des champs de type attachement, même chose.\n\nDans toute l'app, assure-toi que les changements apportés par les actions de l'utilisateur, les changements apportés par les autres utilisateurs et les changements apportés par les API soient visibles immédiatement pour tous les utilisateurs sans qu'ils aient besoin de rafraîchir la page.\n\nAssure-toi que les modales d'édition de champs dans les datatables soient uniformes à travers toute l'app.\n\nVérifi que l'app est cohrente pour l'utilisateur.\n\nVérifi le codebase pour qu'il soit propre et minimaliste. Belles abstractions, réutilisations, nom de variables claires, pas de spaghetti, etc.\n\nFait un audit du code mort pour le retirer proprement."
+  "appReviewCriteria": "Dans toute l'app, les colonnes de type attachement doivent présenter le contenu avec un thumbnail sur la ligne et ouvrir une modale montrant le document lorsque l'utilisateur clique dessus. Les lookups qui pointent vers des champs de type attachement, même chose.\n\nDans toute l'app, assure-toi que les changements apportés par les actions de l'utilisateur, les changements apportés par les autres utilisateurs et les changements apportés par les API soient visibles immédiatement pour tous les utilisateurs sans qu'ils aient besoin de rafraîchir la page.\n\nAssure-toi que les modales d'édition de champs dans les datatables soient uniformes à travers toute l'app.\n\nVérifi que l'app est cohrente pour l'utilisateur.\n\nVérifi le codebase pour qu'il soit propre et minimaliste. Belles abstractions, réutilisations, nom de variables claires, pas de spaghetti, etc.\n\nFait un audit du code mort pour le retirer proprement.",
+  "quotaFloorsByAccount": {
+    "principal": {
+      "week": 30
+    },
+    "compte-2": {
+      "week": 60
+    }
+  }
 }

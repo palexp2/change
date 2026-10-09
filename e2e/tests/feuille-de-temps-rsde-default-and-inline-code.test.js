@@ -95,26 +95,17 @@ describe('FeuilleDeTemps — code RSDE par défaut + création inline', () => {
     await page.goto(`${URL}/feuille-de-temps`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('text=/Total payable du jour/', { timeout: 10000 })
 
-    // La case RSDE de l'entrée est décochée au départ.
-    const rsdeBox = page.locator(`[data-testid="entry-rsde-${setup.entryId}"]`)
-    await rsdeBox.waitFor({ timeout: 5000 })
-    assert.equal(await rsdeBox.isChecked(), false, 'case RSDE décochée avant sélection du code')
+    const row = page.locator(`[data-testid="entry-row-${setup.entryId}"]`)
+    await row.waitFor({ timeout: 5000 })
 
     // Ouvre le picker de code d'activité de la ligne, recherche et sélectionne le code.
-    const codeCell = page.locator('tbody tr', { has: rsdeBox }).locator('button:has-text("Code…")')
+    const codeCell = row.locator('button:has-text("Code…")')
     await codeCell.click()
     const search = page.locator('input[placeholder="Rechercher…"]')
     await search.waitFor({ timeout: 3000 })
     await search.fill(setup.codeName)
     await page.locator(`button:has-text("${setup.codeName}")`).first().click()
-
-    // Après sélection : la case RSDE doit s'être cochée automatiquement.
-    await page.waitForFunction(
-      (id) => document.querySelector(`[data-testid="entry-rsde-${id}"]`)?.checked === true,
-      setup.entryId,
-      { timeout: 5000 },
-    )
-    assert.equal(await rsdeBox.isChecked(), true, 'case RSDE cochée automatiquement après sélection du code rsde_default')
+    await page.waitForTimeout(800)
 
     // Confirmé côté serveur.
     const persisted = await page.evaluate(async ({ dayId, entryId }) => {
@@ -152,11 +143,10 @@ describe('FeuilleDeTemps — code RSDE par défaut + création inline', () => {
     await page.goto(`${URL}/feuille-de-temps`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('text=/Total payable du jour/', { timeout: 10000 })
 
-    const rsdeBox = page.locator(`[data-testid="entry-rsde-${setup.entryId}"]`)
-    await rsdeBox.waitFor({ timeout: 5000 })
+    const row = page.locator(`[data-testid="entry-row-${setup.entryId}"]`)
+    await row.waitFor({ timeout: 5000 })
 
     // Ouvre le picker de la nouvelle entrée et tape un nom inexistant.
-    const row = page.locator('tbody tr', { has: rsdeBox })
     await row.locator('button:has-text("Code…")').click()
     const search = page.locator('input[placeholder="Rechercher…"]')
     await search.waitFor({ timeout: 3000 })

@@ -9,12 +9,14 @@ export const EXTRA_KEYS = ['furnaces', 'valves', 'rollups', 'roofs', 'screens']
 // ouvrants = 2 moteurs, Toits ouvrants = 1 toit, Toiles thermiques = 1 toile
 // (aucune sans permission).
 export const EXTRA_UNITS = { furnaces: 2, valves: 4, rollups: 2, roofs: 1, screens: 1 }
-// Plancher d'une première permission, Helper compris : Chauffage ouvre
-// jusqu'à 4 fournaises, Irrigation jusqu'à 8 valves (un Helper part de 0).
+// Plancher d'une première permission : Chauffage ouvre jusqu'à 4 fournaises,
+// Irrigation jusqu'à 8 valves. Pas au Helper : un extra = 2 fournaises, 4 valves.
 export const PERMISSION_FLOOR = { furnaces: 4, valves: 8 }
 // Matériel à envoyer dans une serre, coché par Orisha (aucune question au
 // client) : valve de brumisation, boîtier 110 V pour les HAF.
 export const MATERIAL_KEYS = ['humidity_valve', 'humidity_haf']
+// Déjà en place dans la serre (oui/non), coché par Orisha : rien à envoyer.
+export const EXISTING_KEYS = ['existing_temp_sensor']
 // Permission Ventilation (oui/non) : louvres et ventilateurs de bout passent
 // de 2 à 4 choix dans le questionnaire client.
 export const FLAG_KEYS = ['ventilation']
@@ -36,7 +38,7 @@ function normalizeExtras(input) {
   if (!Array.isArray(input)) return []
   return input.slice(0, 200).map(e => ({
     ...Object.fromEntries(EXTRA_KEYS.map(key => [key, count(e?.[key], 50)])),
-    ...Object.fromEntries([...FLAG_KEYS, ...MATERIAL_KEYS, ...GREENHOUSE_SENSOR_KEYS].filter(key => e?.[key] === true).map(key => [key, true])),
+    ...Object.fromEntries([...FLAG_KEYS, ...MATERIAL_KEYS, ...GREENHOUSE_SENSOR_KEYS, ...EXISTING_KEYS].filter(key => e?.[key] === true).map(key => [key, true])),
   }))
 }
 // Matériel à envoyer dans une serre.
@@ -48,6 +50,10 @@ export function greenhouseMaterials(options, index) {
 export function greenhouseSensors(options, index) {
   const e = normalizeExtras(options?.additional_equipment)[index] || {}
   return GREENHOUSE_SENSOR_KEYS.filter(key => e[key] === true)
+}
+// La serre a déjà sa sonde de température.
+export function greenhouseHasTempSensor(options, index) {
+  return normalizeExtras(options?.additional_equipment)[index]?.existing_temp_sensor === true
 }
 // Appareils supplémentaires permis dans une serre (Helper compris).
 export function greenhouseExtras(options, index) {
@@ -63,7 +69,7 @@ export function greenhouseLimits(options, index, permission) {
   return {
     ...Object.fromEntries(EXTRA_KEYS.map(key => {
       const limit = base[key] + extras[key]
-      return [key, extras[key] && PERMISSION_FLOOR[key] ? Math.max(limit, PERMISSION_FLOOR[key] + extras[key] - EXTRA_UNITS[key]) : limit]
+      return [key, extras[key] && PERMISSION_FLOOR[key] && permission !== 'helper' ? Math.max(limit, PERMISSION_FLOOR[key] + extras[key] - EXTRA_UNITS[key]) : limit]
     })),
     louvers: aerators,
     fans: aerators,

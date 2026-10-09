@@ -444,10 +444,8 @@ const fmtCad = n => new Intl.NumberFormat('fr-CA', {
   style: 'currency', currency: 'CAD', minimumFractionDigits: 0, maximumFractionDigits: 0,
 }).format(Number(n || 0))
 
-const fmtDateFr = dayIso => {
-  const d = dayToDate(dayIso)
-  return d ? new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(d) : String(dayIso)
-}
+// Dates en YYYY-MM-DD dans Slack comme dans l'app (Charles, 2026-10-08).
+const fmtDateFr = dayIso => String(dayIso).slice(0, 10)
 
 /** Types d'alertes déjà envoyés pour cette carte au cours du mois `period`. */
 export function sentKindsFor(cardId, period) {

@@ -13,6 +13,12 @@
 import { useEffect, useRef } from 'react'
 import { MousePointerClick, X } from 'lucide-react'
 
+// Plans du ciblage : au plafond des z-index. Les listes déroulantes et fenêtres
+// contextuelles de l'app montent jusqu'à 9999-10000 ; sous elles, la
+// surbrillance et le bandeau restaient cachés — l'élément d'une autre fenêtre
+// ouverte semblait impossible à cibler.
+const PICK_Z = 2147483640
+
 /**
  * Description compacte de l'élément DOM cliqué, jointe en contexte de la demande.
  * Priorise les ancres exploitables (data-testid, id, aria).
@@ -38,6 +44,38 @@ export function describeElement(el) {
     }
   }
   return desc.slice(0, 400)
+}
+
+/**
+ * Zone tracée à la souris (rectangle en coordonnées fenêtre) : l'élément qui la
+ * contient entièrement sert d'ancre (description + composants), puis les
+ * éléments repérables et le texte qu'elle couvre.
+ * Retourne `{ desc, anchor }`.
+ */
+export function describeZone(r) {
+  const inPicker = el => el.closest('[data-feedback-picker]')
+  const inside = []
+  for (const el of document.body.querySelectorAll('*')) {
+    if (inPicker(el)) continue
+    const b = el.getBoundingClientRect()
+    if (!b.width || !b.height) continue
+    if (b.left >= r.left - 2 && b.top >= r.top - 2 && b.right <= r.right + 2 && b.bottom <= r.bottom + 2) inside.push(el)
+  }
+  // Ancre : plus proche ancêtre commun des éléments couverts, sinon l'élément
+  // sous le centre de la zone.
+  let anchor = inside[0] || document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+  for (const el of inside) while (anchor && !anchor.contains(el)) anchor = anchor.parentElement
+  if (!anchor || anchor === document.documentElement) anchor = document.body
+  const tops = inside.filter(el => !inside.includes(el.parentElement))
+  const text = tops.map(el => (el.innerText || el.value || '').trim()).filter(Boolean)
+    .join(' · ').replace(/\s+/g, ' ').slice(0, 200)
+  const anchors = [...new Set(inside.map(el => el.getAttribute('data-testid')).filter(Boolean))].slice(0, 6)
+  const W = window.innerWidth, H = window.innerHeight
+  let desc = `zone tracée à la souris (${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}×${Math.round(r.height)} px, fenêtre ${W}×${H})`
+    + ` dans ${describeElement(anchor).slice(0, 250)}`
+  if (anchors.length) desc += ` — repères couverts : ${anchors.map(a => `data-testid="${a}"`).join(', ')}`
+  if (text) desc += ` — texte couvert : « ${text} »`
+  return { desc: desc.slice(0, 700), anchor }
 }
 
 // Plomberie React et cadres sans intérêt pour situer un élément.
@@ -130,7 +168,8 @@ export function PickerBanner({ onSkip, onCancel, skipLabel = 'Demande générale
       data-feedback-picker
       data-testid={`${testIdPrefix}-pick-banner`}
       data-picked-count={count}
-      className="fixed top-4 left-1/2 -translate-x-1/2 z-[9991] flex items-center gap-3 bg-slate-900 text-white
+      style={{ zIndex: PICK_Z + 2 }}
+      className="fixed top-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-slate-900 text-white
         rounded-xl shadow-2xl pl-4 pr-2 py-2 text-sm max-w-[calc(100vw-2rem)]"
     >
       <MousePointerClick size={16} className="text-brand-400 flex-shrink-0" />
@@ -138,8 +177,8 @@ export function PickerBanner({ onSkip, onCancel, skipLabel = 'Demande générale
         {count
           ? `${count} élément${count > 1 ? 's' : ''} retenu${count > 1 ? 's' : ''} — cliquez pour en ajouter, re-cliquez pour retirer`
           : multiple
-            ? 'Cliquez sur les éléments concernés par votre demande — autant que nécessaire'
-            : 'Cliquez sur l\'élément concerné par votre demande'}
+            ? 'Cliquez sur les éléments — ou glissez pour tracer une zone'
+            : 'Cliquez sur l\'élément — ou glissez pour tracer une zone'}
       </span>
       <div className="flex items-center gap-1 flex-shrink-0">
         <button
@@ -178,6 +217,9 @@ export function PickerBanner({ onSkip, onCancel, skipLabel = 'Demande générale
  *
  * `onPick(description)` : un élément a été choisi. `onCancel()` : Échap.
  *
+ * Glisser la souris trace une zone libre (rectangle) au lieu de viser un
+ * élément : elle est décrite par `describeZone` et retenue comme un élément.
+ *
  * Mode `multiple` : le ciblage ne s'arrête pas au premier clic. Chaque élément
  * retenu garde une bordure verte numérotée, un re-clic dessus le retire, et
  * `onChange(descriptions[])` reçoit à chaque fois la liste complète — les
@@ -193,7 +235,7 @@ export function useElementPicker(picking, { onPick, onCancel, multiple = false, 
   useEffect(() => {
     if (!picking) return
     const hl = document.createElement('div')
-    hl.style.cssText = 'position:fixed;z-index:9990;pointer-events:none;display:none;' +
+    hl.style.cssText = `position:fixed;z-index:${PICK_Z + 1};pointer-events:none;display:none;` +
       'border:2px solid #21B14B;background:rgba(33,177,75,0.10);border-radius:4px;transition:all 60ms ease-out'
     document.body.appendChild(hl)
     const style = document.createElement('style')
@@ -214,6 +256,7 @@ export function useElementPicker(picking, { onPick, onCancel, multiple = false, 
       hl.style.height = `${r.height}px`
     }
     function onMove(e) {
+      if (drag?.box) return
       const t = e.target
       if (!(t instanceof Element) || inPicker(t) || t === document.body || t === document.documentElement) {
         hoverEl = null
@@ -234,19 +277,21 @@ export function useElementPicker(picking, { onPick, onCancel, multiple = false, 
     const baseline = multiple ? [...(cb.current.existing || [])] : []
     const offset = baseline.length
     const marks = []
+    // Une zone suit son ancre au scroll : décalage mémorisé par rapport à elle.
     function placeMark(m) {
       const r = m.el.getBoundingClientRect()
-      m.box.style.left = `${r.left - 2}px`
-      m.box.style.top = `${r.top - 2}px`
-      m.box.style.width = `${r.width}px`
-      m.box.style.height = `${r.height}px`
+      const o = m.off || { dx: 0, dy: 0, w: r.width, h: r.height }
+      m.box.style.left = `${r.left + o.dx - 2}px`
+      m.box.style.top = `${r.top + o.dy - 2}px`
+      m.box.style.width = `${o.w}px`
+      m.box.style.height = `${o.h}px`
     }
     function renumber() {
       marks.forEach((m, i) => { m.tag.textContent = String(offset + i + 1) })
     }
-    function addMark(el) {
+    function addMark(el, zone = null) {
       const box = document.createElement('div')
-      box.style.cssText = 'position:fixed;z-index:9989;pointer-events:none;border:2px solid #15803d;' +
+      box.style.cssText = `position:fixed;z-index:${PICK_Z};pointer-events:none;border:2px solid #15803d;` +
         'background:rgba(21,128,61,0.10);border-radius:4px'
       const tag = document.createElement('span')
       tag.style.cssText = 'position:absolute;top:-9px;left:-9px;min-width:18px;height:18px;padding:0 4px;' +
@@ -254,34 +299,80 @@ export function useElementPicker(picking, { onPick, onCancel, multiple = false, 
         'font:600 11px/18px ui-sans-serif,system-ui,sans-serif'
       box.appendChild(tag)
       document.body.appendChild(box)
-      const m = { el, box, tag }
+      const a = el.getBoundingClientRect()
+      const m = zone
+        ? { el, box, tag, desc: zone.desc, off: { dx: zone.rect.left - a.left, dy: zone.rect.top - a.top, w: zone.rect.width, h: zone.rect.height } }
+        : { el, box, tag }
       marks.push(m)
       placeMark(m)
       renumber()
     }
     function emitChange() {
-      cb.current.onChange?.([...baseline, ...marks.map(m => describeElement(m.el))])
+      cb.current.onChange?.([...baseline, ...marks.map(m => m.desc || describeElement(m.el))])
     }
 
     function onScroll() {
       if (hoverEl) position(hoverEl)
       marks.forEach(placeMark)
     }
+
+    // ── Zone libre : glisser trace un rectangle (au-delà de 6 px) ──
+    let drag = null
+    let swallowClick = false
     function onDown(e) {
       if (inPicker(e.target)) return
       e.preventDefault()
       e.stopPropagation()
+      swallowClick = false
+      drag?.box?.remove()
+      drag = e.button === 0 ? { x: e.clientX, y: e.clientY, box: null } : null
+    }
+    function zoneRect(e) {
+      const left = Math.min(drag.x, e.clientX), top = Math.min(drag.y, e.clientY)
+      const width = Math.abs(e.clientX - drag.x), height = Math.abs(e.clientY - drag.y)
+      return { left, top, width, height, right: left + width, bottom: top + height }
+    }
+    function onDrag(e) {
+      if (!drag) return
+      if (!drag.box) {
+        if (Math.max(Math.abs(e.clientX - drag.x), Math.abs(e.clientY - drag.y)) < 6) return
+        drag.box = document.createElement('div')
+        drag.box.style.cssText = `position:fixed;z-index:${PICK_Z + 1};pointer-events:none;` +
+          'border:2px dashed #21B14B;background:rgba(33,177,75,0.10);border-radius:4px'
+        document.body.appendChild(drag.box)
+        hoverEl = null
+        hl.style.display = 'none'
+      }
+      const r = zoneRect(e)
+      Object.assign(drag.box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` })
+    }
+    function onUp(e) {
+      if (!drag) return
+      const rect = zoneRect(e)
+      const box = drag.box
+      drag = null
+      if (!box) return
+      box.remove()
+      e.preventDefault()
+      e.stopPropagation()
+      // Le click qui suit le mouseup ne doit pas viser un élément en plus.
+      swallowClick = true
+      const { desc, anchor } = describeZone(rect)
+      if (!multiple) { cb.current.onPick?.(desc, componentChain(anchor)); return }
+      addMark(anchor, { desc, rect })
+      emitChange()
     }
     function onClick(e) {
       if (inPicker(e.target)) return
       e.preventDefault()
       e.stopPropagation()
+      if (swallowClick) { swallowClick = false; return }
       const target = hoverEl || (e.target instanceof Element ? e.target : null)
       if (!multiple) { cb.current.onPick?.(describeElement(target), componentChain(target)); return }
       if (!target) return
       // Re-clic sur un élément déjà retenu : on le retire (le plus direct pour
       // corriger une erreur sans quitter le mode ciblage).
-      const i = marks.findIndex(m => m.el === target)
+      const i = marks.findIndex(m => m.el === target && !m.off)
       if (i === -1) addMark(target)
       else { marks[i].box.remove(); marks.splice(i, 1); renumber() }
       emitChange()
@@ -293,16 +384,21 @@ export function useElementPicker(picking, { onPick, onCancel, multiple = false, 
     }
     document.addEventListener('mouseover', onMove, true)
     document.addEventListener('mousedown', onDown, true)
+    document.addEventListener('mousemove', onDrag, true)
+    document.addEventListener('mouseup', onUp, true)
     document.addEventListener('click', onClick, true)
     document.addEventListener('scroll', onScroll, true)
     document.addEventListener('keydown', onKey, true)
     return () => {
       document.removeEventListener('mouseover', onMove, true)
       document.removeEventListener('mousedown', onDown, true)
+      document.removeEventListener('mousemove', onDrag, true)
+      document.removeEventListener('mouseup', onUp, true)
       document.removeEventListener('click', onClick, true)
       document.removeEventListener('scroll', onScroll, true)
       document.removeEventListener('keydown', onKey, true)
       marks.forEach(m => m.box.remove())
+      drag?.box?.remove()
       hl.remove()
       style.remove()
       document.body.classList.remove('__feedback-picking')

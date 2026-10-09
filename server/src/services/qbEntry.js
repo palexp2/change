@@ -128,7 +128,11 @@ export async function fetchQbEntry(entity, txnId) {
   const [path, key] = known
   let e
   try {
-    e = (await qbGet(`/${path}/${txnId}`))?.[key]
+    // Le paiement de carte ne se lit pas par son URL (« opération non prise
+    // en charge ») : seulement par une requête.
+    e = entity === 'creditcardpayment'
+      ? (await qbGet(`/query?query=${encodeURIComponent(`SELECT * FROM CreditCardPaymentTxn WHERE Id = '${String(txnId).replace(/\D/g, '')}'`)}&minorversion=75`))?.QueryResponse?.CreditCardPaymentTxn?.[0]
+      : (await qbGet(`/${path}/${txnId}`))?.[key]
   } catch (err) {
     return { ...base, readable: false, reason: err.message }
   }

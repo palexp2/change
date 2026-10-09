@@ -1,3 +1,4 @@
+import { linkSubscriptionContact } from '../services/stripeProjectLink.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
@@ -311,6 +312,7 @@ function upsertLocalSubscription({ sub, companyId, customerId, userId }) {
     )
   }
   if (status !== 'canceled') setCurrentItemsSnapshot(id, extractItemsFromStripeSub(sub))
+  linkSubscriptionContact(id)
 
   emitSubscription(existing ? 'updated' : 'created', id, userId)
   return id

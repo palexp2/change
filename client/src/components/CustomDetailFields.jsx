@@ -69,7 +69,8 @@ export function isLinkCustomField(f) {
 // `linkFilter` : pour un champ LIEN, restriction supplémentaire des candidats
 // proposés, décidée par la fiche (cf. LinkedRecordsValue → `extraFilter`).
 // `widePicker` : pour un champ LIEN, liste déroulante large aux libellés entiers.
-export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false, linkFilter = null, widePicker = false, compactNumber = false }) {
+// `isoDate` : un champ Date (sans heure) se saisit et s'affiche en AAAA-MM-JJ.
+export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false, linkFilter = null, widePicker = false, compactNumber = false, isoDate = false }) {
   const commit = v => onSave?.(field.key, v)
   // Champ lien : la valeur est un (ou des) identifiant(s) de fiche — pastille
   // cliquable + picker recherchable de la table cible, le même dans toutes les
@@ -108,7 +109,7 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId, sele
     case 'duration':
       return <InlineDuration value={value} saving={saving} onSave={commit} format={durationFormatOf(field.field)} testId={`cf-input-${field.key}`} />
     case 'date':
-      return <InlineDate value={value} saving={saving} onSave={commit} withTime={dateFormatHasTime(dateFormatOf(field.field))} testId={`cf-input-${field.key}`} />
+      return <InlineDate value={value} saving={saving} onSave={commit} withTime={dateFormatHasTime(dateFormatOf(field.field))} iso={isoDate} testId={`cf-input-${field.key}`} />
     case 'checkbox':
       return <InlineCheckbox value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     // Évaluation : les 5 étoiles, cliquables (re-cliquer l'étoile courante

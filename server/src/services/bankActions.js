@@ -21,7 +21,7 @@ import db from '../db/database.js'
 import { mainQbAccount } from '../utils/qbBankAccount.js'
 import { newRecordId } from '../utils/recordId.js'
 import { buildEntryDraft, vendorHistory, vendorFromPastPurchases } from './bankEntryDraft.js'
-import { stampRule } from './bankRules/store.js'
+import { stampRule, ruleForTxn, parseRuleSplits } from './bankRules/store.js'
 import { marginRepaymentSplit } from './marginRepayment.js'
 import { deriveStatus } from './bankReconciliation.js'
 import { touchBankTxns } from './realtimeEmitters.js'
@@ -62,8 +62,8 @@ function accountOf(id) {
  * `services/bankEntryDraft.js` ; on en projette ici les clés à plat pour le
  * formulaire, et on joint le dossier entier pour ce que le rail affiche.
  */
-export function suggestAddDefaults(txn, account) {
-  const draft = buildEntryDraft(txn, account)
+export function suggestAddDefaults(txn, account, { vendor = null } = {}) {
+  const draft = buildEntryDraft(txn, account, vendor ? { vendor } : {})
   const f = draft.fields
   return {
     vendor: f.vendor.value,
@@ -89,7 +89,22 @@ export function suggestAddDefaults(txn, account) {
     draft,
     // Un remboursement de marge de crédit paie du capital ET des intérêts dans
     // le même débit : la coupe arrive toute faite.
-    split: marginRepaymentSplit(txn, account),
+    split: marginRepaymentSplit(txn, account) || ruleSplit(txn),
+  }
+}
+
+// La répartition déclarée par la règle de la ligne. Les montants se calculent
+// à l'écran, sur la base hors taxes (le taux du code n'est connu que là) :
+// chaque part porte son % ou son montant, la dernière prend le reste.
+function ruleSplit(txn) {
+  let rule = null
+  try { rule = ruleForTxn(txn) } catch { return null }
+  const s = rule && (!rule.action || rule.action === 'depense') ? parseRuleSplits(rule.splits) : null
+  if (!s) return null
+  return {
+    reason: `règle « ${rule.name} »`,
+    mode: s.mode,
+    lines: s.lines.map((l) => ({ expense_account_id: l.account_id, [s.mode === 'pct' ? 'pct' : 'amount']: l.value })),
   }
 }
 
@@ -128,7 +143,10 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
   if (txn.matched_id) throw new BankActionError('Cette ligne est déjà liée à un document', { status: 409 })
   if (txn.transfer_txn_id) throw new BankActionError('Cette ligne est déjà liée à un virement', { status: 409 })
   if (txn.pending) throw new BankActionError('Transaction encore en attente à la banque — son montant peut changer')
-  if (!(txn.amount < 0)) throw new BankActionError('« Ajouter » ne comptabilise qu\'une sortie d\'argent')
+  // Une entrée sur une carte de crédit (remboursement d'un marchand) se
+  // comptabilise aussi ici, en crédit de carte.
+  const cardCredit = txn.amount > 0 && account?.kind === 'card'
+  if (!(txn.amount < 0) && !cardCredit) throw new BankActionError('« Ajouter » ne comptabilise qu\'une sortie d\'argent')
 
   const vendor = String(body.vendor || '').trim()
   if (!vendor) throw new BankActionError('Fournisseur requis', { field: 'vendor' })
@@ -163,7 +181,7 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
   const draft = buildEntryDraft(txn, account)
   // Facture fournisseur seulement si c'est ainsi qu'on traite ce fournisseur :
   // une sortie déjà passée au compte reste une dépense au comptant par défaut.
-  const type = ['purchase', 'bill', 'cc_credit'].includes(body.qb_type)
+  const type = cardCredit ? 'cc_credit' : ['purchase', 'bill', 'cc_credit'].includes(body.qb_type)
     ? body.qb_type
     : (['purchase', 'bill', 'cc_credit'].includes(draft.fields.qb_type.value) ? draft.fields.qb_type.value : 'purchase')
   // Numéro de PIÈCE : celui du document ou du chèque. `txn.reference` est un
@@ -190,6 +208,10 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
       String(body.payment_account_id || '').trim() || mainQbAccount(account),
       taxCodeId, split ? JSON.stringify(split) : null, userId,
     )
+    if (body.payee_id && ['Vendor', 'Customer', 'Employee'].includes(body.payee_type)) {
+      db.prepare('UPDATE achats_fournisseurs SET qb_payee_id=?, qb_payee_type=? WHERE id=?')
+        .run(String(body.payee_id), body.payee_type, achatId)
+    }
 
     // La garde `matched_id IS NULL` rejoue la validation au moment de l'écriture :
     // deux clics simultanés ne créent pas deux achats liés à la même ligne.
@@ -391,4 +413,102 @@ export async function pushTransferToQB(txn, other, { post = null } = {}) {
   touchBankTxns([txn.id, other.id])
 
   return { quickbooks_id: String(qbId), fx_note: fxNote }
+}
+
+/**
+ * Virement entre le compte du relevé et un compte QuickBooks que l'ERP ne suit
+ * pas comme compte bancaire (marge de crédit BNC : « DEBOURSE MCR » /
+ * « REMB. MCR »). Une seule ligne de relevé, une écriture Transfer.
+ * Sens : une entrée vient du compte QuickBooks, une sortie y va.
+ */
+export async function pushQbAccountTransfer(txn, account, qbAccountId, { memo = null, post = null } = {}) {
+  if (txn.matched_id || txn.transfer_txn_id || txn.qb_txn_id) throw new BankActionError('Cette ligne est déjà comptabilisée', { status: 409 })
+  if (txn.pending) throw new BankActionError('Transaction encore en attente à la banque — son montant peut changer')
+  const bankQb = mainQbAccount(account)
+  if (!bankQb) throw new BankActionError('Compte bancaire sans compte QuickBooks')
+  const other = String(qbAccountId || '').trim()
+  if (!other || other === bankQb) throw new BankActionError('Contre-compte requis', { field: 'account_id' })
+  const inflow = txn.amount > 0
+  const payload = {
+    Amount: round2(Math.abs(txn.amount)),
+    FromAccountRef: { value: inflow ? other : bankQb },
+    ToAccountRef: { value: inflow ? bankQb : other },
+    TxnDate: txn.txn_date,
+  }
+  if (memo) payload.PrivateNote = String(memo).slice(0, 4000)
+  const result = await (post || qbPost)('/transfer', payload)
+  const qbId = result?.Transfer?.Id
+  if (!qbId) throw new BankActionError('QuickBooks n\'a pas renvoyé le virement', { status: 502 })
+  const { linkTxnToQbEntity } = await import('./bankDebitLookup.js')
+  linkTxnToQbEntity(txn.id, { qbTxnId: String(qbId), qbTxnType: 'transfer' })
+  touchBankTxns([txn.id])
+  return { qb_txn_id: String(qbId) }
+}
+
+// ── Ajouter une ENTRÉE : le dépôt QuickBooks ─────────────────────────────────
+//
+// Le pendant d'« Ajouter » pour l'argent qui entre sans facture (intérêts,
+// remboursement, ristourne) : un Deposit au compte du relevé, une ligne au
+// compte de revenu. Le compte proposé est celui du dernier dépôt de même
+// libellé — l'« Intérêt sur EOP » du mois d'avant dit où va celui-ci.
+
+const normLabel = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[^a-z]/g, '')
+
+export async function depositDefaults(txn) {
+  // Un crédit sur une carte n'est pas un dépôt : c'est un remboursement à
+  // apparier à l'achat remboursé.
+  if (accountOf(txn.account_id)?.kind === 'card') return { card: true }
+  const label = normLabel(txnLabel(txn))
+  const past = db.prepare(`
+    SELECT id, txn_date, details, description, qb_txn_id FROM bank_transactions
+    WHERE deleted_at IS NULL AND id != ? AND amount > 0 AND qb_txn_type = 'deposit' AND qb_txn_id IS NOT NULL
+    ORDER BY txn_date DESC LIMIT 400
+  `).all(txn.id).find((t) => label && normLabel(txnLabel(t)) === label)
+  if (!past) return { account_id: null, memo: txnLabel(txn) || null, source: null }
+  try {
+    const { qbGet } = await import('../connectors/quickbooks.js')
+    const dep = (await qbGet(`/deposit/${past.qb_txn_id}`))?.Deposit
+    const line = (dep?.Line || []).find((l) => l.DepositLineDetail?.AccountRef?.value)
+    return {
+      account_id: line ? String(line.DepositLineDetail.AccountRef.value) : null,
+      memo: line?.Description || dep?.PrivateNote || txnLabel(txn) || null,
+      source: `dépôt du ${past.txn_date}`,
+    }
+  } catch {
+    return { account_id: null, memo: txnLabel(txn) || null, source: null }
+  }
+}
+
+export async function addDepositFromTxn(txn, account, body = {}) {
+  if (txn.status === 'ignore') throw new BankActionError('Cette ligne est exclue du rapprochement')
+  if (!(txn.amount > 0)) throw new BankActionError('Un dépôt comptabilise une entrée d\'argent')
+  if (account?.kind === 'card') throw new BankActionError('Un crédit de carte s\'apparie à l\'achat remboursé — pas de dépôt sur une carte')
+  if (txn.matched_id || txn.transfer_txn_id || txn.qb_txn_id) throw new BankActionError('Cette ligne est déjà comptabilisée', { status: 409 })
+  if (txn.pending) throw new BankActionError('Transaction encore en attente à la banque — son montant peut changer')
+  const accountId = String(body.account_id || '').trim()
+  if (!accountId) throw new BankActionError('Compte requis', { field: 'account_id' })
+  const bankAccountId = mainQbAccount(account)
+  if (!bankAccountId) throw new BankActionError('Compte bancaire sans compte QuickBooks')
+  const currency = (account.currency || 'CAD').toUpperCase()
+  let rate = 1
+  if (currency !== 'CAD') {
+    const { getUsdCadRate } = await import('./fx.js')
+    rate = await getUsdCadRate(txn.txn_date)
+  }
+  const amount = round2(txn.amount)
+  const memo = String(body.memo || '').trim() || txnLabel(txn)
+  const res = await qbPost('/deposit', {
+    TxnDate: txn.txn_date,
+    DepositToAccountRef: { value: String(bankAccountId) },
+    CurrencyRef: { value: currency },
+    ExchangeRate: rate,
+    PrivateNote: memo,
+    Line: [{ DetailType: 'DepositLineDetail', Amount: amount, Description: memo, DepositLineDetail: { AccountRef: { value: accountId } } }],
+  })
+  const qbId = String(res?.Deposit?.Id || '')
+  if (!qbId) throw new BankActionError('QuickBooks n\'a pas renvoyé le dépôt', { status: 502 })
+  const { linkTxnToQbEntity } = await import('./bankDebitLookup.js')
+  linkTxnToQbEntity(txn.id, { qbTxnId: qbId, qbTxnType: 'deposit' })
+  touchBankTxns([txn.id])
+  return { qb_txn_id: qbId }
 }

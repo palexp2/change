@@ -112,7 +112,12 @@ export function parseTxnDate(raw) {
 
 // Mots-clés d'entêtes → rôle de colonne.
 const HEADER_ROLES = [
-  { role: 'date', re: /^date(\s|$)/i },
+  // La date d'inscription au relevé n'est PAS la date de la transaction : la
+  // BNC exporte les deux (« Date associée au relevé » / « Date carried to
+  // statement », 1 à 6 jours plus tard). Lue à la place de l'autre, un relevé
+  // anglais redéposé recréait chaque achat déjà connu, décalé.
+  { role: 'posted_date', re: /associ[ée]e au relev|carried to statement|^posting date|^post date|date d'inscription|date de comptabilisation/i },
+  { role: 'date', re: /^date(\s|$)|^transaction date|^date of transaction/i },
   // « Autres détails » avant « Description » : le relevé BNC a les deux, et
   // c'est le premier qui porte la nature de la transaction.
   { role: 'details', re: /autres?\s*d[ée]tails?/i },
@@ -143,6 +148,11 @@ function detectHeader(cells) {
     const hit = HEADER_ROLES.find((h) => h.re.test(t))
     return hit ? hit.role : null
   })
+  // Seule date du fichier : la date d'inscription fait l'affaire.
+  if (!roles.includes('date')) {
+    const i = roles.indexOf('posted_date')
+    if (i >= 0) roles[i] = 'date'
+  }
   const hasDate = roles.includes('date')
   const hasMoney = roles.includes('amount') || roles.includes('debit') || roles.includes('credit')
   return hasDate && hasMoney ? roles : null
@@ -292,6 +302,164 @@ export function findSupersededPending(accountId, rows) {
   return out
 }
 
+// LA MÊME TRANSACTION, À UNE AUTRE DATE. La dédup (date, montant) ne voit pas
+// un achat que la banque redate (date d'achat vs date d'inscription, export
+// français vs anglais). Une ligne du document est déjà connue si :
+//  • sa référence bancaire (« U618149960 ») existe déjà au compte, même montant ;
+//  • ou une ligne du compte a le même montant et le même marchand, datée à
+//    ±TWIN_DRIFT_DAYS jours, et le document ne la liste pas lui-même à sa date
+//    (sinon ce sont deux achats distincts).
+// Rend Set(index de ligne). `skip` : indices déjà traités ailleurs.
+const TWIN_DRIFT_DAYS = 6
+export function findShiftedTwins(accountId, rows, skip = new Set()) {
+  const out = new Set()
+  const list = rows || []
+  const listed = new Set(list.map((r) => `${r?.txn_date}|${Number(r?.amount).toFixed(2)}`))
+  const byRef = db.prepare(`
+    SELECT id FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND reference=? AND ABS(amount - ?) < 0.005 AND txn_date <> ?
+  `)
+  const near = db.prepare(`
+    SELECT id, txn_date, description FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND ABS(amount - ?) < 0.005
+      AND txn_date <> ? AND txn_date BETWEEN date(?, ?) AND date(?, ?)
+    ORDER BY ABS(julianday(txn_date) - julianday(?)), created_at
+  `)
+  const exact = db.prepare(`
+    SELECT 1 FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND txn_date=? AND ABS(amount - ?) < 0.005
+  `)
+  const used = new Set()
+  list.forEach((row, i) => {
+    if (skip.has(i) || !row?.txn_date || !Number(row.amount)) return
+    if (exact.get(accountId, row.txn_date, row.amount)) return
+    const ref = String(row.reference || '').trim()
+    const refHit = ref ? byRef.all(accountId, ref, row.amount, row.txn_date).find((h) => !used.has(h.id)) : null
+    if (refHit) { used.add(refHit.id); out.add(i); return }
+    const key = merchantKey(row.description)
+    if (!key) return
+    const d = `${TWIN_DRIFT_DAYS} days`
+    const hit = near.all(accountId, row.amount, row.txn_date, row.txn_date, `-${d}`, row.txn_date, `+${d}`, row.txn_date)
+      .find((h) => !used.has(h.id)
+        && merchantKey(h.description) === key
+        && !listed.has(`${h.txn_date}|${Number(row.amount).toFixed(2)}`))
+    if (!hit) return
+    used.add(hit.id)
+    out.add(i)
+  })
+  return out
+}
+
+// LE MÊME ACHAT, À UN AUTRE MONTANT. Importé en attente, un achat en devise
+// change souvent de montant en passant (Open-Meteo : 514,67 $ le 22 août,
+// 527,54 $ le 25 — Charles, 2026-10-06). Une ligne du document qui n'existe pas
+// telle quelle remplace une ligne du compte si : même marchand, même sens,
+// datée à ±REVISE_DRIFT_DAYS jours, montant à moins de REVISE_MAX_RATIO près,
+// et le document — qui couvre la date de l'ancienne — ne la liste plus.
+// Rend Map(index de ligne → id de la ligne révisée).
+const REVISE_DRIFT_DAYS = 4
+const REVISE_MAX_RATIO = 0.2
+export function findRevisedAmounts(accountId, rows, skip = new Set()) {
+  const out = new Map()
+  const list = (rows || []).filter((r) => r?.txn_date)
+  if (!list.length) return out
+  const dates = list.map((r) => r.txn_date).sort()
+  const [first, last] = [dates[0], dates[dates.length - 1]]
+  const listed = new Set(list.map((r) => `${r.txn_date}|${Number(r.amount).toFixed(2)}`))
+  const exact = db.prepare(`
+    SELECT 1 FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND txn_date=? AND ABS(amount - ?) < 0.005
+  `)
+  const near = db.prepare(`
+    SELECT id, txn_date, amount, description FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND ABS(amount - ?) >= 0.005 AND amount * ? > 0
+      AND txn_date BETWEEN MAX(date(?, ?), ?) AND MIN(date(?, ?), ?)
+    ORDER BY ABS(amount - ?), ABS(julianday(txn_date) - julianday(?))
+  `)
+  const used = new Set()
+  ;(rows || []).forEach((row, i) => {
+    const amount = Number(row?.amount)
+    if (skip.has(i) || !row?.txn_date || !amount) return
+    if (exact.get(accountId, row.txn_date, amount)) return
+    const key = merchantKey(row.description)
+    if (!key) return
+    const d = `${REVISE_DRIFT_DAYS} days`
+    const hit = near.all(accountId, amount, amount, row.txn_date, `-${d}`, first, row.txn_date, `+${d}`, last, amount, row.txn_date)
+      .find((h) => !used.has(h.id)
+        && merchantKey(h.description) === key
+        && Math.abs(h.amount - amount) <= REVISE_MAX_RATIO * Math.abs(amount)
+        && !listed.has(`${h.txn_date}|${Number(h.amount).toFixed(2)}`))
+    if (!hit) return
+    used.add(hit.id)
+    out.set(i, hit.id)
+  })
+  return out
+}
+
+// LE TOTAL QUI RÉPÈTE SES PARTIES. Le relevé de la marge détaille un
+// paiement (intérêts + capital) ET l'imprime en total : « EOP:19 686,89 $ » =
+// 686,89 + 19 000. Importé tel quel, le total doublait le paiement dans Boréal
+// et dans le fichier de Michel (Charles, 2026-10-06 : « fais attention à
+// l'avenir avec ceux-là »). Une ligne est ce total si, même date, au moins deux
+// autres lignes du même libellé (document ou compte) totalisent son montant en
+// valeur absolue. Rend Set(index de ligne).
+export function findSumDuplicates(accountId, rows, skip = new Set()) {
+  const out = new Set()
+  const list = rows || []
+  const label = (d) => String(d || '').toLowerCase().replace(/\s+/g, ' ').slice(0, 30)
+  const inDb = db.prepare(`
+    SELECT amount, description, interest_cad FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND txn_date=?
+  `)
+  list.forEach((row, i) => {
+    const total = Math.abs(Number(row?.amount))
+    if (skip.has(i) || !row?.txn_date || !total) return
+    const key = label(row.description)
+    if (!key) return
+    // Le capital déjà en base porte ses intérêts à part (`interest_cad`).
+    const known = inDb.all(accountId, row.txn_date)
+    if (known.some((r) => label(r.description) === key && r.interest_cad
+      && Math.abs(Math.abs(r.amount) + Math.abs(r.interest_cad) - total) < 0.005)) { out.add(i); return }
+    const parts = [
+      ...list.filter((r, j) => j !== i && r?.txn_date === row.txn_date && label(r.description) === key).map((r) => Math.abs(Number(r.amount))),
+      ...known.filter((r) => label(r.description) === key && Math.abs(Math.abs(r.amount) - total) >= 0.005).map((r) => Math.abs(r.amount)),
+    ].filter((a) => a && Math.abs(a - total) >= 0.005)
+    // Deux parties qui font le total (le cas vécu) ; trois au plus pour rester sûr.
+    for (let a = 0; a < parts.length; a++) {
+      for (let b = a + 1; b < parts.length; b++) {
+        if (Math.abs(parts[a] + parts[b] - total) < 0.005) { out.add(i); return }
+        for (let c = b + 1; c < parts.length; c++) {
+          if (Math.abs(parts[a] + parts[b] + parts[c] - total) < 0.005) { out.add(i); return }
+        }
+      }
+    }
+  })
+  return out
+}
+
+// La ligne garde ses liens (pièce, écriture QB) et prend le montant final.
+export function applyRevisedAmounts(accountId, rows, revised = findRevisedAmounts(accountId, rows)) {
+  const get = db.prepare('SELECT amount, comment FROM bank_transactions WHERE id=?')
+  const update = db.prepare(`
+    UPDATE bank_transactions
+    SET amount=?, txn_date=?, reference=COALESCE(?, reference), bank_state=COALESCE(?, bank_state),
+        comment=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id=? AND account_id=? AND deleted_at IS NULL
+  `)
+  const fmt = (n) => Math.abs(n).toFixed(2).replace('.', ',')
+  let changed = 0
+  for (const [i, id] of revised) {
+    const row = rows[i]
+    const cur = get.get(id)
+    if (!cur) continue
+    const note = `Montant revu par la banque : ${fmt(cur.amount)} → ${fmt(row.amount)}`
+    changed += update.run(row.amount, row.txn_date, row.reference || null, row.bank_state || null,
+      cur.comment ? `${cur.comment}\n${note}` : note, id, accountId).changes
+  }
+  if (changed) touchBankTxns([...revised.values()])
+  return changed
+}
+
 // La ligne en attente prend la date, la référence et l'état de sa version
 // passée : c'est la même transaction, et le prochain relevé la reconnaîtra.
 export function promoteSupersededPending(accountId, rows, superseded = findSupersededPending(accountId, rows)) {
@@ -413,6 +581,11 @@ export function runPostImportHooks(accountId, { source: _source = 'bank' } = {})
       reconcileAndPersist(dedupeClaims(props), { kinds: ['payment_clear', 'paie_debit'] })
       import('./bankProposals/autoAccept.js').then((m) => m.autoAcceptSafe())
         .catch(e => console.error('bankReconciliation.autoAccept:', e.message))
+      // « Comme d'habitude dans QuickBooks » : lu dans la mémoire déjà remplie,
+      // aucun appel à Intuit ici — la ligne du jour est proposée sans attendre la nuit.
+      import('./bankProposals/producers.js')
+        .then(async (m) => reconcileAndPersist(await m.produceQbHabits(accountId), { accountId, kinds: ['qb_habit'] }))
+        .catch(e => console.error('bankReconciliation.qbHabit:', e.message))
     }
   } catch (e) {
     console.error('bankReconciliation.proposeClears:', e.message)
@@ -678,13 +851,19 @@ export const RECEIPT_BANK_MATCH_AUTOMATION_ID = 'sys_receipt_bank_match'
 
 export function autoMatchReceipt(receiptId) {
   const receipt = db.prepare(`
-    SELECT id, receipt_date, total, currency, status, quickbooks_type
+    SELECT id, receipt_date, order_date, due_date, document_date, created_at, total, currency, status, quickbooks_type
     FROM sale_receipts WHERE id=? AND deleted_at IS NULL
   `).get(receiptId)
   if (!receipt || receipt.status !== 'done') return null
   // Un dépôt (argent reçu) est saisi en positif mais cherche une ENTRÉE.
   if (receipt.quickbooks_type === 'deposit') receipt.total = -Math.abs(receipt.total || 0)
-  if (!receipt.receipt_date || !Number.isFinite(receipt.total) || Math.abs(receipt.total) < 0.011) return null
+  if (!Number.isFinite(receipt.total) || Math.abs(receipt.total) < 0.011) return null
+  // Pièce sans date imprimée (capture d'un sommaire de commande Newark) : on
+  // l'ancre à sa date de commande, sinon au jour où elle est arrivée — le débit
+  // la précède alors, de quelques semaines au plus.
+  const printed = receipt.receipt_date || receipt.order_date || receipt.document_date
+  const anchor = printed || String(receipt.created_at || '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor || '')) return null
 
   // Déjà rattachée (à la main ou par une tournée précédente) : on ne touche pas.
   const already = db.prepare(`
@@ -700,13 +879,13 @@ export function autoMatchReceipt(receiptId) {
   // jour, c'est le filet le plus fréquent. Ce pré-filtre reste large exprès ;
   // c'est la notation (findCandidates) qui décide, et elle exige toujours que
   // le fournisseur soit reconnu au relevé.
-  const rate = usdCadRateLookup()(receipt.receipt_date) || 0
+  const rate = usdCadRateLookup()(anchor) || 0
   const total = Math.abs(receipt.total)
   // Une pièce négative (remboursement, note de crédit) cherche une entrée.
   const dir = receipt.total < 0 ? 1 : -1
   const tol = Math.max(2, total * 0.02)
-  const from = shiftDate(receipt.receipt_date, -7)
-  const to = shiftDate(receipt.receipt_date, 45)
+  const from = shiftDate(anchor, printed ? -7 : -60)
+  const to = shiftDate(anchor, printed ? 45 : 7)
   const txns = db.prepare(`
     SELECT t.* FROM bank_transactions t
     WHERE t.deleted_at IS NULL AND t.matched_id IS NULL AND t.transfer_txn_id IS NULL
@@ -766,4 +945,61 @@ export function bankTxnForDocument(matchedType, matchedId) {
     WHERE t.matched_type=? AND t.matched_id=? AND t.deleted_at IS NULL
     ORDER BY t.txn_date DESC LIMIT 1
   `).get(matchedType, String(matchedId)) || null
+}
+
+// ── Pièce archivée : le débit passe à sa jumelle ─────────────────────────────
+// Un même courriel livre souvent deux PDF (facture + reçu Make, 2026-10-06).
+// Le débit se rattache au premier lu ; si c'est celui qu'on archive, il glisse
+// vers l'autre pièce active du même achat, sinon il se détache (Charles :
+// « si j'en ai archivé un, l'association doit se faire avec l'autre »).
+// Une pièce déjà publiée dans QuickBooks garde son lien : l'écriture existe.
+export function moveBankLinkOffArchived(receiptId) {
+  const r = db.prepare(`
+    SELECT id, company, total, currency, receipt_number, receipt_date, gmail_message_id, quickbooks_id, archived_at
+    FROM sale_receipts WHERE id=?
+  `).get(String(receiptId))
+  if (!r?.archived_at || r.quickbooks_id) return null
+  const txn = db.prepare(`
+    SELECT * FROM bank_transactions WHERE matched_type='receipt' AND matched_id=? AND deleted_at IS NULL
+  `).get(String(r.id))
+  if (!txn) return null
+  const twins = db.prepare(`
+    SELECT s.id FROM sale_receipts s
+    WHERE s.id != :id AND s.deleted_at IS NULL AND s.archived_at IS NULL AND s.status = 'done'
+      AND ABS(ABS(COALESCE(s.total, 0)) - ABS(COALESCE(:total, 0))) < 0.011
+      AND COALESCE(s.currency, '') = COALESCE(:currency, '')
+      AND ((:gmail IS NOT NULL AND s.gmail_message_id = :gmail)
+        OR (:num IS NOT NULL AND :num <> '' AND s.receipt_number = :num)
+        OR (s.company = :company AND s.receipt_date = :date))
+      AND NOT EXISTS (SELECT 1 FROM bank_transactions t WHERE t.matched_type='receipt'
+                      AND t.matched_id = s.id AND t.deleted_at IS NULL)
+  `).all({ id: r.id, total: r.total, currency: r.currency, gmail: r.gmail_message_id,
+    num: r.receipt_number, company: r.company, date: r.receipt_date })
+  let to = twins.length === 1 ? String(twins[0].id) : null
+  // Pas de jumelle évidente (nouvelle pièce datée autrement, sans numéro) :
+  // la ligne refait sa recherche aussitôt, avec la barre de l'appariement
+  // automatique, plutôt que de rester vide (McMaster, Charles 2026-10-06).
+  if (!to) {
+    const cands = findCandidates(txn).filter((c) => !(c.type === 'receipt' && String(c.id) === String(r.id)))
+    const best = cands[0]
+    if (best?.type === 'receipt' && best.confidence >= 0.8 && !(cands[1] && cands[1].confidence >= best.confidence - 0.05)) to = String(best.id)
+  }
+  const next = { ...txn, matched_type: to ? 'receipt' : null, matched_id: to }
+  const status = txn.status === 'rapproche' || txn.status === 'ignore' ? txn.status : deriveStatus(next)
+  db.prepare(`
+    UPDATE bank_transactions SET matched_type=?, matched_id=?, status=?,
+      updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
+  `).run(next.matched_type, to, status, txn.id)
+  if (to) { try { alignReceiptDate(to) } catch (e) { console.warn('alignReceiptDate:', e.message) } }
+  try { touchBankTxns([txn.id]) } catch { /* temps réel facultatif */ }
+  return { txnId: txn.id, movedTo: to }
+}
+
+// Rattrapage : débits restés sur une pièce archivée avant cette règle.
+export function moveBankLinksOffArchived() {
+  const ids = db.prepare(`
+    SELECT r.id FROM bank_transactions t JOIN sale_receipts r ON r.id = t.matched_id
+    WHERE t.matched_type='receipt' AND t.deleted_at IS NULL AND r.archived_at IS NOT NULL AND r.quickbooks_id IS NULL
+  `).all().map((x) => x.id)
+  return ids.map((id) => moveBankLinkOffArchived(id)).filter(Boolean)
 }

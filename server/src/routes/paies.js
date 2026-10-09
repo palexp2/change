@@ -313,6 +313,9 @@ router.post('/:id/import-timesheets', ensureHR, (req, res) => {
   if (!paie) return res.status(404).json({ error: 'Not found' })
   const result = importTimesheetsForPaie(req.params.id)
   emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
+  for (const id of result.changed) {
+    writeBackRecord('paie_items', id, ['regular_hours']).catch(e => console.error('Paie item write-back error:', e.message))
+  }
   res.json(result)
 })
 

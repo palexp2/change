@@ -469,7 +469,30 @@ export async function sendPiecesSlack(month, { userId = null } = {}) {
     result: `Message envoyé à ${cfg.recipient} — déboursés ${monthLabel(month)} : ${fmtAmount(state.debourses)} $`,
     triggerData: { trigger: 'envoi manuel', month },
   })
+  await syncPiecesRecurringTask([month]).catch(e => console.warn(`[pieces] cochage du travail récurrent : ${e.message}`))
   return piecesMonthState(month)
+}
+
+// Travail récurrent « Fournir à Gui les déboursés en pièces » d'Antoine : le
+// message envoyé EST le travail fait, sur le mois des déboursés. Sans liste,
+// rattrape la période affichée et les retards dont le message est déjà parti
+// (démarrage).
+export const PIECES_TASK_ID = 'rt-al-debourses-gui'
+
+export async function syncPiecesRecurringTask(months = null) {
+  const { listRecurringTasks, completeFromAutomation } = await import('./recurringWork.js')
+  if (!months) {
+    const task = listRecurringTasks({ owner: 'AL' }).find(t => t.id === PIECES_TASK_ID)
+    if (!task || task.cadence !== 'mensuel') return []
+    months = [...(task.done ? [] : [task.period_key]), ...(task.catch_up || []).map(p => p.period_key)]
+  }
+  const sent = db.prepare('SELECT 1 FROM pieces_disbursements WHERE month = ? AND slack_sent_at IS NOT NULL')
+  const done = []
+  for (const month of months) {
+    if (!sent.get(month)) continue
+    if (completeFromAutomation(PIECES_TASK_ID, { periodKey: month, note: 'Message envoyé à Guillaume' })?.created) done.push(month)
+  }
+  return done
 }
 
 // ── Préparation automatique (cron du 7) ─────────────────────────────────────

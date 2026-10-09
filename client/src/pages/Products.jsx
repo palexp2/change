@@ -15,6 +15,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import ProductDetail from './ProductDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { isSaleOffer } from '../lib/saleOffers.js'
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
 
@@ -105,7 +106,8 @@ export default function Products() {
   // jour par delta polling toutes les 10s. La page filtre l'état "inactif"
   // côté client (l'ancien endpoint le faisait via ?active=true).
   const { rows: allProducts, loading, reload } = useListData({ table: 'products' })
-  const products = useMemo(() => allProducts.filter(p => p.active !== 0), [allProducts])
+  // Produits de soumission : Catalogue de vente (lib/saleOffers.js).
+  const products = useMemo(() => allProducts.filter(p => p.active !== 0 && !isSaleOffer(p)), [allProducts])
 
   // Pièces dont le coût FIFO est en alerte (lot sans prix, prix douteux,
   // stock sans achat) : le bouton les isole, comme un résultat de scan.

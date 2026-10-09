@@ -8,7 +8,7 @@ const { base, server } = await listen(buildTestApp({ '/api/orders': ordersRouter
 after(() => closeServer(server))
 const { token } = createTestUser()
 // Colonnes ajoutées en production par les imports et le soft-delete.
-for (const [table, column] of [['products', 'deleted_at'], ['shipments', 'items_expedies']]) {
+for (const [table, column] of [['products', 'deleted_at'], ['orders', 'deleted_at'], ['shipments', 'items_expedies']]) {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)
   }

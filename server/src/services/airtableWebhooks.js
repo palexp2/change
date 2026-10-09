@@ -4,6 +4,7 @@ import { getAccessToken, airtableFetch, airtablePost } from '../connectors/airta
 import { tracked } from './syncState.js'
 import { logSync } from './syncLog.js'
 import { logSystemRun } from './systemAutomations.js'
+import { withOrigin } from './writeOrigin.js'
 import { LEGACY_SYNCS } from './airtable.js'
 import { syncFactureLinksFromWebhook } from './factureLinks.js'
 import { routeSync, ENGINE_ONLY_SYNCS } from './airtableMirrorEngine.js'
@@ -258,8 +259,12 @@ function queueRetry(module, changes, error) {
   console.log(`🔄 ${module}: queued for retry (${error})`)
 }
 
+// Écritures attribuées au routeur de webhooks dans l'historique des fiches.
+const ROUTER_ID = 'sys_airtable_webhook_router'
+
 // Process retry queue — called periodically
-export async function processRetryQueue() {
+export function processRetryQueue() { return withOrigin(ROUTER_ID, retryQueue) }
+async function retryQueue() {
   const rows = db.prepare(
     "SELECT * FROM webhook_sync_retry WHERE next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ORDER BY created_at LIMIT 20"
   ).all()
@@ -311,7 +316,8 @@ export async function processRetryQueue() {
 // Called when Airtable sends a ping. Fetches payloads, determines which
 // modules changed, and triggers the appropriate sync functions.
 // On failure, changes are queued for retry instead of being lost.
-export async function processWebhookPing(webhookId) {
+export function processWebhookPing(webhookId) { return withOrigin(ROUTER_ID, () => webhookPing(webhookId)) }
+async function webhookPing(webhookId) {
   const started = Date.now()
   const webhook = db.prepare('SELECT * FROM airtable_webhooks WHERE webhook_id=?').get(webhookId)
   if (!webhook) {

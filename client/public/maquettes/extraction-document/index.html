@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Fiche document</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f6f7f9;--line:#e3e5e8;--line2:#c9ced4;--ink:#2f3135;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--bs:#e6f1fa;--a:#c76a00;--as:#fff3e0;--paper:#fff;--sh:0 1px 3px rgba(0,0,0,.08),0 4px 14px rgba(0,0,0,.05);--hl:rgba(0,119,197,.14);--hla:rgba(199,106,0,.18)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1d2b1b;--b:#4da3e0;--bs:#16263a;--a:#f0a040;--as:#2e2414;--paper:#f3f3f0;--sh:0 1px 3px rgba(0,0,0,.5)}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1d2b1b;--b:#4da3e0;--bs:#16263a;--a:#f0a040;--as:#2e2414;--paper:#f3f3f0;--sh:0 1px 3px rgba(0,0,0,.5)}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:18px;margin:48px 0 10px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer;z-index:9}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:hidden}
+.num{font-variant-numeric:tabular-nums}
+/* ---- document (papier) ---- */
+.docwrap{background:var(--soft);padding:18px;display:flex;justify-content:center;align-items:flex-start;min-width:0}
+.doc{background:#fff;color:#222;width:100%;max-width:470px;padding:26px 28px;box-shadow:0 1px 4px rgba(0,0,0,.18);font-size:11px;line-height:1.5;position:relative}
+.doc .lg{font-weight:800;font-size:19px;color:#c8102e;letter-spacing:-.5px}
+.doc .hd{display:flex;justify-content:space-between;gap:12px;margin-bottom:16px}
+.doc .meta{text-align:right;color:#555}
+.doc .meta b{color:#222}
+.doc table{width:100%;border-collapse:collapse;margin:12px 0}
+.doc th{font-size:9.5px;text-transform:uppercase;color:#666;text-align:left;border-bottom:1px solid #bbb;padding:4px 3px}
+.doc td{padding:5px 3px;border-bottom:1px solid #eee}
+.doc .r{text-align:right}
+.doc .tot{margin-left:auto;width:200px}
+.doc .tot div{display:flex;justify-content:space-between;padding:2px 3px}
+.doc .tot .gt{font-weight:700;font-size:13px;border-top:1.5px solid #222;margin-top:4px;padding-top:5px}
+.doc .ft{margin-top:16px;color:#777;font-size:10px}
+.doc [data-f]{border-radius:3px;transition:background .15s,box-shadow .15s}
+.doc.marks [data-f]{background:var(--hl)}
+.doc.marks [data-f].warn{background:var(--hla)}
+.doc [data-f].lit{background:rgba(0,119,197,.28)!important;box-shadow:0 0 0 2px #0077c5}
+/* ---- bits communs ---- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:6px;font:inherit;font-weight:600;cursor:pointer;padding:9px 16px;white-space:nowrap}
+.btn.go{background:var(--g);color:#fff}.btn.go.big{width:100%;padding:13px;font-size:14px}
+.btn.ghost{background:transparent;color:var(--ink2);border:1px solid var(--line2)}
+.lnk{color:var(--b);cursor:pointer;font-weight:500}
+.mut{color:var(--ink3)}.small{font-size:12px}
+.kbd{font-size:10.5px;border:1px solid rgba(255,255,255,.5);border-radius:4px;padding:0 5px;opacity:.85}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.chip.ok{background:var(--gs);color:var(--gd)}.chip.wr{background:var(--as);color:var(--a)}.chip.bl{background:var(--bs);color:var(--b)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;flex:none}.dot.wr{background:var(--a)}.dot.ok{background:var(--g)}
+.top{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.top .nm{font-weight:700;font-size:15px}
+.top .sp{flex:1}
+.nav{color:var(--ink4);font-size:16px;letter-spacing:6px}
+.sel{border:1px solid var(--line2);border-radius:5px;height:32px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--s);color:var(--ink);white-space:nowrap;overflow:hidden;cursor:pointer}
+.sel:after{content:"▾";color:var(--ink4);font-size:10px}
+.sel.wr{border-color:var(--a);box-shadow:0 0 0 1px var(--a)}
+.fld label{display:block;font-size:11px;color:var(--ink3);margin-bottom:3px;font-weight:500}
+.doc [data-f]{border-radius:3px;transition:background .12s,box-shadow .12s}
+.doc [data-f].lit{background:rgba(0,119,197,.22)!important;box-shadow:0 0 0 2px #0077c5}
+.doc tr[data-f].lit td{background:rgba(0,119,197,.22)}
+[data-k]{transition:background .12s}
+[data-k].lit{background:var(--bs)!important;border-radius:5px}
+.hlbtn{font-size:11.5px;color:var(--ink3);display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.hlbtn i{width:26px;height:15px;border-radius:9px;background:var(--line2);position:relative;display:inline-block}
+.hlbtn i:after{content:"";position:absolute;left:2px;top:2px;width:11px;height:11px;border-radius:50%;background:#fff;transition:left .15s}
+.hlbtn.on i{background:var(--b)}.hlbtn.on i:after{left:13px}
+.doc.marks [data-f]{background:rgba(0,119,197,.08)}
+.chip.rd{background:#fde8e8;color:#c62828;cursor:pointer}
+.chip{cursor:default}.chip.clk{cursor:pointer}
+.pop{position:absolute;z-index:5;background:var(--s);border:1px solid var(--line2);border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.18);padding:6px;min-width:220px;display:none;font-size:12.5px}
+.pop.on{display:block}
+.pop .it{padding:7px 10px;border-radius:5px;cursor:pointer;display:flex;justify-content:space-between;gap:14px}
+.pop .it:hover{background:var(--soft)}.pop .it.red{color:#c62828}
+.pop hr{border:0;border-top:1px solid var(--line);margin:4px 0}
+.rel{position:relative}
+/* tiroirs */
+.dr{border-top:1px solid var(--line)}
+.dr>.dh{display:flex;justify-content:space-between;align-items:center;padding:10px 2px;cursor:pointer;color:var(--ink2);font-weight:500}
+.dr>.dh .mut{font-weight:400}
+.dr>.dh:after{content:"›";color:var(--ink4);margin-left:8px;transition:transform .15s}
+.dr.on>.dh:after{transform:rotate(90deg)}
+.dr>.db{display:none;padding:2px 0 12px}.dr.on>.db{display:block}
+/* articles */
+.it-t{width:100%;border-collapse:collapse;font-size:12px}
+.it-t th{font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--ink3);text-align:left;padding:4px 5px;border-bottom:1px solid var(--line);font-weight:600}
+.it-t td{padding:5px;border-bottom:1px solid var(--line);white-space:nowrap}
+.it-t .r{text-align:right}
+.it-t .x{color:var(--ink4);cursor:pointer}
+.lia{font-size:11px;font-weight:600;color:var(--gd);background:var(--gs);border-radius:4px;padding:1px 5px}
+.lia.q{color:var(--a);background:var(--as)}
+.mini{font-size:11.5px;color:var(--ink3);display:flex;gap:14px;flex-wrap:wrap;margin-top:7px}
+/* taxes */
+.cmp{display:grid;grid-template-columns:1fr 80px 80px;gap:2px 10px;font-size:12.5px}
+.cmp .h{font-size:10px;text-transform:uppercase;color:var(--ink3);font-weight:600;text-align:right}
+.cmp .v{text-align:right;font-variant-numeric:tabular-nums}
+.cmp .e{border-bottom:1px dashed var(--line2);cursor:text}
+.cmp .t{font-weight:700;border-top:1px solid var(--line2);padding-top:4px;margin-top:3px}
+.fis{margin-top:9px;font-size:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* plus */
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:6px;padding:2px;gap:2px;flex-wrap:wrap}
+.seg span{padding:4px 9px;border-radius:4px;font-size:12px;color:var(--ink3);cursor:pointer;white-space:nowrap}
+.seg span.on{background:var(--gs);color:var(--gd);font-weight:600}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.ta{border:1px solid var(--line2);border-radius:5px;min-height:46px;padding:7px 10px;color:var(--ink3);font-size:12px}
+.file{display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:12px}
+.hist{font-size:12px}.hist div{display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--line)}.hist div span:first-child{color:var(--ink3);width:92px;flex:none}
+.tpl div{display:flex;align-items:center;gap:9px;padding:5px 0;font-size:12px;border-bottom:1px solid var(--line)}
+.tpl .u{margin-left:auto;font-size:11px;font-weight:600;color:var(--b);cursor:pointer}
+.conf{position:absolute;left:12px;right:12px;bottom:62px;background:var(--s);border:1px solid var(--line2);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.2);padding:14px;display:none;font-size:12.5px;z-index:6}
+.conf.on{display:block}
+.conf .ln{display:flex;justify-content:space-between;padding:3px 0}
+/* Y1 */
+.y1{display:grid;grid-template-columns:1fr 400px;min-height:620px}
+.y1 .side{border-left:1px solid var(--line);padding:16px 18px;display:flex;flex-direction:column;gap:10px;position:relative}
+.y1 .amt{font-size:28px;font-weight:700;letter-spacing:-.5px}
+.y1 .gridf{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+/* Y2 QBO */
+.y2{display:grid;grid-template-columns:1fr 400px;min-height:640px}
+.y2 .form{padding:16px 20px;display:flex;flex-direction:column;gap:14px;min-width:0;position:relative}
+.y2 .hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.y2 .ttl{font-size:19px;font-weight:600;display:inline-flex;align-items:center;gap:8px;cursor:pointer}
+.y2 .ttl:after{content:"▾";font-size:11px;color:var(--ink4)}
+.y2 .big{text-align:right}.y2 .big small{display:block;font-size:10.5px;color:var(--ink3);text-transform:uppercase;letter-spacing:.04em}
+.y2 .big b{font-size:28px;font-weight:600}
+.y2 .row4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.y2 .low{display:grid;grid-template-columns:1fr 270px;gap:20px;align-items:start}
+.y2 .tots{font-size:13px}.y2 .tots div{display:flex;justify-content:space-between;padding:3px 0}
+.y2 .tots .gt{font-weight:700;font-size:15px;border-top:1px solid var(--line2);margin-top:4px;padding-top:6px}
+.y2 .pane{border-left:1px solid var(--line);display:flex;flex-direction:column}
+.y2 .pane .ph{padding:10px 14px;border-bottom:1px solid var(--line);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.y2 .pane .doc{transform:scale(.78);transform-origin:top center;margin-bottom:-150px}
+.foot{border-top:1px solid var(--line);padding:11px 20px;display:flex;justify-content:space-between;align-items:center;background:var(--soft);gap:10px;position:relative}
+/* Y3 onglets */
+.y3{display:grid;grid-template-columns:1fr 420px;min-height:620px}
+.y3 .side{border-left:1px solid var(--line);display:flex;flex-direction:column;position:relative}
+.y3 .sum{padding:14px 18px 0}
+.y3 .sum .amt{font-size:26px;font-weight:700}
+.tabs{display:flex;gap:18px;padding:0 18px;border-bottom:1px solid var(--line);margin-top:10px}
+.tabs span{padding:9px 0;color:var(--ink3);cursor:pointer;font-weight:500;white-space:nowrap}
+.tabs span.on{color:var(--ink);border-bottom:2px solid var(--g);font-weight:600}
+.tabs span b{font-weight:500;color:var(--ink4);margin-left:3px}
+.pnl{display:none;padding:14px 18px;flex:1;flex-direction:column;gap:10px}.pnl.on{display:flex}
+.y3 .go{padding:12px 18px;border-top:1px solid var(--line)}
+@media (max-width:900px){.y1,.y2,.y3{grid-template-columns:1fr}.y1 .side,.y2 .pane,.y3 .side{border-left:0;border-top:1px solid var(--line)}.y2 .row4{grid-template-columns:1fr 1fr}.y2 .low{grid-template-columns:1fr}}
+.cases{position:sticky;top:0;z-index:8;background:var(--bg);padding:10px 0;display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid var(--line)}
+.cases span{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line2);cursor:pointer;color:var(--ink2);background:var(--s)}
+.cases span.on{background:var(--ink);color:var(--s);border-color:var(--ink)}
+.av{width:28px;height:28px;border-radius:7px;background:#c8102e;color:#fff;font-weight:700;display:inline-flex;align-items:center;justify-content:center;font-size:13px;flex:none}
+.chip.gr{background:var(--soft);color:var(--ink3)}.chip.am{background:var(--as);color:var(--a);cursor:pointer}.chip.in{background:#ece9fb;color:#5b45c9;cursor:pointer}
+.chip.st{border:1px solid currentColor;background:transparent}
+.lbr{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.lbr .tg{font-size:10.5px;font-weight:500;color:#7a5cd6;cursor:pointer}
+.sub{font-size:11px;color:var(--ink3);margin-top:3px}
+.band{border-radius:8px;padding:9px 11px;font-size:12px;display:flex;flex-direction:column;gap:7px}
+.band.r{background:#fde8e8;color:#b42318}.band input{border:1px solid #f1b5b5;border-radius:5px;padding:5px 8px;font:inherit;font-size:12px;background:#fff;width:100%}
+.band .bb{display:flex;gap:8px;flex-wrap:wrap}.band .bb span{font-weight:600;cursor:pointer;border:1px solid #f1b5b5;background:#fff;border-radius:5px;padding:3px 9px}
+.busy{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--ink3);min-height:300px}
+.orb{width:44px;height:44px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#8fd0ff,#0077c5);animation:pl 1.4s ease-in-out infinite}
+@keyframes pl{50%{transform:scale(.85);opacity:.7}}
+.pop table{border-collapse:collapse;font-size:12px;width:100%}.pop td,.pop th{padding:4px 7px;text-align:left;white-space:nowrap}.pop th{font-size:10px;color:var(--ink3);text-transform:uppercase}
+.pop tr.pk{cursor:pointer}.pop tr.pk:hover td{background:var(--soft)}
+.pop .cm{display:grid;grid-template-columns:auto 1fr 1fr;gap:3px 12px;font-size:12px;padding:6px 8px}
+.pop .cm b{font-size:10px;color:var(--ink3);text-transform:uppercase}
+.rel>.conf,[data-go]>[data-case]>.conf{left:0;right:0;bottom:56px}[data-inline] .conf{left:auto!important;right:0;width:330px;bottom:46px!important}[data-go]{position:relative}
+</style></head><body><button class="theme" onclick="var r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">◐</button>
+<div class="wrap">
+<h1>Fiche d'un document</h1>
+<div class="cases" id="cases"></div>
+
+<!-- ============ Y1 ============ -->
+<h2><b>Y1</b> Tiroirs <span>L'essentiel ouvert, le reste dans des tiroirs.</span></h2>
+<div class="scr" data-hl>
+  <div class="top" data-top></div>
+  <div class="y1">
+    <div class="docwrap"><div class="doc" data-doc></div></div>
+    <div class="side">
+      <div data-busy></div>
+      <div class="nc-busy" style="display:flex;flex-direction:column;gap:10px;flex:1">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end"><div data-k="total"><div class="mut small">Total</div><div class="amt num" data-amt></div></div><span data-type></span></div>
+      <div class="gridf">
+        <div class="fld" data-k="date"><label>Date</label><div class="sel">28 sept 2026</div></div>
+        <div data-pay></div>
+      </div>
+      <div data-vendor></div>
+      <div data-account></div>
+      <div class="dr"><div class="dh" onclick="dr(this)"><span>Articles</span><span class="mut">4 · 1 achat à choisir</span></div><div class="db" data-articles></div></div>
+      <div class="dr"><div class="dh" onclick="dr(this)"><span>Taxes</span><span class="mut num">TPS/TVQ QC ✓ · 60,58</span></div><div class="db" data-taxes></div></div>
+      <div class="dr"><div class="dh" onclick="dr(this)"><span>Détails</span><span class="mut">mémo, pièce, devise…</span></div><div class="db" data-plus></div></div>
+      <div class="dr"><div class="dh" onclick="dr(this)"><span>Modèle</span><span class="mut">comme les 3 dernières</span></div><div class="db" data-tpl></div></div>
+      <div style="flex:1"></div>
+      <div data-block></div>
+      <div class="rel" data-go></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Y2 ============ -->
+<h2><b>Y2</b> Dépense QuickBooks <span>Le formulaire QBO, le document à droite.</span></h2>
+<div class="scr" data-hl>
+  <div class="top" data-top></div>
+  <div class="y2">
+    <div class="form">
+      <div data-busy></div>
+      <div class="nc-busy" style="display:flex;flex-direction:column;gap:14px">
+      <div class="hdr">
+        <span data-type data-big></span>
+        <div class="big" data-k="total"><small>Montant</small><b class="num" data-amt></b></div>
+      </div>
+      <div class="row4">
+        <div data-vendor></div>
+        <div data-pay></div>
+        <div class="fld" data-k="date"><label>Date</label><div class="sel">2026-09-28</div></div>
+        <div class="fld" data-k="no"><label>N° de réf.</label><div class="sel">132580242</div></div>
+      </div>
+      <div data-articles data-wide></div>
+      <div class="low">
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div class="fld"><label>Mémo</label><div class="ta">Description principale</div></div>
+          <div class="fld"><label>Pièces jointes</label><div class="file">📄 digikey-132580242.pdf<span class="mut" style="margin-left:auto">✕</span></div></div>
+          <div class="g2"><div class="fld"><label>Mode de paiement</label><div class="sel">Carte de crédit</div></div><div class="fld"><label>Devise</label><div class="sel" data-cur></div></div></div>
+          <div class="mini"><span class="lnk">Montant débité différent ?</span><span class="lnk">Convertir</span><span class="lnk">+ Champ</span><span class="lnk">Réordonner</span></div>
+        </div>
+        <div data-taxes data-short></div>
+      </div>
+      <div data-block></div>
+      </div>
+    </div>
+    <div class="pane">
+      <div class="docwrap" style="flex:1"><div class="doc" data-doc></div></div>
+    </div>
+  </div>
+  <div class="foot"><span class="lnk rel" onclick="pop(this)">Modèle ▾<div class="pop" style="bottom:26px;left:0;min-width:340px"><div data-tpl></div></div></span>
+    <span style="display:flex;gap:10px;align-items:center"><button class="btn ghost">‹ ›</button><span class="rel" data-go data-inline></span></span></div>
+</div>
+
+<!-- ============ Y3 ============ -->
+<h2><b>Y3</b> Onglets <span>Un sujet par onglet ; le bouton reste en bas.</span></h2>
+<div class="scr" data-hl>
+  <div class="top" data-top></div>
+  <div class="y3">
+    <div class="docwrap"><div class="doc" data-doc></div></div>
+    <div class="side">
+      <div data-busy></div>
+      <div class="nc-busy" style="display:flex;flex-direction:column;flex:1">
+      <div class="sum" style="display:flex;justify-content:space-between;align-items:flex-end"><div data-k="total"><div class="amt num" data-amt></div><div class="mut small" data-k="date">28 sept · MasterCard ••4417</div></div><span data-type></span></div>
+      <div class="tabs"><span class="on" onclick="tab(this,0)">Écriture</span><span onclick="tab(this,1)">Articles<b>4</b></span><span onclick="tab(this,2)">Taxes</span><span onclick="tab(this,3)">Détails</span><span onclick="tab(this,4)">Historique</span></div>
+      <div class="pnl on">
+        <div data-vendor></div>
+        <div data-account></div>
+        <div class="g2">
+          <div data-pay></div>
+          <div class="fld" data-k="date"><label>Date</label><div class="sel">28 sept 2026</div></div>
+        </div>
+        <div class="fld" data-k="tps"><label>Taxe</label><div class="sel">TPS/TVQ QC ✓</div></div>
+        <div class="dr" style="margin-top:6px"><div class="dh" onclick="dr(this)"><span>Modèle</span><span class="mut">comme les 3 dernières</span></div><div class="db" data-tpl></div></div>
+      </div>
+      <div class="pnl" data-articles></div>
+      <div class="pnl" data-taxes></div>
+      <div class="pnl" data-plus></div>
+      <div class="pnl"><div class="hist" data-hist></div></div>
+      <div class="go"><div data-block></div><div class="rel" data-go></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+<script>var CASES=[['normal','Normal'],['dup','Doublon'],['obs','Déjà dans QB / 0 $'],['pre','Relevé prépayé'],['bill','Facture à payer'],['usd','En USD'],['dep','Dépôt'],['fis','Écart de taxe'],['old','Facture de +30 jours'],['pub','Publié'],['read','Lecture…'],['err','Erreur de lecture']];
+function c(cs,h,t){t=t||'span';return '<'+t+' data-case="'+cs+'">'+h+'</'+t+'>'}
+var ALL='normal dup obs pre bill usd fis old pub dep';
+
+var DOC='<div class="hd"><div><div class="lg"><span data-f="vendor">DIGI-KEY</span></div><div style="color:#666">Electronics · Thief River Falls, MN</div></div>'+
+'<div class="meta">FACTURE<br/>N° <b data-f="no">132580242</b><br/><span data-f="date">2026-09-28</span></div></div>'+
+'<div style="color:#555">Facturé à : <b style="color:#222">Orisha inc.</b><br/>L\'Ancienne-Lorette QC</div>'+
+'<table data-f="items"><thead><tr><th>Réf.</th><th>Description</th><th class="r">Qté</th><th class="r">Total</th></tr></thead><tbody>'+
+'<tr data-f="l1"><td>1965-ESP32S3</td><td>ESP32-S3-WROOM-1 N8</td><td class="r">50</td><td class="r">212,50</td></tr>'+
+'<tr data-f="l2"><td>1649-SHT45</td><td>SHT45-AD1B-R2</td><td class="r">40</td><td class="r">158,00</td></tr>'+
+'<tr data-f="l3"><td>455-B2B-PH</td><td>JST-PH 2P</td><td class="r">200</td><td class="r">34,00</td></tr>'+
+'<tr data-f="l4"><td>SHIP</td><td>Livraison UPS</td><td class="r">1</td><td class="r">0,00</td></tr></tbody></table>'+
+'<div class="tot"><div data-f="subtotal"><span>Sous-total</span><span>404,50</span></div><div data-f="tps"><span>TPS</span><span>20,23</span></div>'+
+'<div data-f="tvq"><span>TVQ</span><span>40,35</span></div><div class="gt" data-f="total"><span>Total CAD</span><span>465,08</span></div></div>'+
+'<div class="ft">Payé : <span data-f="card">MasterCard ****4417</span> · 2026-09-28</div>';
+
+var MENU='<span class="rel mut" style="cursor:pointer;padding:0 4px" onclick="pop(this)">⋯<div class="pop" style="top:22px;right:0"><div class="it">Relire par l\'IA</div><div class="it">Remettre non lu</div><div class="it">Historique</div><div class="it">Convertir la devise</div><div class="it">Personnaliser les champs</div><hr/><div class="it">Archiver</div><div class="it red">Supprimer</div></div></span>';
+
+var STATUS=c('normal pre usd dup obs dep','<span class="chip bl">Débit trouvé</span>')+c('bill','<span class="chip gr">Débit à venir</span>')+c('fis','<span class="chip wr">Taxe à vérifier</span>')+
+ c('old','<span class="chip wr">+30 jours</span>')+c('pub','<a class="chip ok clk">QB #18342 ↗</a>')+c('read','<span class="chip bl">Lecture…</span>')+c('err','<span class="chip rd">Erreur</span>');
+var ALERTS=c('normal pre usd fis old pub dup obs','<span class="chip ok clk">✓ Débité 29 sept · MasterCard ›</span>')+
+ c('dup','<span class="chip rd rel" onclick="pop(this)">Doublon probable<div class="pop" style="top:24px;left:0;color:var(--ink)"><div class="it">Ouvrir l\'autre reçu</div><div class="it">Voir dans les achats fournisseurs</div><div class="it">Lever l\'alerte</div></div></span>')+
+ c('obs','<span class="chip am rel" onclick="pop(this)">Déjà dans QuickBooks<div class="pop" style="top:24px;left:0;color:var(--ink)"><div class="it">Traiter quand même</div><div class="it">Archiver ce document</div></div></span>')+
+ c('pre','<span class="chip in rel" onclick="pop(this)">Relevé Digi-Key sept 2026<div class="pop" style="top:24px;left:0;color:var(--ink);min-width:270px"><div class="it">Mois <b>sept 2026 ▾</b></div><div class="it">2026-09-04 · 212,40 ↗</div><div class="it">2026-09-18 · 96,10 ↗</div><hr/><div class="it" style="color:var(--b);font-weight:600">Joindre aux transactions QuickBooks</div></div></span>');
+var TOP='<span class="av">D</span><span class="nm" data-k="vendor">Digi-Key</span><span class="mut small" data-k="no">132580242 · Courriel</span>'+STATUS+
+ '<span style="display:inline-flex;gap:6px;flex-wrap:wrap">'+ALERTS+'</span><span class="sp"></span><span class="hlbtn on" onclick="hl(this)"><i></i>Surligner</span><span class="nav">‹ ›</span>'+MENU;
+
+var BUSY=c('read','<div class="busy"><div class="orb"></div>Lecture…</div>','div')+
+ c('err','<div class="busy"><div style="font-size:30px;color:#c62828">!</div>Document illisible<button class="btn ghost">Relancer la lecture</button></div>','div');
+
+var TYPEOPTS='<div class="pop" style="top:26px;right:0;color:var(--ink);font-size:12.5px;font-weight:400"><div class="it">Dépense payée</div><div class="it">Facture à payer</div><div class="it">Crédit carte</div><div class="it">Dépôt</div></div>';
+var TYPE='<span class="chip bl rel clk" onclick="pop(this)">'+c(ALL.replace('bill','').replace('dep',''),'Dépense payée')+c('bill','Facture à payer')+c('dep','Dépôt')+' ▾'+TYPEOPTS+'</span>';
+var TYPEBIG='<span class="ttl rel" style="font-size:19px;font-weight:600;cursor:pointer" onclick="pop(this)">'+c(ALL.replace('bill','').replace('dep',''),'Dépense payée')+c('bill','Facture à payer')+c('dep','Dépôt')+' ▾'+TYPEOPTS.replace('right:0','left:0')+'</span>';
+var AMT=c(ALL.replace('usd',''),'465,08 $')+c('usd','342,10 US$');
+
+function VENDOR(lbl){return '<div class="fld" data-k="vendor"><div class="lbr"><label>'+c(ALL.replace('dep',''),lbl)+c('dep','Payeur')+'</label><span><span class="tg">✦ profil</span> <span class="lnk small">Nouveau</span></span></div><div class="sel">Digi-Key Electronics</div></div>'}
+var ACCOUNT='<div class="fld" data-k="items"><div class="lbr"><label><span class="dot wr"></span> '+c(ALL.replace('dep',''),'Compte')+c('dep','Compte crédité')+'</label><span class="tg">✦ comme le 12 sept</span></div><div class="sel wr">51200 Pièces électroniques</div><div class="sub">Livraison → 53000 · pièces liées à des achats</div></div>';
+function PAY(lbl){return c('dep','<div class="fld"><label>Banque</label><div class="sel">BNC CAD</div></div>','div')+c(ALL.replace('bill','').replace('dep',''),'<div class="fld" data-k="card"><label>'+lbl+'</label><div class="sel">MasterCard ••4417</div><div class="sub">Charles'+'</div>'+c('usd','<div class="sub">Débité 472,30 $ CAD</div>','div')+'</div>','div')+
+ c('bill','<div class="fld"><label>Échéance</label><div class="sel">2026-10-28</div><div class="sub">Net 30 · Comptes fournisseurs</div></div>','div')}
+
+var CANDS='<table><tr><th>Code</th><th>Pièce</th><th>Fournisseur</th><th>Qté</th><th>Cmd</th></tr>'+
+ '<tr class="pk"><td><b>LIA-0418</b></td><td>SHT45</td><td>Digi-Key</td><td>40</td><td>21 sept</td></tr>'+
+ '<tr class="pk"><td><b>LIA-0421</b></td><td>SHT45</td><td>Digi-Key</td><td>40</td><td>24 sept</td></tr>'+
+ '<tr class="pk mut"><td>LIA-0390</td><td>SHT45</td><td>Mouser</td><td>20</td><td>déjà rattaché</td></tr></table>';
+var CMP='<div class="cm"><span></span><b>Facture</b><b>Airtable</b><span class="mut">Nom</span><span>ESP32-S3-WROOM-1 N8</span><span>ESP32-S3 module</span><span class="mut">Qté</span><span>50</span><span>50</span></div><hr/><div class="it">Changer d\'achat</div>';
+function lia(kind){
+ if(kind=='ok')return '<span class="lia rel clk" onclick="pop(this)" style="cursor:pointer">LIA-0412 ✓<div class="pop" style="top:20px;right:0;color:var(--ink);font-weight:400">'+CMP+'</div></span>';
+ if(kind=='q')return '<span class="lia q rel" onclick="pop(this)" style="cursor:pointer">2 choix ?<div class="pop" style="top:20px;right:0;color:var(--ink);font-weight:400">'+CANDS+'</div></span>';
+ return '<span class="lnk small rel" onclick="pop(this)">Lier<div class="pop" style="top:20px;right:0;color:var(--ink);font-weight:400">'+CANDS+'</div></span>';}
+function ART(wide){
+ var L=[['l1','ESP32-S3','50','212,50','—',lia('ok')],['l2','SHT45','40','158,00','—',lia('q')],['l3','JST-PH','200','34,00','—',lia('')],['l4','Livraison','1','0,00','53000','']];
+ var h='<table class="it-t"><thead><tr>'+(wide?'<th>Catégorie</th><th>Description</th>':'<th>Article</th>')+'<th class="r">Montant</th><th>Taxe</th>'+(wide?'':'<th>Compte</th>')+'<th>Achat</th><th></th></tr></thead><tbody>';
+ L.forEach(function(l){h+='<tr data-k="'+l[0]+'">'+(wide?'<td>'+(l[4]=='—'?'51200 Pièces électr.':'53000 Transport')+'</td>':'')+'<td>'+l[1]+'</td><td class="r num">'+l[3]+'</td><td>TPS/TVQ</td>'+(wide?'':'<td class="mut">'+l[4]+'</td>')+'<td>'+l[5]+'</td><td class="x">✕</td></tr>'});
+ h+=c('usd','<td'+(wide?' colspan="2"':'')+'>Frais de conversion</td><td class="r num">4,12</td><td>Exonéré</td>'+(wide?'':'<td></td>')+'<td></td><td></td>','tr');
+ return h+'</tbody></table><div class="mini"><span class="lnk">+ Ligne</span><span class="chip ok">✓ Prorata transport</span></div>';}
+
+var FIS=c(ALL.replace('fis',''),'<span class="chip ok">✓ Achat taxable QC</span>')+c('fis','<span class="chip rd">Exonéré ≠ TPS/TVQ QC</span>');
+var TAX='<div class="cmp"><span></span><span class="h">Facture</span><span class="h">Dossier</span>'+
+'<span data-k="subtotal">Sous-total</span><span class="v mut">404,50</span><span class="v">404,50</span>'+
+'<span data-k="tps">TPS</span><span class="v mut">20,23</span><span class="v e">20,23</span>'+
+'<span data-k="tvq">TVQ</span><span class="v mut">40,35</span><span class="v e">40,35</span>'+
+'<span>Autres taxes</span><span class="v mut">—</span><span class="v e">0,00</span>'+
+'<span>Total taxes</span><span class="v mut">60,58</span><span class="v e">60,58 ✎</span>'+
+'<span class="mut">Selon les codes</span><span></span><span class="v mut">60,58 ✓</span>'+
+'<span class="t" data-k="total">Total</span><span class="v t mut">465,08</span><span class="v t">465,08 ✓</span></div>'+
+'<div class="fis">'+FIS+'<span class="mut">TPS/TVQ QC</span><span class="lnk">Changer</span><span class="lnk">Convertir</span></div>';
+var TAXS='<div class="tots num"><div data-k="subtotal"><span class="mut">Sous-total</span><span>404,50</span></div><div data-k="tps"><span class="mut">TPS</span><span>20,23</span></div><div data-k="tvq"><span class="mut">TVQ</span><span>40,35</span></div><div><span class="mut">Autres taxes</span><span>0,00</span></div><div><span class="mut">Total taxes</span><span>60,58 ✎</span></div><div><span class="mut">Selon les codes</span><span class="mut">60,58 ✓</span></div><div class="gt" data-k="total"><span>Total</span><span>465,08 $ ✓</span></div></div><div class="fis">'+FIS+'<span class="lnk">Changer</span><span class="lnk">Facture | Dossier</span></div>';
+
+var PLUS='<div class="g2"><div class="fld" data-k="no"><label>N°</label><div class="sel">132580242</div></div><div class="fld"><label>Devise</label><div class="sel" data-cur></div></div>'+
+'<div class="fld"><label>Mode de paiement</label><div class="sel">Carte de crédit</div></div><div class="fld"><label>Date d\'exercice</label><div class="sel mut">—</div></div></div>'+
+'<div class="fld"><label>Mémo</label><div class="ta">Description principale</div></div>'+
+'<div class="fld"><label>Pièce</label><div class="file">📄 digikey-132580242.pdf<span class="mut" style="margin-left:auto">✕</span></div></div>'+
+c(ALL.replace('usd',''),'<span class="lnk small">Montant débité différent ?</span>','div')+
+c('usd','<div class="fld"><label>Montant débité</label><div class="sel">472,30 $ CAD</div><div class="sub">+4,12 en frais de conversion</div></div>','div')+
+'<div class="mini"><span class="lnk">+ Champ</span><span class="lnk">Réordonner</span></div>';
+
+var TPL='<div class="tpl"><div><span class="mut">12 sept</span><b class="num">388,20</b><span class="mut">Dépense · 51200 · TPS/TVQ</span><span class="u">Utiliser</span></div>'+
+'<div><span class="mut">29 août</span><b class="num">1 204,77</b><span class="mut">Dépense · 51200 · TPS/TVQ</span><span class="u">Utiliser</span></div>'+
+'<div><span class="mut">2 août</span><b class="num">96,40</b><span class="mut">Facture · 53000 · TPS/TVQ</span><span class="u">Utiliser</span></div></div>';
+var HIST='<div><span>28 sept 09:12</span>Ajouté par courriel</div><div><span>28 sept 09:13</span>Lu par l\'IA</div><div><span>29 sept 06:00</span>Lié au débit MasterCard</div><div><span>30 sept 14:20</span>Compte modifié par Charles</div>';
+
+var BLOCK=c('fis','<div class="band r"><b>« Achat taxable QC » attend TPS/TVQ QC, pas Exonéré.</b><div class="bb"><span>Corriger → TPS/TVQ QC</span></div><div class="bb"><span>Publier quand même</span></div></div>','div')+
+ c('dup','<div class="band r"><b>Doublon probable</b><div class="bb"><span>Publier quand même</span></div></div>','div')+
+ c('old','<div class="band r"><b>Facture datée d\'il y a 94 jours</b><div class="bb"><span>Publier quand même</span></div></div>','div');
+
+var CONF='<div class="conf"><div class="ln"><span class="mut">Dépense payée</span><b class="num">465,08 $</b></div><div class="ln"><span class="mut">Pièce jointe</span><span>✓</span></div><div class="ln"><span class="mut">Achat taxable QC → TPS/TVQ QC</span><span style="color:var(--gd)">✓</span></div>'+
+'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn ghost" onclick="this.closest(\'.conf\').classList.remove(\'on\')">Annuler</button><button class="btn go">Confirmer</button></div></div>';
+function GO(inl){return c(ALL.replace('pub',''),'<button class="btn go'+(inl?'':' big')+'" onclick="conf(this)">'+(inl?'Publier et suivant':c(ALL.replace('pub','').replace('bill',''),'Publier')+c('bill','Publier la facture'))+' <span class="kbd">↵</span></button>','div')+
+ c('pub','<button class="btn ghost'+(inl?'':' big')+'" style="width:'+(inl?'auto':'100%')+'">Voir dans QuickBooks ↗</button>','div')}
+
+function fill(sel,h){document.querySelectorAll(sel).forEach(function(e){e.innerHTML=typeof h=='function'?h(e):h})}
+fill('[data-top]',TOP);fill('[data-busy]',BUSY);fill('[data-doc]',DOC);
+fill('[data-type]',function(e){return e.hasAttribute('data-big')?TYPEBIG:TYPE});
+fill('[data-vendor]',function(e){return VENDOR(e.closest('.y2')?'Bénéficiaire':'Fournisseur')});
+fill('[data-account]',ACCOUNT);
+fill('[data-pay]',function(e){return PAY(e.closest('.y2')?'Compte de paiement':'Payé par')});
+fill('[data-articles]',function(e){return ART(e.hasAttribute('data-wide'))});
+fill('[data-taxes]',function(e){return e.hasAttribute('data-short')?TAXS:TAX});
+fill('[data-plus]',PLUS);fill('[data-tpl]',TPL);fill('[data-hist]',HIST);fill('[data-block]',BLOCK);
+fill('[data-go]',function(e){return GO(e.hasAttribute('data-inline'))});
+fill('[data-amt]',AMT);fill('[data-cur]',c(ALL.replace('usd',''),'CAD')+c('usd','USD'));
+
+// cas
+var css='[data-case]{display:none!important}body.c-read .nc-busy,body.c-err .nc-busy{display:none!important}';
+CASES.forEach(function(k){css+='body.c-'+k[0]+' [data-case~="'+k[0]+'"]{display:revert!important}'});
+var st=document.createElement('style');st.textContent=css;document.head.appendChild(st);
+var cb=document.getElementById('cases');
+CASES.forEach(function(k,i){var s=document.createElement('span');s.textContent=k[1];s.onclick=function(){setCase(k[0],s)};cb.appendChild(s);if(!i)setCase(k[0],s)});
+function setCase(k,s){CASES.forEach(function(x){document.body.classList.remove('c-'+x[0])});document.body.classList.add('c-'+k);cb.querySelectorAll('span').forEach(function(x){x.classList.toggle('on',x===s)})}
+
+// surlignage
+document.querySelectorAll('[data-hl]').forEach(function(scr){
+  var doc=scr.querySelector('.doc');
+  function lite(k,on){
+    doc.querySelectorAll('[data-f="'+k+'"]').forEach(function(t){t.classList.toggle('lit',on)});
+    scr.querySelectorAll('[data-k="'+k+'"]').forEach(function(t){t.classList.toggle('lit',on)});
+  }
+  scr.querySelectorAll('[data-k]').forEach(function(f){
+    f.addEventListener('mouseenter',function(){if(!scr.dataset.off)lite(f.dataset.k,true)});
+    f.addEventListener('mouseleave',function(){lite(f.dataset.k,false)});
+  });
+  doc.querySelectorAll('[data-f]').forEach(function(t){
+    t.addEventListener('mouseenter',function(e){if(scr.dataset.off)return;e.stopPropagation();lite(t.dataset.f,true)});
+    t.addEventListener('mouseleave',function(){lite(t.dataset.f,false)});
+  });
+});
+function hl(b){b.classList.toggle('on');var s=b.closest('[data-hl]');if(b.classList.contains('on'))delete s.dataset.off;else s.dataset.off=1}
+function dr(h){h.parentNode.classList.toggle('on')}
+function tab(t,i){var s=t.closest('.side');s.querySelectorAll('.tabs span').forEach(function(x,j){x.classList.toggle('on',j===i)});s.querySelectorAll('.pnl').forEach(function(p,j){p.classList.toggle('on',j===i)})}
+function conf(b){var c=b.parentNode.querySelector('.conf');c&&c.classList.toggle('on')}
+function pop(el){var ev=window.event;var p=el.querySelector(':scope>.pop');if(!p)return;if(ev&&ev.target.closest('.pop'))return;var was=p.classList.contains('on');document.querySelectorAll('.pop.on').forEach(function(x){x.classList.remove('on')});if(!was)p.classList.add('on');ev&&ev.stopPropagation()}
+document.addEventListener('click',function(e){if(!e.target.closest('.pop'))document.querySelectorAll('.pop.on').forEach(function(x){x.classList.remove('on')})});
+</script></body></html>

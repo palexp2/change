@@ -4,19 +4,57 @@ import db from '../db/database.js'
 import { requireAdmin } from '../middleware/auth.js'
 import { newId } from '../utils/ids.js'
 import { runAutomation } from '../services/automationEngine.js'
-import { scheduleAutomation, unscheduleAutomation } from '../services/automationScheduler.js'
+import { scheduleAutomation, unscheduleAutomation, runFlowNow } from '../services/automationScheduler.js'
+import { STEP_TYPES } from '../services/ruleActions/steps.js'
+import { groupOf } from '../services/automationGroups.js'
+import { SYSTEM_FLOWS } from '../services/automationFlows.js'
+import { runSubscriptionProductFor, pairsFor } from '../services/subscriptionProductTrigger.js'
 import { MANUAL_RUNNERS, logSystemRun, CONFIGURABLE_SYSTEM_AUTOMATIONS } from '../services/systemAutomations.js'
 import { sendInstallationTestEmail, buildInstallationEmailHtml, selectEligibleCompanies } from '../services/installationFollowup.js'
-import { dryRunFieldRule, runDateOffsetRuleNow, previewRuleForRecord, drainDeferredForAutomation, CANDIDATE_CAP } from '../services/fieldRuleEngine.js'
+import { runRuleActionForRecord, dryRunFieldRule, runDateOffsetRuleNow, previewRuleForRecord, drainDeferredForAutomation, CANDIDATE_CAP } from '../services/fieldRuleEngine.js'
 import { getAutomationFrom, listFromAddresses } from '../services/postmarkConfig.js'
 import { processRetryQueue } from '../services/airtableWebhooks.js'
 import { generateShortToken } from '../utils/shortToken.js'
 import { runWebhook } from '../services/webhookEngine.js'
 import { APP_URL } from '../config/appUrl.js'
 import { parseLimit } from '../utils/pagination.js'
+import { listSlackChannels, listSlackUsers } from '../services/slack.js'
 
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/i
-const VALID_ACTION_TYPES = new Set(['slack', 'email', 'task', 'script'])
+const VALID_ACTION_TYPES = new Set(['slack', 'email', 'task', 'script', 'steps'])
+
+// Automatisation en blocs : liste d'actions (services/ruleActions/steps.js).
+function validateSteps(ac) {
+  const steps = ac?.steps
+  if (!Array.isArray(steps)) throw new Error('action_config.steps requis')
+  if (steps.length > 20) throw new Error('20 actions au maximum')
+  steps.forEach((st, i) => {
+    if (!STEP_TYPES.includes(st?.type)) throw new Error(`Action ${i + 1} : type invalide (${st?.type})`)
+    if (st.config != null && typeof st.config !== 'object') throw new Error(`Action ${i + 1} : configuration invalide`)
+  })
+}
+
+const parseTc = tc => (typeof tc === 'string' ? JSON.parse(tc || '{}') : (tc || {}))
+
+// Déclencheur planifié d'une automatisation en blocs → expression cron.
+const FREQ_CRON = { min5: '*/5 * * * *', min15: '*/15 * * * *', hour: '0 * * * *' }
+function scheduleTrigger(tc) {
+  const t = typeof tc === 'string' ? JSON.parse(tc || '{}') : (tc || {})
+  // « Quand un abonnement contient un produit » : liste de produits Stripe.
+  if (t.type === 'subscription_product') {
+    const products = (Array.isArray(t.products) ? t.products : []).filter(p => /^prod_[A-Za-z0-9]+$/.test(p))
+    return { type: 'subscription_product', products, ...(t.event === 'lost' ? { event: 'lost' } : {}) }
+  }
+  const [h, m] = String(t.time || '08:00').split(':').map(Number)
+  if (!(h >= 0 && h < 24 && m >= 0 && m < 60)) throw new Error('Heure invalide')
+  const freq = t.freq || 'day'
+  const cronExpr = FREQ_CRON[freq]
+    || (freq === 'day' ? `${m} ${h} * * *`
+      : freq === 'week' ? `${m} ${h} * * ${Math.min(6, Math.max(0, Number(t.weekday ?? 1)))}`
+        : freq === 'month' ? `${m} ${h} ${Math.min(28, Math.max(1, Number(t.monthday ?? 1)))} * *` : null)
+  if (!cronExpr) throw new Error(`Fréquence invalide : ${freq}`)
+  return { freq, time: t.time || '08:00', weekday: t.weekday ?? 1, monthday: t.monthday ?? 1, cron: cronExpr }
+}
 // Webhook automations (kind='webhook') — surface déclarative validée côté serveur.
 const WEBHOOK_TABLES = new Set(['tickets', 'projects', 'serial_numbers'])
 const VALID_STEP_TYPES = new Set(['update', 'upsert', 'create'])
@@ -104,6 +142,13 @@ function validateFieldRule({ trigger_config, action_type, action_config }) {
       throw new Error('trigger_config.conditions.conjunction doit être AND ou OR')
     }
     const rules = tc.conditions.rules
+    // Automatisation en blocs en cours de construction : sans condition, elle ne
+    // correspond à rien (le moteur traduit une liste vide par « aucun »).
+    if (action_type === 'steps' && Array.isArray(rules) && rules.length === 0) {
+      const ac = typeof action_config === 'string' ? JSON.parse(action_config) : (action_config || {})
+      validateSteps(ac)
+      return { tc, ac, at: 'steps' }
+    }
     if (!Array.isArray(rules) || rules.length === 0) {
       throw new Error('trigger_config.conditions.rules requis (au moins une condition)')
     }
@@ -122,6 +167,7 @@ function validateFieldRule({ trigger_config, action_type, action_config }) {
   if (at === 'task' && ac.link_company === false && tc.erp_table === 'tasks') {
     throw new Error('Garde anti-cycle: règle sur `tasks` avec action task interdite')
   }
+  if (at === 'steps') validateSteps(ac)
   if (at === 'script' && (!ac.script || !String(ac.script).trim())) {
     throw new Error('action_config.script requis pour une règle de type script')
   }
@@ -290,6 +336,12 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // Sync TRX_Orisha : le seul réglage ouvert est la liste des appariements
   // QuickBooks posés SANS demander. Les autres deviennent des propositions à
   // confirmer ; vider la liste coupe tout appariement automatique.
+  sys_bank_reconcile_nightly: {
+    actionKeys: new Set(['since']),
+    validateKey(key, v) {
+      if (key === 'since' && !/^\d{4}-\d{2}$/.test(v || '')) throw new Error('since : AAAA-MM')
+    },
+  },
   sys_bank_qb_verify: {
     actionKeys: new Set(['window_days', 'grace_days', 'auto_apply_methods', 'deep_since', 'auto_reconcile']),
     validateKey(key, v) {
@@ -329,6 +381,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   sys_work_suggestions: { actionKeys: new Set() },
   sys_autonomous_agents: { actionKeys: new Set() },
   sys_month_end_provisions: { actionKeys: new Set() },
+  sys_timesheet_paie_sync: { actionKeys: new Set() },
   sys_address_check: { actionKeys: new Set() },
   // Confirmation d'adresse auprès de l'API : seuls les types d'adresse
   // concernés se règlent ici (« Livraison,Ferme » par défaut).
@@ -351,6 +404,8 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     },
   },
   sys_return_label: { actionKeys: new Set() },
+  sys_meeting_booking: { actionKeys: new Set() },
+  sys_meeting_reminders: { actionKeys: new Set() },
   sys_soumission_link_click: { actionKeys: new Set() },
   // Relance d'un clic tardif : à qui va la tâche, et après combien d'heures.
   sys_soumission_late_click_task: {
@@ -358,6 +413,13 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     validateKey(key, v) {
       if (key === 'assignee_email' && v && !v.includes('@')) throw new Error('assignee_email : adresse courriel requise')
       if (key === 'delay_hours' && v !== '' && !(Number(v) >= 0)) throw new Error('delay_hours : nombre d’heures requis')
+    },
+  },
+  // Paiement refusé à l'ajout à un abonnement : à qui va la tâche de suivi.
+  sys_payment_failed_task: {
+    actionKeys: new Set(['assignee_email']),
+    validateKey(key, v) {
+      if (key === 'assignee_email' && v && !v.includes('@')) throw new Error('assignee_email : adresse courriel requise')
     },
   },
   // Corbeille : durée de rétention avant suppression définitive. Le compte à
@@ -585,9 +647,19 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       if (key === 'low_rating_max' && !/^[1-5]$/.test(v)) throw new Error('low_rating_max : 1 à 5')
     },
   },
+  // Programme partenaire → date dans la fiche HubSpot du contact.
+  sys_partnership_hubspot: {
+    actionKeys: new Set(['product_name', 'product_stripe_id', 'hubspot_property']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'product_name' && v.length > 200) throw new Error('product_name trop long (max 200 caractères)')
+      if (key === 'product_stripe_id' && !/^prod_[A-Za-z0-9]{6,40}$/.test(v)) throw new Error('product_stripe_id : « prod_… »')
+      if (key === 'hubspot_property' && !/^[a-z0-9_]{1,100}$/.test(v)) throw new Error('hubspot_property : nom interne HubSpot (minuscules, chiffres, _)')
+    },
+  },
   // « Une facture a été payée » sur #paiements.
   sys_facture_paid_slack: {
-    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'paid_statuses', 'skip_zero_amount', 'message']),
+    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'paid_statuses', 'skip_zero_amount', 'message', 'upgrade_prefix', 'excluded_products']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'slack_channel' && !/^(#?[a-z0-9._-]{1,80}|@[A-Za-z0-9._-]{1,80}|[^\s@]+@[^\s@]+\.[^\s@]+|[CGDU][A-Z0-9]{6,})$/.test(v)) {
@@ -602,7 +674,18 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       if (key === 'paid_statuses' && v.length > 120) throw new Error('paid_statuses trop long (max 120 caractères)')
       if (key === 'skip_zero_amount' && v !== '0' && v !== '1') throw new Error('skip_zero_amount doit valoir 0 ou 1')
       if (key === 'message' && v.length > 2000) throw new Error('message trop long (max 2000 caractères)')
+      if (key === 'upgrade_prefix' && v.length > 200) throw new Error('upgrade_prefix trop long (max 200 caractères)')
+      if (key === 'excluded_products') {
+        let ids = null
+        try { ids = JSON.parse(v) } catch {}
+        if (!Array.isArray(ids) || ids.some(x => typeof x !== 'string' || x.length > 64)) throw new Error('excluded_products : liste de produits')
+      }
     },
+  },
+  // Réception d'un retour : destinataire de l'alerte « rembourser / désabonner ».
+  sys_return_item_received: {
+    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env']),
+    validateKey(key, v) { CONFIGURABLE_SYSTEM_SPECS.sys_facture_paid_slack.validateKey(key, v) },
   },
   // Prospects Instagram. Les trois automations sont `configurable: true` : sans
   // ces entrées, leur fiche affiche des champs que le PATCH refuse en 400.
@@ -952,6 +1035,15 @@ const router = Router()
 router.use(requireAdmin)
 router.get('/runtime/status', (_req, res) => res.json(scriptRuntimeStatus()))
 
+// GET /api/automations/slack-channels — choix du destinataire d'une action
+// « Message Slack » : canaux, puis personnes (`user: true`, valeur = id « U… »).
+router.get('/slack-channels', async (_req, res) => {
+  try {
+    const [channels, users] = await Promise.all([listSlackChannels(), listSlackUsers().catch(() => [])])
+    res.json([...channels, ...users.map(u => ({ ...u, user: true }))])
+  } catch (e) { res.status(502).json({ error: e.message }) }
+})
+
 // GET /api/automations
 router.get('/', (req, res) => {
   const automations = db.prepare(`
@@ -970,7 +1062,7 @@ router.get('/', (req, res) => {
     WHERE a.deleted_at IS NULL
     ORDER BY a.created_at DESC
   `).all()
-  res.json(automations)
+  res.json(automations.map(a => ({ ...a, group: groupOf(a), flow: a.system ? SYSTEM_FLOWS[a.id] || null : null })))
 })
 
 // GET /api/automations/field-defs?erp_table=tickets
@@ -1053,8 +1145,22 @@ router.get('/:id', (req, res) => {
 
 // POST /api/automations
 router.post('/', (req, res) => {
-  const { name, description, trigger_type, trigger_config, script, active, kind, action_type, action_config } = req.body
+  const { name, description, trigger_type, trigger_config, script, active, kind, action_type, action_config, group_name } = req.body
   if (!name?.trim()) return res.status(400).json({ error: 'Nom requis' })
+  if (kind === 'flow') {
+    // Automatisation en blocs planifiée.
+    let tc
+    try { tc = scheduleTrigger(trigger_config); validateSteps(typeof action_config === 'string' ? JSON.parse(action_config) : (action_config || { steps: [] })) } catch (e) { return res.status(400).json({ error: e.message }) }
+    const id = newId('auto')
+    db.prepare(`INSERT INTO automations (id, name, description, trigger_type, trigger_config, action_type, action_config, script, active, kind, group_name)
+      VALUES (?, ?, ?, ?, ?, 'steps', ?, '', ?, 'flow', ?)`).run(id, name.trim(), description || null,
+      tc.type === 'subscription_product' ? 'subscription_product' : 'schedule', JSON.stringify(tc),
+      typeof action_config === 'string' ? action_config : JSON.stringify(action_config || { steps: [] }), active !== undefined ? active : 0, group_name || null)
+    const created = db.prepare('SELECT * FROM automations WHERE id = ?').get(id)
+    recordAutomationVersion(id, snapshotFromRow(created), req, { coalesce: false })
+    if (created.active && created.trigger_type === 'schedule') scheduleAutomation(created)
+    return res.status(201).json(created)
+  }
   if (!trigger_type && kind !== 'field_rule' && kind !== 'webhook') return res.status(400).json({ error: 'trigger_type requis' })
 
   const isFieldRule = kind === 'field_rule'
@@ -1088,6 +1194,7 @@ router.post('/', (req, res) => {
     tcJson, at, acJson, isFieldRule ? '' : (script || ''),
     active !== undefined ? active : 1, isFieldRule ? 'field_rule' : (isWebhook ? 'webhook' : null), webhookToken)
 
+  if (group_name) db.prepare('UPDATE automations SET group_name = ? WHERE id = ?').run(group_name, id)
   const created = db.prepare('SELECT * FROM automations WHERE id = ?').get(id)
   recordAutomationVersion(id, snapshotFromRow(created), req, { coalesce: false })
 
@@ -1105,7 +1212,55 @@ router.patch('/:id', (req, res) => {
   ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
-  const { name, description, trigger_type, trigger_config, script, active, action_type, action_config } = req.body
+  const { name, description, trigger_type, trigger_config, script, active, action_type, action_config, group_name } = req.body
+
+  if (group_name !== undefined && !automation.system) {
+    db.prepare('UPDATE automations SET group_name = ? WHERE id = ?').run(group_name || null, automation.id)
+  }
+
+  // Automation système : seul le nom se renomme (le seed le respecte ensuite).
+  if (automation.system && name !== undefined) {
+    if (!String(name).trim()) return res.status(400).json({ error: 'Nom requis' })
+    ensureBaselineVersion(automation)
+    db.prepare(`UPDATE automations SET name = ?, name_custom = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(String(name).trim(), automation.id)
+    const updated = db.prepare('SELECT * FROM automations WHERE id = ?').get(automation.id)
+    recordAutomationVersion(updated.id, snapshotFromRow(updated), req)
+    const rest = ['description', 'trigger_type', 'trigger_config', 'script', 'active', 'action_type', 'action_config']
+    if (rest.every(k => req.body[k] === undefined)) return res.json({ ...updated, group: groupOf(updated) })
+    automation.name = updated.name
+  }
+
+  // Automatisation en blocs : le déclencheur passe d'« enregistrement »
+  // (règle de champ) à « planifié » (flow) et inversement.
+  if (!automation.system && automation.action_type === 'steps') {
+    const nextKind = req.body.kind || automation.kind
+    let tc = trigger_config ?? automation.trigger_config
+    try {
+      const ac = action_config ?? automation.action_config
+      if (nextKind === 'flow') {
+        tc = JSON.stringify(scheduleTrigger(nextKind !== automation.kind && trigger_config === undefined ? {} : tc))
+        validateSteps(typeof ac === 'string' ? JSON.parse(ac) : ac)
+      } else {
+        if (nextKind !== automation.kind && trigger_config === undefined) {
+          tc = JSON.stringify({ erp_table: 'shipments', conditions: { conjunction: 'AND', rules: [] }, fire_on: 'per_record_once' })
+        }
+        validateFieldRule({ trigger_config: tc, action_type: 'steps', action_config: ac })
+      }
+    } catch (e) { return res.status(400).json({ error: e.message }) }
+    ensureBaselineVersion(automation)
+    db.prepare(`UPDATE automations SET name = COALESCE(?, name), description = COALESCE(?, description), active = COALESCE(?, active),
+      kind = ?, trigger_type = ?, trigger_config = ?, action_config = COALESCE(?, action_config), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?`).run(name !== undefined ? name.trim() : null, description !== undefined ? description : null, active ?? null,
+      nextKind, nextKind === 'flow' ? (parseTc(tc).type === 'subscription_product' ? 'subscription_product' : 'schedule') : 'field_rule',
+      typeof tc === 'string' ? tc : JSON.stringify(tc),
+      action_config !== undefined ? (typeof action_config === 'string' ? action_config : JSON.stringify(action_config)) : null, automation.id)
+    const updated = db.prepare('SELECT * FROM automations WHERE id = ?').get(automation.id)
+    recordAutomationVersion(updated.id, snapshotFromRow(updated), req)
+    if (updated.trigger_type === 'schedule' && updated.active) scheduleAutomation(updated)
+    else unscheduleAutomation(updated.id)
+    return res.json({ ...updated, group: groupOf(updated) })
+  }
 
   // Automations système configurables (ex. sys_revenue_recognition) : la condition
   // de déclenchement et les clés d'action whitelistées sont éditables, en plus du
@@ -1459,6 +1614,26 @@ router.post('/:id/drain-deferred', async (req, res) => {
 //  - field_rule : dry-run sans dispatch ni insertion de fires
 //  - webhook    : dry-run déclaratif (matches + réponse calculés, AUCUNE écriture)
 //                 avec les params fournis dans le body { params: {...} }
+// POST /api/automations/:id/run-now — automatisation en blocs : exécute ses
+// actions pour de vrai, sur l'enregistrement choisi (déclencheur enregistrement)
+// ou sans enregistrement (planifiée). Bouton « Tester » de la page.
+router.post('/:id/run-now', async (req, res) => {
+  const a = db.prepare('SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  if (!a || a.action_type !== 'steps') return res.status(404).json({ error: 'Introuvable' })
+  try {
+    if (a.trigger_type === 'subscription_product') {
+      if (!req.body?.record_id) return res.status(400).json({ error: 'Abonnement requis' })
+      return res.json(await runSubscriptionProductFor(a.id, String(req.body.record_id)))
+    }
+    if (a.kind === 'flow') return res.json(await runFlowNow(a.id, { trigger: 'manuel' }))
+    const tc = JSON.parse(a.trigger_config || '{}')
+    if (!req.body?.record_id) return res.status(400).json({ error: 'Enregistrement requis' })
+    res.json(await runRuleActionForRecord(a.id, tc.erp_table, String(req.body.record_id)))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 router.post('/:id/test', async (req, res) => {
   const automation = db.prepare(
     'SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL'
@@ -1475,6 +1650,15 @@ router.post('/:id/test', async (req, res) => {
     } catch (e) {
       return res.status(400).json({ error: e.message })
     }
+  }
+
+  if (automation.trigger_type === 'subscription_product') {
+    // Les couples déjà traités restent listés : sans nouvelle tentative
+    // automatique, « Exécuter » est le seul moyen de relancer un échec.
+    const pairs = pairsFor(automation).sort((x, y) => x.already_fired - y.already_fired)
+    const fired = pairs.filter(r => r.already_fired).length
+    return res.json({ candidates_total: pairs.length, would_fire: pairs.length - fired, already_fired: fired,
+      previews: pairs.slice(0, 50).map(r => ({ id: r.id, label: `${r.contact_name} · ${r.stripe_id || r.subscription_id}${r.lost_product ? ` · ${r.produits}` : ''}`, already_fired: r.already_fired })) })
   }
 
   if (automation.kind !== 'field_rule') {

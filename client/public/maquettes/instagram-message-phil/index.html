@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Message à Phil</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root { --bg:#f5f6f7; --s:#fff; --soft:#f7f8f9; --line:#eceef0; --line2:#dfe2e5; --ink:#1d1c1d; --ink2:#454245; --ink3:#7a8089; --ink4:#a6abb2; --link:#1264a3; --g:#2ca01c; --gd:#1d7f12; --edit:#fdf6e3; }
+:root[data-theme="dark"] { --bg:#111315; --s:#1a1d21; --soft:#202327; --line:#2a2e33; --line2:#33383e; --ink:#e8e8e8; --ink2:#c9c9c9; --ink3:#8e959d; --ink4:#646b73; --link:#4ea4e8; --g:#45b934; --gd:#6ccf5c; --edit:#2c2717; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111315; --s:#1a1d21; --soft:#202327; --line:#2a2e33; --line2:#33383e; --ink:#e8e8e8; --ink2:#c9c9c9; --ink3:#8e959d; --ink4:#646b73; --link:#4ea4e8; --g:#45b934; --gd:#6ccf5c; --edit:#2c2717; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 Inter,system-ui,sans-serif; padding:24px 16px 60px; -webkit-font-smoothing:antialiased; }
+h1 { max-width:1100px; margin:0 auto 18px; font-size:16px; font-weight:600; }
+.grid { max-width:1100px; margin:0 auto; display:grid; grid-template-columns:repeat(auto-fill,minmax(500px,1fr)); gap:18px; }
+@media (max-width:560px) { .grid { grid-template-columns:1fr; } }
+.opt h2 { font-size:14px; margin:0 0 2px; } .opt h2 b { color:var(--gd); margin-right:6px; }
+.opt .l { color:var(--ink3); font-size:12.5px; margin-bottom:10px; }
+.slack { background:var(--s); border-radius:12px; box-shadow:0 1px 2px rgb(0 0 0/.04),0 10px 28px rgb(0 0 0/.06); padding:14px 18px; display:flex; flex-direction:column; gap:16px; }
+.m { display:flex; gap:10px; }
+.ava { width:36px; height:36px; border-radius:8px; background:#1d7f12; color:#fff; font-weight:700; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:15px; }
+.b { min-width:0; flex:1; }
+.n { font-weight:700; } .n span { font-weight:400; color:var(--ink3); font-size:12px; margin-left:6px; }
+.n .app { font-size:10px; font-weight:600; background:var(--soft); color:var(--ink3); padding:1px 4px; border-radius:3px; margin-left:4px; }
+.t { color:var(--ink2); }
+.t strong { color:var(--ink); }
+.t ul { margin:2px 0 0; padding-left:20px; }
+a { color:var(--link); text-decoration:none; }
+.ed { font-size:11px; color:var(--ink4); margin-left:4px; }
+.hi { background:var(--edit); border-radius:6px; margin:-4px -6px; padding:4px 6px; }
+.time { text-align:center; font-size:11.5px; color:var(--ink4); border-top:1px solid var(--line); padding-top:8px; }
+</style>
+</head>
+<body>
+<h1>Message à Phil — samedi</h1>
+<div class="grid">
+
+  <div class="opt">
+    <h2><b>P1</b>Par origine</h2>
+    <div class="l">Compte ce qui s'est passé (commentaires, messages, abonnés) — le tri n'y change rien.</div>
+    <div class="slack">
+      <div class="m"><div class="ava">B</div><div class="b">
+        <div class="n">Boréal <span class="app">APP</span><span>9 h 02</span></div>
+        <div class="t">📸 <strong>43 personnes · 27 sept. au 3 oct.</strong>
+          <ul><li>31 commentaires — dont 22 « coach »</li><li>9 messages privés</li><li>3 nouveaux abonnés</li></ul>
+          <a href="#">Ouvrir dans Boréal</a></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="opt">
+    <h2><b>P2</b>Le lien seulement</h2>
+    <div class="l">Aucun chiffre, rien qui puisse devenir faux.</div>
+    <div class="slack">
+      <div class="m"><div class="ava">B</div><div class="b">
+        <div class="n">Boréal <span class="app">APP</span><span>9 h 02</span></div>
+        <div class="t">📸 Ta liste Instagram de la semaine est prête.<br><a href="#">Ouvrir dans Boréal</a></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="opt">
+    <h2><b>P3</b>Message qui se met à jour</h2>
+    <div class="l">Un seul message, réécrit pendant la journée à mesure que le tri avance.</div>
+    <div class="slack">
+      <div class="m"><div class="ava">B</div><div class="b">
+        <div class="n">Boréal <span class="app">APP</span><span>9 h 02</span></div>
+        <div class="t hi">📸 <strong>43 personnes · 27 sept. au 3 oct.</strong>
+          <ul><li>Coaching 22</li><li>Questions 10</li><li>Commentaires 8</li><li>Fleurs 2</li><li>Abonnés 1</li></ul>
+          <a href="#">Ouvrir dans Boréal</a> <span class="ed">(modifié · 15 h 40 · tri terminé)</span></div>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="opt">
+    <h2><b>P4</b>Deux temps</h2>
+    <div class="l">Le matin : combien et le lien. En fin de tri : les piles.</div>
+    <div class="slack">
+      <div class="m"><div class="ava">B</div><div class="b">
+        <div class="n">Boréal <span class="app">APP</span><span>9 h 02</span></div>
+        <div class="t">📸 <strong>43 personnes cette semaine.</strong> Le tri se termine dans la journée.<br><a href="#">Ouvrir dans Boréal</a></div>
+      </div></div>
+      <div class="time">15 h 40</div>
+      <div class="m"><div class="ava">B</div><div class="b">
+        <div class="n">Boréal <span class="app">APP</span><span>15 h 40</span></div>
+        <div class="t">✅ <strong>Tri terminé</strong> · 18 messages prêts
+          <ul><li>Coaching 22</li><li>Questions 10 — à écrire toi-même</li><li>Commentaires 8</li><li>Fleurs 2</li><li>Abonnés 1</li></ul></div>
+      </div></div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

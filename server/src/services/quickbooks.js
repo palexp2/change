@@ -10,6 +10,7 @@ import { emitCompany, emitEntity } from './realtimeEmitters.js'
 import { logSync } from './syncLog.js'
 import { validateTaxCodeAgainstType, getTransactionType } from './fiscalStatus.js'
 import { completeLiaDescription } from './purchaseLiaMatch.js'
+import { applyPartsAccount, allLinesAreParts, isLiaLine, resolvePartsAccountId } from './liaPartsAccount.js'
 import { round2, round2Safe } from '../utils/money.js'
 import { uploadsPath } from '../config/uploads.js'
 import { consolidateSingleItemCharges } from './saleReceiptSingleItem.js'
@@ -183,6 +184,9 @@ const PAYMENT_TYPE_MAP = {
 // ── Push achat → QB (Purchase ou Bill selon type) ────────────────────────────
 
 async function resolveQBVendor(row) {
+  // Bénéficiaire choisi dans la liste QuickBooks (ligne ouverte de Transactions) :
+  // l'id est déjà le bon, rien à chercher ni à créer.
+  if (row.qb_payee_type === 'Vendor' && row.qb_payee_id) return row.qb_payee_id
   if (row.vendor_id) {
     const company = db.prepare('SELECT quickbooks_vendor_id, name FROM companies WHERE id=?').get(row.vendor_id)
     if (company?.quickbooks_vendor_id) return company.quickbooks_vendor_id
@@ -256,8 +260,24 @@ export async function pushAchatToQB(achatId) {
       if (taxLines) taxDetail.TxnTaxDetail.TaxLine = taxLines
     } catch { /* taux QB indisponibles → auto-calcul */ }
   }
+  // Code à taux zéro (Hors champ, Exonéré, Détaxé) sans taxe : on l'envoie quand
+  // même, pour que QuickBooks porte le code exact affiché au rapprochement — sans
+  // lui, QuickBooks posait « NON » (hors taxes). Le montant ne bouge pas.
+  let zeroCode = false
+  if (!applyTax && row.tax_code_id && row.tax_code_id !== NO_TAX_CODE && !(row.tax_cad > 0)) {
+    try {
+      const { ZERO_RATE_CODES } = await import('./bankTaxCode.js')
+      zeroCode = ZERO_RATE_CODES.has(await resolveTaxCodeNameById(row.tax_code_id))
+    } catch { zeroCode = false }
+  }
+  if (zeroCode) {
+    taxDetail = {
+      TxnTaxDetail: { TxnTaxCodeRef: { value: row.tax_code_id }, TotalTax: 0 },
+      GlobalTaxCalculation: 'TaxExcluded',
+    }
+  }
   const lineDetail = { AccountRef: { value: expenseAccountId } }
-  if (applyTax) lineDetail.TaxCodeRef = { value: row.tax_code_id }
+  if (applyTax || zeroCode) lineDetail.TaxCodeRef = { value: row.tax_code_id }
 
   // Écriture coupée en plusieurs comptes : chaque part devient une ligne. On
   // ne s'en sert que si les parts sont complètes ET qu'elles totalisent
@@ -279,7 +299,7 @@ export async function pushAchatToQB(achatId) {
       DetailType: 'AccountBasedExpenseLineDetail',
       AccountBasedExpenseLineDetail: {
         AccountRef: { value: l.account_id },
-        ...(applyTax ? { TaxCodeRef: { value: l.tax_code_id || row.tax_code_id } } : {}),
+        ...(applyTax || zeroCode ? { TaxCodeRef: { value: l.tax_code_id || row.tax_code_id } } : {}),
       },
       Description: l.description || description,
     }))
@@ -323,8 +343,14 @@ export async function pushAchatToQB(achatId) {
     // Charles (2026-08-11) — le libellé doit apparaître dans le mémo ET sur la ligne,
     // pas seulement sur la ligne.
     if (row.qb_memo) purchase.PrivateNote = row.qb_memo
-    const qbVendorId = await resolveQBVendor(row)
-    if (qbVendorId) purchase.EntityRef = { value: qbVendorId, type: 'Vendor' }
+    // Une dépense payée peut avoir pour bénéficiaire un client ou un employé,
+    // comme dans QuickBooks ; sinon c'est un fournisseur.
+    if (row.qb_payee_id && ['Customer', 'Employee'].includes(row.qb_payee_type)) {
+      purchase.EntityRef = { value: row.qb_payee_id, type: row.qb_payee_type }
+    } else {
+      const qbVendorId = await resolveQBVendor(row)
+      if (qbVendorId) purchase.EntityRef = { value: qbVendorId, type: 'Vendor' }
+    }
     // Numéro de PIÈCE : celui du fournisseur (n° de facture, n° de chèque) quand
     // on l'a. `reference` est un numéro de transaction bancaire — un repli, pas
     // un numéro de pièce.
@@ -1101,7 +1127,13 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
 
   // Résoudre les comptes : params en priorité, sinon config globale
   const cfg = getQBConfig()
-  const expenseAccountId = params.expenseAccountId || cfg.expense_account_id
+  // Lignes LIA → compte 14000 Stock de Pièces, d'office (cf. liaPartsAccount.js). Un
+  // document fait uniquement de pièces y va tout entier.
+  let recItems = []
+  try { recItems = JSON.parse(rec.items || '[]') } catch {}
+  const partsAccountId = recItems.some(isLiaLine) ? await resolvePartsAccountId() : null
+  const expenseAccountId = (partsAccountId && allLinesAreParts(recItems) ? partsAccountId : null)
+    || params.expenseAccountId || cfg.expense_account_id
   if (!expenseAccountId) throw fieldError('Compte de dépense non spécifié', 'expense_account')
 
   let paymentAccountId = null
@@ -1168,6 +1200,7 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   // 6000 « Vous ne pouvez utiliser qu'une seule devise étrangère par opération ».
   // On vérifie AVANT le POST et on explique quoi choisir (cas réel : Slack USD
   // publié depuis la Mastercard CAD).
+  let usdVendorPaidInCad = false
   if (type !== 'bill' && paymentAccountId) {
     let acctRes
     try {
@@ -1182,6 +1215,22 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
       throw fieldError(`Un crédit sur carte de crédit doit cibler un compte de type Carte de crédit — « ${acct?.Name || paymentAccountId} » est de type ${acct.AccountType}.`, 'payment_account')
     }
     const acctCurrency = (acct?.CurrencyRef?.value || 'CAD').toUpperCase()
+    // Facture USD payée depuis un compte CAD (Mastercard BNC…) : la banque a converti
+    // et débité en CAD. On publie sur la variante CAD du fournisseur (« X » au lieu de
+    // « X - USD », créée au besoin) ; la conversion au taux du débit suit plus bas.
+    if (acctCurrency === 'CAD' && txnCurrency === 'USD' && vendorId) {
+      usdVendorPaidInCad = true
+      const baseName = String(vendorDisplayName || rec.company || '').replace(/\s*-\s*USD$/i, '').trim()
+      if (baseName) {
+        vendorId = await findOrCreateVendor(baseName, 'CAD')
+        try {
+          const v = await qbGet(`/vendor/${vendorId}`)
+          if (v?.Vendor?.DisplayName) vendorDisplayName = v.Vendor.DisplayName
+          if (v?.Vendor?.CurrencyRef?.value) txnCurrency = v.Vendor.CurrencyRef.value.toUpperCase()
+          else txnCurrency = 'CAD'
+        } catch { txnCurrency = 'CAD'; vendorDisplayName = baseName }
+      }
+    }
     if (acctCurrency !== txnCurrency) {
       // Meilleur effort : lister les comptes compatibles pour un message actionnable.
       let hint = ''
@@ -1211,7 +1260,7 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     console.warn(`pushSaleReceiptToQB: période de service indisponible pour ${receiptId} (${e.message})`)
   }
 
-  const items = JSON.parse(rec.items || '[]')
+  const items = applyPartsAccount(recItems, partsAccountId)
   // DATE DE COMPTABILISATION : celle du passage AU COMPTE quand la ligne du
   // relevé est appariée à ce document. Une facture datée du 11 débitée le 14
   // appartient au 14 — c'est la date qui permet au rapprochement de retomber
@@ -1222,6 +1271,19 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     ORDER BY txn_date LIMIT 1
   `).get(String(receiptId))
   const txnDate = bankLine?.txn_date || rec.receipt_date || new Date().toISOString().slice(0, 10)
+  // MOIS DU SERVICE (Charles, 2026-10-03) : une facture de « septembre » datée du
+  // 1er octobre appartient à septembre. Elle part en facture à payer datée de la
+  // fin de la période, puis — dépense déjà payée — se règle au jour du débit
+  // (settleAccruedReceipt). Une facture à payer choisie comme telle prend
+  // simplement la date de fin de période.
+  let accrualDate = null
+  if ((type === 'purchase' || type === 'bill') && !params.noServiceAccrual) {
+    try {
+      const { serviceAccrualDate } = await import('./servicePeriod.js')
+      accrualDate = serviceAccrualDate(rec.service_period, txnDate)
+    } catch {}
+  }
+  let postType = accrualDate ? 'bill' : type
   let totalAmt = rec.total || 0
   let subtotalAmt = rec.subtotal || 0
   let tpsAmt = rec.tps || 0
@@ -1271,6 +1333,11 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     const charged = fxChargedAmount(rec, params)
     if (charged && usdCad && Math.abs(charged / origTotal / usdCad - 1) > 0.1) {
       throw fieldError(`Débit de ${charged.toFixed(2)} ${txnCurrency} incohérent avec la facture de ${origTotal.toFixed(2)} ${recCurrency} (taux ${round2(charged / origTotal)} contre ${usdCad} à la Banque du Canada).`, 'bank_charged_total')
+    }
+    // Fournisseur USD payé sur un compte CAD : seul le débit réel fait foi, jamais
+    // un taux Banque du Canada (cas PromptSmart : 161,41 $ CA publiés 229,94).
+    if (usdVendorPaidInCad && !charged) {
+      throw fieldError(`Montant débité en CAD inconnu : saisissez « Montant passé à la banque » ou liez la ligne du relevé.`, 'bank_charged_total')
     }
     if (!charged && !usdCad) throw new Error(`Taux USD→CAD indisponible pour ${txnDate} (Banque du Canada) — impossible de convertir le reçu ${recCurrency} en ${txnCurrency}. Réessayer plus tard.`)
     const factor = charged ? charged / origTotal : usdCad // seul sens autorisé : USD → CAD
@@ -1408,8 +1475,14 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   // Débit déjà absorbé par la conversion USD → CAD : aucun frais à ajouter.
   const conversionFee = computeConversionFee(fxConvertedFromBank ? null : params.bankChargedTotal, totalAmt)
   if (conversionFee.error) throw fieldError(conversionFee.error, 'bank_charged_total')
+  // Une facture à payer ne porte ni frais de conversion ni fournisseur absent :
+  // la dépense payée reste alors une dépense, à sa date habituelle.
+  if (postType === 'bill' && type === 'purchase' && (conversionFee.fee !== 0 || !vendorId)) {
+    accrualDate = null
+    postType = type
+  }
   if (conversionFee.fee !== 0) {
-    if (type === 'bill') {
+    if (postType === 'bill') {
       throw fieldError('Le montant passé à la banque ne s\'applique qu\'à une dépense payée (Purchase) — pour une facture à payer, l\'écart se constate au paiement.', 'bank_charged_total')
     }
     const exoneratedId = await resolveTaxCodeByName('Exonéré')
@@ -1464,7 +1537,7 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     taxDetail = { GlobalTaxCalculation: 'TaxExcluded' }
     // Purchase : TotalAmt est obligatoire et doit égaler base HT + taxe que QB va calculer.
     // On la recompose depuis les taux de chaque code pour rester aligné avec QB.
-    if (type !== 'bill') {
+    if (postType !== 'bill') {
       try {
         const rates = ratesByCode ? new Map(ratesByCode) : new Map()
         for (const code of [...new Set(effectiveLines.map(l => l.taxCodeId).filter(Boolean))]) {
@@ -1501,22 +1574,23 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   if (txnCurrency && txnCurrency !== 'CAD') {
     let rate = 1
     if (txnCurrency === 'USD') {
-      rate = await getUsdCadRate(txnDate)
-      if (!rate) throw new Error(`Taux USD→CAD indisponible pour ${txnDate} (Banque du Canada). Réessayer plus tard.`)
+      rate = await getUsdCadRate(accrualDate || txnDate)
+      if (!rate) throw new Error(`Taux USD→CAD indisponible pour ${accrualDate || txnDate} (Banque du Canada). Réessayer plus tard.`)
     }
     currencyFields = { CurrencyRef: { value: txnCurrency }, ExchangeRate: rate }
   }
 
   let qbId
-  if (type === 'bill') {
+  if (postType === 'bill') {
     const bill = {
       VendorRef: { value: vendorId },
-      TxnDate: txnDate,
+      TxnDate: accrualDate || txnDate,
       Line: lines,
       ...currencyFields,
       ...taxDetail,
     }
     if (params.dueDate) bill.DueDate = params.dueDate
+    else if (accrualDate && type === 'purchase') bill.DueDate = txnDate
     if (rec.receipt_number) bill.DocNumber = qbDocNumber(rec.receipt_number)
     if (privateNote) bill.PrivateNote = privateNote
     const result = await qbPost('/bill', bill)
@@ -1531,7 +1605,8 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     }
     // CTB - Suivi : programme le paiement dans le Google Sheets (fire-and-forget,
     // import dynamique pour éviter le cycle quickbooks → ctbSheet → systemAutomations).
-    import('./ctbSheet.js').then(({ appendFactureAPayer }) => appendFactureAPayer({
+    // Pas pour une dépense déjà payée passée en facture de fin de mois.
+    if (type === 'bill') import('./ctbSheet.js').then(({ appendFactureAPayer }) => appendFactureAPayer({
       vendor: vendorDisplayName || rec.company, total: totalAmt, currency: txnCurrency,
       dueDate: params.dueDate || null, source: `sale_receipt ${receiptId}`,
     })).catch(() => {})
@@ -1568,10 +1643,19 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     SET quickbooks_id=?, quickbooks_type=?,
         expense_account_id=?, payment_account_id=?, tax_code_id=?, vendor_id=?,
         transaction_type=?, fiscal_force_reason=?,
-        due_date=COALESCE(?, due_date),
+        due_date=COALESCE(?, due_date), service_accrual_date=?,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id=?
-  `).run(qbId, type, expenseAccountId || null, paymentAccountId || null, lineTaxCodeId || null, vendorId || null, transactionType, forceReason, (type === 'bill' && params.dueDate) || null, receiptId)
+  `).run(qbId, postType, expenseAccountId || null, paymentAccountId || null, lineTaxCodeId || null, vendorId || null, transactionType, forceReason, (type === 'bill' && params.dueDate) || null, accrualDate, receiptId)
+
+  // Dépense déjà payée, comptabilisée au mois du service : le paiement de la
+  // facture part au jour du débit, si la ligne du relevé est déjà là. Sinon il
+  // partira quand elle sera appariée (bankMatchPublish).
+  if (accrualDate && type === 'purchase') {
+    try { await settleAccruedReceipt(receiptId) } catch (e) {
+      console.warn(`pushSaleReceiptToQB: paiement de la facture ${qbId} différé (${e.message})`)
+    }
+  }
 
   // Le reçu vient de changer d'état (publié) : recalcul de ses anomalies — le
   // « montant inhabituel » tombe (montant validé au push), les messages de doublon
@@ -1642,7 +1726,7 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
         baseName = dot > 0 ? `${baseName.slice(0, dot)}-p${i + 1}${baseName.slice(dot)}` : `${baseName}-p${i + 1}`
       }
       await qbUploadAttachment({
-        entityType: type === 'bill' ? 'Bill' : 'Purchase',
+        entityType: postType === 'bill' ? 'Bill' : 'Purchase',
         entityId: qbId,
         fileBuffer: buffer,
         fileName: baseName,
@@ -1689,6 +1773,57 @@ const QB_STRIPE_FEE_TAX_CODES = {
 }
 
 // Extracts processing fee vs tax-on-fee (TPS/TVQ) from a balance_transaction's fee_details.
+// Règle la facture d'un reçu comptabilisé au mois du service (voir
+// pushSaleReceiptToQB) : BillPayment au jour où l'argent est sorti du compte,
+// depuis le compte de paiement choisi à la publication. Idempotent — ne fait rien
+// sans ligne de relevé appariée, ni si le paiement existe déjà.
+export async function settleAccruedReceipt(receiptId) {
+  const rec = db.prepare(`
+    SELECT id, quickbooks_id, quickbooks_type, payment_account_id, service_accrual_date,
+           accrual_payment_qb_id, receipt_number
+    FROM sale_receipts WHERE id=? AND deleted_at IS NULL
+  `).get(receiptId)
+  if (!rec?.service_accrual_date || rec.quickbooks_type !== 'bill' || !rec.quickbooks_id) return null
+  if (rec.accrual_payment_qb_id || !rec.payment_account_id) return null
+  const bankLine = db.prepare(`
+    SELECT txn_date FROM bank_transactions
+    WHERE matched_type='receipt' AND matched_id=? AND deleted_at IS NULL
+    ORDER BY txn_date LIMIT 1
+  `).get(String(receiptId))
+  if (!bankLine?.txn_date) return null
+
+  const qbBill = (await qbGet(`/bill/${rec.quickbooks_id}`))?.Bill
+  if (!qbBill) throw new Error(`Facture QB #${rec.quickbooks_id} introuvable`)
+  const balance = round2(Number(qbBill.Balance) || 0)
+  if (!(balance > 0)) {
+    // Déjà réglée (QB l'a appariée elle-même, ou réglée à la main).
+    db.prepare("UPDATE sale_receipts SET accrual_payment_qb_id='deja-payee' WHERE id=?").run(receiptId)
+    return null
+  }
+  const acct = (await qbGet(`/account/${rec.payment_account_id}`))?.Account
+  const isCard = acct?.AccountType === 'Credit Card'
+  const payload = {
+    VendorRef: { value: String(qbBill.VendorRef?.value) },
+    TxnDate: bankLine.txn_date,
+    TotalAmt: balance,
+    PayType: isCard ? 'CreditCard' : 'Check',
+    Line: [{ Amount: balance, LinkedTxn: [{ TxnId: String(rec.quickbooks_id), TxnType: 'Bill' }] }],
+    ...(isCard
+      ? { CreditCardPayment: { CCAccountRef: { value: String(rec.payment_account_id) } } }
+      : { CheckPayment: { BankAccountRef: { value: String(rec.payment_account_id) }, PrintStatus: 'NotSet' } }),
+  }
+  if (qbBill.CurrencyRef?.value) payload.CurrencyRef = { value: qbBill.CurrencyRef.value }
+  if (qbBill.CurrencyRef?.value && qbBill.CurrencyRef.value !== 'CAD') {
+    const rate = qbBill.CurrencyRef.value === 'USD' ? await getUsdCadRate(bankLine.txn_date) : null
+    if (rate) payload.ExchangeRate = rate
+  }
+  if (rec.receipt_number) payload.PrivateNote = `Facture ${rec.receipt_number}`.slice(0, 1000)
+  const result = await qbPost('/billpayment', payload)
+  const payId = result?.BillPayment?.Id || null
+  db.prepare('UPDATE sale_receipts SET accrual_payment_qb_id=? WHERE id=?').run(payId, receiptId)
+  return payId
+}
+
 // Stripe stores fee_details on every BT — each entry has type ('stripe_fee', 'application_fee', 'tax')
 // and description ('Canadian GST', 'Canadian QST', 'Sales Tax', etc.).
 //
@@ -1790,6 +1925,11 @@ export async function loadAccountsCache() {
     byId: new Map(all.map(a => [String(a.Id), { acctNum: a.AcctNum || null, name: a.Name }])),
   }
   return _accountsCache
+}
+
+// Variante synchrone : null tant que le plan comptable n'a pas encore été chargé.
+export function cachedAccountIdByAcctNum(acctNum) {
+  return _accountsCache?.byAcctNum.get(String(acctNum)) || null
 }
 
 export async function resolveAccountByAcctNum(acctNum) {

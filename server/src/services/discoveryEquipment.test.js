@@ -157,12 +157,23 @@ test('module d’activation : le détail des sorties se recompte', () => {
   assert.equal(g.slot_sources.find(s => s.label.startsWith('Louvre seule spring loaded')).qty, 2)
 })
 
-test('open/close avec ventilateur : aucun contrôle séparé ni total V2, même avec une ancienne configuration', () => {
+test('open/close 24 V avec ventilateur : boîtier time delay en plus du boîtier 24 V', () => {
+  assert(EQUIPMENT_ROLES.includes('louver_time_delay_box'))
+  assert(EQUIPMENT_PRODUCTS.some(([role]) => role === 'louver_time_delay_box'))
+  const r = calc([{ has_louvers: true, louvers: [{ voltage: '24', control_type: 'open_close', has_fan: true }, { voltage: '24', control_type: 'open_close', has_fan: true }] }], {}, {
+    products: { louver_open_close_24: 'LOUVRE', louver_time_delay_box: 'DELAY' },
+  })
+  assert.equal(r.calculationComplete, true)
+  assert.equal(r.greenhouses[0].slots, 4)
+  assert.deepEqual(r.orderItems.map(i => [i.product_id, i.qty]), [['LOUVRE', 2], ['DELAY', 2]])
+})
+
+test('open/close 12 V avec ventilateur : aucun contrôle séparé ni total V2, même avec une ancienne configuration', () => {
   assert(!EQUIPMENT_ROLES.includes('louver_fan_control'))
   assert(!OUTPUT_ROLES.includes('louver_fan_control'))
   assert(!EQUIPMENT_PRODUCTS.some(([role]) => role === 'louver_fan_control'))
   assert(!EQUIPMENT_OUTPUTS.some(([role]) => role === 'louver_fan_control'))
-  for (const voltage of ['24', '12']) {
+  for (const voltage of ['12']) {
     const r = calc([{ has_louvers: true, louvers: [{ voltage, control_type: 'open_close', has_fan: true }] }], {}, {
       products: { louver_fan_control: 'OLD', [`louver_open_close_${voltage}`]: 'LOUVRE' },
       outputs: { ...outputs, louver_fan_control: 1 },
@@ -465,7 +476,8 @@ test('moteurs et tuyaux guides fournis par Orisha : un de chaque par côté', ()
   assert.deepEqual(roles({ has_existing_side_vent_motors: false, guide_pipes_state: 'needed' }), ['guide_pipe:2', 'guide_pipe_hanging_kit:2', 'side_vent_motor_left:1', 'side_vent_motor_right:1'])
   assert.deepEqual(roles({ num_side_vent_motors: 1, has_existing_side_vent_motors: false, guide_pipes_state: 'present' }), ['side_vent_motor_left:1'])
   assert.deepEqual(roles({ has_existing_side_vent_motors: true, guide_pipes_state: 'present' }), [])
-  assert.deepEqual(roles({ has_existing_side_vent_motors: true, guide_pipes_state: 'needed' }), ['guide_pipe:2', 'guide_pipe_hanging_kit:2'])
+  // Moteurs déjà en place : tuyaux guides jamais fournis, même avec une ancienne réponse.
+  assert.deepEqual(roles({ has_existing_side_vent_motors: true, guide_pipes_state: 'needed' }), [])
 
 })
 
@@ -478,7 +490,7 @@ test('tuyau de côté entre 1 5/16 et 1 1/2 po : un adaptateur par moteur', () =
 })
 
 test('tuyaux guides « Je ne sais pas » : rien fourni, appeler le client', () => {
-  const r = calculateDiscoveryEquipment({ greenhouses: [{ has_side_vents: true, length: 100, num_side_vent_motors: 2, has_existing_side_vent_motors: true, guide_pipes_state: 'unknown' }] })
+  const r = calculateDiscoveryEquipment({ greenhouses: [{ has_side_vents: true, length: 100, num_side_vent_motors: 2, has_existing_side_vent_motors: false, guide_pipes_state: 'unknown' }] })
   assert.equal(r.items.some(i => i.role.startsWith('guide_pipe')), false)
   assert.ok(r.warnings.some(w => w.code === 'guide_pipes_call_client'))
 })
@@ -488,6 +500,25 @@ test('chef de culture : un capteur de vent et un boîtier météo par commande, 
   const lines = gh => calc(gh, { sensors: { wind_sensor: 2 } }, { products }).orderItems.filter(i => ['WIND', 'BOX'].includes(i.product_id)).map(i => [i.product_id, i.qty])
   assert.deepEqual(lines([{ permission_level: 'chief_grower' }, { permission_level: 'chief_grower' }, { permission_level: 'helper' }]), [['WIND', 3], ['BOX', 1]])
   assert.deepEqual(lines([{ permission_level: 'helper' }]), [['WIND', 2]])
+})
+
+test('site existant en Chef de culture : capteur de vent seulement si demandé', () => {
+  const products = { wind_sensor: 'WIND', weather_box: 'BOX' }
+  const wind = extra => calculateDiscoveryEquipment({ is_new_site: 'add_to_existing', within_central_controller_range: true, greenhouses: [{ permission_level: 'chief_grower' }], ...extra }, { products })
+    .orderItems.find(i => i.product_id === 'WIND')?.qty || 0
+  assert.equal(wind({ needs_wind_sensor: false }), 0)
+  assert.equal(wind({ needs_wind_sensor: true }), 1)
+  assert.equal(wind({}), 1)
+  assert.equal(wind({ is_new_site: 'new', needs_wind_sensor: false }), 1)
+})
+
+test('chef de culture sans aucun capteur météo : pas de boîtier météo', () => {
+  const products = { wind_sensor: 'WIND', weather_box: 'BOX' }
+  const box = (extra, sensors = {}) => calculateDiscoveryEquipment({ is_new_site: 'add_to_existing', within_central_controller_range: true, needs_wind_sensor: false, greenhouses: [{ permission_level: 'chief_grower' }], form_options: { sensors }, ...extra }, { products })
+    .orderItems.some(i => i.product_id === 'BOX')
+  assert.equal(box({}), false)
+  assert.equal(box({}, { rain_sensor: 1 }), true)
+  assert.equal(box({ needs_wind_sensor: true }), true)
 })
 
 test('capteur de température et d’humidité : un par serre Helper ou Chef de culture', () => {
@@ -500,4 +531,23 @@ test('capteur de température avancé : remplace le capteur de température et d
   const r = calc([{ permission_level: 'chief_grower' }, { permission_level: 'helper' }], { additional_equipment: [{ advanced_temperature_sensor: true }, {}] })
   const roles = r.greenhouses.map(g => g.items.map(i => i.role).filter(role => ['temp_humidity_sensor', 'advanced_temperature_sensor'].includes(role)))
   assert.deepEqual(roles, [['advanced_temperature_sensor'], ['temp_humidity_sensor']])
+})
+
+test('sonde de température déjà en place : aucun capteur de température et d’humidité pour la serre', () => {
+  const r = calc([{ permission_level: 'chief_grower' }, { permission_level: 'helper' }], { additional_equipment: [{ existing_temp_sensor: true }, {}] })
+  const roles = r.greenhouses.map(g => g.items.map(i => i.role).filter(role => role === 'temp_humidity_sensor'))
+  assert.deepEqual(roles, [[], ['temp_humidity_sensor']])
+})
+
+test('côté ouvrant « Autre » : aucun matériel déduit, matériel et sorties choisis à la main', () => {
+  const g = { permission_level: 'helper', has_side_vents: true, num_side_vent_motors: 2, length: 300, side_vent_type: 'other', has_existing_side_vent_motors: false, guide_pipes_state: 'needed' }
+  const open = calculateDiscoveryEquipment({ greenhouses: [g] })
+  assert.ok(!open.items.some(i => /^(side_|motor_wire_|guide_pipe)/.test(i.role)))
+  assert.ok(open.warnings.some(w => w.code === 'side_vent_manual'))
+  assert.equal(open.calculationComplete, false)
+  const set = calculateDiscoveryEquipment({ greenhouses: [{ ...g, side_vent_manual: { slots: 6, items: [{ product_id: 'P1', qty: 2 }] } }] })
+  assert.ok(!set.warnings.some(w => w.code === 'side_vent_manual'))
+  assert.equal(set.greenhouses[0].slots, 6)
+  assert.equal(set.items.find(i => i.role === 'activation_v2')?.qty, 2)
+  assert.deepEqual(set.orderItems.filter(l => l.product_id === 'P1').map(l => l.qty), [2])
 })

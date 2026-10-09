@@ -140,7 +140,7 @@ function SoumissionEditor({ project, initial }) {
   const [saving, setSaving] = useState(false)
   // Déjà envoyée : figée, seul le ré-envoi reste (dupliquer pour la changer).
   const sent = soumissionWasSent(initial)
-  const { ready, items, discounts, body } = useSoumissionBuilder({ initial, language, currency, readOnly: sent })
+  const { ready, items, discounts, body } = useSoumissionBuilder({ initial, language, currency, readOnly: sent, unitPrices: true })
 
   const payload = () => ({
     language, currency,

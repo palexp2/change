@@ -41,7 +41,8 @@ test('Envoyé 30 dernier jours suit la date affichée des envois', async t => {
     const table = response.body.tables.orders
     return table ? table.upsert.map(row => Object.fromEntries(table.columns.map((c, i) => [c, row[i]]))) : []
   }
-  const clearLog = () => db.prepare('DELETE FROM change_log').run()
+  // Les parents de rollup passent aussi par change_log_rollup (triggers chr_*).
+  const clearLog = () => db.exec('DELETE FROM change_log; DELETE FROM change_log_rollup')
   const date = () => row().cf_date_de_l_envoi_le_plus_recent
 
   await t.test('corrige et rattrape la commande déjà en cache sans changer ses données', async () => {

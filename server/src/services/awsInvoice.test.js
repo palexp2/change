@@ -1,8 +1,8 @@
 // Normalisation des factures Amazon Web Services Canada.
 // Cas de référence : les vraies factures CAIN26-1967781 (août 2026, période juillet)
 // et CAIN26-1708886 (juillet 2026, période juin), toutes deux bi-devises USD/CAD.
-// L'invariant : on ne retient QUE la colonne USD — c'est en USD qu'AWS est
-// comptabilisé (fournisseur QB « Amazon Web Services - USD »).
+// L'invariant : on ne retient QUE la colonne CAD — c'est le montant débité au compte
+// bancaire canadien (fournisseur QB « Amazon Web Services », CAD).
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -61,16 +61,17 @@ Total in CAD: $102.73*
 This message was produced and distributed by Amazon Web Services Canada, Inc.
 `
 
-test('parseAwsInvoice retient la colonne USD, pas l\'équivalent CAD', () => {
+test('parseAwsInvoice retient la colonne CAD, pas la colonne USD', () => {
   const r = parseAwsInvoice(INVOICE_1967781)
   assert.equal(r.invoiceNumber, 'CAIN26-1967781')
-  assert.equal(r.currency, 'USD')
-  assert.equal(r.subtotal, 62.69)
-  assert.equal(r.tps, 3.14)
-  assert.equal(r.tvq, 6.25)
+  assert.equal(r.currency, 'CAD')
+  assert.equal(r.subtotal, 89.35)
+  assert.equal(r.tps, 4.47)
+  assert.equal(r.tvq, 8.91)
   assert.equal(r.otherTaxes, 0)
-  assert.equal(r.total, 72.08)
-  // L'équivalent CAD reste lisible pour le rapprochement bancaire, jamais comptabilisé.
+  assert.equal(r.total, 102.73)
+  // La colonne USD reste lisible à titre indicatif, jamais comptabilisée.
+  assert.equal(r.usdTotal, 72.08)
   assert.equal(r.cadTotal, 102.73)
   assert.equal(r.fxRate, 1.42521978296)
 })
@@ -93,7 +94,7 @@ test('parseAwsInvoice lit la date de facture et la période de facturation', () 
   const prev = parseAwsInvoice(INVOICE_1708886)
   assert.equal(prev.invoiceDate, '2026-07-01')
   assert.equal(prev.period, 'juin 2026')
-  assert.equal(prev.total, 69.68)
+  assert.equal(prev.total, 98.86)
 })
 
 test('parseAwsInvoice ignore le courriel « Billing Statement Available »', () => {
@@ -107,36 +108,36 @@ test('parseAwsInvoice ignore un document non-AWS ou vide', () => {
 })
 
 test('parseAwsInvoice refuse un layout qui ne boucle pas', () => {
-  const broken = INVOICE_1967781.replace('USD 62.69         CAD 89.35\n      Net', 'USD 42.69         CAD 89.35\n      Net')
-    .replace('USD 62.69         CAD 89.35\n      rabais', 'USD 42.69         CAD 89.35\n      rabais')
+  const broken = INVOICE_1967781.replace('USD 62.69         CAD 89.35\n      Net', 'USD 62.69         CAD 69.35\n      Net')
+    .replace('USD 62.69         CAD 89.35\n      rabais', 'USD 62.69         CAD 69.35\n      rabais')
   const r = parseAwsInvoice(broken)
   // Sous-total incohérent avec le total : on ne force rien, l'IA + l'opérateur tranchent.
   assert.equal(r, null)
 })
 
-test('applyAwsInvoice réécrit l\'extraction IA panachée (montants CAD, currency USD)', () => {
-  // Ce que l'IA avait produit pour CAIN26-1967781 : les montants CAD sous le code USD.
+test('applyAwsInvoice réécrit l\'extraction IA panachée (montants USD, currency CAD)', () => {
+  // Forme panachée déjà vue (CAIN26-1708886) : les montants USD sous le code CAD.
   const aiExtracted = {
     company: 'Amazon Web Services Canada, Inc.',
     receipt_date: '2026-08-01',
     receipt_number: 'CAIN26-1967781',
     general_description: 'Frais de service AWS pour la période de facturation',
-    subtotal: 89.35, tps: 4.47, tvq: 8.91, other_taxes: 0, total: 102.73,
-    currency: 'USD',
+    subtotal: 62.69, tps: 3.14, tvq: 6.25, other_taxes: 0, total: 72.08,
+    currency: 'CAD',
     items: [],
   }
   const { extracted, items, applied } = applyAwsInvoice(aiExtracted, [], INVOICE_1967781)
   assert.equal(applied, true)
-  assert.equal(extracted.currency, 'USD')
-  assert.equal(extracted.subtotal, 62.69)
-  assert.equal(extracted.tps, 3.14)
-  assert.equal(extracted.tvq, 6.25)
-  assert.equal(extracted.total, 72.08)
+  assert.equal(extracted.currency, 'CAD')
+  assert.equal(extracted.subtotal, 89.35)
+  assert.equal(extracted.tps, 4.47)
+  assert.equal(extracted.tvq, 8.91)
+  assert.equal(extracted.total, 102.73)
   assert.equal(extracted.company, 'Amazon Web Services')
   assert.equal(extracted.service_period, 'juillet 2026')
   assert.equal(extracted.transaction_type, 'achat_num_inscrit_taxe')
   // Une seule ligne de dépense, au sous-total HT — forme des Purchase QB déjà publiés.
-  assert.deepEqual(items, [{ description: 'Frais de service AWS', quantity: null, unit_price: null, total: 62.69 }])
+  assert.deepEqual(items, [{ description: 'Frais de service AWS', quantity: null, unit_price: null, total: 89.35 }])
 })
 
 test('applyAwsInvoice laisse passer un document non-AWS sans y toucher', () => {
@@ -146,4 +147,12 @@ test('applyAwsInvoice laisse passer un document non-AWS sans y toucher', () => {
   assert.equal(r.applied, false)
   assert.equal(r.extracted, other)
   assert.equal(r.items, otherItems)
+})
+
+test('parseAwsInvoice retombe sur la colonne USD quand la facture n\'a pas de colonne CAD', () => {
+  const usdOnly = INVOICE_1708886.replace(/\s+CAD \d+\.\d{2}/g, '')
+  const r = parseAwsInvoice(usdOnly)
+  assert.equal(r.currency, 'USD')
+  assert.equal(r.subtotal, 60.6)
+  assert.equal(r.total, 69.68)
 })

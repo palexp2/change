@@ -26,6 +26,7 @@ import { parsePositiveInt, parseNonNegativeInt, validateNumericFields } from '..
 import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
 import { applyOrderItemDefaults } from '../services/orderItemDefaults.js';
 import { shippedCostSql, refreezeOrderShippedCosts, pieceUnitCostSql } from '../services/shippedCost.js';
+import { orderRevenueSql, orderIsSubscriptionSql } from '../services/orderRevenue.js';
 import { logSystemRun } from '../services/systemAutomations.js';
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
@@ -390,27 +391,18 @@ router.get('/:id', (req, res) => {
   // ── Rentabilité ────────────────────────────────────────────────────────────
   // Revenu et coûts calculés EXACTEMENT comme le tableau Rentabilité du dashboard
   // (server/src/routes/dashboard.js). Garder les deux alignés.
-  //   Revenu : abonnement → 1re facture HT × 38 ; achat → SUM des factures HT,
-  //            liées directement (order_id) ou via le projet (project_id).
-  //            Le HT des factures Stripe est APRÈS rabais (total_excluding_tax,
-  //            cf. services/stripeFactureFieldMap.js) — d'où le filtre > 0 côté
-  //            abonnement : un 1er mois offert (rabais 100 %) ne doit pas
-  //            ramener la valeur projetée de l'abonnement à 0.
+  //   Revenu : services/orderRevenue.js (abonnement — case cochée OU facture
+  //            d'abonnement liée — → 1re facture HT × 38 ; achat → SUM HT).
   //   Coûts (COGS) : SUM du coût à l'envoi (services/shippedCost.js) pour les
   //            items 'Facturable' uniquement.
   // Les overrides (revenue_override_cad, cogs_override_cad) priment sur la valeur
   // calculée correspondante quand ils sont posés.
-  const revenueComputed = order.is_subscription
-    ? (db.prepare(
-        `SELECT f.amount_before_tax_cad * 38 AS rev FROM factures f
-         WHERE (f.order_id = ? OR (? IS NOT NULL AND f.project_id = ?))
-           AND COALESCE(f.amount_before_tax_cad, 0) > 0
-         ORDER BY COALESCE(f.document_date, f.created_at) ASC LIMIT 1`
-      ).get(req.params.id, order.project_id, order.project_id)?.rev || 0)
-    : (db.prepare(
-        `SELECT COALESCE(SUM(f.amount_before_tax_cad), 0) AS rev FROM factures f
-         WHERE (f.order_id = ? OR (? IS NOT NULL AND f.project_id = ?))`
-      ).get(req.params.id, order.project_id, order.project_id)?.rev || 0);
+  const revenueRow = db.prepare(
+    `SELECT ${orderIsSubscriptionSql('o.id', 'o.project_id', 'o.is_subscription')} AS is_sub,
+            ${orderRevenueSql('o.id', 'o.project_id', 'o.is_subscription')} AS rev
+     FROM orders o WHERE o.id = ?`
+  ).get(req.params.id);
+  const revenueComputed = revenueRow?.rev || 0;
   // Coût des marchandises : le coût GELÉ au moment de l'envoi quand il existe
   // (valeur de fabrication de chaque numéro de série + coût de la pièce pour la
   // quantité non sérialisée — cf. services/shippedCost.js), sinon la même règle
@@ -425,6 +417,7 @@ router.get('/:id', (req, res) => {
   const cogsEffective = (cogsOverride != null) ? cogsOverride : cogsComputed;
   const profitability = {
     revenue_computed: revenueComputed,
+    revenue_is_subscription: !!revenueRow?.is_sub,
     revenue_override_cad: revOverride != null ? revOverride : null,
     revenue_effective: revenueEffective,
     cogs_computed: cogsComputed,

@@ -56,20 +56,35 @@ function resolveGoogleAccount(preferredEmail) {
   `).get() || null
 }
 
+export const SHEET_MIME = 'application/vnd.google-apps.spreadsheet'
+
+// Contenu du classeur, qu'il soit un .xlsx ou une Google Sheet (exportée en xlsx).
+export async function readTimesheetWorkbook(drive, file) {
+  const res = file.mimeType === SHEET_MIME
+    ? await drive.files.export({ fileId: file.id, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, { responseType: 'arraybuffer' })
+    : await drive.files.get({ fileId: file.id, alt: 'media' }, { responseType: 'arraybuffer' })
+  return xlsx.read(Buffer.from(res.data), { type: 'buffer' })
+}
+
 export async function findTimesheetFile(month, { googleAccountEmail = null } = {}) {
   const account = resolveGoogleAccount(googleAccountEmail)
   if (!account) throw new Error('Aucun compte Google connecté (page Connecteurs)')
   const drive = await getDriveClient(account.id)
   const name = timesheetFileName(month)
+  // Le fichier du mois est un .xlsx déposé à la main (jusqu'en octobre 2026) ou
+  // une Google Sheet créée par Boréal, du même nom sans extension — c'est elle
+  // qu'on préfère : c'est la seule que Boréal sait aussi écrire.
+  const bare = name.replace(/\.xlsx$/i, '')
   const res = await drive.files.list({
-    q: `name = '${name.replace(/'/g, "\\'")}' and trashed = false`,
+    q: `(name = '${name.replace(/'/g, "\\'")}' or name = '${bare.replace(/'/g, "\\'")}') and trashed = false`,
     fields: 'files(id,name,mimeType,modifiedTime)',
     orderBy: 'modifiedTime desc',
     pageSize: 10,
     includeItemsFromAllDrives: true,
     supportsAllDrives: true,
   })
-  const file = (res.data.files || [])[0] || null
+  const files = res.data.files || []
+  const file = files.find(f => f.mimeType === SHEET_MIME) || files[0] || null
   return { drive, account, file, expectedName: name }
 }
 
@@ -78,7 +93,7 @@ export async function findTimesheetFile(month, { googleAccountEmail = null } = {
 //     valeur retenue (`hours`), quoi qu'affiche le pied de l'onglet ;
 //   • `file_total` — la ligne « total » du fichier, gardée uniquement pour
 //     signaler une formule qui ne couvre pas toutes ses lignes.
-export function sumSheetHours(sheet) {
+export function sumSheetHours(sheet, { until = null } = {}) {
   const rows = xlsx.utils.sheet_to_json(sheet, { header: 1, blankrows: false })
   let headerIdx = -1
   let hoursCol = 1
@@ -86,7 +101,9 @@ export function sumSheetHours(sheet) {
     const idx = (rows[i] || []).findIndex(c => norm(c).includes('heures rsde'))
     if (idx >= 0) { headerIdx = i; hoursCol = idx; break }
   }
-  if (headerIdx < 0) return { hours: 0, day_hours: 0, file_total: null, days: 0, recognized: false }
+  if (headerIdx < 0) return { hours: 0, day_hours: 0, file_total: null, days: 0, recognized: false, projects: {} }
+  const projectCol = (rows[headerIdx] || []).findIndex(c => norm(c) === 'projet')
+  const projects = {}
   let dayHours = 0
   let days = 0
   let fileTotal = null
@@ -102,11 +119,26 @@ export function sumSheetHours(sheet) {
     // numéro de série Excel quand la cellule est typée date).
     const isDay = /\d{4}[/-]\d{1,2}[/-]\d{1,2}/.test(label) || /^\d{5}(\.\d+)?$/.test(label)
     if (!isDay) continue
+    // Mois en cours : les jours à venir ne comptent pas encore (certains
+    // pré-remplissent tout le mois).
+    if (until && dayIso(label) > until) continue
     const v = Number(row?.[hoursCol])
-    if (Number.isFinite(v)) { dayHours += v; days++ }
+    if (Number.isFinite(v)) {
+      dayHours += v; days++
+      if (v && projectCol >= 0) {
+        const p = String(row?.[projectCol] || '').trim() || 'Sans projet'
+        projects[p] = Math.round(((projects[p] || 0) + v) * 100) / 100
+      }
+    }
   }
   dayHours = Math.round(dayHours * 100) / 100
-  return { hours: dayHours, day_hours: dayHours, file_total: fileTotal, days, recognized: true }
+  return { hours: dayHours, day_hours: dayHours, file_total: fileTotal, days, recognized: true, projects }
+}
+
+function dayIso(label) {
+  if (/^\d{5}(\.\d+)?$/.test(label)) return new Date(Math.round((Number(label) - 25569) * 86400000)).toISOString().slice(0, 10)
+  const m = /(\d{4})[/-](\d{1,2})[/-](\d{1,2})/.exec(label)
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : ''
 }
 
 function matchEmployeeId(name) {
@@ -132,8 +164,9 @@ export async function importRdHours(month, { googleAccountEmail = null, contract
   const { drive, file, expectedName } = await findTimesheetFile(month, { googleAccountEmail })
   if (!file) throw new Error(`Fichier « ${expectedName} » introuvable dans le Drive`)
 
-  const res = await drive.files.get({ fileId: file.id, alt: 'media' }, { responseType: 'arraybuffer' })
-  const wb = xlsx.read(Buffer.from(res.data), { type: 'buffer' })
+  const wb = await readTimesheetWorkbook(drive, file)
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Montreal' })
+  const until = today.startsWith(month) ? today : null
 
   const imported = []
   const skipped = []
@@ -142,7 +175,8 @@ export async function importRdHours(month, { googleAccountEmail = null, contract
 
   const apply = db.transaction(() => {
     for (const sheetName of wb.SheetNames) {
-      const { hours, day_hours: dayHours, file_total: fileTotal, recognized } = sumSheetHours(wb.Sheets[sheetName])
+      const { hours, day_hours: dayHours, file_total: fileTotal, recognized, projects } = sumSheetHours(wb.Sheets[sheetName], { until })
+      const projectJson = Object.keys(projects || {}).length ? JSON.stringify(projects) : null
       if (!recognized) { unreadable.push(sheetName); continue }
       const contractor = contractorList.includes(norm(sheetName)) ? 1 : 0
       const existing = db.prepare(`
@@ -156,13 +190,13 @@ export async function importRdHours(month, { googleAccountEmail = null, contract
       if (existing) {
         db.prepare(`
           UPDATE rd_month_hours SET hours = ?, day_hours = ?, file_total_hours = ?, contractor = ?,
-            source = 'import', drive_file_id = ?, updated_at = ? WHERE id = ?
-        `).run(hours, dayHours, fileTotal, contractor, file.id, now, existing.id)
+            source = 'import', drive_file_id = ?, project_hours = ?, updated_at = ? WHERE id = ?
+        `).run(hours, dayHours, fileTotal, contractor, file.id, projectJson, now, existing.id)
       } else {
         db.prepare(`
-          INSERT INTO rd_month_hours (id, month, employee_name, employee_id, hours, day_hours, file_total_hours, contractor, source, drive_file_id)
-          VALUES (?,?,?,?,?,?,?,?,'import',?)
-        `).run(newRecordId(), month, sheetName, matchEmployeeId(sheetName), hours, dayHours, fileTotal, contractor, file.id)
+          INSERT INTO rd_month_hours (id, month, employee_name, employee_id, hours, day_hours, file_total_hours, contractor, source, drive_file_id, project_hours)
+          VALUES (?,?,?,?,?,?,?,?,'import',?,?)
+        `).run(newRecordId(), month, sheetName, matchEmployeeId(sheetName), hours, dayHours, fileTotal, contractor, file.id, projectJson)
       }
       imported.push({ name: sheetName, hours, day_hours: dayHours, file_total: fileTotal, contractor: !!contractor })
     }

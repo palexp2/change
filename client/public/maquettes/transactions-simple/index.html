@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Colonnes simplifiées</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root { --bg:#f5f6f7; --s:#fff; --soft:#f8f9fa; --line:#eceef0; --line2:#dfe2e5; --ink:#1f2328; --ink2:#4a5058; --ink3:#7a8089; --ink4:#a6abb2; --qb:#2ca01c; --qbd:#1d7f12; --qbs:#eef7ec; --amber:#b86e00; --ambs:#fdf3e1; --blue:#0a6fbf; --red:#d1362a; }
+:root[data-theme="dark"] { --bg:#111315; --s:#181b1e; --soft:#1d2024; --line:#262a2f; --line2:#30353b; --ink:#eceef0; --ink2:#c3c8ce; --ink3:#8e959d; --ink4:#646b73; --qb:#45b934; --qbd:#6ccf5c; --qbs:#1a2a18; --amber:#f0b04a; --ambs:#2e2617; --blue:#5cb0ef; --red:#ff7a6e; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#111315; --s:#181b1e; --soft:#1d2024; --line:#262a2f; --line2:#30353b; --ink:#eceef0; --ink2:#c3c8ce; --ink3:#8e959d; --ink4:#646b73; --qb:#45b934; --qbd:#6ccf5c; --qbs:#1a2a18; --amber:#f0b04a; --ambs:#2e2617; --blue:#5cb0ef; --red:#ff7a6e; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:13.5px/1.45 Inter,system-ui,sans-serif; padding:24px 16px 60px; -webkit-font-smoothing:antialiased; }
+button { font:inherit; color:inherit; background:none; border:0; cursor:pointer; padding:0; }
+.top { max-width:1240px; margin:0 auto 14px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.top h1 { font-size:16px; font-weight:600; margin:0 10px 0 0; }
+.opt { padding:6px 12px; border:1px solid var(--line2); border-radius:999px; background:var(--s); color:var(--ink2); font-weight:500; }
+.opt b { color:var(--qbd); margin-right:5px; }
+.opt[aria-pressed="true"] { background:var(--ink); color:var(--bg); border-color:var(--ink); }
+.opt[aria-pressed="true"] b { color:inherit; opacity:.6; }
+.lede { max-width:1240px; margin:0 auto 12px; color:var(--ink3); }
+.screen { max-width:1240px; margin:0 auto; background:var(--s); border-radius:14px; box-shadow:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.06); overflow:hidden; }
+.wrap { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; min-width:940px; }
+th { text-align:left; font-size:11.5px; font-weight:500; color:var(--ink4); padding:11px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
+td { padding:13px 12px; border-bottom:1px solid var(--line); vertical-align:middle; }
+th:first-child, td:first-child { padding-left:28px; } th:last-child, td:last-child { padding-right:28px; }
+tr:hover td { background:#fafbfb; } :root[data-theme="dark"] tr:hover td { background:#1f2327; }
+.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.dt { color:var(--ink3); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.lab { font-weight:500; max-width:260px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pos { color:var(--qbd); }
+.muted { color:var(--ink4); }
+.btn { height:28px; padding:0 13px; border-radius:999px; font-size:12.5px; font-weight:500; border:1px solid var(--line2); background:var(--s); color:var(--ink2); white-space:nowrap; }
+.btn.g { background:var(--qb); border-color:var(--qb); color:#fff; }
+.act { text-align:right; }
+.dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:8px; vertical-align:middle; flex-shrink:0; }
+.d-ok { background:var(--qb); } .d-half { background:#e0a100; } .d-no { background:transparent; border:1.5px solid var(--ink4); }
+.pill { display:inline-flex; align-items:center; gap:6px; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:500; white-space:nowrap; }
+.p-ok { background:var(--qbs); color:var(--qbd); } .p-half { background:var(--ambs); color:var(--amber); } .p-no { background:var(--soft); color:var(--ink3); }
+.cell { display:flex; align-items:center; min-width:0; }
+.cell span.t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.arrow { color:var(--ink4); margin:0 6px; }
+.vend { color:var(--ink2); }
+.vend.new { color:var(--ink4); font-style:italic; }
+.chk { color:var(--qbd); font-weight:600; }
+.legend { display:flex; gap:16px; padding:12px 28px; color:var(--ink3); font-size:12px; border-bottom:1px solid var(--line); }
+.theme { position:fixed; top:12px; right:14px; border:1px solid var(--line2); border-radius:999px; padding:4px 10px; background:var(--s); color:var(--ink3); font-size:12px; }
+</style>
+</head>
+<body>
+<button class="theme" id="theme">◐</button>
+<div class="top"><h1>Colonnes simplifiées</h1><span id="opts"></span></div>
+<div class="lede" id="lede"></div>
+<div class="screen"><div class="wrap" id="screen"></div></div>
+<script>
+// [date, libellé, montant, fournisseur, catégorie/compte, état: ok|half|no, type: match|cat|xfer|none, document]
+const ROWS = [
+  ['2026-10-02', 'OPENAI *CHATGPT SUBSCR', -26.25, 'OpenAI', 'Logiciels', 'ok', 'match', 'Facture OpenAI'],
+  ['2026-10-02', 'GOOGLE *WORKSPACE ORIS', -202.40, 'Google', 'Services web & téléphonie', 'ok', 'match', 'Facture Google'],
+  ['2026-10-02', 'DHL EXPRESS ADC QC', -147.99, 'DHL (Douanes)', 'Douanes et droits', 'ok', 'match', 'Facture DHL'],
+  ['2026-10-02', 'OPENAI SAN FRANCISCO CA', -30.78, 'OpenAI', 'Logiciels', 'half', 'cat', ''],
+  ['2026-10-01', 'PREMIER FARNELL MISSISSAUGA', -1273.64, 'Newark', 'Pièces et composants', 'half', 'cat', ''],
+  ['2026-10-01', 'RONA CA BOUCHERVILLE QC', 130.60, 'RONA', '', 'no', 'none', ''],
+  ['2026-10-01', 'RONA CA BOUCHERVILLE QC', 10.35, 'RONA', 'Desjardins USD', 'ok', 'xfer', ''],
+  ['2026-10-01', 'AMAZON.CA TORONTO', -8.40, '', '', 'no', 'none', ''],
+  ['2026-09-30', 'BELL CANADA (CR) VERDUN', -103.42, 'Bell Canada', 'Télécommunications', 'ok', 'cat', ''],
+]
+const OPTS = [
+  ['S0', 'Actuel', 'Pour comparer.'],
+  ['S1', 'Un point + un mot', 'La couleur dit si c\'est prêt ; le texte dit où ça va. Un seul bouton.'],
+  ['S2', 'Pastille d\'état', 'Trois états seulement : Prêt · À compléter · À faire.'],
+  ['S3', 'Fournisseur → compte', 'Les deux colonnes fusionnées en une phrase.'],
+  ['S4', 'Juste le bouton', 'Plus de colonne d\'état : le bouton est l\'état.'],
+]
+let opt = 'S1'
+const fmt = (v) => Math.abs(v).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $'
+const money = (r) => `<td class="num">${r[2] < 0 ? fmt(r[2]) : ''}</td><td class="num pos">${r[2] > 0 ? fmt(r[2]) : ''}</td>`
+const where = (r) => r[6] === 'xfer' ? `Virement · ${r[4]}` : r[6] === 'match' ? r[7] : r[4]
+const STATE = { ok: 'Prêt', half: 'À compléter', no: 'À faire' }
+
+function s0() {
+  const verb = { match: 'Apparier', cat: 'Publier', xfer: 'Transférer', none: 'Catégoriser' }
+  return `<table><thead><tr><th>Date</th><th>Description</th><th>Fournisseur</th><th>Catégorie ou correspondance</th><th class="num">Dépense</th><th class="num">Dépôt</th><th class="act">Action</th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr><td class="dt">${r[0]}</td><td class="lab">${r[1]}</td>
+    <td>${r[3] ? `<span style="color:${r[6]==='match'?'var(--qbd)':'var(--blue)'}">${r[3]}</span>${r[6]==='match'?' <span class="muted">▤ ↗</span>':''}` : ''}</td>
+    <td>${r[6]==='match' ? `<div class="chk">1 correspondance</div><div class="muted" style="font-size:11.5px">${r[3]}</div>` : r[6]==='xfer' ? `<div>Transfert</div><div class="muted" style="font-size:11.5px">${r[4]}</div>` : r[6]==='cat' ? `<div>${r[4]} <span class="pill p-ok" style="font-size:10px;padding:0 5px">AUTO</span> <span class="muted" style="font-size:11px">annuler</span></div><div class="muted" style="font-size:11.5px">Règle « ${r[3]} »</div>` : '<span class="muted">Non catégorisé</span>'}</td>
+    ${money(r)}<td class="act"><button class="btn ${r[6]==='none'?'':'g'}">${verb[r[6]]}</button> <button class="btn ${r[6]==='none'?'':'g'}" style="padding:0 8px">⌄</button></td></tr>`).join('')}</tbody></table>`
+}
+function s1() {
+  return `<table><thead><tr><th>Date</th><th>Description</th><th>Fournisseur</th><th>Va dans</th><th class="num">Dépense</th><th class="num">Dépôt</th><th class="act"></th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr><td class="dt">${r[0]}</td><td class="lab">${r[1]}</td>
+    <td class="vend ${r[3]?'':'new'}">${r[3] || '—'}</td>
+    <td><div class="cell"><i class="dot d-${r[5]}"></i><span class="t ${r[5]==='no'?'muted':''}">${r[5]==='no' ? 'Choisir…' : where(r)}</span></div></td>
+    ${money(r)}<td class="act"><button class="btn ${r[5]==='ok'?'g':''}">${r[5]==='ok' ? 'Confirmer' : 'Ouvrir'}</button></td></tr>`).join('')}</tbody></table>`
+}
+function s2() {
+  return `<table><thead><tr><th>Date</th><th>Description</th><th>Fournisseur</th><th>Catégorie</th><th>État</th><th class="num">Dépense</th><th class="num">Dépôt</th><th class="act"></th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr><td class="dt">${r[0]}</td><td class="lab">${r[1]}</td>
+    <td class="vend">${r[3] || ''}</td>
+    <td class="${r[5]==='no'?'muted':''}">${r[5]==='no' ? '—' : where(r)}</td>
+    <td><span class="pill p-${r[5]}">${STATE[r[5]]}</span></td>
+    ${money(r)}<td class="act"><button class="btn ${r[5]==='ok'?'g':''}">${r[5]==='ok' ? 'Confirmer' : 'Ouvrir'}</button></td></tr>`).join('')}</tbody></table>`
+}
+function s3() {
+  return `<table><thead><tr><th>Date</th><th>Description</th><th>Fournisseur → compte</th><th class="num">Dépense</th><th class="num">Dépôt</th><th class="act"></th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr><td class="dt">${r[0]}</td><td class="lab">${r[1]}</td>
+    <td><div class="cell"><i class="dot d-${r[5]}"></i>${r[3] ? `<span class="t">${r[3]}</span>` : ''}${r[5] !== 'no' ? `<span class="arrow">→</span><span class="t" style="color:var(--ink3)">${r[6]==='match' ? 'facture trouvée' : r[6]==='xfer' ? r[4] : r[4]}</span>` : `<span class="t muted">${r[3] ? '<span class="arrow">→</span>' : ''}?</span>`}</div></td>
+    ${money(r)}<td class="act"><button class="btn ${r[5]==='ok'?'g':''}">${r[5]==='ok' ? 'Confirmer' : 'Ouvrir'}</button></td></tr>`).join('')}</tbody></table>`
+}
+function s4() {
+  return `<table><thead><tr><th>Date</th><th>Description</th><th>Fournisseur</th><th>Catégorie</th><th class="num">Dépense</th><th class="num">Dépôt</th><th class="act"></th></tr></thead><tbody>
+  ${ROWS.map(r => `<tr><td class="dt">${r[0]}</td><td class="lab">${r[1]}</td>
+    <td class="vend">${r[3] || ''}</td>
+    <td class="${r[5]==='no'?'muted':''}">${r[5]==='no' ? '—' : where(r)}</td>
+    ${money(r)}<td class="act">${r[5]==='ok' ? '<button class="btn g">✓ Confirmer</button>' : r[5]==='half' ? '<button class="btn" style="border-color:#e0a100;color:var(--amber)">Compléter</button>' : '<button class="btn">Catégoriser</button>'}</td></tr>`).join('')}</tbody></table>`
+}
+function render() {
+  document.getElementById('opts').innerHTML = OPTS.map(([k, t]) => `<button class="opt" data-o="${k}" aria-pressed="${opt===k}"><b>${k}</b>${t}</button>`).join(' ')
+  document.getElementById('lede').textContent = OPTS.find(o => o[0] === opt)[2]
+  document.getElementById('screen').innerHTML = { S0: s0, S1: s1, S2: s2, S3: s3, S4: s4 }[opt]()
+}
+document.addEventListener('click', (e) => {
+  const o = e.target.closest('[data-o]'); if (o) { opt = o.dataset.o; render() }
+  if (e.target.id === 'theme') { const r = document.documentElement; const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; r.dataset.theme = dark ? 'light' : 'dark' }
+})
+render()
+</script>
+</body>
+</html>

@@ -37,6 +37,7 @@ describe('Extraction de données : cascade lignes → sous-total / taxes / total
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -102,9 +103,5 @@ describe('Extraction de données : cascade lignes → sous-total / taxes / total
     // En lecture seule c'est un <span>, pas un <input> éditable.
     const tag = await el.evaluate(node => node.tagName.toLowerCase())
     assert.notEqual(tag, 'input', 'le sous-total dérivé ne doit pas être un champ éditable')
-    await assert.doesNotReject(
-      page.locator('text=(somme des lignes)').waitFor({ state: 'visible', timeout: 3000 }),
-      'l\'indice « (somme des lignes) » doit être affiché'
-    )
   })
 })

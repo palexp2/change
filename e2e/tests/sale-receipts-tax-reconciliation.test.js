@@ -20,6 +20,7 @@ describe('Extraction de données : réconciliation des taxes par ligne', () => {
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -58,7 +59,7 @@ describe('Extraction de données : réconciliation des taxes par ligne', () => {
     await browser?.close()
   })
 
-  test('codes cohérents → indicateur « correspond »', async () => {
+  test('codes cohérents → aucun indicateur', async () => {
     if (!qcCode) { console.log('QB non connecté ou code QC absent — test ignoré.'); return }
     // 1 ligne taxable 100 $ au code TPS/TVQ QC ; taxes document = 14,975 (= 14,98 arrondi).
     await page.request.patch(URL + '/api/sale-receipts/' + receiptId, {
@@ -70,9 +71,8 @@ describe('Extraction de données : réconciliation des taxes par ligne', () => {
     })
 
     await page.goto(URL + '/sale-receipts/' + receiptId, { waitUntil: 'networkidle' })
-    const row = page.getByTestId('receipt-tax-reconciliation')
-    await row.waitFor({ state: 'visible', timeout: 10000 })
-    await assert.doesNotReject(row.getByText('correspond').waitFor({ state: 'visible', timeout: 5000 }))
+    await page.getByTestId('receipt-amount-total').waitFor({ state: 'visible', timeout: 10000 })
+    assert.equal(await page.getByTestId('receipt-tax-reconciliation').count(), 0, 'concordance = silence')
   })
 
   test('passer une ligne à « Aucune taxe » → indicateur « écart »', async () => {

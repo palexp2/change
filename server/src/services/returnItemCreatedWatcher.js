@@ -149,6 +149,7 @@ const watcher = createChangeLogWatcher({
   tables: 'return_items',
   batchSize: BATCH,
   isEnabled: () => isSystemAutomationActive('sys_return_item_created'),
+  automationId: 'sys_return_item_created',
   onRows: async (rows, { advance }) => {
     for (const row of rows) {
       advance(row.id)

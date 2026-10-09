@@ -33,6 +33,7 @@ import { interactionTitle, interactionSubtitle } from './interactionLabel.js'
 //  - guard     : 'admin' | 'hr' — rôle requis (aligné sur la route de la liste).
 //  - idPattern : forme des id de la table, si elle sort de l'ordinaire
 //                (défaut : entier ou UUID — voir `matchPeekRoute`).
+//  - historySource : l'historique nomme l'automatisation des révisions « Système ».
 export const PEEK_ROUTES = {
   products: {
     label: 'Produit',
@@ -101,10 +102,11 @@ export const PEEK_ROUTES = {
     list: '/retours',
     Component: lazy(() => import('../pages/RetourDetail.jsx')),
     load: id => api.retours.get(id),
-    // Ni n° RMA ni entreprise sur un retour depuis la migration serveur 037,
-    // ni statut depuis la 041 : l'id du retour sert de sous-titre.
-    title: () => 'Retour',
-    subtitle: r => r.id,
+    // Le n° RMA vit dans le champ personnalisé « # de retour » (cf_de_retour)
+    // depuis la migration serveur 037. Pas de sous-titre : l'id Boréal n'apporte rien.
+    title: r => r.cf_de_retour || 'Retour',
+    // Historique : nomme l'automatisation derrière « Système ».
+    historySource: true,
   },
   purchases: {
     label: 'Achat',
@@ -208,6 +210,43 @@ export const PEEK_ROUTES = {
     load: id => api.marketingForms.get(id),
     title: r => r.name || 'Formulaire',
     subtitle: r => [r.language?.toUpperCase(), `${r.submission_count || 0} soumissions`].filter(Boolean).join(' · '),
+  },
+  'rendez-vous': {
+    label: 'Page de rendez-vous',
+    width: 760,
+    list: '/rendez-vous',
+    Component: lazy(() => import('../pages/MeetingTypeDetail.jsx')),
+    load: id => api.meetings.getType(id),
+    title: r => r.name || 'Page de rendez-vous',
+    subtitle: r => [r.owner_name, r.durations?.map(d => `${d} min`).join(' / ')].filter(Boolean).join(' · '),
+  },
+  acceptations: {
+    label: 'Acceptation',
+    width: 720,
+    list: '/acceptations',
+    Component: lazy(() => import('../pages/AcceptationDetail.jsx')),
+    load: id => api.publicFiles.getAcceptance(id),
+    title: r => r.contact_name || r.name || 'Acceptation',
+    subtitle: r => r.page_name || '',
+  },
+  'catalogue-vente': {
+    label: 'Produit Stripe',
+    width: 720,
+    list: '/catalogue-vente',
+    idPattern: /^prod_[A-Za-z0-9]+$/,
+    Component: lazy(() => import('../pages/StripeProductDetail.jsx')),
+    load: id => api.stripeCatalog.get(id),
+    title: r => r.name || 'Produit',
+    subtitle: r => (r.active ? '' : 'Archivé'),
+  },
+  'modeles-courriel': {
+    label: 'Modèle de courriel',
+    width: 720,
+    list: '/modeles-courriel',
+    Component: lazy(() => import('../pages/EmailTemplateDetail.jsx')),
+    load: id => api.emailTemplates.get(id),
+    title: r => r.name || 'Modèle de courriel',
+    subtitle: r => r.subject || '',
   },
   employees: {
     label: 'Employé',

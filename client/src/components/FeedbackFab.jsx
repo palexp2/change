@@ -2,7 +2,7 @@ import { hasRole } from '../../../shared/roles.mjs'
 import { useAuth } from '../lib/auth.jsx'
 import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
-import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X } from 'lucide-react'
+import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X, ImagePlus } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { api } from '../lib/api.js'
 import { getIsOffline } from '../lib/serverStatus.js'
@@ -39,6 +39,10 @@ import { useAutocorrect } from '../lib/useAutocorrect.js'
 // changé, et à la navigation (Layout est remonté à chaque page).
 const STORAGE_KEY = 'erp_feedback_fab_state'
 
+// Captures d'écran : mêmes limites que la route serveur (/travaux/captures).
+const SHOT_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+const MAX_SHOTS = 8
+
 function readPersisted() {
   try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null') || {} } catch { return {} }
 }
@@ -72,6 +76,10 @@ export function FeedbackFab({ contextRecord = '' }) {
   const sendingRef = useRef(false)
   const isQuestion = mode === 'question'
   const textareaRef = useRef(null)
+  // Captures d'écran jointes (collées, glissées ou choisies) : { file, url }.
+  // Non persistées — un File ne survit pas au sessionStorage.
+  const [shots, setShots] = useState([])
+  const shotInputRef = useRef(null)
   const autocorrect = useAutocorrect({
     text, setText, ref: textareaRef, enabled: open,
     fix: t => api.travaux.spellfix(t).then(r => r?.text),
@@ -137,7 +145,25 @@ export function FeedbackFab({ contextRecord = '' }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [isAdmin, open, picking])
 
+  function addShots(files) {
+    const imgs = Array.from(files || []).filter(f => f && SHOT_TYPES.includes(f.type))
+    if (!imgs.length) return false
+    setShots(s => [...s, ...imgs.map(file => ({ file, url: URL.createObjectURL(file) }))].slice(0, MAX_SHOTS))
+    return true
+  }
+
+  function removeShot(i) {
+    setShots(s => { URL.revokeObjectURL(s[i]?.url); return s.filter((_, j) => j !== i) })
+  }
+
+  // Ctrl+V d'une capture : l'image est jointe, pas collée en texte.
+  function onPaste(e) {
+    const files = Array.from(e.clipboardData?.items || []).filter(i => i.kind === 'file').map(i => i.getAsFile())
+    if (addShots(files)) e.preventDefault()
+  }
+
   function reset() {
+    setShots([])
     setText('')
     setMode('implement')
     setElement('')
@@ -198,7 +224,7 @@ export function FeedbackFab({ contextRecord = '' }) {
     // « Envoi… » une demi-seconde ou plus quand le serveur est occupé. Le
     // brouillon est mis de côté : si l'envoi échoue, la fenêtre revient telle
     // qu'elle était, rien n'est perdu.
-    const draft = { text, mode, element, chain }
+    const draft = { text, mode, element, chain, shots }
     setOpen(false)
     reset()
     try {
@@ -206,8 +232,13 @@ export function FeedbackFab({ contextRecord = '' }) {
       // élément ciblé) est inclus dans le prompt, c'est lui que l'agent recevra.
       // Le serveur relance l'ordonnanceur : la tâche part tout de suite si rien
       // ne tourne, sinon elle attend son tour en fin de file.
+      let prompt = `${trimmed}\n\nContexte (ERP) : ${context}`
+      if (draft.shots.length) {
+        const { paths } = await api.travaux.uploadCaptures(draft.shots.map(s => s.file))
+        prompt += `\n\nCaptures d'écran jointes (à ouvrir avec l'outil Read) :\n${paths.map(p => `- ${p}`).join('\n')}`
+      }
       const created = await api.travaux.createPrompt({
-        prompt: `${trimmed}\n\nContexte (ERP) : ${context}`,
+        prompt,
         mode,
         space: 'finance',
         // Opus épinglé pour toutes les demandes (plus de choix de modèle).
@@ -228,6 +259,7 @@ export function FeedbackFab({ contextRecord = '' }) {
       setMode(draft.mode)
       setElement(draft.element)
       setChain(draft.chain)
+      setShots(draft.shots)
       setOpen(true)
       addToast({ message: 'Échec de l\'envoi de la suggestion', type: 'error' })
     } finally {
@@ -241,8 +273,8 @@ export function FeedbackFab({ contextRecord = '' }) {
     <>
       {/* z-[9989] : au-dessus des modales/drawers de l'app (z-50) pour rester
           cliquable même quand une modale est ouverte — la demande peut concerner
-          un élément DANS une modale. Reste sous la bannière de picking (9991) et
-          l'overlay de surbrillance (9990). Masqué pendant que SA propre modale
+          un élément DANS une modale. Reste sous le bandeau et la surbrillance du
+          ciblage (plafond des z-index, lib/pageContext.jsx). Masqué pendant que SA propre modale
           est ouverte (open) pour ne pas chevaucher son pied de page. */}
       <button
         type="button"
@@ -265,7 +297,7 @@ export function FeedbackFab({ contextRecord = '' }) {
           empile à 50 + profondeur×2), sinon la fenêtre s'ouvrait DERRIÈRE un
           panneau empilé — invisible, et le clic suivant tombait sur le voile du
           panneau du dessus, qui se refermait. Reste sous l'overlay hors-ligne et
-          les toasts (100), le FAB (9989) et le bandeau de ciblage (9991). */}
+          les toasts (100), le FAB (9989) et le bandeau de ciblage. */}
       <Modal
         isOpen={open}
         onClose={close}
@@ -277,7 +309,13 @@ export function FeedbackFab({ contextRecord = '' }) {
             admise à la règle autosave). Ni écran de confirmation, ni attente :
             la fenêtre se referme au clic et l'envoi finit en arrière-plan (un
             toast accuse réception ; un échec rouvre la fenêtre intacte). */}
-        <form onSubmit={submit} className="space-y-4">
+        <form
+          onSubmit={submit}
+          onPaste={onPaste}
+          onDragOver={e => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault() }}
+          onDrop={e => { if (addShots(e.dataTransfer?.files)) e.preventDefault() }}
+          className="space-y-4"
+        >
           {/* Choix du mode : demande d'implémentation vs simple question.
               Une question n'implémente rien — l'agent répond dans le compte-rendu
               de la carte (page Travaux). */}
@@ -309,7 +347,7 @@ export function FeedbackFab({ contextRecord = '' }) {
             <div data-testid="feedback-element-chip" className="flex items-start gap-2 bg-brand-50 border border-brand-200 rounded-lg px-3 py-2">
               <MousePointerClick size={14} className="text-brand-600 flex-shrink-0 mt-0.5" />
               <div className="flex-1 min-w-0">
-                <div className="text-[11px] font-semibold text-brand-800">Élément ciblé — joint en contexte</div>
+                <div className="text-[11px] font-semibold text-brand-800">{element.startsWith('zone tracée') ? 'Zone ciblée' : 'Élément ciblé'} — joint en contexte</div>
                 <div className="text-xs font-mono text-slate-600 break-all line-clamp-2">{element}</div>
               </div>
               <button
@@ -330,7 +368,7 @@ export function FeedbackFab({ contextRecord = '' }) {
               onClick={repickFromForm}
               className="inline-flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-700 font-medium"
             >
-              <Crosshair size={13} /> Cibler un élément sur la page
+              <Crosshair size={13} /> Cibler un élément ou une zone
             </button>
           )}
 
@@ -377,7 +415,40 @@ export function FeedbackFab({ contextRecord = '' }) {
               </button>
             </div>
           )}
-          <div className="flex justify-end gap-3 pt-1">
+          {!!shots.length && (
+            <div className="flex flex-wrap gap-2" data-testid="feedback-shots">
+              {shots.map((s, i) => (
+                <div key={s.url} className="relative">
+                  <img src={s.url} alt="" className="h-16 w-auto max-w-[8rem] object-cover rounded border border-slate-200" />
+                  <button
+                    type="button"
+                    onClick={() => removeShot(i)}
+                    aria-label="Retirer la capture"
+                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-slate-700 text-white flex items-center justify-center"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <input
+              ref={shotInputRef} type="file" multiple accept={SHOT_TYPES.join(',')} className="hidden"
+              data-testid="feedback-shot-input"
+              onChange={e => { addShots(e.target.files); e.target.value = '' }}
+            />
+            <button
+              type="button"
+              data-testid="feedback-shot-add"
+              onClick={() => shotInputRef.current?.click()}
+              disabled={shots.length >= MAX_SHOTS}
+              title="Joindre une capture (ou Ctrl+V)"
+              aria-label="Joindre une capture d'écran"
+              className="mr-auto text-slate-400 hover:text-brand-600 disabled:opacity-40"
+            >
+              <ImagePlus size={18} />
+            </button>
             <button type="button" onClick={close} className="btn-secondary">Annuler</button>
             <button
               type="submit"

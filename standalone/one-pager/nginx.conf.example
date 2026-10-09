@@ -1,0 +1,15 @@
+# Brancher un domaine sur le one-pager (remplacer DOMAINE) :
+#   1. DNS : enregistrement A de DOMAINE → IP publique de ce serveur
+#   2. sudo cp nginx.conf.example /etc/nginx/conf.d/DOMAINE.conf (+ sed DOMAINE)
+#   3. sudo nginx -t && sudo systemctl reload nginx
+#   4. sudo certbot --nginx -d DOMAINE   (ajoute le 443 + la redirection)
+server {
+    listen 80;
+    server_name DOMAINE;
+
+    location / {
+        proxy_pass http://127.0.0.1:3010;
+        proxy_set_header Host $host;
+        proxy_set_header Accept-Encoding $http_accept_encoding;
+    }
+}

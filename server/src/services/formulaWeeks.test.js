@@ -44,14 +44,23 @@ test('semaines ISO : lundi, dimanche, semaine 53 et changement d’année', () =
   ]) assert.equal(preview(date, 'YYYY-ww'), expected, date)
 })
 
-test('dates vides/invalides et calcul UTC', () => {
+test('dates vides/invalides et calcul à l’heure du Québec', () => {
   for (const date of [null, '', 'pas une date']) assert.equal(preview(date, 'YYYY-ww'), null)
-  assert.equal(preview('2026-01-04T23:30:00-02:00', 'YYYY-ww'), '2026-02')
+  // 01:30 UTC le lundi 5 = dimanche 4 à 20:30 (EST) : encore semaine 1.
+  assert.equal(preview('2026-01-04T23:30:00-02:00', 'YYYY-ww'), '2026-01')
+})
+
+test('semaine qui commence le mardi à midi, été comme hiver (−36 h)', () => {
+  const wk = (iso) => previewFormula('ops_issues', `DATETIME_FORMAT(DATEADD('${iso}', -36, 'hours'), 'YYYY-ww')`)[0].value
+  assert.equal(wk('2026-10-06T15:59:00Z'), '2026-40') // 11:59 EDT
+  assert.equal(wk('2026-10-06T16:00:00Z'), '2026-41') // 12:00 EDT
+  assert.equal(wk('2026-12-01T16:59:00Z'), '2026-48') // 11:59 EST
+  assert.equal(wk('2026-12-01T17:00:00Z'), '2026-49') // 12:00 EST
 })
 
 test('formats existants, littéraux et format par défaut conservés', () => {
   const date = '2026-09-29T12:34:56Z'
-  assert.equal(preview(date, 'YYYY-MM-DD HH:mm:ss'), '2026-09-29 12:34:56')
+  assert.equal(preview(date, 'YYYY-MM-DD HH:mm:ss'), '2026-09-29 08:34:56')
   assert.equal(preview(date, 'YYYY-[ww]-ww'), '2026-ww-40')
   assert.equal(preview(date, ''), '2026-09-29T12:34:56.000Z')
   assert.equal(previewFormula('ops_issues', `CONCATENATE("DATETIME_FORMAT(", datetime_format(created_at, "YYYY-ww"))`)[0].value,

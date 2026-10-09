@@ -10,6 +10,7 @@ import { Modal } from '../components/Modal.jsx'
 import { RecordForm } from '../components/RecordForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
+import { Field } from '../components/Field.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 
@@ -35,11 +36,16 @@ const achatFields = f => [
 
 const byDateDesc = (a, b) => String(b.purchased_at || '').localeCompare(String(a.purchased_at || ''))
 
-function Field({ label, children, span2 }) {
+// `id` = champ de la table : bloc gardé par le portier (supprimé → masqué,
+// renommé → libellé de l'utilisateur). Sans `id` : valeur calculée.
+function Info({ id, label, children, span2 }) {
+  const value = <div className="text-sm text-slate-900 mt-0.5">{children ?? DASH}</div>
+  const cls = span2 ? 'col-span-2' : ''
+  if (id) return <Field table="fournitures" id={id} label={label} className={cls} labelClassName="text-xs text-slate-500">{value}</Field>
   return (
-    <div className={span2 ? 'col-span-2' : ''}>
+    <div className={cls}>
       <div className="text-xs text-slate-500">{label}</div>
-      <div className="text-sm text-slate-900 mt-0.5">{children ?? DASH}</div>
+      {value}
     </div>
   )
 }
@@ -129,14 +135,14 @@ export default function FournitureDetail({ recordId: id, onClose, onChanged }) {
     >
       {saveError && <ErrorBanner>{saveError}</ErrorBanner>}
       <div className="card p-5 grid grid-cols-2 gap-4">
-        <Field label="Nom" span2><InlineText {...inline('name')} required /></Field>
-        <Field label="Fournisseur"><InlineText {...inline('supplier')} /></Field>
-        <Field label="Unité"><InlineText {...inline('unit')} /></Field>
-        <Field label="Lien d'achat" span2><InlineUrl {...inline('web_url')} /></Field>
-        <Field label="Prix de réf."><InlineNumber {...inline('reference_price')} min={0} step="0.01" suffix="$" /></Field>
-        <Field label="Dernier achat">{achats[0]?.purchased_at ? fmtDate(achats[0].purchased_at) : null}</Field>
-        <Field label="Total dépensé">{achats.length ? money(spent) : null}</Field>
-        <Field label="Notes" span2><InlineTextarea {...inline('notes')} /></Field>
+        <Info id="name" label="Nom" span2><InlineText {...inline('name')} required /></Info>
+        <Info id="supplier" label="Fournisseur"><InlineText {...inline('supplier')} /></Info>
+        <Info id="unit" label="Unité"><InlineText {...inline('unit')} /></Info>
+        <Info label="Lien d'achat" span2><InlineUrl {...inline('web_url')} /></Info>
+        <Info id="reference_price" label="Prix de réf."><InlineNumber {...inline('reference_price')} min={0} step="0.01" suffix="$" /></Info>
+        <Info id="last_purchased_at" label="Dernier achat">{achats[0]?.purchased_at ? fmtDate(achats[0].purchased_at) : null}</Info>
+        <Info label="Total dépensé">{achats.length ? money(spent) : null}</Info>
+        <Info label="Notes" span2><InlineTextarea {...inline('notes')} /></Info>
       </div>
 
       <div className="mt-6 mb-2 flex items-center justify-between">

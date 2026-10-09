@@ -4,6 +4,7 @@ import { newRecordId } from '../utils/recordId.js';
 import bcrypt from 'bcrypt';
 import db from '../db/database.js';
 import { requireAdmin } from '../middleware/auth.js';
+import { sanitizeSignatureHtml } from '../utils/sanitizeHtml.js';
 import { promises as fsp } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -511,6 +512,34 @@ router.put('/users/:id', async (req, res) => {
 
   const updated = db.prepare('SELECT id, email, name, role, roles, active, employee_id, created_at FROM users WHERE id = ?').get(req.params.id);
   res.json({ ...updated, roles: rolesOf(updated) });
+});
+
+// Signatures de courriel d'un autre utilisateur (Paramètres › Mon compte Google) :
+// un admin peut les poser à la place de la personne.
+const readUserSignatures = (id) => {
+  const r = db.prepare('SELECT email_signature, email_signature_en FROM users WHERE id = ? AND deleted_at IS NULL').get(id);
+  return r && { email_signature: r.email_signature || '', email_signature_en: r.email_signature_en || '' };
+};
+
+// GET /api/admin/users/:id/signatures
+router.get('/users/:id/signatures', (req, res) => {
+  const sigs = readUserSignatures(req.params.id);
+  if (!sigs) return res.status(404).json({ error: 'User not found' });
+  res.json(sigs);
+});
+
+// PATCH /api/admin/users/:id/signatures — { email_signature?, email_signature_en? }
+router.patch('/users/:id/signatures', (req, res) => {
+  if (!readUserSignatures(req.params.id)) return res.status(404).json({ error: 'User not found' });
+  for (const key of ['email_signature', 'email_signature_en']) {
+    const v = req.body?.[key];
+    if (v === undefined) continue;
+    if (v !== null && (typeof v !== 'string' || v.length > 50000)) {
+      return res.status(400).json({ error: `${key} doit être une chaîne (50 000 caractères max)` });
+    }
+    db.prepare(`UPDATE users SET ${key} = ? WHERE id = ?`).run(sanitizeSignatureHtml(v) || null, req.params.id);
+  }
+  res.json(readUserSignatures(req.params.id));
 });
 
 // POST /api/admin/users/:id/reset-password

@@ -274,6 +274,36 @@ export function inferLookupResultType(table, column) {
 // Retourne pour la table source : les colonnes FK détectées (via PRAGMA
 // foreign_key_list) avec leur table cible probable, plus la whitelist de
 // tables autorisées et leurs colonnes disponibles.
+// Colonnes des champs supprimés (corbeille ou purge définitive), par table :
+// elles existent encore en SQL mais ne doivent plus être proposées dans les
+// formules, lookups et rollups. Une colonne qui porte de nouveau un champ
+// vivant (ré-adoption) n'en fait pas partie.
+function deletedColumnsByTable() {
+  const live = new Set(db.prepare(
+    `SELECT erp_table || ' ' || column_name AS k FROM custom_fields WHERE deleted_at IS NULL`
+  ).all().map(r => r.k))
+  const out = new Map()
+  const add = (table, column) => {
+    const t = table === 'retours' ? 'returns' : table
+    if (live.has(`${t} ${column}`)) return
+    if (!out.has(t)) out.set(t, new Set())
+    out.get(t).add(column)
+  }
+  for (const r of db.prepare(
+    `SELECT erp_table, column_name FROM custom_fields WHERE deleted_at IS NOT NULL`
+  ).all()) add(r.erp_table, r.column_name)
+  try {
+    for (const r of db.prepare('SELECT erp_table, column_name FROM purged_fields').all()) add(r.erp_table, r.column_name)
+  } catch { /* table absente au tout premier démarrage */ }
+  // created_at / updated_at portent les champs auto vivants (« Date » des
+  // envois) même quand leur ligne technique brute a été purgée.
+  for (const r of db.prepare(
+    `SELECT erp_table, kind FROM custom_fields
+     WHERE deleted_at IS NULL AND kind IN ('created_time','last_modified_time')`
+  ).all()) out.get(r.erp_table)?.delete(r.kind === 'created_time' ? 'created_at' : 'updated_at')
+  return out
+}
+
 export function getLookupMeta(erpTable) {
   if (!SAFE_IDENT.test(erpTable)) throw new Error('Nom de table invalide')
   const fks = db.pragma(`foreign_key_list(${erpTable})`)
@@ -343,12 +373,14 @@ export function getLookupMeta(erpTable) {
     }
   }
 
+  const deletedByTable = deletedColumnsByTable()
+  const notDeleted = t => c => !deletedByTable.get(t)?.has(c)
   const targetColumns = {}
   for (const t of LOOKUP_TARGET_WHITELIST) {
     try {
       const labels = labelsByTable.get(t)
       const fields = fieldsByTable.get(t)
-      const cols = childColumnRows(t).filter(c => isSafeColumn(c.name))
+      const cols = childColumnRows(t).filter(c => isSafeColumn(c.name) && notDeleted(t)(c.name))
         .map(c => ({
           column: c.name,
           label: labels?.get(c.name) || null,
@@ -440,6 +472,7 @@ export function getLookupMeta(erpTable) {
        AND kind IN ('formula','lookup','rollup','link','created_time','last_modified_time','created_by','last_modified_by')`
   ).all(erpTable).map(r => r.column_name)
   const sourceColumns = [...new Set([...allCols.filter(isSafeColumn), ...virtualColumns])]
+    .filter(notDeleted(erpTable))
     .map(c => ({ column: c, label: sourceLabels.get(c) || null }))
 
   return {

@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Upload, RefreshCw, AlertCircle, CheckCircle, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen, FileX } from 'lucide-react'
+import { Upload, RefreshCw, AlertCircle, CheckCircle, Camera, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -11,7 +11,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { fmtCad } from '../utils/formatters.js'
+import { fmtCad, fmtMoney } from '../utils/formatters.js'
 import { InvoiceCollectionPanel } from './InvoiceCollection.jsx'
 import { ReceiptAttachment } from '../components/ReceiptAttachment.jsx'
 
@@ -24,8 +24,8 @@ const TABS = [
   ['collecte', 'Collecte de factures'],
 ]
 
-import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
 import ThinkingOrb from '../components/ThinkingOrb'
+import { ReceiptStatePill, sourceLabel } from '../components/ReceiptStatePill.jsx'
 
 const UPLOAD_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
 const UPLOAD_EXTS  = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf']
@@ -35,13 +35,16 @@ function isAcceptedFile(file) {
   return UPLOAD_MIMES.includes(file.type) || UPLOAD_EXTS.includes(ext)
 }
 
-function UploadZone({ onUpload, uploading, progress, compact }) {
+// Dépôt n'importe où sur la page (plus de boîte dédiée) : un voile s'affiche
+// pendant le glisser, et un petit bouton garde l'accès au sélecteur de fichiers.
+// On ne réagit qu'à un vrai fichier, pas au déplacement d'une sélection de texte.
+function PageDrop({ onUpload, uploading, progress, enabled }) {
   const { addToast } = useToast()
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef()
 
   // Sélection/glisser multiple : chaque fichier devient un document distinct.
-  function handleFiles(fileList) {
+  const handleFiles = useCallback((fileList) => {
     const files = Array.from(fileList || [])
     if (!files.length) return
     const accepted = files.filter(isAcceptedFile)
@@ -56,44 +59,70 @@ function UploadZone({ onUpload, uploading, progress, compact }) {
     }
     if (!accepted.length) return
     onUpload(accepted)
-  }
+  }, [addToast, onUpload])
+
+  const handleRef = useRef(handleFiles)
+  handleRef.current = handleFiles
+
+  useEffect(() => {
+    if (!enabled) return
+    let depth = 0
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files')
+    const onEnter = (e) => { if (hasFiles(e)) { e.preventDefault(); depth++; setDragOver(true) } }
+    const onOver = (e) => { if (hasFiles(e)) e.preventDefault() }
+    const onLeave = () => { if (--depth <= 0) { depth = 0; setDragOver(false) } }
+    const onDrop = (e) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      depth = 0
+      setDragOver(false)
+      handleRef.current(e.dataTransfer.files)
+    }
+    window.addEventListener('dragenter', onEnter)
+    window.addEventListener('dragover', onOver)
+    window.addEventListener('dragleave', onLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onEnter)
+      window.removeEventListener('dragover', onOver)
+      window.removeEventListener('dragleave', onLeave)
+      window.removeEventListener('drop', onDrop)
+      setDragOver(false)
+    }
+  }, [enabled])
 
   return (
-    <div
-      className={`relative border-2 border-dashed rounded-xl ${compact ? 'px-4 py-3' : 'p-8'} text-center transition-colors cursor-pointer
-        ${dragOver ? 'border-brand-500 bg-brand-50' : 'border-slate-300 bg-white hover:border-brand-400 hover:bg-slate-50'}
-        ${uploading ? 'opacity-60 pointer-events-none' : ''}`}
-      onDragOver={e => { e.preventDefault(); setDragOver(true) }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={e => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files) }}
-      onClick={() => inputRef.current?.click()}
-      data-testid="upload-zone"
-    >
+    <>
       <input
         ref={inputRef}
         type="file"
         multiple
         accept=".jpg,.jpeg,.png,.gif,.webp,.pdf"
         className="hidden"
+        data-testid="upload-input"
         onChange={e => { handleFiles(e.target.files); e.target.value = '' }}
       />
-      {uploading ? (
-        <div className="flex items-center justify-center gap-2 text-slate-600">
-          <ThinkingOrb size={16} />
-          <span className="text-sm font-medium" data-testid="upload-progress">
-            {progress?.total > 1
-              ? `Téléversement ${Math.min(progress.done + 1, progress.total)} / ${progress.total}…`
-              : 'Téléversement en cours…'}
-          </span>
-        </div>
-      ) : (
-        <div className="flex items-center justify-center gap-3 text-slate-600">
-          <Upload size={18} className="text-brand-600" />
-          <span className="text-sm font-medium">Glissez un ou plusieurs fichiers ici ou cliquez pour parcourir</span>
-          <span className="text-xs text-slate-400">JPG, PNG, GIF, WEBP, PDF — max 20 Mo par fichier</span>
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={uploading}
+        data-testid="upload-zone"
+        title="Ou glissez des fichiers n'importe où sur la page"
+        className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 bg-white border border-slate-300 rounded-lg hover:border-brand-400 hover:bg-slate-50 transition-colors disabled:opacity-60"
+      >
+        {uploading ? <ThinkingOrb size={14} /> : <Upload size={14} />}
+        <span data-testid={uploading ? 'upload-progress' : undefined}>
+          {uploading
+            ? (progress?.total > 1 ? `${Math.min(progress.done + 1, progress.total)} / ${progress.total}` : 'Envoi…')
+            : 'Importer'}
+        </span>
+      </button>
+      {dragOver && (
+        <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center bg-brand-600/10 border-4 border-dashed border-brand-500">
+          <span className="px-4 py-2 rounded-lg bg-white text-sm shadow">Lâchez ici</span>
         </div>
       )}
-    </div>
+    </>
   )
 }
 
@@ -240,50 +269,34 @@ const RENDERS = {
   // été ouvert (read_at NULL). L'espace est réservé même une fois lu pour que
   // les noms restent alignés d'une ligne à l'autre.
   company: row => (
-    <span className="inline-flex items-center gap-2 min-w-0">
+    <span className="inline-flex items-center gap-2.5 min-w-0">
       <span
         className={`h-2 w-2 rounded-full shrink-0 ${row.read_at ? 'bg-transparent' : 'bg-blue-500'}`}
         title={row.read_at ? undefined : 'Non consulté'}
         data-testid={row.read_at ? undefined : 'receipt-unread-dot'}
       />
-      <span className="font-medium text-slate-900 truncate">{row.company || row.original_name || '—'}</span>
+      {/* Le nom seul (maquette E3, 2026-10-03) : gras tant que non lu ; le
+          numéro a sa propre colonne. */}
+      <span className={`min-w-0 truncate text-slate-900 ${row.read_at ? '' : 'font-semibold'}`}>{row.company || row.original_name || '—'}</span>
     </span>
   ),
+  source: row => <span className="text-slate-500">{sourceLabel(row.source)}</span>,
   receipt_date: row => <span className="text-slate-500">{row.receipt_date ? fmtDate(row.receipt_date) : '—'}</span>,
   receipt_number: row => row.receipt_number
     ? <span className="font-mono text-xs text-slate-600">#{row.receipt_number}</span>
     : <span className="text-slate-300">—</span>,
-  total: row => <span className="font-medium text-slate-700">{fmtCad(row.total)}</span>,
+  total: row => <span className="font-medium text-slate-700 tabular-nums">
+    {row.currency && row.currency !== 'CAD' ? fmtMoney(row.total, row.currency) : fmtCad(row.total)}
+  </span>,
   currency: row => row.currency
     ? <span className="font-mono text-xs text-slate-600">{row.currency}</span>
     : <span className="text-slate-300">—</span>,
   payment_method: row => <span className="text-slate-600">{row.payment_method || '—'}</span>,
   // `obsolete` (serveur) : document sans objet comptable — 0 $ ou copie d'un document
   // déjà publié sur QB. Le badge signale dès la liste ce qui peut être archivé.
-  status: row => (
-    <span className="inline-flex items-center gap-1.5">
-      <StatusBadge status={row.status} />
-      {row.obsolete && (
-        <span
-          className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full"
-          title={row.obsolete.message}
-          data-testid="receipt-obsolete-pill"
-        >
-          <FileX size={10} /> Obsolète
-        </span>
-      )}
-    </span>
-  ),
-  quickbooks_id: row => row.quickbooks_id
-    ? (row.quickbooks_url
-        ? <a href={row.quickbooks_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
-             className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 hover:bg-green-200 px-2 py-0.5 rounded-full">
-            <BookOpen size={10} /> #{row.quickbooks_id}
-          </a>
-        : <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
-            <BookOpen size={10} /> #{row.quickbooks_id}
-          </span>)
-    : <span className="text-slate-300">—</span>,
+  // Une seule pastille : ce qu'il reste à faire pour ce document (voir receiptState).
+  // Seuls les problèmes s'écrivent (voir la variante `quiet`).
+  status: row => <ReceiptStatePill row={row} quiet />,
   original_name: row => <span className="text-slate-500 text-xs">{row.original_name || '—'}</span>,
   justificatif: row => <ReceiptAttachment receipt={row} />,
   created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
@@ -295,7 +308,12 @@ const RENDERS = {
     : <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700"><span className="h-2 w-2 rounded-full bg-blue-500" /> Non lu</span>,
 }
 
-const COLUMNS = TABLE_COLUMN_META.sale_receipts.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+// La colonne QuickBooks est retirée de la liste (Charles, 2026-10-03) : le ✓ de
+// l'état mène déjà à l'écriture. Les filtres des onglets lisent le champ, pas la
+// colonne — ils restent intacts.
+const COLUMNS = TABLE_COLUMN_META.sale_receipts
+  .filter(meta => meta.id !== 'quickbooks_id')
+  .map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function SaleReceipts() {
   const navigate = useNavigate()
@@ -333,12 +351,6 @@ export default function SaleReceipts() {
   useEffect(() => { load() }, [load])
 
   useEntityListRealtime('sale_receipt', setReceipts)
-
-  // Compteur de non-lus (documents actifs seulement — les archivés ne comptent pas).
-  const unreadCount = useMemo(
-    () => receipts.filter(r => !r.read_at && !r.archived_at).length,
-    [receipts]
-  )
 
   async function handleUpload(formData) {
     setUploading(true)
@@ -507,20 +519,25 @@ export default function SaleReceipts() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <span className="inline-flex items-center gap-2">
-              <PageTitle>Extraction de données</PageTitle>
-              {tab === 'recus' && unreadCount > 0 && (
-                <span
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full"
-                  data-testid="receipts-unread-count"
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                  {unreadCount} non lu{unreadCount > 1 ? 's' : ''}
-                </span>
-              )}
-            </span>
+            <PageTitle>Extraction de données</PageTitle>
             <p className="text-xs text-slate-400 mt-0.5">Extraction automatique par IA</p>
           </div>
+          <div className="flex items-center gap-2">
+          {tab === 'recus' && (
+            <>
+              <PageDrop onUpload={handleUploadFiles} uploading={uploading} progress={uploadProgress} enabled={!webcamOpen} />
+              <button
+                type="button"
+                onClick={() => setWebcamOpen(true)}
+                disabled={uploading}
+                data-testid="open-webcam"
+                className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-slate-700 bg-white border border-slate-300 rounded-lg hover:border-brand-400 hover:bg-slate-50 transition-colors disabled:opacity-60"
+              >
+                <Camera size={14} />
+                Capturer
+              </button>
+            </>
+          )}
           <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
             {TABS.map(([k, label]) => (
               <button key={k} onClick={() => setTab(k)} data-testid={`tab-${k}`}
@@ -529,26 +546,11 @@ export default function SaleReceipts() {
               </button>
             ))}
           </div>
+          </div>
         </div>
 
         {tab === 'collecte' ? <InvoiceCollectionPanel /> : (
         <>
-        <div className="flex items-stretch gap-3 mb-4">
-          <div className="flex-1">
-            <UploadZone onUpload={handleUploadFiles} uploading={uploading} progress={uploadProgress} compact />
-          </div>
-          <button
-            type="button"
-            onClick={() => setWebcamOpen(true)}
-            disabled={uploading}
-            data-testid="open-webcam"
-            className="inline-flex items-center justify-center gap-2 px-4 text-sm text-slate-700 bg-white border border-slate-300 rounded-xl hover:border-brand-400 hover:bg-slate-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            <Camera size={16} />
-            Capturer
-          </button>
-        </div>
-
         {/* Lu / non lu à la Gmail : les non-lus ressortent (gras, texte plein,
             point bleu dans la cellule Fournisseur), les lus passent en retrait
             (fond légèrement teinté, titre atténué) ; transition-colors adoucit
@@ -564,9 +566,12 @@ export default function SaleReceipts() {
           bulkActions={BULK_ACTIONS}
           bulkDeleteAlways
           onFilteredDataChange={rows => { displayedIdsRef.current = rows.map(r => String(r.id)) }}
-          rowClassName={row => row.read_at
+          rowClassName={row => (row.read_at
             ? 'transition-colors bg-slate-50/70 hover:bg-slate-100 [&_.text-slate-900]:text-slate-600 [&_.text-slate-700]:text-slate-500'
-            : 'transition-colors bg-white font-semibold [&_.text-slate-500]:text-slate-700 [&_.text-slate-600]:text-slate-800'}
+            : 'transition-colors bg-white font-semibold [&_.text-slate-500]:text-slate-700 [&_.text-slate-600]:text-slate-800')
+            // Lié à une transaction du relevé : même bleu que Transactions
+            // (maquette X1, 2026-10-06) — ligne bleutée + trait à gauche.
+            + (row.bank_txn ? ' !bg-sky-100 hover:!bg-sky-200 [&>td:first-child]:shadow-[inset_5px_0_0_#0284c7]' : '')}
           onRowClick={row => {
             // Ouvrir un reçu le marque lu (comme un courriel Gmail).
             if (!row.read_at) {
@@ -581,7 +586,7 @@ export default function SaleReceipts() {
             } catch {}
             navigate(`/sale-receipts/${row.id}`)
           }}
-          emptyState={{ icon: Receipt, title: 'Aucun reçu de vente', description: "Aucun reçu n'a encore été importé. Téléverse un ou plusieurs fichiers ci-dessus ou prends une photo d'un reçu.", cta: { label: 'Prendre en photo', icon: Camera, onClick: () => setWebcamOpen(true) } }}
+          emptyState={{ icon: Receipt, title: 'Aucun reçu de vente', description: "Aucun reçu n'a encore été importé. Glisse des fichiers sur la page ou prends une photo.", cta: { label: 'Prendre en photo', icon: Camera, onClick: () => setWebcamOpen(true) } }}
         />
         </>
         )}

@@ -31,6 +31,8 @@ export const DEFAULT_TEXTS = {
   'controller_distance.prompt': 'À quelle distance du contrôleur central seront situées la/les serres à automatiser ?',
   'controller_distance.near': 'Aucun nouveau contrôleur central à fournir.',
   'controller_distance.far': 'Un nouveau contrôleur central sera fourni. Vos contrôleurs centraux devront être programmés en mode multi-contrôleurs.',
+  'wind_sensor.title': 'Capteur de vent',
+  'wind_sensor.prompt': 'Avez-vous besoin d’un capteur de vent ?',
 
   'farm.title': 'Adresse de la ferme',
   'farm.help': 'Cette adresse sert à pré-programmer le contrôleur central avec les coordonnées géographiques de votre ferme.',
@@ -52,6 +54,7 @@ export const DEFAULT_TEXTS = {
 
   'greenhouse.length_label': 'Longueur de la serre (pi)',
   'greenhouse.side_vents_count_label': 'Combien de côtés ouvrants à automatiser ?',
+  'greenhouse.side_vent_type_label': 'Type de côté ouvrant',
   'greenhouse.motors_label': 'Avez-vous déjà les moteurs ?',
   'greenhouse.side_vent_height_label': 'Hauteur des côtés ouvrants (pi)',
   'greenhouse.side_pipe_type_label': 'Type de tuyau de côté',
@@ -158,6 +161,11 @@ export const DEFAULT_CHOICES = {
     { value: 'up_to_200', label: '200 pi ou moins' },
     { value: 'over_200', label: 'Plus de 200 pi' },
   ],
+  // « Autre » : aucun matériel déduit, Orisha le choisit sur la fiche du système.
+  'greenhouse.side_vent_type_options': [
+    { value: 'rollup', label: 'Moteurs roll-up' },
+    { value: 'other', label: 'Autre' },
+  ],
   'greenhouse.motors_options': [
     { value: 'no', label: "J'ai besoin de moteurs" },
     { value: 'yes', label: "J'ai déjà mes moteurs" },
@@ -232,11 +240,13 @@ export const CONDITION_SOURCES = [
   { field: 'is_new_site', scope: 'form', label: 'Type de commande', choices: 'order_type.options' },
   { field: 'within_central_controller_range', scope: 'form', label: 'Serres à portée du contrôleur central', bool: true },
   { field: 'central_controller_distance', scope: 'form', label: 'Distance du contrôleur central', choices: 'controller_distance.options' },
+  { field: 'needs_wind_sensor', scope: 'form', label: 'Besoin d’un capteur de vent', bool: true },
   { field: 'shipping_same_as_farm', scope: 'form', label: 'Livraison = ferme', bool: true },
   { field: 'network_access', scope: 'form', label: 'Accès réseau', choices: 'network.options' },
   { field: 'num_greenhouses', scope: 'form', label: 'Nombre de serres', number: true },
   { field: 'length', scope: 'greenhouse', label: 'Longueur de la serre', number: true },
   { field: 'has_side_vents', scope: 'greenhouse', label: 'Côtés ouvrants', bool: true },
+  { field: 'side_vent_type', scope: 'greenhouse', label: 'Type de côté ouvrant', choices: 'greenhouse.side_vent_type_options' },
   { field: 'side_pipe_type', scope: 'greenhouse', label: 'Type de tuyau de côté', choices: 'greenhouse.side_pipe_type_options' },
   { field: 'guide_pipes_state', scope: 'greenhouse', label: 'Tuyaux guides', choices: 'greenhouse.guide_pipes_options' },
   { field: 'has_furnaces', scope: 'greenhouse', label: 'Fournaises', bool: true },
@@ -289,6 +299,8 @@ export const SCHEMA_GROUPS = [
       { id: 'controller_distance.options', kind: 'choices', label: 'Choix (distance du contrôleur)', fixedValues: true },
       { id: 'controller_distance.near', kind: 'text', label: 'Réponse à 250 pi ou moins' },
       { id: 'controller_distance.far', kind: 'textarea', label: 'Réponse au-delà de 250 pi' },
+      { id: 'wind_sensor.title', kind: 'text', label: 'Titre (capteur de vent)' },
+      { id: 'wind_sensor.prompt', kind: 'text', label: 'Question (capteur de vent)' },
     ],
   },
   {
@@ -331,6 +343,8 @@ export const SCHEMA_GROUPS = [
       { id: 'greenhouse.side_vents', kind: 'group', label: 'Bloc côtés ouvrants', hideable: true },
       // Les trois réponses (0, 1, 2 côtés) sont des images dessinées par le code.
       { id: 'greenhouse.side_vents_count_label', kind: 'text', label: 'Question côtés ouvrants' },
+      { id: 'greenhouse.side_vent_type_label', kind: 'text', label: 'Question type de côté', under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.side_vent_type_options', kind: 'choices', label: 'Choix type de côté', fixedValues: true, under: 'greenhouse.side_vents' },
       // `under` : ces questions ne paraissent que si le bloc masquable nommé est
       // affiché (l'éditeur les atténue quand il est masqué).
       // Les deux réponses (moteurs déjà là, moteurs à fournir) sont des images.
@@ -607,6 +621,13 @@ export function emptyOverrides() {
 // (miroir de la même règle côté serveur, services/discoveryEquipment.js).
 export function sideVentsOnly(permission) {
   return permission === 'helper'
+}
+
+// Côté ouvrant « Autre » : les questions roll-up (moteurs, hauteur, tuyaux) ne
+// s'appliquent pas et aucun matériel n'est déduit (même règle côté serveur).
+// Sans réponse (formulaires d'avant la question) : roll-up.
+export function sideVentOther(greenhouse) {
+  return greenhouse?.has_side_vents === true && greenhouse?.side_vent_type === 'other'
 }
 
 /** `true` si la réponse à une question personnalisée est considérée remplie. */

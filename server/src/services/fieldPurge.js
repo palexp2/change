@@ -60,53 +60,118 @@ function backupValues(erpTable, columns) {
   }
 }
 
-// Vues enregistrées (barre des vues) : une colonne droppée qui traîne dans
-// visible_columns / sort / filters / group_by laisserait une colonne fantôme.
-function cleanViewPills(erpTable, dropped) {
-  let pills = []
-  try { pills = db.prepare(`SELECT * FROM table_view_pills WHERE table_name=?`).all(erpTable) }
-  catch { return 0 }
+// Clés de vue rangées sous un autre nom que la table SQL : la page /retours
+// (`retours`) et les tableaux encastrés dans une fiche ont leurs propres vues.
+// Miroir de VIEW_KEY_TO_SQL_TABLE (routes/views.js), étendu aux encastrés.
+const VIEW_KEYS_OF_TABLE = {
+  returns: ['retours', 'company_retours'],
+  return_items: ['retour_items'],
+  order_items: ['shipment_items'],
+  shipments: ['order_envois', 'adresse_envois', 'company_envois'],
+  serial_numbers: ['company_serials'],
+  stock_movements: ['product_movements'],
+  contacts: ['company_contacts'],
+  projects: ['company_projects'],
+  orders: ['company_orders'],
+  factures: ['company_factures', 'project_factures'],
+  tickets: ['company_tickets'],
+  purchases: ['company_achats', 'product_purchases'],
+  subscriptions: ['abonnements', 'company_abonnements'],
+}
+export const viewKeysOf = erpTable => [erpTable, ...(VIEW_KEYS_OF_TABLE[erpTable] || [])]
+
+// Nettoie toutes les traces de configuration d'un champ détruit : vues
+// enregistrées (pastilles et vue « Tous »), disposition des fiches, formulaires
+// d'ajout, colonnes gelées du sync Airtable. Une colonne citée là après la purge
+// est une colonne fantôme — invisible dans les réglages, mais toujours lue.
+export function cleanPurgedReferences(erpTable, columns) {
+  const dropped = columns instanceof Set ? columns : new Set(columns)
+  const out = { pills: 0, pills_removed: 0, configs: 0, details: 0, forms: 0, frozen: 0 }
+  if (!dropped.size) return out
   const parse = (raw, fallback) => { try { return JSON.parse(raw) ?? fallback } catch { return fallback } }
-  const list = (raw) => { const value = parse(raw, []); return Array.isArray(value) ? value : [] }
+  const keyOf = x => (typeof x === 'string' ? x : (x?.field || x?.id || x?.key || x?.column))
   // Les filtres récents sont des groupes AND/OR imbriqués, les anciens
   // sont des tableaux. Retirer aussi les groupes devenus vides.
   const cleanFilters = node => {
     if (Array.isArray(node)) return node.map(cleanFilters).filter(n => n != null)
     if (!node || typeof node !== 'object') return node
-    if (dropped.has(node.field || node.id)) return null
+    if (!Array.isArray(node.rules) && dropped.has(keyOf(node))) return null
     if (Array.isArray(node.rules)) {
       const rules = cleanFilters(node.rules)
       return rules.length ? { ...node, rules } : null
     }
     return node
   }
-  let cleaned = 0
-  for (const p of pills) {
-    const patch = {}
-    const vis = list(p.visible_columns)
-    if (vis.some(c => dropped.has(c))) patch.visible_columns = JSON.stringify(vis.filter(c => !dropped.has(c)))
-    const sort = list(p.sort)
-    if (sort.some(s => dropped.has(s?.field || s?.id))) patch.sort = JSON.stringify(sort.filter(s => !dropped.has(s?.field || s?.id)))
-    const filters = parse(p.filters, [])
-    const remainingFilters = cleanFilters(filters) ?? []
-    if (JSON.stringify(filters) !== JSON.stringify(remainingFilters)) patch.filters = JSON.stringify(remainingFilters)
-    const rules = list(p.color_rules)
-    if (rules.some(r => dropped.has(r?.field || r?.id))) patch.color_rules = JSON.stringify(rules.filter(r => !dropped.has(r?.field || r?.id)))
-    const groups = parse(p.group_by, p.group_by)
-    if (Array.isArray(groups)) {
-      if (groups.some(c => dropped.has(c))) patch.group_by = JSON.stringify(groups.filter(c => !dropped.has(c)))
-    } else if (p.group_by && dropped.has(p.group_by)) patch.group_by = null
-    let widths = {}
-    widths = parse(p.column_widths, {})
-    if (Object.keys(widths).some(c => dropped.has(c))) {
-      patch.column_widths = JSON.stringify(Object.fromEntries(Object.entries(widths).filter(([c]) => !dropped.has(c))))
+  const cleanValue = (raw, shape) => {
+    if (raw == null || raw === '') return undefined
+    if (shape === 'filters') {
+      const v = parse(raw, null)
+      if (v == null) return undefined
+      const next = cleanFilters(v) ?? []
+      return JSON.stringify(v) === JSON.stringify(next) ? undefined : JSON.stringify(next)
     }
-    if (!Object.keys(patch).length) continue
-    const sets = Object.keys(patch).map(k => `${k}=?`).join(', ')
-    db.prepare(`UPDATE table_view_pills SET ${sets} WHERE id=?`).run(...Object.values(patch), p.id)
-    cleaned++
+    if (shape === 'map') {
+      const v = parse(raw, null)
+      if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+      if (!Object.keys(v).some(k => dropped.has(k))) return undefined
+      return JSON.stringify(Object.fromEntries(Object.entries(v).filter(([k]) => !dropped.has(k))))
+    }
+    // list, ou scalaire legacy (group_by « category »)
+    const v = parse(raw, raw)
+    if (Array.isArray(v)) {
+      if (!v.some(x => dropped.has(keyOf(x)))) return undefined
+      return JSON.stringify(v.filter(x => !dropped.has(keyOf(x))))
+    }
+    if (typeof v === 'string' && dropped.has(v)) return null
+    return undefined
   }
-  return cleaned
+  const patchRow = (table, keyCol, row, shapes) => {
+    const patch = {}
+    for (const [col, shape] of Object.entries(shapes)) {
+      if (!(col in row)) continue
+      const next = cleanValue(row[col], shape)
+      if (next !== undefined) patch[col] = next
+    }
+    if (!Object.keys(patch).length) return false
+    const sets = Object.keys(patch).map(k => `${k}=?`).join(', ')
+    db.prepare(`UPDATE ${table} SET ${sets} WHERE ${keyCol}=?`).run(...Object.values(patch), row[keyCol])
+    return true
+  }
+  const rowsOf = (sql, ...args) => { try { return db.prepare(sql).all(...args) } catch { return [] } }
+
+  for (const key of viewKeysOf(erpTable)) {
+    for (const p of rowsOf('SELECT * FROM table_view_pills WHERE table_name=?', key)) {
+      // Pastille dont TOUT le filtre reposait sur un champ détruit : vidée, elle
+      // afficherait tout sous une étiquette fausse — supprimée.
+      const f = parse(p.filters, [])
+      const rules = Array.isArray(f) ? f : (Array.isArray(f?.rules) ? f.rules : [])
+      if (rules.length && rules.every(r => !Array.isArray(r?.rules) && dropped.has(keyOf(r)))) {
+        db.prepare('DELETE FROM table_view_pills WHERE id=?').run(p.id)
+        out.pills_removed++
+        continue
+      }
+      if (patchRow('table_view_pills', 'id', p, {
+        visible_columns: 'list', sort: 'list', filters: 'filters', color_rules: 'list',
+        group_by: 'list', column_widths: 'map',
+      })) out.pills++
+    }
+    for (const c of rowsOf('SELECT * FROM table_view_configs WHERE table_name=?', key)) {
+      if (patchRow('table_view_configs', 'id', c, {
+        visible_columns: 'list', default_sort: 'list', column_widths: 'map', footer_aggregations: 'map',
+      })) out.configs++
+    }
+    for (const d of rowsOf('SELECT * FROM detail_field_configs WHERE entity_type=?', key)) {
+      if (patchRow('detail_field_configs', 'id', d, { field_order: 'list' })) out.details++
+    }
+    for (const f of rowsOf('SELECT * FROM table_form_configs WHERE table_name=?', key)) {
+      if (patchRow('table_form_configs', 'table_name', f, { fields: 'list' })) out.forms++
+    }
+  }
+  try {
+    const del = db.prepare('DELETE FROM airtable_frozen_columns WHERE erp_table=? AND column_name=?')
+    for (const c of dropped) out.frozen += del.run(erpTable, c).changes
+  } catch { /* table absente */ }
+  return out
 }
 
 // Le mapping Airtable N'EST PAS supprimé, il est coupé : c'est cette ligne, en
@@ -204,8 +269,16 @@ export function purgeFields(ids) {
       }
       regenerateView(table)
       disableAirtableMappings(table, cols)
-      cleanViewPills(table, new Set(cols))
     }
+
+    // Toutes les colonnes purgées, droppées ou non : un champ natif détruit ne
+    // doit pas non plus rester cité dans les vues et les fiches.
+    const purgedByTable = new Map()
+    for (const r of purgedRows) {
+      if (!purgedByTable.has(r.erp_table)) purgedByTable.set(r.erp_table, new Set())
+      purgedByTable.get(r.erp_table).add(r.column_name)
+    }
+    for (const [table, cols] of purgedByTable) cleanPurgedReferences(table, cols)
   })()
 
   // Les pierres tombales retirent ces colonnes du snapshot client, même quand

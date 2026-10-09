@@ -980,6 +980,7 @@ export async function onAgentTaskFinalized(task) {
   // La carte n'affiche donc que les boutons de choix, pas une seconde fois le texte.
   if (task.pending_question?.question) reply += `\n\n❓ ${task.pending_question.question}`
   addMessage(row.id, { role: 'agent', text: reply, agentTaskId: task.id })
+  spawnModificationTask(row, task)
 
   const finished = finishPrompt(row.id, task)
   // Le compte-rendu vient d'entrer dans le fil : sur un projet qui a déjà tourné
@@ -1013,6 +1014,36 @@ export async function onAgentTaskFinalized(task) {
   // Aucun avis Slack de fin de tâche (demande de Charles, 2026-09-15) : la fin se
   // constate dans la carte de /travaux, où vit le compte-rendu. Ne pas réintroduire.
   advanceQueue()
+}
+
+// Tâches agent déjà converties : une finalisation rejouée ne crée pas de doublon.
+const _modificationSpawned = new Set()
+
+/**
+ * Question → modification : l'exécution (lecture seule) a rédigé le brief d'une
+ * modification demandée par l'utilisateur dans le fil. Nouvel item « modification »
+ * dans la même file, même demandeur (created_by → « DEMANDÉ PAR » du brief), signalé
+ * dans le fil de la question pour qu'on sache où il est parti.
+ */
+export function spawnModificationTask(row, task) {
+  const req = task?.modification_request
+  if (!req?.brief || row.mode !== 'question' || _modificationSpawned.has(task.id)) return null
+  _modificationSpawned.add(task.id)
+  try {
+    const created = createPrompt({
+      title: req.title || '',
+      prompt: `${req.brief}\n\n(Née de la question « ${row.title} ».)`,
+      mode: 'implement',
+      preset: 'auto',
+      space: row.space,
+      created_by: row.created_by || null,
+    })
+    addMessage(row.id, { role: 'agent', text: `🛠 Modification lancée : « ${created.title} »`, agentTaskId: task.id })
+    return created
+  } catch (e) {
+    console.error('🤖 File de travaux: tâche de modification impossible —', e.message)
+    return null
+  }
 }
 
 /**

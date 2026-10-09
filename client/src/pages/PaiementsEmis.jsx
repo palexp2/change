@@ -24,6 +24,7 @@
 // disait jamais d'où l'argent sortait.
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
+import { VendorHover } from '../components/VendorProfileHint.jsx'
 import {
   Plus, Trash2, Landmark, RefreshCw, History, Copy, ArrowRight, MoreHorizontal,
   CheckCircle2, Circle, AlertTriangle, ReceiptText, X, Search, ChevronDown, ExternalLink,
@@ -46,14 +47,14 @@ const fmtCad = (n, currency = 'CAD') => fmtMoney(n, currency, { nullIsZero: true
 // Montant éditable de la liste : lisible (séparateurs de milliers, 2 décimales)
 // sans symbole — parseAmount sait relire cette forme au blur.
 const fmtNum = n => fmtNumber(n, { decimals: 2, nullIsZero: true })
-const fmtDay = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
+const fmtDay = d => (d ? String(d).slice(0, 10) : '—')
 // Date compacte AAAA-MM-JJ : le format d'une cellule de tableur, et celui que
 // rendent nativement les <input type="date"> — les colonnes de dates de la
 // liste s'alignent donc toutes sur la même largeur.
 const fmtIso = d => (d ? String(d).slice(0, 10) : '—')
 // Avec le jour de la semaine : c'est lui qui explique une date de paiement
 // avancée (« l'échéance tombe un samedi »).
-const fmtDayLong = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : '—')
+const fmtDayLong = d => (d ? `${weekdayName(d)} ${String(d).slice(0, 10)}` : '—')
 const weekdayName = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { weekday: 'long' }) : '')
 const todayIso = () => new Date().toLocaleDateString('en-CA')
 const parseAmount = v => Number(String(v ?? '').replace(/\s/g, '').replace(',', '.'))
@@ -213,9 +214,11 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
         </button>
 
         <span className="flex-1 min-w-0 flex items-center gap-1.5">
-          <input defaultValue={p.label || ''}
-            className={`${cellCls} flex-1 min-w-0 font-medium text-slate-800`}
-            onBlur={e => save('label', e.target.value)} />
+          <VendorHover variant="payment" name={sp.transfer ? '' : p.label} className="flex-1 min-w-0 flex">
+            <input defaultValue={p.label || ''}
+              className={`${cellCls} flex-1 min-w-0 font-medium text-slate-800`}
+              onBlur={e => save('label', e.target.value)} />
+          </VendorHover>
           {/* Particularité du fournisseur : signalée tant que le paiement n'est
               pas passé — c'est en l'émettant qu'il ne faut pas l'oublier. */}
           {!cleared && particularites && (
@@ -598,7 +601,7 @@ function OpenBillsPanel({ bills, particByKey, onPick }) {
               <span className="flex items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium text-slate-700 flex items-center gap-1.5">
                   {partic && <AlertTriangle size={13} className="shrink-0 text-amber-500" />}
-                  {b.vendor || 'Sans fournisseur'}
+                  <VendorHover variant="payment" name={b.vendor}>{b.vendor || 'Sans fournisseur'}</VendorHover>
                 </span>
                 <span className="shrink-0 text-sm tabular-nums text-slate-700">
                   {fmtCad(b.balance_due_cad ?? b.total_cad, b.currency)}

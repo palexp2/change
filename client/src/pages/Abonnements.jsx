@@ -12,6 +12,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtCad } from '../utils/formatters.js'
+import { intervalLabel } from '../lib/subscriptionPricing.js'
 
 function fmtMonth(ym) {
   if (!ym || typeof ym !== 'string' || ym.length < 7) return '—'
@@ -86,6 +87,9 @@ function RachatCell({ row, onChange }) {
 }
 
 const RENDERS = {
+  contact_name: row => row.contact_id
+    ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.contact_name}</Link>
+    : <span className="text-slate-400">—</span>,
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
@@ -93,6 +97,12 @@ const RENDERS = {
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
     : <span className="text-slate-400">—</span>,
   amount_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_cad)}</span>,
+  currency: row => row.currency
+    ? <Badge color={row.currency === 'USD' ? 'blue' : 'gray'}>{row.currency}</Badge>
+    : <span className="text-slate-400">—</span>,
+  interval_type: row => row.interval_type
+    ? <span className="text-slate-600">{intervalLabel(row)}</span>
+    : <span className="text-slate-400">—</span>,
   start_date: row => <span className="text-slate-500">{fmtDate(row.start_date)}</span>,
   start_month: row => <span className="text-slate-500">{fmtMonth(row.start_month)}</span>,
   end_date:   row => <span className="text-slate-500">{fmtDate(row.end_date)}</span>,
@@ -169,7 +179,7 @@ export default function Abonnements() {
         columns={COLUMNS}
         data={abonnements}
         loading={loading}
-        searchFields={['company_name', 'rachat', 'amount_cad']}
+        searchFields={['company_name', 'contact_name', 'rachat', 'amount_cad', 'currency']}
         onRowClick={setSelected}
         emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Aucun abonnement Stripe actif ou passé. Les abonnements se synchronisent automatiquement depuis Stripe." }}
       />

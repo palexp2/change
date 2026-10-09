@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Opérations bancaires</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f4f5f8;--row:#fafbfc;--line:#e3e5e8;--line2:#c9ced4;--ink:#393a3d;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--bs:#e6f1fa;--a:#b86e00;--as:#fdf3e1;--r:#d52b1e;--rs:#fcebea;--p:#6b3fd1;--ps:#f1ecfc;--sh:0 1px 2px rgb(0 0 0/.05),0 10px 30px rgb(0 0 0/.08)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--row:#1c1f22;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--row:#1c1f22;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1320px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer;z-index:9}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:hidden;display:grid;grid-template-columns:1fr 400px;min-height:560px}
+@media (max-width:1000px){.scr{grid-template-columns:1fr}}
+.list{border-right:1px solid var(--line);min-width:0;overflow-x:auto}
+.top{display:flex;align-items:center;gap:22px;padding:12px 16px 0;border-bottom:1px solid var(--line)}
+.top span{padding-bottom:9px;color:var(--ink3);font-weight:500}
+.top span.on{color:var(--ink);border-bottom:3px solid var(--g);font-weight:600}
+table{width:100%;border-collapse:collapse}
+th{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;text-align:left;padding:9px 10px;border-bottom:1px solid var(--line2);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle;height:52px}
+tr{cursor:pointer}tbody tr:hover td{background:var(--row)}
+tr.sel td{background:var(--bs)!important}
+tr.sel td:first-child{box-shadow:inset 3px 0 0 var(--b)}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.m{color:var(--ink3);font-size:12px;white-space:nowrap}
+.desc{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink3);font-size:11px}
+.who{font-weight:500;white-space:nowrap;max-width:170px;overflow:hidden;text-overflow:ellipsis}
+.cb{width:14px;height:14px;border:1.5px solid var(--line2);border-radius:3px;display:inline-block;vertical-align:middle}
+.cb.on{background:var(--g);border-color:var(--g);position:relative}
+.cb.on:after{content:"";position:absolute;left:3.5px;top:0.5px;width:4px;height:8px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+/* colonne catégorie / correspondance */
+.cat{display:flex;flex-direction:column;min-width:0;max-width:260px}
+.cat .l1{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+.cat .l2{font-size:11.5px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cat .match{color:var(--gd)}
+.cat .xfer{color:var(--b)}
+.cat .none{color:var(--ink4);font-weight:400}
+.cat .warn{color:var(--a)}
+.cat .miss{color:var(--r)}
+.tag{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.03em;padding:1px 5px;border-radius:4px;background:var(--soft);color:var(--ink3);flex:none}
+.tag.ai{background:var(--ps);color:var(--p)}
+.tag.rule{background:var(--bs);color:var(--b)}
+.act{color:var(--b);font-weight:600;white-space:nowrap}
+.act.go{color:var(--gd)}
+.act.warn{color:var(--a)}
+.btn{height:32px;padding:0 16px;border-radius:999px;border:0;background:var(--g);color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn.sm{height:28px;padding:0 13px;font-size:12px}
+.btn.warn{background:var(--a)}
+.btn.ghost{background:var(--s);border:1px solid var(--line2);color:var(--ink2);font-weight:600}
+.btn.sq{border-radius:4px}
+/* panneau */
+.pane{display:flex;flex-direction:column;min-width:0}
+.ph{padding:14px 18px 12px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:flex-start}
+.ph .n{font-size:15px;font-weight:600}
+.ph .d{font-size:11.5px;color:var(--ink3);font-family:ui-monospace,Menlo,monospace;margin-top:2px}
+.ph .a{margin-left:auto;text-align:right;font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ph .a small{display:block;font-size:11px;color:var(--ink3);font-weight:400}
+.ph .x{color:var(--ink4);font-size:18px;line-height:1;cursor:pointer;margin-left:6px}
+.radios{display:flex;gap:16px;padding:12px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.rad{display:flex;align-items:center;gap:6px;color:var(--ink2);cursor:pointer;white-space:nowrap}
+.rad i{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--line2);flex:none;position:relative}
+.rad.on{color:var(--ink);font-weight:600}
+.rad.on i{border-color:var(--g)}.rad.on i:after{content:"";position:absolute;inset:2.5px;border-radius:50%;background:var(--g)}
+.tabs{display:flex;gap:20px;padding:0 18px;border-bottom:1px solid var(--line)}
+.tab{padding:11px 0 9px;color:var(--ink3);font-weight:500;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-1px;white-space:nowrap}
+.tab.on{color:var(--ink);border-color:var(--g);font-weight:600}
+.body{padding:14px 18px;display:flex;flex-direction:column;gap:12px}
+.fg{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+.f{min-width:0}.f.full{grid-column:1/-1}
+.lab{font-size:11.5px;color:var(--ink3);margin-bottom:3px;display:flex;gap:6px;align-items:center}
+.inp{border:1px solid var(--line2);border-radius:4px;height:34px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;background:var(--s);min-width:0;font-weight:500}
+.inp>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inp.auto{border-color:color-mix(in srgb,var(--g) 55%,var(--line2));background:color-mix(in srgb,var(--g) 5%,var(--s))}
+.inp.warn{border-color:var(--a);background:var(--as)}
+.inp.empty{color:var(--ink4);font-weight:400}
+.car{color:var(--ink4);display:inline-flex}
+.foot{margin-top:auto;border-top:1px solid var(--line);padding:12px 18px;display:flex;align-items:center;gap:14px}
+.grow{flex:1}
+.link{color:var(--b);cursor:pointer;font-weight:500}
+.muted{color:var(--ink3);cursor:pointer}
+/* bannière de suggestion */
+.sug{border-radius:8px;padding:11px 13px;display:flex;gap:10px;align-items:flex-start;background:var(--gs);border:1px solid color-mix(in srgb,var(--g) 35%,transparent)}
+.sug.warn{background:var(--as);border-color:color-mix(in srgb,var(--a) 45%,transparent)}
+.sug.miss{background:var(--rs);border-color:color-mix(in srgb,var(--r) 40%,transparent)}
+.sug .ic{flex:none;margin-top:1px;color:var(--gd)}.sug.warn .ic{color:var(--a)}.sug.miss .ic{color:var(--r)}
+.sug .t{font-weight:600}
+.sug .why{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px;font-size:12px;color:var(--ink2)}
+.sug .why span{display:inline-flex;align-items:center;gap:4px}
+.ok{color:var(--gd)}.wr{color:var(--a)}.ms{color:var(--r)}
+/* apparier */
+.mt{width:100%;border-collapse:collapse;font-size:12.5px}
+.mt th{font-size:10px;padding:6px 6px}.mt td{height:auto;padding:8px 6px}
+.mt tr.on td{background:var(--gs)}
+.sum{display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:12.5px;padding:10px 12px;background:var(--soft);border-radius:6px}
+.sum b{font-variant-numeric:tabular-nums;text-align:right}
+.sum .diff{color:var(--a)}
+.side2{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
+.side2>div{padding:9px 11px;min-width:0}
+.side2>div+div{border-left:1px solid var(--line2);background:var(--gs)}
+.side2 .cap{font-size:10px;font-weight:600;text-transform:uppercase;color:var(--ink3);letter-spacing:.03em;margin-bottom:5px}
+.side2 .row{display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:12.5px}
+.side2 .row span:first-child{color:var(--ink3)}
+.side2 .row span:last-child{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side2 .row.w span:last-child{color:var(--a)}
+</style></head>
+<body><button class="theme" onclick="tg()">◐</button>
+<div class="wrap">
+<h1>Opérations bancaires — façon QuickBooks</h1>
+
+<h2><b>Q1</b> QuickBooks tel quel <span>Catégorie ou correspondance + Action ; panneau Catégoriser · Apparier · Transfert.</span></h2>
+<div class="scr" id="q1"></div>
+
+<h2><b>Q2</b> QuickBooks + suggestion expliquée <span>Même grille ; le « pourquoi » est écrit sous la suggestion.</span></h2>
+<div class="scr" id="q2"></div>
+
+<h2><b>Q3</b> QuickBooks, Apparier en face à face <span>La ligne de banque et la pièce côte à côte, la différence calculée.</span></h2>
+<div class="scr" id="q3"></div>
+</div>
+
+<script>
+const I = {
+  ok: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>',
+  warn: '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="7" y="2.5" width="2.2" height="7.5" rx="1.1"/><circle cx="8.1" cy="13" r="1.3"/></svg>',
+  spark: '<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.6 4.4L14 7l-4.4 1.6L8 13l-1.6-4.4L2 7l4.4-1.6z"/></svg>',
+  car: '<svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>',
+  xfer: '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5h11M10 2.5l3 3-3 3M14 10.5H3M6 7.5l-3 3 3 3"/></svg>',
+}
+// kind : cat (catégoriser) · match (correspondance) · xfer (transfert) · none
+const C = [
+  { id: 'mc', date: '2026-10-06', desc: 'COMPTE A PAYER', who: 'M/CARD AFFAIRES', amt: -5238.25, kind: 'xfer', st: 'ok',
+    l1: 'Transfert : MasterCard BNC', why: [['ok', 'même montant que le relevé MasterCard'], ['ok', '9 fois en 9 mois']],
+    action: 'Transférer', acct: 'MasterCard BNC' },
+  { id: 'qbg', date: '2026-10-05', desc: 'SOCIETE IMMOBILIERE', who: 'Société Immobilière Québourg', amt: -6115.89, kind: 'match', st: 'warn',
+    l1: '1 correspondance trouvée', l2: "Paiement émis · Les Jardins d'Inverness",
+    why: [['warn', '6,53 $ de différence'], ['warn', 'autre nom'], ['ok', '2 jours']],
+    action: 'Apparier', doc: { type: 'Paiement émis', who: "Les Jardins d'Inverness", date: '2026-10-03', amt: 6122.42, acct: 'BNC CAD' } },
+  { id: 'dec', date: '2026-10-05', desc: 'COMPTE DIVERS', who: 'DECEMBRE', amt: 7335.81, kind: 'match', st: 'warn',
+    l1: '1 correspondance trouvée', l2: 'Paiement de carte · 1 oct.',
+    why: [['ok', 'même montant'], ['warn', 'inscrit sur MasterCard BNC'], ['warn', '4 jours']],
+    action: 'Apparier', doc: { type: 'Paiement de carte', who: 'MasterCard BNC', date: '2026-10-01', amt: 7335.81, acct: 'MasterCard BNC', acctWarn: true } },
+  { id: 'edi', date: '2026-10-05', desc: 'COMPTE A PAYER', who: 'FACTURATION EDI', amt: -13.5, kind: 'cat', st: 'ok', tag: 'rule',
+    l1: 'Frais bancaires', l2: 'Règle « Frais EDI »', why: [['ok', 'règle « Frais EDI »'], ['ok', 'pareil chaque mois']],
+    action: 'Ajouter', payee: 'Banque Nationale', acct: 'Frais bancaires', tax: 'Hors taxes' },
+  { id: 'mcr', date: '2026-10-05', desc: 'DEBOURSE MCR', who: 'DEBOURSE MCR', amt: 1204, kind: 'xfer', st: 'ok',
+    l1: 'Transfert : Marge de crédit', why: [['ok', 'balayage de la marge'], ['ok', 'même montant à la marge']],
+    action: 'Transférer', acct: 'Marge de crédit' },
+  { id: 'amz', date: '2026-10-04', desc: 'AMZN MKTP CA', who: 'Amazon.ca', amt: -84.27, kind: 'cat', st: 'miss', tag: 'ai',
+    l1: 'Fournitures de bureau', l2: 'Facture manquante', why: [['ok', 'compte habituel'], ['miss', 'aucune facture reçue']],
+    action: 'Ajouter', payee: 'Amazon', acct: 'Fournitures de bureau', tax: 'TPS/TVQ' },
+]
+const fmt = (n) => Math.abs(n).toLocaleString('fr-CA', { minimumFractionDigits: 2 }) + ' $'
+const mark = (s) => s === 'ok' ? `<span class="ok">${I.ok}</span>` : `<span class="${s === 'miss' ? 'ms' : 'wr'}">${I.warn}</span>`
+const inp = (v, cls = 'auto') => `<div class="inp ${cls}"><span>${v}</span><span class="car">${I.car}</span></div>`
+const field = (lab, v, cls, full) => `<div class="f ${full ? 'full' : ''}"><div class="lab">${lab}</div>${inp(v, cls)}</div>`
+
+// ── colonne « Catégorie ou correspondance »
+function catCell(c, explained) {
+  const cls = c.kind === 'match' ? 'match' : c.kind === 'xfer' ? 'xfer' : ''
+  const tag = c.tag === 'rule' ? '<span class="tag rule">Règle</span>' : c.tag === 'ai' ? `<span class="tag ai">Suggéré</span>` : ''
+  const icon = c.kind === 'xfer' ? I.xfer : ''
+  const l2 = explained
+    ? `<span class="l2">${c.why.map(([s, t]) => `<span class="${s === 'ok' ? '' : s === 'miss' ? 'ms' : 'wr'}">${s === 'ok' ? '' : '! '}${t}</span>`).join(' · ')}</span>`
+    : c.l2 ? `<span class="l2 ${c.st === 'miss' ? 'ms' : ''}">${c.l2}</span>` : ''
+  return `<div class="cat"><span class="l1 ${cls}">${icon}${c.l1}${tag}</span>${l2}</div>`
+}
+function actCell(c, style) {
+  if (style === 'btn') return `<button class="btn sm ${c.st === 'ok' ? '' : 'warn'}">${c.st === 'warn' ? 'Vérifier' : c.st === 'miss' ? 'Demander' : c.action}</button>`
+  return `<span class="act ${c.st === 'warn' ? 'warn' : 'go'}">${c.action}</span>`
+}
+const COLS = ['', 'Date', 'Description', 'Catégorie ou correspondance', 'Dépense', 'Dépôt', 'Action']
+const row = (c, explained, actStyle) => `<td><span class="cb"></span></td><td class="m">${c.date}</td>
+  <td><div class="who">${c.who}</div><div class="desc">${c.desc}</div></td><td>${catCell(c, explained)}</td>
+  <td class="r">${c.amt < 0 ? fmt(c.amt) : ''}</td><td class="r">${c.amt > 0 ? fmt(c.amt) : ''}</td><td>${actCell(c, actStyle)}</td>`
+
+// ── panneau
+const head = (c) => `<div class="ph"><div style="min-width:0"><div class="n">${c.who}</div><div class="d">${c.desc} · ${c.date}</div></div>
+  <div class="a ${c.amt > 0 ? 'ok' : ''}">${c.amt < 0 ? '−' : '+'}${fmt(c.amt)}<small>BNC CAD</small></div><span class="x">×</span></div>`
+const MODES = [['cat', 'Catégoriser'], ['match', 'Correspondance'], ['xfer', 'Transfert']]
+function body(c, mode, opts) {
+  if (mode === 'cat') {
+    const a = c.kind === 'cat'
+    return `<div class="fg">
+      ${field(c.amt < 0 ? 'Bénéficiaire' : 'Reçu de', a ? c.payee : '', a ? 'auto' : 'empty')}
+      ${field('Catégorie', a ? c.acct : 'Choisir une catégorie', a ? 'auto' : 'empty')}
+      ${field('Taxe', a ? c.tax : '—', a ? 'auto' : 'empty')}
+      ${field('Facture', c.st === 'miss' ? 'Manquante — demander' : 'Jointe', c.st === 'miss' ? 'warn' : a ? 'auto' : 'empty')}
+      ${field('Mémo', c.desc, 'empty', true)}</div>`
+  }
+  if (mode === 'xfer') {
+    const a = c.kind === 'xfer'
+    return `<div class="fg">${field(c.amt < 0 ? 'Vers le compte' : 'Depuis le compte', a ? c.acct : 'Choisir un compte', a ? 'auto' : 'empty', true)}
+      ${field('Montant', fmt(c.amt), 'auto')}${field('Date', c.date, 'auto')}${field('Mémo', c.desc, 'empty', true)}</div>`
+  }
+  if (!c.doc) return `<div style="padding:30px 0;text-align:center;color:var(--ink3)">Aucune pièce au même montant.</div>`
+  const d = c.doc; const diff = Math.abs(c.amt) - d.amt
+  if (opts.face) {
+    const r = (k, a, b, w) => `<div class="row ${w ? 'w' : ''}"><span>${k}</span><span>${a}</span></div>`
+    return `<div class="side2">
+      <div><div class="cap">Banque</div>${r('Qui', c.who)}${r('Montant', fmt(c.amt))}${r('Date', c.date)}${r('Compte', 'BNC CAD')}</div>
+      <div><div class="cap">QuickBooks · ${d.type}</div>${r('Qui', d.who, 0, c.id === 'qbg')}${r('Montant', fmt(d.amt), 0, Math.abs(diff) > .01)}${r('Date', d.date)}${r('Compte', d.acct, 0, d.acctWarn)}</div>
+    </div>
+    <div class="sum"><span>Banque</span><b>${fmt(c.amt)}</b><span>Pièce</span><b>${fmt(d.amt)}</b><span>Différence</span><b class="${Math.abs(diff) > .01 ? 'diff' : 'ok'}">${Math.abs(diff) > .01 ? fmt(diff) : '0,00 $'}</b></div>
+    <div class="link" style="font-size:12px">Autres pièces…</div>`
+  }
+  return `<table class="mt"><thead><tr><th></th><th>Date</th><th>Type</th><th>Bénéficiaire</th><th class="r">Montant</th></tr></thead><tbody>
+    <tr class="on"><td><span class="cb on"></span></td><td>${d.date}</td><td>${d.type}</td><td>${d.who}</td><td class="r">${fmt(d.amt)}</td></tr></tbody></table>
+    <div class="sum"><span>Montant de la transaction</span><b>${fmt(c.amt)}</b><span>Sélectionné</span><b>${fmt(d.amt)}</b><span>Différence</span><b class="${Math.abs(diff) > .01 ? 'diff' : ''}">${fmt(diff)}</b></div>`
+}
+function banner(c) {
+  const t = c.kind === 'match' ? `Correspond à : ${c.doc.type} · ${c.doc.who}` : c.l1
+  return `<div class="sug ${c.st === 'ok' ? '' : c.st}"><span class="ic">${c.st === 'ok' ? I.spark : I.warn}</span><div style="min-width:0">
+    <div class="t">${c.st === 'ok' ? '' : c.st === 'warn' ? 'À vérifier — ' : 'Il manque la facture — '}${t}</div>
+    <div class="why">${c.why.map(([s, w]) => `<span>${mark(s)}${w}</span>`).join('')}</div></div></div>`
+}
+function btnLabel(c, mode) {
+  if (mode === 'match') return 'Apparier'
+  if (mode === 'xfer') return 'Transférer'
+  return c.st === 'miss' ? 'Ajouter sans facture' : 'Ajouter'
+}
+function pane(c, mode, opts) {
+  const sel = opts.tabs
+    ? `<div class="tabs">${MODES.map(([k, l]) => `<span class="tab ${k === mode ? 'on' : ''}" data-mode="${k}">${l}</span>`).join('')}</div>`
+    : `<div class="radios">${MODES.map(([k, l]) => `<span class="rad ${k === mode ? 'on' : ''}" data-mode="${k}"><i></i>${l}</span>`).join('')}</div>`
+  return `${head(c)}${sel}<div class="body">${opts.banner && mode === c.kind ? banner(c) : ''}${body(c, mode, opts)}</div>
+    <div class="foot"><span class="muted">Exclure</span>${c.amt < 0 && c.st === 'miss' ? '<span class="link">Demander la facture</span>' : ''}<span class="grow"></span>
+    <button class="btn ghost sm">Annuler</button><button class="btn ${opts.banner && c.st === 'warn' && mode === c.kind ? 'warn' : ''}">${btnLabel(c, mode)}</button></div>`
+}
+
+const V = {
+  q1: { explained: false, act: 'link', opts: { tabs: false, banner: false, face: false } },
+  q2: { explained: true, act: 'btn', opts: { tabs: true, banner: true, face: false } },
+  q3: { explained: false, act: 'btn', opts: { tabs: true, banner: true, face: true } },
+}
+const state = { q1: ['mc', null], q2: ['qbg', null], q3: ['dec', null] }
+function render(id) {
+  const v = V[id]; const [sel, m] = state[id]; const c = C.find((x) => x.id === sel); const mode = m || c.kind
+  const el = document.getElementById(id)
+  el.innerHTML = `<div class="list"><div class="top"><span class="on">Pour révision 6</span><span>Catégorisées 480</span><span>Exclues 2</span></div>
+    <table><thead><tr>${COLS.map((h, i) => `<th class="${i === 4 || i === 5 ? 'r' : ''}">${h}</th>`).join('')}</tr></thead><tbody>
+    ${C.map((x) => `<tr class="${x.id === sel ? 'sel' : ''}" data-id="${x.id}">${row(x, v.explained, v.act)}</tr>`).join('')}</tbody></table></div>
+    <div class="pane">${pane(c, mode, v.opts)}</div>`
+  el.querySelectorAll('tr[data-id]').forEach((tr) => tr.onclick = () => { state[id] = [tr.dataset.id, null]; render(id) })
+  el.querySelectorAll('[data-mode]').forEach((t) => t.onclick = () => { state[id] = [sel, t.dataset.mode]; render(id) })
+}
+render('q1'); render('q2'); render('q3')
+function tg() { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark' }
+</script>
+</body></html>

@@ -4,7 +4,7 @@ import { api } from '../lib/api.js'
 import { CountStepper } from './DiscoveryFormOptions.jsx'
 import { fmtMoney } from '../utils/formatters.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { purchasePct } from '../lib/soumissionDiscount.js'
+import { discountOffs, purchasePct } from '../lib/soumissionDiscount.js'
 
 // Saisie d'une soumission, mise en page de la modale System builder (images
 // des produits en plus) : totaux, compteurs Chef de culture / Assistant,
@@ -23,17 +23,13 @@ const FARM_LABEL = 'Pour toute la ferme'
 const FARM_BASE_ROLES = new Set(['mobile_controller'])
 const isFarm = p => p.quote_farm_wide === 1
 
-// Retirés des soumissions (Pierre-Alexandre, 2026-09-29) : « Orisha dans la
-// serre » et « Prévention des maladies » ; le contrôleur central, sans objet
-// au niveau d'une serre ; le « Kit de prolongation de la portée ».
-const HIDDEN_SKUS = new Set(['SVC-004', 'SVC-005', '1479', 'SVC-017'])
-
-// Le catalogue porte des doublons par SKU (anciennes copies à 0 $) : on garde
-// celui qui a un prix.
+// Produits offerts : le Catalogue de vente, case « Proposé en soumission »
+// (les retraits de Pierre-Alexandre du 2026-09-29 — Orisha dans la serre,
+// Prévention des maladies, contrôleur central, kit de prolongation — y sont
+// décochés). Doublons par SKU : on garde celui qui a un prix.
 function dedupeCatalog(list) {
   const bySku = new Map()
   for (const p of list) {
-    if (/legacy/i.test(p.type || '') || HIDDEN_SKUS.has(p.sku)) continue
     const key = p.sku || p.id
     const cur = bySku.get(key)
     const worth = x => (x.price_cad || 0) + (x.monthly_price_cad || 0)
@@ -79,8 +75,10 @@ const toQty = v => Math.max(0, parseInt(v) || 0)
 // `initial` : soumission existante — ses lignes redeviennent serres, compteurs
 // et extras une fois le catalogue connu (hors liste → ligne sur mesure, prix
 // gardés). `readOnly` : même mise en page, rien de modifiable.
+// `unitPrices` : prix unitaires affichés à côté des compteurs Chef / Assistant
+// et des extras du site.
 // Renvoie les lignes et rabais courants, et `body` à placer dans la page.
-export function useSoumissionBuilder({ initial, language, currency, readOnly = false }) {
+export function useSoumissionBuilder({ initial, language, currency, readOnly = false, unitPrices = false }) {
   const [catalog, setCatalog] = useState([])
   const [discounts, setDiscounts] = useState(() => (initial ? initialDiscounts(initial) : []))
   const [chiefCount, setChiefCount] = useState(0)
@@ -200,12 +198,8 @@ export function useSoumissionBuilder({ initial, language, currency, readOnly = f
 
   const subtotal = items.reduce((t, it) => t + it.qty * it.unit_price_cad, 0)
   const monthlyTotal = items.reduce((t, it) => t + it.qty * it.unit_monthly_price, 0)
-  // Même calcul que le PDF (serveur, discountTotals).
-  const discountLines = discounts.map(d => ({
-    ...d,
-    offMonthly: monthlyTotal * (d.pct || 0) / 100 + (d.monthly || 0),
-    offAmount: subtotal * purchasePct(d) / 100 + (d.amount || 0),
-  }))
+  // Même calcul que le PDF (serveur, discountLines) : $ d'abord, puis %.
+  const discountLines = discountOffs(discounts, monthlyTotal, subtotal)
   const netMonthly = Math.max(0, monthlyTotal - discountLines.reduce((t, d) => t + d.offMonthly, 0))
   const netTotal = Math.max(0, subtotal - discountLines.reduce((t, d) => t + d.offAmount, 0))
   const patchDiscount = (key, patch) => setDiscounts(prev => prev.map(d => d.key === key ? { ...d, ...patch } : d))
@@ -227,17 +221,24 @@ export function useSoumissionBuilder({ initial, language, currency, readOnly = f
 
   // Produit : image + nom, case (service) ou compteur (équipement).
   // `counted` : compteur même pour un service (bloc du site, Pierre-Alexandre 2026-09-29).
-  const productLine = ({ data, patch }, p, context, counted = false) => {
+  // `priced` : prix unitaire (abonnement et/ou achat) après le nom.
+  const unitTag = p => {
+    const unit = p && [monthlyOf(p) && `${fmtP(monthlyOf(p))}/mois`, priceOf(p) && fmtP(priceOf(p))].filter(Boolean).join(' · ')
+    return unit && <span className="flex-shrink-0 text-xs font-normal text-slate-400 tabular-nums">{unit}</span>
+  }
+
+  const productLine = ({ data, patch }, p, context, counted = false, priced = false) => {
     const q = data.qty[p.id] || 0
     const setQ = v => patch(s => ({ ...s, qty: { ...s.qty, [p.id]: toQty(v) } }))
+    const tag = priced && unitTag(p)
     return isService(p) && !counted ? (
       <label key={p.id} className="flex items-center gap-2 text-sm text-slate-700">
         <input type="checkbox" checked={q > 0} onChange={e => setQ(e.target.checked ? 1 : 0)} />
-        <Thumb src={p.image_url} />{nameOf(p)}
+        <Thumb src={p.image_url} />{nameOf(p)}{tag}
       </label>
     ) : (
       <div key={p.id} className="flex items-center justify-between gap-3 text-sm text-slate-700">
-        <span className="flex items-center gap-2 min-w-0"><Thumb src={p.image_url} /><span className="truncate">{nameOf(p)}</span></span>
+        <span className="flex items-center gap-2 min-w-0"><Thumb src={p.image_url} /><span className="truncate">{nameOf(p)}</span>{tag}</span>
         <CountStepper label={`${context} · ${nameOf(p)}`} max={100} value={q} onChange={setQ} />
       </div>
     )
@@ -322,11 +323,11 @@ export function useSoumissionBuilder({ initial, language, currency, readOnly = f
 
       <fieldset disabled={readOnly} className="grid grid-cols-2 gap-4">
         <div>
-          <label htmlFor="soumission-chief-count" className="label">Nombre de Chef de culture</label>
+          <label htmlFor="soumission-chief-count" className="label">Nombre de Chef de culture {unitPrices && unitTag(lists.chief)}</label>
           <CountStepper id="soumission-chief-count" label="Chef de culture" max={50} value={chiefCount} onChange={setChiefCount} />
         </div>
         <div>
-          <label htmlFor="soumission-helper-count" className="label">Nombre d'Assistant</label>
+          <label htmlFor="soumission-helper-count" className="label">Nombre d'Assistant {unitPrices && unitTag(lists.helper)}</label>
           <CountStepper id="soumission-helper-count" label="Assistant" max={50} value={helperCount} onChange={setHelperCount} />
         </div>
       </fieldset>
@@ -353,7 +354,7 @@ export function useSoumissionBuilder({ initial, language, currency, readOnly = f
           </fieldset>}
           <fieldset className="space-y-2 border-t border-slate-200 pt-4">
             <legend className="text-sm font-semibold text-slate-900">Extra pour le site</legend>
-            {lists.farm.map(p => productLine(blocks.farm(), p, FARM_LABEL, true))}
+            {lists.farm.map(p => productLine(blocks.farm(), p, FARM_LABEL, true, unitPrices))}
             {customLines(blocks.farm())}
           </fieldset>
         </fieldset>}

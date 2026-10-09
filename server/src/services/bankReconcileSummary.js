@@ -231,10 +231,10 @@ function mergeLedgers(lists) {
 
 async function qbCurrentBalance(qbAccountIds) {
   const ids = qbAccountIds.map((i) => `'${i}'`).join(',')
-  const q = encodeURIComponent(`SELECT Id, Name, CurrentBalance FROM Account WHERE Id IN (${ids})`)
+  const q = encodeURIComponent(`SELECT Id, Name, CurrentBalance, CurrencyRef FROM Account WHERE Id IN (${ids})`)
   const d = await qbGet(`/query?query=${q}`)
   const accounts = (d.QueryResponse?.Account || []).map((a) => ({
-    id: String(a.Id), name: a.Name, balance: round2(Number(a.CurrentBalance || 0)),
+    id: String(a.Id), name: a.Name, balance: round2(Number(a.CurrentBalance || 0)), currency: a.CurrencyRef?.value || 'CAD',
   }))
   return { accounts, total: round2(accounts.reduce((s, a) => s + a.balance, 0)) }
 }
@@ -249,7 +249,10 @@ export async function qbBalanceAsOf(qbAccountIds, asOf) {
   const end = shiftDate(today > asOf ? today : asOf, 400)
   if (start > end) return { accounts, current: total, as_of: total, after: 0 }
   const lists = []
-  for (const id of qbAccountIds) lists.push(await fetchQbLedgerRaw(id, start, end))
+  for (const id of qbAccountIds) {
+    const cur = accounts.find((a) => a.id === String(id))?.currency || 'CAD'
+    lists.push(await fetchQbLedgerRaw(id, start, end, { inAccountCurrency: cur !== 'CAD' }))
+  }
   const after = round2(mergeLedgers(lists).reduce((s, e) => s + e.amount, 0))
   return { accounts, current: total, as_of: round2(total - after), after }
 }

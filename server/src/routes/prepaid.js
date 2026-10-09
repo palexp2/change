@@ -9,6 +9,7 @@ import {
   ledgerEntries, ledgerBalance, syncPrepaidAccountFromQB, fetchProviderBalance,
   auditPrepaidAccountAgainstQB, continuityView, buildFpaMonth, publishFpaMonth,
 } from '../services/prepaid.js'
+import { syncMonthEndTask } from '../services/monthEndTask.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -268,7 +269,9 @@ router.get('/fpa/month/:month', (req, res) => {
 // l'utilisateur (bouton), jamais automatique.
 router.post('/fpa/month/:month/publish', async (req, res) => {
   try {
-    res.json(await publishFpaMonth(req.params.month, { userId: req.user.id }))
+    const out = await publishFpaMonth(req.params.month, { userId: req.user.id })
+    syncMonthEndTask()
+    res.json(out)
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

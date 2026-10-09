@@ -50,7 +50,9 @@ async function call(path, { method = 'GET', body = null, timeoutMs = 20000 } = {
   }
   let res
   try {
-    res = await fetch(`${origin}/erp/api/scrapers/session-bridge${path}`, {
+    // `v=` : la version qui tourne, lisible dans les journaux de l'ERP.
+    const sep = path.includes('?') ? '&' : '?'
+    res = await fetch(`${origin}/erp/api/scrapers/session-bridge${path}${sep}v=${chrome.runtime.getManifest().version}`, {
       method,
       // Sans ça, le navigateur renvoie la requête avec son ETag, nginx répond
       // 304, et la réponse arrive VIDE quand le cache a été purgé entre-temps :
@@ -328,4 +330,362 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   runBridge().catch(async (e) => { await setRun({ running: false, error: e.message }) })
   reply({ ok: true, started: true })
   return false
+})
+
+// ── Profils Instagram ────────────────────────────────────────────────────────
+//
+// Instagram refuse au serveur la lecture des profils (qui fait pousser des
+// fleurs, qui est maraîcher…). Depuis un onglet instagram.com ouvert ici, la
+// même lecture est une visite ordinaire. Toutes les 20 minutes, tant qu'un
+// onglet Instagram est ouvert, le module lit une dizaine de profils demandés
+// par l'ERP et lui renvoie le résultat. Plus serré, Instagram bloquerait la
+// session entière.
+const IG_ALARM = 'orisha-ig-profiles'
+const IG_MINUTES = 20
+
+function trace(msg) { call('/log', { method: 'POST', body: { msg } }).catch(() => {}) }
+
+// L'onglet Instagram où lire. Edge endort les onglets en arrière-plan : un
+// onglet endormi est réveillé (rechargé) plutôt qu'ignoré.
+async function instagramTab() {
+  let tabs = []
+  try { tabs = await chrome.tabs.query({ url: ['https://www.instagram.com/*', 'https://instagram.com/*'] }) } catch (e) { trace(`tabs.query: ${e.message}`); return null }
+  trace(`onglets Instagram : ${tabs.map(t => `${t.status}${t.discarded ? ' endormi' : ''}${t.frozen ? ' gelé' : ''}`).join(', ') || 'aucun'}`)
+  const awake = tabs.find(t => t.id && !t.discarded && !t.frozen && t.status === 'complete')
+  if (awake) return awake
+  const asleep = tabs.find(t => t.id)
+  if (!asleep) return null
+  try { await chrome.tabs.reload(asleep.id) } catch { return null }
+  for (let i = 0; i < 30; i++) {
+    await new Promise(ok => setTimeout(ok, 1000))
+    try {
+      const t = await chrome.tabs.get(asleep.id)
+      if (t.status === 'complete' && !t.discarded) return t
+    } catch { return null }
+  }
+  return null
+}
+
+// Une seule requête faite DANS l'onglet Instagram (mêmes témoins, même adresse
+// que le site). Les attentes, elles, se font ici : Edge ralentit fortement les
+// minuteries d'un onglet en arrière-plan, une pause là-bas pouvait durer une minute.
+async function pageFetch(tabId, url, { method = 'GET', body = null, headers = {} } = {}) {
+  const [r] = await withTimeout(30000, chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'MAIN',
+    args: [url, method, body, headers],
+    func: async (url, method, body, headers) => {
+      try {
+        const r = await fetch(url, { method, body, headers, credentials: 'include', signal: AbortSignal.timeout(20000) })
+        return { status: r.status, text: await r.text() }
+      } catch (e) { return { status: 0, text: String(e?.message || e) } }
+    },
+  }))
+  return r?.result || { status: 0, text: 'aucun résultat' }
+}
+const IG_H = { 'X-IG-App-ID': '936619743392459', 'X-Requested-With': 'XMLHttpRequest' }
+const pause = (min = 1500, spread = 1500) => new Promise(ok => setTimeout(ok, min + Math.random() * spread))
+const json = (t) => { try { return JSON.parse(t) } catch { return null } }
+
+async function readInstagramProfiles() {
+  const { auto } = await settings()
+  if (!auto) return
+  const tab = await instagramTab()
+  if (!tab) return
+  let due = []
+  try { due = (await call('/instagram/due?limit=10')).usernames || [] } catch { return }
+  if (!due.length) return
+  const profiles = []
+  for (const username of due) {
+    const r = await pageFetch(tab.id, `/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`, { headers: IG_H })
+    if (r.status === 404) { profiles.push({ username, missing: true }); continue }
+    if (r.status !== 200) { trace(`profil ${username} : ${r.status}`); break }
+    const u = json(r.text)?.data?.user
+    if (!u) { profiles.push({ username, missing: true }); continue }
+    const edges = (u.edge_owner_to_timeline_media?.edges || []).slice(0, 12)
+    profiles.push({ username, user: {
+      id: u.id, biography: u.biography, category_name: u.category_name, external_url: u.external_url,
+      edge_followed_by: { count: u.edge_followed_by?.count ?? null },
+      is_business_account: u.is_business_account, is_private: u.is_private,
+      edge_owner_to_timeline_media: { count: u.edge_owner_to_timeline_media?.count ?? null, edges: edges.map(e => ({ node: {
+        shortcode: e.node?.shortcode, taken_at_timestamp: e.node?.taken_at_timestamp,
+        accessibility_caption: e.node?.accessibility_caption, thumbnail_src: e.node?.thumbnail_src, display_url: e.node?.display_url,
+        edge_media_to_caption: { edges: (e.node?.edge_media_to_caption?.edges || []).slice(0, 1) },
+      } })) },
+    } })
+    await pause(4000, 4000)
+  }
+  if (!profiles.length) return
+  try { await call('/instagram/profiles', { method: 'POST', body: { profiles } }) } catch { /* relu à la prochaine tournée */ }
+  trace(`${profiles.length} profil(s) envoyé(s)`)
+}
+
+// Les commentaires des publications (les nôtres et celles en collaboration).
+// L'ERP dit s'il est temps (au plus toutes les 3 h) et quels comptes lire.
+async function readInstagramComments() {
+  const { auto } = await settings()
+  if (!auto) return
+  const tab = await instagramTab()
+  if (!tab) return
+  let plan
+  try { plan = await call('/instagram/scrape-plan') } catch (e) { trace(`plan: ${e.message}`); return }
+  if (!plan?.due || !plan.accounts?.length) { trace('lecture pas encore due'); return }
+  const errors = []
+  const since = Date.now() / 1000 - plan.lookback_days * 86400
+  const user = u => (u ? { username: u.username, pk: u.pk, full_name: u.full_name } : null)
+  const posts = new Map()
+  // Le fil passe par la requête GraphQL du site. Jetons : LSD et fb_dtsg dans
+  // la page du profil, csrftoken et ds_user_id dans les témoins.
+  const cookie = async (name) => (await chrome.cookies.get({ url: 'https://www.instagram.com/', name }))?.value || ''
+  const csrf = await cookie('csrftoken')
+  const me = (await cookie('ds_user_id')) || '0'
+  for (const account of plan.accounts) {
+    const page = await pageFetch(tab.id, `/${encodeURIComponent(account)}/`)
+    const lsd = (page.text.match(/"LSD",\[\],\{"token":"([^"]+)"/) || [])[1]
+    const dtsg = (page.text.match(/"DTSGInitialData",\[\],\{"token":"([^"]+)"/) || page.text.match(/"dtsg":\{"token":"([^"]+)"/) || [])[1]
+    if (!lsd) { errors.push(`pas de jeton pour ${account} (${page.status})`); continue }
+    await pause()
+    let after = null
+    for (let n = 0; n < 5; n++) {
+      const body = new URLSearchParams({
+        av: me, __a: '1', __user: '0', lsd, fb_api_caller_class: 'RelayModern',
+        ...(dtsg ? { fb_dtsg: dtsg, jazoest: '2' + [...dtsg].reduce((t, ch) => t + ch.charCodeAt(0), 0) } : {}),
+        fb_api_req_friendly_name: 'PolarisProfilePostsQuery', doc_id: plan.doc_id || '9310670392322965',
+        variables: JSON.stringify({
+          after, before: null, first: 12, last: null,
+          data: { count: 12, include_reel_media_seen_timestamp: true, include_relationship_info: true, latest_besties_reel_media: true, latest_reel_media: true },
+          username: account,
+          __relay_internal__pv__PolarisIsLoggedInrelayprovider: true,
+          __relay_internal__pv__PolarisShareSheetV3relayprovider: false,
+        }),
+      }).toString()
+      const r = await pageFetch(tab.id, '/graphql/query', { method: 'POST', body, headers: {
+        'content-type': 'application/x-www-form-urlencoded', 'x-ig-app-id': '936619743392459', 'x-csrftoken': csrf,
+        'x-fb-lsd': lsd, 'x-fb-friendly-name': 'PolarisProfilePostsQuery', 'x-asbd-id': '129477',
+      } })
+      const conn = json(r.text)?.data?.xdt_api__v1__feed__user_timeline_graphql_connection
+      if (!conn) { errors.push(`graphql ${account} ${r.status} ${r.text.slice(0, 160)}`); break }
+      const items = (conn.edges || []).map(e => e?.node).filter(Boolean)
+      for (const it of items) {
+        if (it.taken_at >= since && !posts.has(String(it.pk))) {
+          posts.set(String(it.pk), {
+            pk: String(it.pk), code: it.code, taken_at: it.taken_at, comment_count: it.comment_count || 0,
+            user: user(it.user), coauthor_producers: (it.coauthor_producers || []).map(user),
+            invited_coauthor_producers: (it.invited_coauthor_producers || []).map(user), comments: [],
+          })
+        }
+      }
+      const next = conn.page_info
+      if (!items.length || items.every(i => i.taken_at < since) || !next?.has_next_page || !next?.end_cursor) break
+      after = next.end_cursor
+      await pause()
+    }
+    await pause()
+  }
+  trace(`${posts.size} publication(s) lues, commentaires…`)
+  const slim = c => ({
+    pk: c.pk, text: c.text, created_at: c.created_at, user: user(c.user),
+    preview_child_comments: (c.preview_child_comments || []).map(x => ({ pk: x.pk, text: x.text, created_at: x.created_at, user: user(x.user) })),
+  })
+  let limited = false
+  outer: for (const p of posts.values()) {
+    if (!p.comment_count) continue
+    let minId = null
+    for (let n = 0; n < 5; n++) {
+      const r = await pageFetch(tab.id, `/api/v1/media/${p.pk}/comments/?can_support_threading=true${minId ? `&min_id=${encodeURIComponent(minId)}` : ''}`, { headers: IG_H })
+      if (r.status === 429) { limited = true; errors.push('429 commentaires'); break outer }
+      const data = r.status === 200 ? json(r.text) : null
+      if (!data) { errors.push(`commentaires ${p.pk} : ${r.status}`); break }
+      p.comments.push(...(data.comments || []).map(slim))
+      minId = data.next_min_id
+      await pause(1200, 1200)
+      if (!minId) break
+    }
+  }
+  // Même vide, on le dit à l'ERP : il journalise pourquoi la lecture n'a rien donné.
+  try {
+    const out = await call('/instagram/comments', { method: 'POST', body: { posts: [...posts.values()], errors: errors.slice(0, 10) }, timeoutMs: 120000 })
+    trace(out?.summary || out?.error || 'lecture envoyée')
+  } catch (e) { trace(`envoi: ${e.message}`) }
+  return { limited }
+}
+
+// Une tournée à la fois, et pas deux en moins de 15 min (sauf le filet horaire) :
+// Instagram bloque les rafales.
+let igRunning = false
+async function instagramRound({ eager = false } = {}) {
+  if (igRunning) { trace('tournée déjà en cours'); return }
+  const { igLastAt = 0 } = await chrome.storage.local.get('igLastAt')
+  if (eager && Date.now() - igLastAt < 15 * 60_000) { trace('tournée trop récente'); return }
+  trace(`tournée Instagram${eager ? ' (immédiate)' : ''}`)
+  igRunning = true
+  try {
+    await chrome.storage.local.set({ igLastAt: Date.now() })
+    // Les commentaires d'abord (ils nourrissent la liste), puis les profils.
+    const r = await readInstagramComments()
+    // Instagram vient de dire « trop d'appels » : on n'insiste pas avec les profils.
+    if (!r?.limited) await readInstagramProfiles()
+  } finally { igRunning = false }
+}
+
+chrome.alarms?.create(IG_ALARM, { periodInMinutes: IG_MINUTES })
+chrome.alarms?.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === IG_ALARM) await instagramRound()
+})
+// Tout de suite, sans attendre l'alarme : dès qu'un onglet Instagram finit de
+// charger, et à l'installation / au démarrage du navigateur.
+chrome.tabs?.onUpdated.addListener((_id, info, tab) => {
+  if (info.status === 'complete' && /^https:\/\/(www\.)?instagram\.com\//.test(tab?.url || '')) {
+    setTimeout(() => instagramRound({ eager: true }).catch(() => {}), 5000)
+  }
+})
+chrome.runtime.onInstalled?.addListener(() => {
+  // Module tout juste rechargé : on lit sans attendre le délai de 15 min.
+  chrome.storage.local.set({ igLastAt: 0 }).then(() => setTimeout(() => instagramRound({ eager: true }).catch(() => {}), 10000))
+})
+chrome.runtime.onStartup?.addListener(() => { setTimeout(() => instagramRound({ eager: true }).catch(() => {}), 10000) })
+
+// ── Mise à jour toute seule ──────────────────────────────────────────────────
+//
+// Sur le Mac, une tâche planifiée remplace les fichiers de ce dossier par la
+// dernière version de l'ERP. Le module compare alors la version écrite sur le
+// disque à celle qu'il fait tourner, et se recharge s'il est en retard : plus
+// aucun geste à faire dans edge://extensions.
+const SELF_UPDATE_ALARM = 'orisha-self-update'
+async function reloadIfUpdated() {
+  try {
+    const r = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' })
+    const onDisk = (await r.json())?.version
+    if (onDisk && onDisk !== chrome.runtime.getManifest().version) chrome.runtime.reload()
+  } catch { /* fichier en cours d'écriture : on réessaiera */ }
+}
+chrome.alarms?.create(SELF_UPDATE_ALARM, { periodInMinutes: 0.5 })
+chrome.alarms?.onAlarm.addListener((alarm) => { if (alarm.name === SELF_UPDATE_ALARM) reloadIfUpdated() })
+
+// Nouvelle version qui démarre (mise à jour automatique) : on n'attend aucun
+// événement du navigateur, on relit Instagram et on renvoie les sessions.
+chrome.storage.local.get('runningVersion').then(({ runningVersion }) => {
+  const v = chrome.runtime.getManifest().version
+  if (runningVersion === v) return
+  chrome.storage.local.set({ runningVersion: v, igLastAt: 0 }).then(() => {
+    setTimeout(() => { pushAll().catch(() => {}); instagramRound({ eager: true }).catch(() => {}) }, 5000)
+  })
+}).catch(() => {})
+
+// ── Envoyer ce document à l'extracteur ───────────────────────────────────────
+//
+// Un clic (bouton du module, clic droit, ou Alt+Shift+E) et la facture affichée
+// dans l'onglet part dans l'extracteur de l'ERP. Trois façons de la capturer,
+// de la plus fidèle à la plus grossière :
+//   1. l'onglet affiche un PDF ou une image → le fichier lui-même ;
+//   2. une page web (facture en ligne) → la page entière imprimée en PDF ;
+//   3. sinon → une capture de ce qui est visible à l'écran.
+// L'onglet n'est lu qu'au clic : `activeTab` suffit, aucun accès permanent.
+
+// Exécutée DANS l'onglet : même origine que le document, donc ses témoins.
+async function readTabDocument() {
+  const ct = String(document.contentType || '')
+  if (ct !== 'application/pdf' && !ct.startsWith('image/')) return { kind: 'page', title: document.title }
+  const blob = await (await fetch(location.href, { credentials: 'include' })).blob()
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  let name = ''
+  try { name = decodeURIComponent(location.pathname.split('/').pop() || '') } catch { /* nom illisible */ }
+  return { kind: 'file', mime: (blob.type || ct).split(';')[0], data: btoa(bin), name: name || document.title }
+}
+
+async function bufferToB64(buf) {
+  const bytes = new Uint8Array(buf)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  return btoa(bin)
+}
+
+async function printTabToPdf(tabId) {
+  const target = { tabId }
+  await chrome.debugger.attach(target, '1.3')
+  try {
+    const { data } = await chrome.debugger.sendCommand(target, 'Page.printToPDF', { printBackground: true, preferCSSPageSize: true })
+    return data
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {})
+  }
+}
+
+async function captureTab(tab) {
+  const fallbackName = (tab.title || 'document').trim()
+  let found = null
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readTabDocument })
+    found = r?.result || null
+  } catch { /* PDF local, page protégée : on essaie autrement */ }
+  if (found?.kind === 'file') return found
+
+  // PDF que le script n'a pas pu lire (fichier local, visionneuse) : on le
+  // télécharge directement par son adresse.
+  if (!found && /\.pdf($|[?#])/i.test(tab.url || '')) {
+    try {
+      const r = await fetch(tab.url, { credentials: 'include' })
+      if (r.ok) {
+        const name = decodeURIComponent((new URL(tab.url).pathname.split('/').pop()) || '') || fallbackName
+        return { kind: 'file', mime: 'application/pdf', data: await bufferToB64(await r.arrayBuffer()), name }
+      }
+    } catch { /* on passe à la capture */ }
+  }
+
+  if (found?.kind === 'page') {
+    try { return { kind: 'file', mime: 'application/pdf', data: await printTabToPdf(tab.id), name: fallbackName } }
+    catch { /* débogueur refusé (outils de développement ouverts…) */ }
+  }
+  const shot = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' })
+  return { kind: 'file', mime: 'image/png', data: shot.split(',')[1], name: fallbackName }
+}
+
+async function flashBadge(text, color) {
+  try {
+    await chrome.action.setBadgeBackgroundColor({ color })
+    await chrome.action.setBadgeText({ text })
+    setTimeout(() => chrome.action.setBadgeText({ text: '' }).catch(() => {}), 6000)
+  } catch { /* sans importance */ }
+}
+
+async function sendDocument(tab) {
+  if (!tab?.id) throw new Error('Aucun onglet actif')
+  await chrome.storage.local.set({ lastDoc: { running: true, at: Date.now(), title: tab.title || '' } })
+  await flashBadge('…', '#2563eb')
+  try {
+    const doc = await captureTab(tab)
+    const res = await call('/document', { method: 'POST', body: { ...doc, title: tab.title || '', url: tab.url || '' }, timeoutMs: 60000 })
+    const { erpUrl } = await settings()
+    const link = res.id ? `${normalizeErpUrl(erpUrl)}/erp/sale-receipts/${res.id}` : ''
+    await chrome.storage.local.set({ lastDoc: { running: false, at: Date.now(), title: tab.title || '', status: res.status, link } })
+    await flashBadge('✓', '#059669')
+    return res
+  } catch (e) {
+    await chrome.storage.local.set({ lastDoc: { running: false, at: Date.now(), title: tab.title || '', error: e.message } })
+    await flashBadge('!', '#dc2626')
+    throw e
+  }
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+  if (msg?.type !== 'send-document') return false
+  chrome.tabs.get(msg.tabId)
+    .then(sendDocument)
+    .then(r => reply({ ok: true, ...r }), e => reply({ ok: false, error: e.message }))
+  return true
+})
+
+const DOC_MENU = 'orisha-send-document'
+chrome.runtime.onInstalled?.addListener(() => {
+  chrome.contextMenus?.create({ id: DOC_MENU, title: 'Envoyer à l’extracteur Orisha', contexts: ['page', 'frame', 'image', 'link', 'selection'] }, () => void chrome.runtime.lastError)
+})
+chrome.contextMenus?.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === DOC_MENU) sendDocument(tab).catch(() => {})
+})
+chrome.commands?.onCommand.addListener(async (command, tab) => {
+  if (command !== 'send-document') return
+  const t = tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
+  sendDocument(t).catch(() => {})
 })

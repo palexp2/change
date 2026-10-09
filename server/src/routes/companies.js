@@ -114,13 +114,14 @@ router.get('/', (req, res) => {
   }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM companies c ${where}`).get(...params).c;
+  // Lecture dans la vue : elle porte les champs calculés (« Pays de livraison »…).
   const companies = db.prepare(
     `SELECT c.*,
       (SELECT COUNT(*) FROM contacts ct WHERE ct.company_id = c.id AND ct.deleted_at IS NULL) as contacts_count,
       (SELECT COUNT(*) FROM projects p WHERE p.company_id = c.id AND p.deleted_at IS NULL) as projects_count,
       (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.id AND o.deleted_at IS NULL) as orders_count,
       ${CC_PERMISSION_SELECT}
-     FROM companies c
+     FROM ${readRelation('companies')} c
      ${CC_PERMISSIONS_JOIN} ON ccp.company_id = c.id
      ${where}
      ORDER BY c.updated_at DESC
@@ -132,7 +133,8 @@ router.get('/', (req, res) => {
 
 // GET /api/companies/:id
 router.get('/:id', (req, res) => {
-  const company = db.prepare(`SELECT * FROM ${readRelation('companies')} WHERE id = ?`).get(req.params.id);
+  // Supprimée : fiche inaccessible, on ne la revoit que dans la corbeille.
+  const company = db.prepare(`SELECT * FROM ${readRelation('companies')} WHERE id = ? AND deleted_at IS NULL`).get(req.params.id);
   if (!company) return res.status(404).json({ error: 'Company not found' });
 
   // Liste les contacts liés via la jointure (inclut les contacts dont

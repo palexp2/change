@@ -245,7 +245,11 @@ async function askModel({ rules, context, instructions, model, temperature }) {
     (specific ? `\n\nINSTRUCTIONS SPÉCIFIQUES (priorité haute) :\n${specific}` : '') +
     // Le contexte est en français ; le message, lui, part toujours en anglais.
     "\n\nÉcris le message privé Instagram, EN ANGLAIS, adapté à son activité réelle (profil ci-dessus) — " +
-    'sans lui prêter une culture que son profil ne montre pas. JSON strict : { "text": "…" }.'
+    'sans lui prêter une culture que son profil ne montre pas. ' +
+    // Règle de Charles (2026-10-03) : jamais un chiffre inventé.
+    'AUCUN chiffre, mesure, durée, débit, dosage ou prix qui ne figure pas mot pour mot dans le contexte ou ' +
+    'les instructions : à une question technique, ne réponds pas toi-même — dis qu\'un de nos experts va lui ' +
+    'répondre. JSON strict : { "text": "…" }.'
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -311,9 +315,36 @@ export async function writeDraft(prospectId, { instructions, force = false } = {
     activeRules: cfg.review_rules,
   })
 
+  // Question technique : on demande d'abord au chatbot de support, qui connaît
+  // la base d'Orisha. Sa réponse est la SEULE source de chiffres permise.
+  let context = buildContext(p, messages)
+  let expert = null
+  if ((p.segment || '') === 'question') {
+    const { askSupportBot } = await import('./supportBot.js')
+    expert = await askSupportBot(userWords(incoming) || p.first_comment_text || '').catch(() => null)
+    // Pas de réponse vérifiée : pas de suggestion du tout, Philippe écrit
+    // lui-même (Charles, 2026-10-03). Sauf s'il a donné ses propres consignes.
+    if (!expert && !instructions) {
+      if (existing) dropOpenDrafts(prospectId, 'Pas de réponse vérifiée — à écrire soi-même')
+      else {
+        // Trace « écartée » : la tournée ne reposera pas la question à chaque passage.
+        const now = new Date().toISOString()
+        db.prepare(`
+          INSERT INTO instagram_drafts (id, prospect_id, manychat_user_id, ig_username, text, status, error, model, generated_at, created_at, updated_at)
+          VALUES (?,?,?,?,'','dropped','Pas de réponse vérifiée — à écrire soi-même',?,?,?,?)
+        `).run(newRecordId(), p.id, thread?.user_id || p.manychat_subscriber_id || null, p.ig_username, cfg.model, now, now, now)
+      }
+      return { ok: true, skipped: 'no_verified_answer' }
+    }
+    if (expert) {
+      context += `\n\nRéponse de l'assistant technique d'Orisha (base de connaissance vérifiée) : « ${expert} »\n` +
+        'Résume cette réponse en une ou deux phrases dans le message, sans rien y ajouter.'
+    }
+  }
+
   const text = await askModel({
     rules: cfg.rules,
-    context: buildContext(p, messages),
+    context,
     // Chaque type de demande a son propre message : celle qui a écrit « coach »
     // ne reçoit pas le même mot que celle qui fait pousser des fleurs.
     instructions: instructions ?? existing?.instructions ?? instructionsForSegment(p.segment || 'commentaire'),

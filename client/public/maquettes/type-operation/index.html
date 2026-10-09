@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Type d'opération</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f4f5f8;--exp:#f7f8fa;--line:#e3e5e8;--line2:#c9ced4;--ink:#393a3d;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--bs:#e6f1fa;--a:#b86e00;--as:#fdf3e1;--r:#d52b1e;--rs:#fcebea;--p:#6b3fd1;--ps:#f1ecfc;--sh:0 1px 2px rgb(0 0 0/.05),0 10px 30px rgb(0 0 0/.08)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--exp:#1d2024;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--exp:#1d2024;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer;z-index:9}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:hidden}
+.scroll{overflow-x:auto}
+/* cartes de compte (QBO) */
+.cards{display:flex;gap:12px;padding:16px 16px 4px;overflow-x:auto}
+.card{border:1px solid var(--line2);border-radius:8px;padding:10px 14px;min-width:200px;background:var(--s)}
+.card.on{border:2px solid var(--g);padding:9px 13px}
+.card .n{font-weight:600}
+.card .k{display:flex;justify-content:space-between;gap:16px;font-size:12px;color:var(--ink3);margin-top:3px}
+.card .k b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.card .rv{display:inline-block;margin-top:6px;font-size:11.5px;font-weight:600;color:var(--b)}
+.top{display:flex;align-items:center;gap:22px;padding:14px 16px 0;border-bottom:1px solid var(--line)}
+.top span{padding-bottom:9px;color:var(--ink3);font-weight:500;white-space:nowrap}
+.top span.on{color:var(--ink);border-bottom:3px solid var(--g);font-weight:600}
+.tools{display:flex;align-items:center;gap:10px;padding:10px 16px}
+.dd{border:1px solid var(--line2);border-radius:4px;height:30px;padding:0 10px;display:inline-flex;align-items:center;gap:8px;color:var(--ink2);white-space:nowrap}
+table{width:100%;border-collapse:collapse;min-width:720px}
+th{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;text-align:left;padding:9px 10px;border-top:1px solid var(--line);border-bottom:1px solid var(--line2);white-space:nowrap;background:var(--s)}
+td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle;height:50px}
+tr.row{cursor:pointer}tr.row:hover td{background:var(--exp)}
+tr.open td{background:var(--exp);border-bottom:0}
+tr.xp td{background:var(--exp);padding:0;height:auto;border-bottom:1px solid var(--line2)}
+tr.open td:first-child,tr.xp td{box-shadow:inset 3px 0 0 var(--g)}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.m{color:var(--ink3);font-size:12.5px;white-space:nowrap}
+.desc{max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.who{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cb{width:14px;height:14px;border:1.5px solid var(--line2);border-radius:3px;display:inline-block;vertical-align:middle;background:var(--s)}
+.cat{display:flex;flex-direction:column;min-width:0;max-width:270px}
+.cat .l1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+.cat .l2{font-size:11.5px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cat .match{color:var(--gd);font-weight:600}
+.cat .xfer{color:var(--ink)}
+.tag{font-size:10px;font-weight:600;letter-spacing:.02em;padding:1px 6px;border-radius:4px;flex:none}
+.tag.ai{background:var(--ps);color:var(--p)}
+.tag.rule{background:var(--bs);color:var(--b)}
+.act{color:var(--b);font-weight:600;white-space:nowrap;cursor:pointer}
+.wr,.cat .l2.wr{color:var(--a)}.ms,.cat .l2.ms{color:var(--r)}.ok{color:var(--gd)}
+th:first-child{padding-left:18px}
+/* ligne ouverte */
+.x{padding:12px 18px 14px 18px;display:flex;flex-direction:column;gap:12px}
+.radios{display:flex;gap:22px;flex-wrap:wrap}
+.rad{display:flex;align-items:center;gap:7px;color:var(--ink2);cursor:pointer;white-space:nowrap}
+.rad i{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line2);flex:none;position:relative;background:var(--s)}
+.rad.on{color:var(--ink);font-weight:600}
+.rad.on i{border-color:var(--g)}.rad.on i:after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--g)}
+.fg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 14px;max-width:760px}
+.f{min-width:0}.f.w2{grid-column:span 2}
+.lab{font-size:11.5px;color:var(--ink3);margin-bottom:3px}
+.inp{border:1px solid var(--line2);border-radius:4px;height:34px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;background:var(--s);min-width:0}
+.inp>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inp.auto{border-color:color-mix(in srgb,var(--g) 60%,var(--line2))}
+.inp.warn{border-color:var(--a);background:var(--as)}
+.inp.empty{color:var(--ink4)}
+.car{color:var(--ink4);display:inline-flex}
+.bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;max-width:980px;border-top:1px solid var(--line);padding-top:12px}
+.bank{font-size:12px;color:var(--ink3)}.bank b{font-weight:500;color:var(--ink2);font-family:ui-monospace,Menlo,monospace;font-size:11.5px;margin-left:6px}
+.ctb{display:grid;grid-template-columns:1.1fr 1.4fr 1fr .9fr;gap:10px 14px;max-width:980px}
+.ctb .memo{grid-column:1/3}
+.ctb.xf{grid-template-columns:1.4fr .9fr 1.1fr 1fr}.ctb.xf .memo{grid-column:1/2}
+.ro{height:34px;display:flex;flex-direction:column;justify-content:center;font-weight:600;font-variant-numeric:tabular-nums}
+.ro small{font-weight:400;font-size:11px;color:var(--ink3)}
+.link.ms{color:var(--r)}
+.grow{flex:1}
+.link{color:var(--b);cursor:pointer;font-weight:500;white-space:nowrap}
+.btn{height:34px;padding:0 18px;border-radius:999px;border:0;background:var(--g);color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn.warn{background:var(--a)}
+.btn.ghost{background:var(--s);border:1px solid var(--line2);color:var(--ink2)}
+/* suggestion */
+.sug{border-radius:6px;padding:8px 12px;display:flex;gap:10px;align-items:center;background:var(--gs);max-width:980px;flex-wrap:wrap}
+.sug.warn{background:var(--as)}.sug.miss{background:var(--rs)}
+.sug .ic{flex:none;color:var(--gd);display:inline-flex}.sug.warn .ic{color:var(--a)}.sug.miss .ic{color:var(--r)}
+.sug .t{font-weight:600}
+.sug .why{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink2)}
+.sug .why span{display:inline-flex;align-items:center;gap:4px}
+/* correspondances */
+.mt{border-collapse:collapse;min-width:0;width:100%;max-width:620px;background:var(--s);border:1px solid var(--line);border-radius:6px}
+.mt th{font-size:10px;padding:6px 10px;border-top:0;background:transparent}.mt td{height:auto;padding:9px 10px;background:var(--s)!important}
+.mt tr.on td{background:var(--gs)!important}
+.mt .w{color:var(--a);font-weight:600}
+.face{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-width:620px;border:1px solid var(--line2);border-radius:6px;overflow:hidden;background:var(--s)}
+.face>div{padding:10px 14px;min-width:0}
+.face>div+div{border-left:1px solid var(--line2)}
+.face .cap{font-size:10px;font-weight:600;text-transform:uppercase;color:var(--ink3);letter-spacing:.03em;margin-bottom:6px}
+.face .k{display:grid;grid-template-columns:70px 1fr auto;gap:8px;padding:2px 0}
+.face .k span:first-child{color:var(--ink3)}
+.face .k span:nth-child(2){font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.face .k.w span:nth-child(2){color:var(--a)}
+.tot{display:flex;gap:22px;font-size:12.5px;color:var(--ink3);max-width:1000px}
+.tot b{color:var(--ink);font-variant-numeric:tabular-nums}.tot b.w{color:var(--a)}
+
+.sel{appearance:none;-webkit-appearance:none;border:1px solid var(--line2);border-radius:4px;height:34px;padding:0 28px 0 10px;background:var(--s) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239a9ca1' fill='none' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center;color:var(--ink);font:inherit;width:100%;cursor:pointer}
+.sel.auto{border-color:color-mix(in srgb,var(--g) 60%,var(--line2))}
+.sel.type{font-weight:600}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line2);border-radius:999px;padding:5px 12px;cursor:pointer;color:var(--ink2);background:var(--s);white-space:nowrap;font-weight:500}
+.chip.on{background:var(--g);border-color:var(--g);color:#fff}
+.chip.sug:not(.on){border-color:var(--g);color:var(--gd)}
+.chips .sep{width:1px;background:var(--line2);margin:0 6px}
+.tp{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px 2px 8px;font-size:12px;font-weight:600;white-space:nowrap}
+.tp i{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.8}
+.t-depense{background:var(--bs);color:var(--b)}.t-facture{background:var(--ps);color:var(--p)}.t-virement,.t-carte{background:var(--soft);color:var(--ink2)}
+.t-cheque{background:var(--bs);color:var(--b)}.t-depot,.t-client{background:var(--gs);color:var(--gd)}.t-rembourse{background:var(--as);color:var(--a)}.t-journal{background:var(--soft);color:var(--ink3)}
+.tpsel{position:relative;display:inline-block}
+.tpsel select{position:absolute;inset:0;opacity:0;cursor:pointer}
+.ft{width:100%;max-width:760px;border:1px solid var(--line);border-radius:6px;border-collapse:collapse;min-width:0;background:var(--s)}
+.ft th{font-size:10px;padding:6px 10px;border-top:0;background:transparent}.ft td{height:auto;padding:8px 10px;background:var(--s)!important}
+.ft tr.on td{background:var(--gs)!important}
+.ft .cb.on{background:var(--g);border-color:var(--g)}
+.span3{grid-column:1/-1}
+.fg4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 14px;max-width:980px}
+.fg4 .w2{grid-column:span 2}
+.phr{font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.phr .sel{width:auto;height:30px;font-size:14px;font-weight:600}
+.ft td,.mt td{box-shadow:none!important}
+</style></head>
+<body><button class="theme" onclick="tg()">◐</button>
+<div class="wrap">
+<h1>Type d'opération</h1>
+
+<h2><b>K1</b> Champ « Type » en premier <span>comme QBO : le type choisi refait les champs</span></h2>
+<div class="scr" id="k1"></div>
+
+<h2><b>K2</b> Le type en onglets <span>un clic, le type suggéré est en vert</span></h2>
+<div class="scr" id="k2"></div>
+
+<h2><b>K3</b> Le type dans la liste <span>colonne Type ; la ligne ouverte en fait une phrase</span></h2>
+<div class="scr" id="k3"></div>
+</div>
+<script>
+const ACCTS = ['BNC CAD','BNC USD','BNC Épargne','MasterCard BNC','Desjardins CAD','VISA Desjardins CAD','Venn CAD']
+const CATS = ['66000 Frais bancaires','61200 Loyer','54000 Pièces électroniques','62100 Logiciels et abonnements','12100 Stripe à recevoir','40000 Ventes','23900 Dépôts de commandes','51000 Salaires']
+const TAXES = ['TPS/TVQ QC - 9,975','TPS','Exonéré','Hors champ']
+const TYPES = {
+  depense:{ l:'Dépense', cta:'Ajouter la dépense', debit:1 },
+  facture:{ l:'Paiement de facture', cta:'Payer', debit:1 },
+  virement:{ l:'Virement', cta:'Enregistrer le virement', debit:1, credit:1 },
+  carte:{ l:'Paiement de carte', cta:'Payer la carte', debit:1 },
+  cheque:{ l:'Chèque', cta:'Ajouter le chèque', debit:1 },
+  depot:{ l:'Dépôt', cta:'Ajouter le dépôt', credit:1 },
+  client:{ l:'Paiement client', cta:'Recevoir', credit:1 },
+  rembourse:{ l:'Remboursement fournisseur', cta:'Ajouter le crédit', credit:1 },
+  journal:{ l:'Écriture de journal', cta:"Ajouter l'écriture", debit:1, credit:1 },
+}
+const ROWS = [
+  { id:1, d:'5 oct.', desc:'M/CARD AFFAIRES', raw:'PMT CARTE CREDIT M/CARD AFFAIRES 5258', amt:-12701.12, type:'carte',
+    g:{ carte:{ card:'MasterCard BNC', stmt:'Relevé du 14 sept. 2026', memo:'Paiement relevé septembre' },
+        depense:{ who:'Banque Nationale', cat:'', tax:'Hors champ' }, virement:{ to:'MasterCard BNC' } } },
+  { id:2, d:'4 oct.', desc:'SOC IMMO QUEBOURG', raw:'PAIEMENT PREAUTORISE SOC IMMO QUEBOURG', amt:-6122.42, type:'depense',
+    g:{ depense:{ who:'Société Immobilière Québourg', cat:'61200 Loyer', tax:'TPS/TVQ QC - 9,975', memo:'Loyer octobre 2026', att:'Soc_Immo_Quebourg_2026-2027.pdf' },
+        facture:{ who:'Société Immobilière Québourg', bills:[{n:'Aucune facture ouverte'}] } } },
+  { id:3, d:'3 oct.', desc:'DKC*DIGI-KEY CORP', raw:'DKC*DIGI-KEY CORP THIEF RIVER F MN', amt:-985.24, type:'facture',
+    g:{ facture:{ who:'Digi-Key', bills:[{n:'132580242',due:'3 oct.',bal:985.24,on:1},{n:'132571118',due:'28 sept.',bal:115.65}] },
+        depense:{ who:'Digi-Key', cat:'54000 Pièces électroniques', tax:'TPS', memo:'Composantes' } } },
+  { id:4, d:'3 oct.', desc:'VIREMENT ENTRE COMPTES', raw:'VIR ENTRE COMPTES 0102030 EPARGNE', amt:-5000, type:'virement',
+    g:{ virement:{ to:'BNC Épargne', memo:'Mise de côté TPS/TVQ' } } },
+  { id:5, d:'2 oct.', desc:'FACTURATION EDI', raw:'FRAIS FACTURATION EDI', amt:-20, type:'depense',
+    g:{ depense:{ who:'Banque Nationale', cat:'66000 Frais bancaires', tax:'Exonéré', memo:'Frais EDI' } } },
+  { id:6, d:'1 oct.', desc:'PAIEMENT TRANSFERT ÉLECTRONIQUE', raw:'PAIEMENT TRANSFERT ELECTRONIQUE FERME L APOGEE', amt:1724.69, type:'client',
+    g:{ client:{ who:"Ferme L'Apogée", bills:[{n:'F-2026-118',due:'30 sept.',bal:1724.69,on:1},{n:'F-2026-131',due:'15 oct.',bal:860}] },
+        depot:{ who:"Ferme L'Apogée", cat:'40000 Ventes', tax:'TPS/TVQ QC - 9,975' } } },
+  { id:7, d:'30 sept.', desc:'STRIPE TRANSFER', raw:'STRIPE TRANSFER ST-K8Q2', amt:3410.55, type:'depot',
+    g:{ depot:{ who:'Stripe', cat:'12100 Stripe à recevoir', tax:'Hors champ', memo:'Versement Stripe 30 sept.' } } },
+  { id:8, d:'29 sept.', desc:'REMB. MOUSER', raw:'CREDIT MOUSER ELECTRONICS', amt:73.18, type:'rembourse',
+    g:{ rembourse:{ who:'Mouser Electronics', cat:'54000 Pièces électroniques', tax:'TPS', memo:'Retour pièces' } } },
+]
+const money = (v) => (v < 0 ? '−' : '') + Math.abs(v).toLocaleString('fr-CA',{minimumFractionDigits:2}) + ' $'
+const allowed = (r) => Object.entries(TYPES).filter(([,t]) => r.amt < 0 ? t.debit : t.credit)
+const esc = (s) => String(s ?? '')
+
+function opt(list, v) { return ['', ...list].map((o) => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('') }
+function select(lab, list, v, cls = '', w = '') {
+  const shown = v && !list.includes(v) ? [v, ...list] : list
+  return `<div class="f ${w}"><div class="lab">${lab}</div><select class="sel ${v ? 'auto' : ''} ${cls}">${opt(shown, v)}</select></div>`
+}
+function input(lab, v, w = '', ph = '') { return `<div class="f ${w}"><div class="lab">${lab}</div><div class="inp ${v ? 'auto' : 'empty'}"><span>${esc(v) || ph || '&nbsp;'}</span></div></div>` }
+function ro(lab, v, small = '') { return `<div class="f"><div class="lab">${lab}</div><div class="ro">${v}${small ? `<small>${small}</small>` : ''}</div></div>` }
+
+function billsTable(bills, amt) {
+  if (!bills || !bills[0]?.bal) return `<div class="m">Aucune facture ouverte</div>`
+  return `<table class="ft"><tr><th></th><th>N°</th><th>Échéance</th><th class="r">Solde</th><th class="r">Paiement</th></tr>${
+    bills.map((b) => `<tr class="${b.on ? 'on' : ''}"><td style="width:28px"><span class="cb ${b.on ? 'on' : ''}"></span></td><td>${b.n}</td><td class="m">${b.due}</td><td class="r">${money(b.bal)}</td><td class="r"><b>${b.on ? money(Math.abs(amt)) : ''}</b></td></tr>`).join('')}</table>`
+}
+
+// Les champs, selon le type. `g` = ce que Boréal a deviné pour ce type.
+function fields(r, type, st) {
+  const g = { ...(r.g[type] || {}) }
+  const keep = st.keep || {}
+  if (!g.who && keep.who && ['depense','facture','cheque','depot','client','rembourse'].includes(type)) g.who = keep.who
+  if (!g.memo && keep.memo) g.memo = keep.memo
+  const amt = Math.abs(r.amt)
+  const acct = st.acct
+  switch (type) {
+    case 'depense': case 'cheque': case 'depot': case 'rembourse': return `
+      <div class="fg4">
+        ${type === 'cheque' ? input('N° de chèque', '', '', '') : ''}
+        ${input(type === 'depot' ? 'Reçu de' : type === 'rembourse' ? 'Fournisseur' : 'Bénéficiaire', g.who, type === 'cheque' ? '' : '')}
+        ${select('Catégorie', CATS, g.cat, '', 'w2')}
+        ${select('Taxe', TAXES, g.tax)}
+        ${type === 'cheque' ? '' : ''}
+        ${ro('Montant', money(amt), g.tax && !/Exon|Hors/.test(g.tax) ? (g.tax === 'TPS' ? 'TPS ' + money(amt - amt / 1.05) : 'TPS ' + money(amt / 1.14975 * .05) + ' · TVQ ' + money(amt / 1.14975 * .09975)) : '')}
+        ${input('Mémo', g.memo, 'w2')}
+        ${input('Reçu', g.att ? '📎 ' + g.att : '', '', 'Joindre')}
+      </div>`
+    case 'facture': case 'client': return `
+      <div class="fg4">
+        ${input(type === 'client' ? 'Client' : 'Fournisseur', g.who, 'w2')}
+        ${ro('Montant', money(amt))}
+        ${type === 'client' ? input('Frais retenus', '', '', '0,00 $') : input('N° de référence', '', '', '')}
+        <div class="f span3"><div class="lab">Factures ouvertes</div>${billsTable(g.bills, r.amt)}</div>
+        ${input('Mémo', g.memo, 'w2')}
+      </div>`
+    case 'virement': {
+      const to = g.to || ''
+      const fx = /USD/.test(to)
+      return `
+      <div class="fg4">
+        ${r.amt < 0 ? ro('Depuis', acct) : select('Depuis', ACCTS.filter((a) => a !== acct), to)}
+        ${r.amt < 0 ? select('Vers', ACCTS.filter((a) => a !== acct), to) : ro('Vers', acct)}
+        ${ro('Montant', money(amt))}
+        ${fx ? input('Montant reçu (USD)', '3 645,21 $', '', '') : '<div></div>'}
+        ${input('Mémo', g.memo, 'w2')}
+      </div>` }
+    case 'carte': return `
+      <div class="fg4">
+        ${select('Carte payée', ACCTS.filter((a) => /Card|VISA/.test(a)), g.card)}
+        ${select('Relevé', ['Relevé du 14 sept. 2026','Relevé du 14 août 2026'], g.stmt)}
+        ${ro('Montant', money(amt), 'solde du relevé ' + money(12701.12))}
+        <div></div>
+        ${input('Mémo', g.memo, 'w2')}
+      </div>`
+    case 'journal': return `
+      <table class="ft" style="max-width:860px"><tr><th>Compte</th><th class="r">Débit</th><th class="r">Crédit</th><th>Nom</th></tr>
+        <tr><td>${r.amt < 0 ? '<span class="m">Choisir…</span>' : acct}</td><td class="r">${money(amt)}</td><td></td><td></td></tr>
+        <tr><td>${r.amt < 0 ? acct : '<span class="m">Choisir…</span>'}</td><td></td><td class="r">${money(amt)}</td><td></td></tr>
+      </table>
+      <div class="fg4">${input('Mémo', g.memo, 'w2')}</div>`
+  }
+  return ''
+}
+function ctaLabel(r, type) {
+  const t = TYPES[type]
+  if (type === 'facture') return 'Payer 1 facture'
+  if (type === 'client') return 'Recevoir 1 facture'
+  return t.cta
+}
+function bar(r, type) {
+  return `<div class="bar"><span class="bank">Détail bancaire<b>${r.raw}</b></span><span class="grow"></span>
+    ${['depense','cheque','depot','rembourse'].includes(type) ? '<span class="link">Diviser</span>' : ''}
+    <span class="link">Créer une règle</span><span class="link">Exclure</span>
+    <button class="btn">${ctaLabel(r, type)}</button></div>`
+}
+
+// ── trois écrans, même données ─────────────────────────────────────────────
+const state = {}
+function mount(id, mode) {
+  state[id] = { open: mode === 'k3' ? 1 : mode === 'k2' ? 3 : 2, types: {}, keep: {}, acct: 'BNC CAD', tab: 'cat' }
+  render(id, mode)
+}
+function render(id, mode) {
+  const st = state[id]
+  const el = document.getElementById(id)
+  const tOf = (r) => st.types[r.id] || r.type
+  const head = `<div class="cards">${['BNC CAD','MasterCard BNC','BNC USD','Desjardins CAD'].map((a, i) => `<div class="card ${i === 0 ? 'on' : ''}"><div class="n">${a}</div><div class="k">Pour révision <b>${[8,14,3,5][i]}</b></div></div>`).join('')}</div>
+    <div class="top"><span class="on">Pour révision</span><span>Catégorisées</span><span>Exclues</span></div>`
+  const cols = mode === 'k3'
+    ? '<th></th><th>Date</th><th>Description</th><th>Type</th><th>Bénéficiaire</th><th>Catégorie ou correspondance</th><th class="r">Dépense</th><th class="r">Dépôt</th><th>Action</th>'
+    : '<th></th><th>Date</th><th>Description</th><th>Bénéficiaire</th><th>Catégorie ou correspondance</th><th class="r">Dépense</th><th class="r">Dépôt</th><th>Action</th>'
+  const n = mode === 'k3' ? 9 : 8
+  const rows = ROWS.map((r) => {
+    const type = tOf(r)
+    const g = r.g[type] || {}
+    const catTxt = type === 'virement' ? `<span class="xfer">Virement → ${g.to || '?'}</span>`
+      : type === 'carte' ? `<span class="xfer">Paiement → ${g.card}</span>`
+      : (type === 'facture' || type === 'client') ? `<span class="match">1 facture trouvée</span>`
+      : (g.cat || '<span class="m">Non catégorisé</span>')
+    const typeCell = mode === 'k3' ? `<td><span class="tpsel"><span class="tp t-${type}"><i></i>${TYPES[type].l} ▾</span><select data-r="${r.id}">${allowed(r).map(([k, t]) => `<option value="${k}" ${k === type ? 'selected' : ''}>${t.l}</option>`).join('')}</select></span></td>` : ''
+    const main = `<tr class="row ${st.open === r.id ? 'open' : ''}" data-open="${r.id}"><td><span class="cb"></span></td><td class="m">${r.d}</td><td><div class="desc">${r.desc}</div></td>${typeCell}
+      <td><div class="who">${g.who || ''}</div></td><td><div class="cat"><div class="l1">${catTxt}</div></div></td>
+      <td class="r">${r.amt < 0 ? money(-r.amt) : ''}</td><td class="r">${r.amt > 0 ? money(r.amt) : ''}</td><td><span class="act">${st.open === r.id ? 'Fermer' : ctaLabel(r, type).split(' ')[0]}</span></td></tr>`
+    if (st.open !== r.id) return main
+    return main + `<tr class="xp"><td colspan="${n}"><div class="x">${expanded(r, type, mode, st)}</div></td></tr>`
+  }).join('')
+  el.innerHTML = head + `<div class="scroll"><table><tr>${cols}</tr>${rows}</table></div>`
+  el.querySelectorAll('[data-open]').forEach((tr) => tr.addEventListener('click', (e) => {
+    if (e.target.closest('select')) return
+    const rid = Number(tr.dataset.open); st.open = st.open === rid ? null : rid; st.tab = 'cat'; render(id, mode)
+  }))
+  el.querySelectorAll('select[data-r]').forEach((s) => s.addEventListener('change', () => { setType(st, Number(s.dataset.r), s.value); render(id, mode) }))
+  el.querySelectorAll('select[data-type]').forEach((s) => s.addEventListener('change', () => { setType(st, st.open, s.value); render(id, mode) }))
+  el.querySelectorAll('[data-chip]').forEach((c) => c.addEventListener('click', () => {
+    if (c.dataset.chip === 'match') st.tab = 'match'; else { st.tab = 'cat'; setType(st, st.open, c.dataset.chip) }
+    render(id, mode)
+  }))
+  el.querySelectorAll('[data-tab]').forEach((c) => c.addEventListener('click', () => { st.tab = c.dataset.tab; render(id, mode) }))
+}
+function setType(st, rid, type) {
+  const r = ROWS.find((x) => x.id === rid)
+  const prev = r.g[st.types[rid] || r.type] || {}
+  st.keep = { who: prev.who, memo: prev.memo }
+  st.types[rid] = type
+}
+function typeSelect(r, type) {
+  return `<div class="f"><div class="lab">Type d'opération</div><select class="sel type auto" data-type="1">${allowed(r).map(([k, t]) => `<option value="${k}" ${k === type ? 'selected' : ''}>${t.l}</option>`).join('')}</select></div>`
+}
+function matchPane(r) {
+  return `<table class="mt"><tr><th></th><th>Date</th><th>Type</th><th>Nom</th><th class="r">Montant</th></tr>
+    <tr class="on"><td style="width:28px"><span class="cb"></span></td><td class="m">${r.d}</td><td>Dépense</td><td>${(r.g[r.type] || {}).who || '—'}</td><td class="r">${money(Math.abs(r.amt))}</td></tr></table>
+    <div class="bar"><span class="grow"></span><button class="btn">Apparier</button></div>`
+}
+function expanded(r, type, mode, st) {
+  if (mode === 'k1') {
+    const radios = `<div class="radios"><span class="rad ${st.tab === 'cat' ? 'on' : ''}" data-tab="cat"><i></i>Catégoriser</span><span class="rad ${st.tab === 'match' ? 'on' : ''}" data-tab="match"><i></i>Trouver une correspondance</span></div>`
+    if (st.tab === 'match') return radios + matchPane(r)
+    return radios + `<div class="fg4">${typeSelect(r, type)}</div>` + fields(r, type, st) + bar(r, type)
+  }
+  if (mode === 'k2') {
+    const chips = `<div class="chips">${allowed(r).map(([k, t]) => `<span class="chip ${st.tab === 'cat' && k === type ? 'on' : ''} ${k === r.type ? 'sug' : ''}" data-chip="${k}">${t.l}</span>`).join('')}<span class="sep"></span><span class="chip ${st.tab === 'match' ? 'on' : ''}" data-chip="match">Correspondance</span></div>`
+    if (st.tab === 'match') return chips + matchPane(r)
+    return chips + fields(r, type, st) + bar(r, type)
+  }
+  // k3 : la phrase
+  const g = r.g[type] || {}
+  const tail = type === 'virement' ? `vers <b>${g.to || '…'}</b>` : type === 'carte' ? `de <b>${g.card}</b>` : g.who ? `${['client','depot'].includes(type) ? 'de' : 'à'} <b>${g.who}</b>` : ''
+  return `<div class="phr">${money(Math.abs(r.amt))} · <select class="sel type auto" data-type="1">${allowed(r).map(([k, t]) => `<option value="${k}" ${k === type ? 'selected' : ''}>${t.l}</option>`).join('')}</select> ${tail}</div>` + fields(r, type, st) + bar(r, type)
+}
+mount('k1', 'k1'); mount('k2', 'k2'); mount('k3', 'k3')
+function tg() { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark' }
+</script>
+</body></html>

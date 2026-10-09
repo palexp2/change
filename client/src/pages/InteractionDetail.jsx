@@ -272,7 +272,7 @@ export default function InteractionDetail({ recordId: id, onClose }) {
         {item.type === 'email' && (
           <EmailAttachments interactionId={id} embedded hideWhenEmpty />
         )}
-        {item.type === 'email' && item.direction === 'out' && <EmailTrackingBlock interactionId={id} />}
+        {item.type === 'email' && item.direction === 'out' && <EmailTrackingBlock interactionId={id} defaultOpen />}
 
         {/* Réunion / note — et notes d'un appel saisi à la main ou importé */}
         {item.meeting_notes && (

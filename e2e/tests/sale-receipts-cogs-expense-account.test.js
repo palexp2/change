@@ -20,6 +20,7 @@ describe('Extraction de données : formulaire QB', () => {
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -64,7 +65,7 @@ describe('Extraction de données : formulaire QB', () => {
     const portal = page.locator('#qb-select-portal')
     await portal.waitFor({ state: 'visible', timeout: 5000 })
     const options = await portal.locator('button').allTextContents()
-    await page.keyboard.press('Escape').catch(() => {})
+    await page.getByTestId('qb-type-menu').click().catch(() => {})
     const hasShipping = options.some(o => /Expédition.*livraison.*poste/i.test(o))
     assert.ok(
       hasShipping,
@@ -74,10 +75,12 @@ describe('Extraction de données : formulaire QB', () => {
 
   test("mode Purchase (défaut) : Compte de paiement visible, Échéance absente", async () => {
     // Le bouton radio Purchase doit être coché par défaut
+    await page.getByTestId('qb-type-menu').click()
     const purchaseRadio = page.getByTestId('qb-type-purchase')
     assert.equal(await purchaseRadio.isChecked(), true)
+    await page.getByTestId('qb-type-menu').click()
 
-    const paymentLabel = page.locator('label:has-text("Compte de paiement")').first()
+    const paymentLabel = page.locator('label:has-text("Payé par")').first()
     await paymentLabel.waitFor({ state: 'visible', timeout: 5000 })
 
     const dueDateLabel = page.locator('label:has-text("Échéance")')
@@ -85,16 +88,17 @@ describe('Extraction de données : formulaire QB', () => {
   })
 
   test("mode Bill : Compte de paiement disparaît, Échéance apparaît", async () => {
+    await page.getByTestId('qb-type-menu').click()
     await page.getByTestId('qb-type-bill').check()
 
     const dueDateLabel = page.locator('label:has-text("Échéance")').first()
     await dueDateLabel.waitFor({ state: 'visible', timeout: 5000 })
 
-    const paymentLabel = page.locator('label:has-text("Compte de paiement")')
-    assert.equal(await paymentLabel.count(), 0, 'Le label Compte de paiement ne doit pas apparaître en mode Bill')
+    const paymentLabel = page.locator('label:has-text("Payé par")')
+    assert.equal(await paymentLabel.count(), 0, 'Le label Payé par ne doit pas apparaître en mode Bill')
 
     // L'input date d'échéance doit être présent
-    const dueDateInput = dueDateLabel.locator('xpath=following-sibling::input[@type="date"]').first()
+    const dueDateInput = dueDateLabel.locator('xpath=ancestor::div[2]//input[@type="date"]').first()
     await dueDateInput.waitFor({ state: 'visible', timeout: 5000 })
 
     // Mentionner que le crédit va automatiquement aux Comptes fournisseurs (rassure l'utilisateur)
@@ -102,6 +106,7 @@ describe('Extraction de données : formulaire QB', () => {
     assert.ok(await hint.isVisible(), 'L\'aide-mémoire « Comptes fournisseurs » doit être visible en mode Bill')
 
     // Re-basculer en Purchase pour ne pas laisser l'UI dans un état non-défaut au prochain chargement
+    await page.getByTestId('qb-type-menu').click()
     await page.getByTestId('qb-type-purchase').check()
   })
 

@@ -16,10 +16,8 @@ export function weekStartOf(value) {
   return d.toISOString().slice(0, 10)
 }
 
-/** Libellé humain d'un lundi de semaine (« 24 août 2026 »). */
+/** Libellé d'un lundi de semaine (« 2026-08-24 »). */
 export function fmtWeekStart(weekKey) {
   if (!weekKey) return ''
-  const d = new Date(`${String(weekKey).slice(0, 10)}T12:00:00Z`)
-  if (Number.isNaN(d.getTime())) return String(weekKey)
-  return d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+  return String(weekKey).slice(0, 10)
 }

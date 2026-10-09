@@ -46,6 +46,8 @@ const PORTAL_ID = 'qb-select-portal'
 //  - quietSelection        : le choix actuel n'a ni fond ni couleur, seulement une
 //                            coche grise (quand une autre rangée porte déjà le vert).
 //  - menuClassName         : classes ajoutées au menu ouvert.
+//  - fitViewport           : menu recadré dans l'écran (gauche/droite) et liste
+//                            aussi haute que l'espace disponible le permet.
 //  - disabled              : bool.
 export function SearchableSelect({
   value,
@@ -74,6 +76,7 @@ export function SearchableSelect({
   minMenuWidth = 240,
   quietSelection = false,
   menuClassName = '',
+  fitViewport = false,
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -121,6 +124,22 @@ export function SearchableSelect({
   const computePos = useCallback(() => {
     const rect = btnRef.current?.getBoundingClientRect()
     if (!rect) return
+    if (fitViewport) {
+      // Menu large dans un panneau à droite : recadré dans l'écran, des deux axes.
+      const M = 8
+      const width = Math.min(Math.max(rect.width, minMenuWidth), window.innerWidth - 2 * M)
+      const below = window.innerHeight - rect.bottom - M - 4
+      const above = rect.top - M - 4
+      const openUp = below < 320 && above > below
+      setPos({
+        top: openUp ? rect.top - 4 : rect.bottom + 4,
+        left: Math.max(M, Math.min(rect.left, window.innerWidth - width - M)),
+        width,
+        openUp,
+        maxHeight: Math.min(openUp ? above : below, 520),
+      })
+      return
+    }
     const spaceBelow = window.innerHeight - rect.bottom
     const openUp = spaceBelow < 260 && rect.top > spaceBelow
     setPos({
@@ -129,7 +148,7 @@ export function SearchableSelect({
       width: Math.max(rect.width, minMenuWidth),
       openUp,
     })
-  }, [minMenuWidth])
+  }, [minMenuWidth, fitViewport])
 
   useEffect(() => {
     if (!open) return
@@ -206,6 +225,7 @@ export function SearchableSelect({
             bottom: pos.openUp ? window.innerHeight - pos.top : undefined,
             left: pos.left,
             width: pos.width,
+            maxHeight: pos.maxHeight,
             zIndex: 9999,
           }}
           className={`bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden flex flex-col ${menuClassName}`}
@@ -224,7 +244,7 @@ export function SearchableSelect({
             {searchAside && <div className={`shrink-0 ${txt} text-slate-400`}>{searchAside}</div>}
           </div>
           {listHeader && <div className="flex-shrink-0 border-b border-slate-100">{listHeader}</div>}
-          <div className="max-h-64 overflow-y-auto">
+          <div className={fitViewport ? 'flex-auto min-h-0 overflow-y-auto' : 'max-h-64 overflow-y-auto'}>
             {showEmpty && (
               <button
                 type="button"

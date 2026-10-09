@@ -81,23 +81,25 @@ export default function Retours() {
     <ListPage title="Retours">
       <DataTable
         table="retours"
+        showFormulaSyntaxHelp={false}
+        showFormulaAutocompleteHint={false}
+        showFormulaKeyboardHint={false}
         manageViews
         columns={COLUMNS}
         data={rows}
         loading={loading}
         onCellEdit={updateField}
         peek={{
-          title: () => 'Retour',
+          title: row => row.cf_de_retour || 'Retour',
           to: row => `/retours/${row.id}`,
           width: 720,
           openId: peekOpenId,
           onOpenConsumed: consumePeekOpen,
           render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
         }}
-        // Le statut était le dernier champ natif cherchable (droppé par la 041) :
-        // il ne reste que l'identifiant du retour, plus le nom de l'entreprise
-        // reconstitué ci-dessus.
-        searchFields={['id', 'company_search']}
+        // N° RMA (champ Airtable, déjà titre du panneau), identifiant, et nom
+        // de l'entreprise reconstitué ci-dessus.
+        searchFields={['cf_de_retour', 'id', 'company_search']}
         emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée. Les retours clients apparaissent ici." }}
       />
     </ListPage>

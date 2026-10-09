@@ -31,6 +31,8 @@ const FACTURE_RULE_FIELDS = [
   { id: 'company_id',          field: 'company_id',          label: 'Entreprise (id)' },
   { id: 'company_name',        field: 'company_name',        label: 'Entreprise (nom)' },
   { id: 'customer_email',      field: 'customer_email',      label: 'Courriel client (Stripe)' },
+  { id: 'contact_id',          field: 'contact_id',          label: 'Contact (id)' },
+  { id: 'contact_name',        field: 'contact_name',        label: 'Contact (nom)' },
   { id: 'project_id',          field: 'project_id',          label: 'Projet (id)' },
   { id: 'project_name',        field: 'project_name',        label: 'Projet (nom)' },
   { id: 'order_id',            field: 'order_id',            label: 'Commande (id)' },
@@ -155,7 +157,7 @@ export default function FactureDetail({ recordId, onClose }) {
     try {
       const r = await api.factures.void(id)
       invalidate(`/projets/factures/${id}`)
-      setFacture(f => ({ ...f, status: r.status, ...(f.source === 'pending' ? { pending_status: 'cancelled' } : { balance_due: 0 }) }))
+      setFacture(f => ({ ...f, status: r.status, balance_due: 0, ...(f.source === 'pending' ? { pending_status: 'cancelled' } : {}) }))
       setVoidModalOpen(false)
     } catch (e) {
       setVoidError(e?.message || "Échec de l'annulation")
@@ -283,6 +285,15 @@ export default function FactureDetail({ recordId, onClose }) {
     }
   }
 
+  async function handleContactChange(newContactId) {
+    setSaving(true)
+    try {
+      setFacture(await api.factures.update(id, { contact_id: newContactId || null }))
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function handleCompanyChange(newCompanyId) {
     setSaving(true)
     try {
@@ -309,7 +320,7 @@ export default function FactureDetail({ recordId, onClose }) {
   // blocs nus, exactement comme avant.
   const wrapGuardedField = useCallback((f, node) => {
     const guardId = GUARD_IDS[f.key]
-    return guardId ? <FieldGuard fieldId={guardId} label={f.label}>{node}</FieldGuard> : node
+    return guardId ? <FieldGuard fieldId={guardId} label={f.label} silentWhenHidden>{node}</FieldGuard> : node
   }, [])
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: facture, notFound: 'Facture introuvable.' })
@@ -338,11 +349,6 @@ export default function FactureDetail({ recordId, onClose }) {
           ),
           badge: (
             <>
-              {facture.status && (
-                <Badge color={STATUS_COLORS[facture.status] || 'gray'} size="md">
-                  {facture.status}
-                </Badge>
-              )}
               {(() => {
                 const stripeUrl = buildStripeUrl(facture)
                 if (!stripeUrl) return null
@@ -367,7 +373,7 @@ export default function FactureDetail({ recordId, onClose }) {
                   <Send size={12} /> {facture.pending_status === 'sent' ? 'Renvoyer par email' : 'Envoyer par email'}
                 </button>
               )}
-              {facture.source === 'pending' && facture.pay_url && (
+              {facture.source === 'pending' && facture.pending_status !== 'cancelled' && facture.pay_url && (
                 <a
                   href={facture.pay_url}
                   target="_blank"
@@ -384,10 +390,10 @@ export default function FactureDetail({ recordId, onClose }) {
                   className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-red-700 bg-white hover:bg-red-50 rounded-lg border border-red-200"
                   data-testid="facture-void-button"
                 >
-                  <Ban size={12} /> Void
+                  <Ban size={12} /> Annuler la facture
                 </button>
               )}
-              {facture.source === 'pending' && facture.pay_url && (
+              {facture.source === 'pending' && facture.pending_status !== 'cancelled' && facture.pay_url && (
                 <CopyButton text={facture.pay_url} title="Copier le lien de paiement" testId="copy-pay-url" />
               )}
               {/* Badge « Revenu perçu d'avance » : affichée tant que la vente n'est pas
@@ -433,6 +439,15 @@ export default function FactureDetail({ recordId, onClose }) {
           ),
         }}
       >
+        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="facture-procedure">
+          <p className="font-semibold mb-1">Procédure</p>
+          <ol className="list-decimal pl-5 space-y-1">
+            <li>Lier la facture au client final. Jamais au distributeur.</li>
+            <li>Lier au projet correspondant et fermer le projet.</li>
+            <li>S'il n'y a pas de projet correspondant, ex. lorsqu'il s'agit de pièces de rechange, vérifier s'il y a une commande à envoyer ou en attente et lier à cette commande ou créer une nouvelle commande.</li>
+            <li>Si c'est pour un rachat d'équipement en abonnement, liez la facture au projet lié à l'abonnement. Ne pas lier à une commande. Annuler l'abonnement, rembourser la dernière facture si elle date de moins de 15 jours et changer l'état de ses numéros de série.</li>
+          </ol>
+        </div>
         <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
           {/* Carte de champs commune : une seule liste de champs, réordonnable
               et masquable depuis la fiche (bouton « Personnaliser les champs »).
@@ -466,6 +481,19 @@ export default function FactureDetail({ recordId, onClose }) {
                   </a>
                 </p>
               )}
+            </DetailField>
+
+            <DetailField id="contact_name" label="Contact">
+              <LinkedRecordField
+                name="contact_id"
+                value={facture.contact_id}
+                options={facture.contact_id ? [{ id: facture.contact_id, name: facture.contact_name }] : []}
+                labelFn={c => c.name}
+                searchTarget="contacts"
+                getHref={c => `/contacts/${c.id}`}
+                saving={saving}
+                onChange={handleContactChange}
+              />
             </DetailField>
 
             <DetailField id="project_name" label="Projet">
@@ -508,6 +536,12 @@ export default function FactureDetail({ recordId, onClose }) {
                 : facture.subscription_id
                   ? <span className="text-slate-500 font-mono text-sm">{facture.subscription_id}</span>
                   : <span className="text-slate-400 text-sm">—</span>}
+            </DetailField>
+
+            <DetailField id="status" label="Statut">
+              {facture.status
+                ? <Badge color={STATUS_COLORS[facture.status] || 'gray'} size="sm">{facture.status}</Badge>
+                : <span className="text-sm text-slate-400">—</span>}
             </DetailField>
 
             <DetailField id="document_date" label="Date de facturation">
@@ -736,7 +770,7 @@ export default function FactureDetail({ recordId, onClose }) {
       <Modal
         isOpen={voidModalOpen}
         onClose={() => !voiding && setVoidModalOpen(false)}
-        title="Voider cette facture ?"
+        title="Annuler cette facture ?"
         size="sm"
       >
         <div className="space-y-4 text-sm text-slate-700">
@@ -748,9 +782,9 @@ export default function FactureDetail({ recordId, onClose }) {
             <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-red-800 text-xs">{voidError}</div>
           )}
           <div className="flex justify-end gap-3">
-            <button onClick={() => setVoidModalOpen(false)} disabled={voiding} className="btn-secondary">Annuler</button>
+            <button onClick={() => setVoidModalOpen(false)} disabled={voiding} className="btn-secondary">Garder</button>
             <button onClick={handleVoid} disabled={voiding} className="btn-danger" data-testid="facture-void-confirm">
-              {voiding ? '…' : 'Voider'}
+              {voiding ? '…' : 'Annuler la facture'}
             </button>
           </div>
         </div>

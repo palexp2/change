@@ -281,6 +281,55 @@ export function extractPendingQuestion(raw) {
   return { text: head, question: plain ? { question: plain, options: [] } : null }
 }
 
+// ─── Question → tâche de modification ─────────────────────────────────────────
+// Dans un fil de QUESTION, la réponse donne souvent envie de passer à l'acte
+// (« ok, fais-le »). L'exécution est en lecture seule : elle ne peut pas
+// implémenter, mais elle peut rédiger le brief. Section finale optionnelle, lue
+// par finalize() ; la file de travaux en tire un nouvel item « modification »
+// (même demandeur, même espace) et le signale dans le fil de la question.
+export const MODIFICATION_MARKER = '=== TÂCHE MODIFICATION ==='
+export const MODIFICATION_TASK_INSTRUCTION = [
+  '\n\nTu es en lecture seule et ne peux rien modifier toi-même. MAIS si l\'utilisateur demande EXPLICITEMENT ',
+  'une modification de l\'app (dans la question ou dans son dernier message du fil : « vas-y », « fais-le », « corrige ça »…), ',
+  'crée la tâche de modification en ajoutant TOUT À LA FIN une section délimitée EXACTEMENT ainsi:\n',
+  MODIFICATION_MARKER, '\n',
+  'Suivie d\'un objet JSON sur une seule ligne: {"title":"titre court","brief":"le brief complet"}\n',
+  'Le brief sera exécuté dans une session NEUVE qui ignore cette conversation : il doit être autoportant — ',
+  'le problème vécu et comment constater qu\'il est réglé, les décisions déjà prises, le plan (fichiers, fonctions existantes à réutiliser), ',
+  'ce qui est hors périmètre, comment vérifier. Dans la section réponse, dis en une phrase que la modification est lancée. ',
+  'N\'émets JAMAIS cette section pour une simple question, ni sans demande explicite de l\'utilisateur.',
+].join('')
+
+/**
+ * Détache la section « tâche de modification » du rapport. Renvoie { text, task }
+ * où `task` = { title, brief } ou null. La section peut précéder la section
+ * question : elle s'arrête donc au marqueur question qui la suit, laissé en place.
+ * JSON illisible → le corps brut devient le brief (titre automatique).
+ */
+export function extractModificationTask(raw) {
+  const text = String(raw || '')
+  const idx = text.lastIndexOf(MODIFICATION_MARKER)
+  if (idx === -1) return { text, task: null }
+  const after = text.slice(idx + MODIFICATION_MARKER.length)
+  const q = after.indexOf(QUESTION_MARKER)
+  const body = (q === -1 ? after : after.slice(0, q)).trim()
+  const rest = q === -1 ? '' : after.slice(q)
+  const cleaned = [text.slice(0, idx).trim(), rest.trim()].filter(Boolean).join('\n\n')
+  if (!body) return { text: cleaned, task: null }
+
+  const json = body.match(/\{[\s\S]*\}/)
+  if (json) {
+    try {
+      const parsed = JSON.parse(json[0])
+      const brief = String(parsed.brief || '').trim()
+      if (!brief) return { text: cleaned, task: null }
+      return { text: cleaned, task: { title: String(parsed.title || '').trim().slice(0, 140), brief } }
+    } catch { /* repli texte brut ci-dessous */ }
+  }
+  const plain = body.replace(/```\w*|```/g, '').trim()
+  return { text: cleaned, task: plain ? { title: '', brief: plain } : null }
+}
+
 // Prompt d'exécution d'une QUESTION (mode choisi par l'utilisateur à la soumission) :
 // exploration en lecture seule, AUCUNE implémentation — la réponse part dans la
 // section résumé et devient le compte-rendu de la carte.
@@ -1308,6 +1357,14 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
     // celle du résumé dans le rapport ; l'extraction du résumé prenant tout jusqu'à la
     // fin, la laisser en place la collerait dans le compte-rendu au lieu de la poser
     // comme question à répondre.
+    // Tâche de modification demandée depuis une question : même raison, détachée
+    // avant la question (elle s'arrête au marqueur question qui la suivrait).
+    let modification_request = null
+    {
+      const cut = extractModificationTask(agent_result)
+      agent_result = cut.text
+      modification_request = cut.task
+    }
     let pending_question = null
     {
       const cut = extractPendingQuestion(agent_result)
@@ -1327,7 +1384,9 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
       // stream (événement `result`), qui la porte quand les événements `assistant`
       // ne l'ont pas véhiculée. Évite un compte-rendu « manquant » alors que le
       // modèle l'avait bien écrit.
-      const cutResult = extractPendingQuestion(extractResultText(raw))
+      const cutMod = extractModificationTask(extractResultText(raw))
+      if (!modification_request) modification_request = cutMod.task
+      const cutResult = extractPendingQuestion(cutMod.text)
       const resultText = cutResult.text
       if (!pending_question) pending_question = cutResult.question
       const i = resultText.lastIndexOf(SUMMARY_SECTION_MARKER)
@@ -1356,6 +1415,8 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
     const finalTask = updateTask(taskId, {
       status, agent_result, user_summary,
       pending_question,
+      // Seule une question terminée peut en créer une (consigne réservée à ce mode).
+      modification_request: known?.mode === 'question' && status === 'done' ? modification_request : null,
       missed_user_message,
       touched_files,
       session_id: sessionId || null,
@@ -1650,6 +1711,9 @@ function executeTask(next, { lane = 'exec', execLane = null } = {}) {
   // les seuls dont la carte sait afficher la question et récolter la réponse. Une
   // tâche de la bulle d'aide qui la poserait parlerait dans le vide.
   if (next.work_prompt_id) prompt += ASK_USER_INSTRUCTION
+  // Même restriction pour la création d'une tâche de modification : seule la file
+  // de travaux sait en faire un item.
+  if (next.work_prompt_id && isQuestion) prompt += MODIFICATION_TASK_INSTRUCTION
 
   // Detached + durable: the result is recorded off a .code file, so a `pm2 restart`
   // triggered by the implementation itself can't lose the success and leave the task

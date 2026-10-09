@@ -31,11 +31,15 @@ export const TRASH_TABLES = [
   },
   {
     key: 'companies', table: 'companies', label: 'Entreprises', autoPurge: true,
-    sql: `SELECT id, name as label, deleted_at FROM companies WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
+    sql: `SELECT id, name as label, deleted_at,
+      TRIM(COALESCE(city,'') || CASE WHEN city IS NOT NULL AND province IS NOT NULL THEN ', ' ELSE '' END || COALESCE(province,'')) AS info
+      FROM companies WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
   },
   {
     key: 'contacts', table: 'contacts', label: 'Contacts', autoPurge: true,
-    sql: `SELECT id, (first_name || ' ' || last_name) as label, deleted_at FROM contacts WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
+    sql: `SELECT ct.id, NULLIF(TRIM(COALESCE(ct.first_name,'') || ' ' || COALESCE(ct.last_name,'')), '') as label, ct.deleted_at,
+      TRIM(COALESCE(ct.email,'') || CASE WHEN co.name IS NOT NULL THEN ' · ' || co.name ELSE '' END) AS info
+      FROM contacts ct LEFT JOIN companies co ON co.id = ct.company_id WHERE ct.deleted_at IS NOT NULL ORDER BY ct.deleted_at DESC`,
   },
   {
     key: 'orders', table: 'orders', label: 'Commandes', autoPurge: true,

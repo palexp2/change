@@ -60,7 +60,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
     ]).then(([shipResp, prodResp]) => {
       setShipping(shipResp)
       const all = (prodResp.data || prodResp || [])
-      setProducts(all.filter(p => p.is_sellable === 1 || p.is_sellable === true))
+      setProducts(all.filter(p => (p.is_sellable === 1 || p.is_sellable === true) && !p.offer_legacy && p.active !== 0))
     }).catch(e => setError(e.message))
       .finally(() => setShippingLoading(false))
   }, [isOpen, companyId])
@@ -222,7 +222,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
     <Modal isOpen={isOpen} onClose={onClose} title="Nouvelle facture Stripe" size="xl">
       <div className="p-5 space-y-4 overflow-y-auto">
         {result ? (
-          <SuccessView result={result} onClose={onClose} />
+          <SuccessView result={result} sending={sendModalOpen} onClose={onClose} />
         ) : (
           <>
 
@@ -533,17 +533,23 @@ function ItemRow({ item, products, onChange, onPickProduct, onRemove }) {
   )
 }
 
-function SuccessView({ result, onClose }) {
+function SuccessView({ result, sending, onClose }) {
   const isSent = result.status === 'sent'
+  // Fenêtre d'envoi ouverte : la facture n'est draft que le temps de l'envoi.
+  const inFlight = sending && !isSent
   return (
     <div className="space-y-3">
       <div className="rounded-lg bg-green-50 border border-green-200 p-4">
-        <div className="font-semibold text-green-900">{isSent ? 'Facture envoyée' : 'Facture en draft'}</div>
-        <div className="text-sm text-green-800 mt-1">Statut : <span className="font-mono">{isSent ? 'En attente paiement' : 'Draft'}</span></div>
+        <div className="font-semibold text-green-900">{isSent ? 'Facture envoyée' : inFlight ? 'Facture créée' : 'Facture en draft'}</div>
+        {inFlight ? (
+          <div className="mt-1"><Spinner size="xs" label="Envoi en cours…" /></div>
+        ) : (
+          <div className="text-sm text-green-800 mt-1">Statut : <span className="font-mono">{isSent ? 'En attente paiement' : 'Draft'}</span></div>
+        )}
         {result.email?.sent_to && (
           <div className="text-sm text-green-800 mt-1">Email envoyé à <span className="font-medium">{result.email.sent_to}</span> depuis <span className="font-mono">{result.email.from}</span></div>
         )}
-        {result.email?.reason && (
+        {!inFlight && result.email?.reason && (
           <div className="text-sm text-amber-700 mt-1">Email non envoyé : {labelEmailReason(result.email.reason)}</div>
         )}
       </div>

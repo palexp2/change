@@ -143,6 +143,8 @@ export default function OpsIssues() {
           dateCellPicker
           selectedSelectChevron
           selectedSelectClickOpens
+          fullHeightCells
+          seamlessCellInput
           data={issues}
           loading={loading}
           searchFields={['title', 'description', 'resolution', 'area', 'reported_by_name']}

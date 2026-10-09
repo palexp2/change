@@ -17,6 +17,13 @@
 // ne clique JAMAIS « Terminer » (`guardedClick` le refuse quel que soit
 // l'appelant), ne crée ni ne modifie aucune écriture.
 //
+// Révisé le 2026-10-06 (« un bouton qui permet que ça se termine dans
+// QuickBooks ») : sur demande explicite (`finish: true`, bouton « Terminer dans
+// QuickBooks » de Boréal), le robot clique « Terminer » — seulement si la
+// Différence lue est exactement 0 $ et que le relevé clôt un mois. Jamais
+// « Terminer maintenant » (qui créerait un ajustement). Les passages
+// automatiques (relevés déposés) ne terminent toujours pas.
+//
 // Relevé officiel (2026-09-26, Charles : « c'est possible de faire faire ça par
 // le robot aussi ? ») : quand un relevé déposé dans Boréal porte un solde de
 // clôture vérifié, il fait foi. Le robot corrige alors la date et le solde de
@@ -54,10 +61,29 @@ const NEVER = /terminer|finish|fermer sans|close without/i
 // autorisation explicite de l'appelant (`allow`).
 const FORBIDDEN = /enregistrer|save|commencer|start|rapprocher maintenant|reconcile now|modifier|edit|annuler|undo|supprimer|delete/i
 
-let running = false
-export const isRobotRunning = () => running
+// Un passage par compte, plusieurs comptes en parallèle (Charles, 2026-10-06 :
+// « faire rouler plusieurs robots en même temps »). Chaque passage a son propre
+// navigateur ; plafond pour ne pas noyer le serveur.
+const MAX_PARALLEL = 4
+const running = new Set()
+export const isRobotRunning = (accountId) => (accountId ? running.has(accountId) : running.size > 0)
+const busyError = (id) => (running.has(id) ? 'Un passage du robot est déjà en cours pour ce compte'
+  : running.size >= MAX_PARALLEL ? `Déjà ${MAX_PARALLEL} robots en cours — réessayer dans une minute` : null)
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
+
+// QuickBooks garde des requêtes ouvertes en permanence : « networkidle »
+// n'arrive presque jamais et coûtait son plafond entier à chaque étape. On
+// sonde plutôt une condition concrète, toutes les 250 ms.
+async function waitUntil(fn, timeoutMs) {
+  const until = Date.now() + timeoutMs
+  do {
+    if (await fn().catch(() => false)) return true
+    await sleep(250)
+  } while (Date.now() < until)
+  return false
+}
+const bodyText = page => page.locator('body').innerText().catch(() => '')
 
 function slug(s) {
   return String(s || 'compte').normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -204,15 +230,10 @@ export async function openScreen(opened, account, qbId, log) {
   if (realmId) params.set('deeplinkcompanyid', String(realmId))
   log(`ouverture ${QB_APP_HOST}/app/reconcile (compte QB ${qbId})`)
   await page.goto(`${QB_APP_HOST}/app/reconcile?${params}`, { waitUntil: 'domcontentloaded' })
-  await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
-  await sleep(2500)
 
   // QuickBooks peut rester plusieurs secondes sur son écran de chargement.
-  let text = await page.locator('body').innerText().catch(() => '')
-  for (let i = 0; i < 15 && classify(page.url(), text) === 'unknown'; i++) {
-    await sleep(2000)
-    text = await page.locator('body').innerText().catch(() => '')
-  }
+  let text = ''
+  await waitUntil(async () => { text = await bodyText(page); return classify(page.url(), text) !== 'unknown' }, 55_000)
   const screen = classify(page.url(), text)
   log(`écran : ${screen} (${page.url().split('?')[0]})`)
 
@@ -262,7 +283,7 @@ async function capture(page, account, log, suffix = '') {
 export async function openReconcile(bankAccountId) {
   const t0 = Date.now()
   const trace = []
-  const log = m => trace.push(m)
+  const log = m => trace.push(`${((Date.now() - t0) / 1000).toFixed(1)}s ${m}`)
   const finish = (result) => {
     logSync(MODULE, 'manual', {
       status: result.ok ? 'success' : 'error',
@@ -277,8 +298,9 @@ export async function openReconcile(bankAccountId) {
   const s = checkSession()
   if (!s.session) return finish({ ok: false, ...s })
 
-  if (running) return finish({ ok: false, error: 'Un passage du robot est déjà en cours' })
-  running = true
+  const busy = busyError(account.id)
+  if (busy) return finish({ ok: false, error: busy })
+  running.add(account.id)
 
   let browser
   try {
@@ -305,7 +327,7 @@ export async function openReconcile(bankAccountId) {
   } catch (e) {
     return finish({ ok: false, error: e.message })
   } finally {
-    running = false
+    running.delete(account.id)
     if (browser) await browser.close().catch(() => {})
   }
 }
@@ -357,7 +379,7 @@ async function startOrResume(page, { endDate, endingBalance, lastDateShown, log 
   }
 
   const dateInput = await editableByLabel(page, /date de fin|ending date|statement date|date du relev/i)
-  const balInput = await editableByLabel(page, /solde de (fin|cl[ôo]ture)|ending balance/i)
+  const balInput = await editableByLabel(page, /solde de (fin|cl[ôo]ture|fermeture)|ending balance/i)
   if (!dateInput || !balInput) {
     return { error: seen ? 'Champs « date de fin » / « solde de fin » introuvables' : 'Écran de départ non chargé après 20 s (ni « Reprendre », ni « Commencer », ni grille)' }
   }
@@ -384,7 +406,14 @@ async function startOrResume(page, { endDate, endingBalance, lastDateShown, log 
 
   const start = page.locator('button:visible').filter({ hasText: /commencer|start/i }).first()
   if (!await start.count().catch(() => 0)) return { error: 'Bouton « Commencer » introuvable' }
-  await guardedClick(start, /commencer|start/i)
+  // Le premier clic est souvent avalé (la saisie vient de perdre le focus) :
+  // on reclique tant que la grille ne s'ouvre pas (BNC Épargne, 2026-10-06).
+  for (let k = 0; k < 4; k++) {
+    if (k) log(`« Commencer » sans effet : nouveau clic (${k + 1})`)
+    await guardedClick(start, /commencer|start/i)
+    if (await waitUntil(() => gridOpen(page), 6_000)) break
+    if (!await start.isVisible().catch(() => false)) break
+  }
   log(`commencé au ${endDate}, solde ${endingBalance.toFixed(2)}`)
   return { resumed: false }
 }
@@ -580,11 +609,40 @@ async function saveForLater(page, log) {
     return { saved: false, why: n ? '« Enregistrer pour plus tard » ambigu' : '« Enregistrer pour plus tard » introuvable' }
   }
   await guardedClick(item().first(), /enregistrer pour plus tard|save for later/i)
-  await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
-  await sleep(1500)
+  await waitUntil(async () => !/enregistrer pour plus tard|save for later/i.test(await bodyText(page)) || !await gridOpen(page), 10_000)
+  await sleep(800)
   log('enregistré pour plus tard')
   return { saved: true }
 }
+
+// « Terminer » : seul clic qui ferme un rapprochement. Appelé uniquement quand
+// la Différence est nulle et que Charles l'a demandé depuis Boréal.
+async function finishReconcile(page, log) {
+  const btn = page.locator('button:visible').filter({ hasText: /^\s*(terminer|finish)\s*$/i })
+  const n = await btn.count().catch(() => 0)
+  if (n !== 1) return { finished: false, why: n ? '« Terminer » ambigu' : '« Terminer » introuvable' }
+  await btn.first().click()
+  const DONE = /rapprochement (est )?termin|termin[ée] avec succ|reconcil\w* (is )?complete|successfully reconciled|afficher le rapport|view report|vous avez rapproch[ée] ce compte|you(?:'ve| have) reconciled this account/i
+  await waitUntil(async () => DONE.test(await bodyText(page))
+    || await page.locator('[role="dialog"]:visible, [role="alertdialog"]:visible').count() > 0, 25_000)
+  await sleep(800)
+  // Carte de crédit : « Vous avez rapproché ce compte — Comment voulez-vous
+  // payer votre facture ? » = terminé ; la question du paiement reste sans
+  // réponse (rien n'est créé).
+  const text = await bodyText(page)
+  if (/rapprochement (est )?termin|termin[ée] avec succ|reconcil\w* (is )?complete|successfully reconciled|afficher le rapport|view report|vous avez rapproch[ée] ce compte|you(?:'ve| have) reconciled this account/i.test(text)) {
+    log('terminé dans QuickBooks')
+    return { finished: true }
+  }
+  // Une boîte de dialogue demande quelque chose : on ne répond pas à sa place.
+  const dialog = await page.locator('[role="dialog"]:visible, [role="alertdialog"]:visible').first().innerText().catch(() => '')
+  if (dialog) return { finished: false, why: dialog.split('\n').map(x => x.trim()).filter(Boolean).slice(0, 2).join(' — ').slice(0, 160) }
+  const still = await page.locator('button:visible').filter({ hasText: /^\s*(terminer|finish)\s*$/i }).count().catch(() => 0)
+  if (!still) { log('terminé dans QuickBooks (bouton disparu)'); return { finished: true } }
+  return { finished: false, why: 'QuickBooks n\'a pas confirmé la fin' }
+}
+
+const isMonthEnd = (d) => shiftDate(d, 1).slice(8, 10) === '01'
 
 // Dernier relevé déposé et vérifié (solde d'ouverture + lignes = clôture) du
 // compte, s'il est plus récent que le dernier solde imprimé connu.
@@ -671,8 +729,9 @@ async function editStatementInfo(page, { endDate, endingBalance, log }) {
   const save = page.locator('button:visible').filter({ hasText: /^\s*(enregistrer|save)\s*$/i }).last()
   if (!await save.count().catch(() => 0)) { await cancel(); return { error: '« Enregistrer » du panneau introuvable' } }
   await guardedClick(save, /^\s*(enregistrer|save)\s*$/i)
-  await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
-  await sleep(2500)
+  await sleep(800)
+  await waitUntil(() => gridOpen(page), 15_000)
+  await sleep(500)
   log(`renseignements corrigés : ${found.date} / ${found.bal} → ${endDate} / ${endingBalance.toFixed(2)}`)
   return { changed: true, before: { date: found.date, balance: balNow } }
 }
@@ -709,13 +768,18 @@ async function expectedFor(accountId, qbId, endDate, log) {
 
 /**
  * Prépare le rapprochement d'un compte dans QuickBooks : coche les lignes
- * vertes, lit la Différence, enregistre pour plus tard. Ne termine jamais.
+ * vertes, lit la Différence, enregistre pour plus tard — ou, avec `finish`,
+ * clique « Terminer » si la Différence est nulle au dernier jour d'un mois.
  * @returns {Promise<object>} { ok, difference, checked, already_checked, unmatched_boreal, unmatched_qb, screenshot, saved, … }
  */
-export async function reconcileAccount(bankAccountId, { requireOfficial = false } = {}) {
+// `asOf` (fin de mois, AAAA-MM-JJ) : rapprocher à cette date-là plutôt qu'au
+// dernier relevé, avec le solde banque du soir (Charles, 2026-10-07 : fermer
+// septembre quand le dernier relevé est déjà en octobre). Une session déjà
+// enregistrée à une autre date est réalignée par « Modifier les renseignements ».
+export async function reconcileAccount(bankAccountId, { requireOfficial = false, finish: wantFinish = false, asOf = null } = {}) {
   const t0 = Date.now()
   const trace = []
-  const log = m => trace.push(m)
+  const log = m => trace.push(`${((Date.now() - t0) / 1000).toFixed(1)}s ${m}`)
   const base = { difference: null, checked: 0, already_checked: 0, unmatched_boreal: [], unmatched_qb: [], screenshot: null, saved: false }
   const finish = (result) => {
     logSync(MODULE, 'manual', {
@@ -734,15 +798,31 @@ export async function reconcileAccount(bankAccountId, { requireOfficial = false 
   // Le dernier relevé PDF du compte fait foi, qu'il soit plus récent ou non que
   // le dernier solde imprimé de Boréal — écarté plus bas s'il est déjà rapproché
   // dans QuickBooks.
-  let official = officialStatement(account.id, null)
+  let official = asOf ? null : officialStatement(account.id, null)
   let endDate = official ? official.endDate : stmt.date
   let endingBalance = official ? official.endingBalance : endingBalanceFor(account.kind, stmt.printed_balance_signed)
+  if (asOf) {
+    // Couverte = le relevé va au-delà (une carte n'imprime pas de solde à
+    // chaque ligne : le dernier solde imprimé est souvent bien plus tôt).
+    const covered = asOf <= stmt.date || db.prepare(`
+      SELECT 1 FROM bank_transactions WHERE account_id=? AND deleted_at IS NULL AND COALESCE(pending,0)=0 AND txn_date > ?
+      UNION ALL SELECT 1 FROM bank_statement_uploads WHERE account_id=? AND period_end >= ? LIMIT 1
+    `).get(account.id, asOf, account.id, asOf)
+    if (!isMonthEnd(asOf) || !covered) return finish({ ok: false, error: `Date ${asOf} : pas une fin de mois couverte par les relevés` })
+    const { reconcileSheet, isQbLiability } = await import('./bankReconcileSheet.js')
+    const sheet = await reconcileSheet(account.id, asOf.slice(0, 7))
+    if (sheet.bank_balance == null) return finish({ ok: false, error: `Solde banque inconnu au ${asOf}` })
+    const liability = account.kind === 'card' || await isQbLiability(qbId)
+    endDate = asOf
+    endingBalance = Math.round((liability ? -sheet.bank_balance : sheet.bank_balance) * 100) / 100
+  }
   if (official) log(`relevé officiel : ${official.name} (${official.endDate}, ${official.endingBalance.toFixed(2)})`)
   const s = checkSession()
   if (!s.session) return finish({ ok: false, ...s, statement_date: endDate, ending_balance: endingBalance })
 
-  if (running) return finish({ ok: false, error: 'Un passage du robot est déjà en cours' })
-  running = true
+  const busy = busyError(account.id)
+  if (busy) return finish({ ok: false, error: busy })
+  running.add(account.id)
 
   let browser
   try {
@@ -774,10 +854,10 @@ export async function reconcileAccount(bankAccountId, { requireOfficial = false 
       const shot = await capture(page, account, log)
       return finish({ ok: false, error: st.error, screenshot: shot, ...meta })
     }
-    await page.waitForLoadState('networkidle', { timeout: 25_000 }).catch(() => {})
-    await sleep(3000)
+    await waitUntil(() => gridOpen(page), 25_000)
+    await sleep(500)
     let infoFix = null
-    if (official && st.resumed) {
+    if ((official || asOf) && st.resumed) {
       infoFix = await editStatementInfo(page, { endDate, endingBalance, log }).catch(e => ({ error: e.message }))
       if (infoFix.error) {
         const shot = await capture(page, account, log)
@@ -842,13 +922,23 @@ export async function reconcileAccount(bankAccountId, { requireOfficial = false 
     }
     log(`${screenRows} ligne(s) à l'écran · ${checked} cochée(s) · ${alreadyChecked} déjà cochée(s) · ${unchecked} décochée(s)${failed ? ` · ${failed} coche(s) refusée(s)` : ''}`)
 
-    await sleep(1500)
+    await sleep(600)
     const diff = await readDifference(page)
     log(`différence lue : ${diff.raw ?? '—'}`)
     const view = await readView(page).catch(() => null)
     const shot = await capture(page, account, log)
-    const save = await saveForLater(page, log).catch(e => ({ saved: false, why: e.message }))
-    if (!save.saved) log(`non enregistré : ${save.why}`)
+    let fin = null
+    if (wantFinish) {
+      if (diff.value == null || Math.abs(diff.value) >= 0.005) fin = { finished: false, why: `Différence ${diff.raw ?? '—'} dans QuickBooks` }
+      else if (!official && !isMonthEnd(endDate)) fin = { finished: false, why: `Relevé au ${endDate} : mois pas fini` }
+      else fin = await finishReconcile(page, log).catch(e => ({ finished: false, why: e.message }))
+      if (!fin.finished) log(`non terminé : ${fin.why}`)
+    }
+    const finishedShot = fin?.finished ? await capture(page, account, log, '-termine') : null
+    const save = fin?.finished
+      ? { saved: false, why: null }
+      : await saveForLater(page, log).catch(e => ({ saved: false, why: e.message }))
+    if (!fin?.finished && !save.saved) log(`non enregistré : ${save.why}`)
 
     try { saveBridgeSession(SESSION_KEY, await opened.context.storageState()) } catch { /* l'ancienne reste */ }
 
@@ -870,15 +960,20 @@ export async function reconcileAccount(bankAccountId, { requireOfficial = false 
         : remaining.flatMap(e => e.borealIds.map(id => byId.get(id)).filter(Boolean))
         .map(t => ({ id: t.id, date: t.txn_date, amount: t.amount, label: t.description })),
       unmatched_qb: unmatchedQb,
-      screenshot: shot,
+      screenshot: finishedShot || shot,
       saved: !!save.saved,
       save_note: save.saved ? null : save.why,
+      finished: !!fin?.finished,
+      finish_note: fin && !fin.finished ? fin.why : null,
       view,
     })
   } catch (e) {
     return finish({ ok: false, error: e.message })
   } finally {
-    running = false
+    running.delete(account.id)
     if (browser) await browser.close().catch(() => {})
+    // Le robot coche dans l'écran QuickBooks, pas par l'API : rien ne vidait
+    // le grand livre en cache et le crochet du mois n'arrivait qu'au rafraîchissement.
+    await import('./bankQbVerify.js').then((m) => m.invalidateLedgerCache()).catch(() => {})
   }
 }

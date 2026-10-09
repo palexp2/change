@@ -93,7 +93,7 @@ test('options créées → lecture publique → réponses → commande, avec DB 
   assert.equal(schema.body.schema.equipment.outputs.louver_open_close, 2)
   assert(!('invalid' in schema.body.schema.equipment.outputs))
   const preview = await api('GET', `/discovery-forms/${form.id}/equipment-preview`)
-  assert.equal(preview.body.siteItems.length, 2)
+  assert.deepEqual(preview.body.siteItems.map(i => i.role), ['mobile_controller_ca', 'soil_temperature_sensor', 'wind_sensor', 'weather_box'], 'chef de culture : capteur de vent + boîtier météo')
   const order = await api('POST', `/discovery-forms/${form.id}/create-order`)
   assert.equal(order.status, 201, JSON.stringify(order.body))
   const items = db.prepare('SELECT product_id, qty, notes FROM order_items WHERE order_id=?').all(order.body.id)

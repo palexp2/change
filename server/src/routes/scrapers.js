@@ -7,7 +7,7 @@
 // réponse aux défis 2FA et consultation de l'historique des tournées.
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
-import { existsSync, unlinkSync } from 'fs'
+import { readFileSync, existsSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { tmpdir } from 'os'
@@ -292,6 +292,14 @@ router.get('/health', (req, res) => {
 // sans ça, il n'y a aucun moyen d'obtenir les fichiers sur son poste. Le lien
 // porte le jeton en paramètre (requireAuth l'accepte sur un GET), donc un clic
 // suffit depuis la page.
+// La version publiée du module, sans rien télécharger : la tâche du Mac la
+// consulte toutes les 30 s et ne prend le zip que si elle a changé.
+router.get('/session-bridge/module/version', (req, res) => {
+  const file = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'browser-extension', 'manifest.json')
+  try { res.type('text/plain').send(JSON.parse(readFileSync(file, 'utf8')).version) }
+  catch { res.status(404).send('') }
+})
+
 router.get('/session-bridge/module', (req, res) => {
   const source = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'browser-extension')
   if (!existsSync(source)) return res.status(404).json({ error: 'Module introuvable sur le serveur' })
@@ -378,7 +386,7 @@ function collectAfterPush(account) {
 // Dépôt d'une session. Même normalisation et même chiffrement que l'import
 // manuel ci-dessus — parseSessionPayload accepte déjà un tableau de cookies
 // d'extension.
-router.post('/session-bridge/push', (req, res) => {
+router.post('/session-bridge/push', async (req, res) => {
   // Session d'un service sans collecte (QuickBooks) : on la garde, rien d'autre.
   const bridgeKey = bridgeKeyOf(req.body?.account_id)
   if (bridgeKey) {
@@ -394,7 +402,10 @@ router.post('/session-bridge/push', (req, res) => {
       return res.status(400).json({ error: `Aucun cookie de ${fragment} — ouvrir le service et se connecter, puis recommencer` })
     }
     saveBridgeSession(bridgeKey, state)
-    return res.json({ ok: true, vendor: bridgeKey, cookies: state.cookies.length, origins: state.origins.length, collecting: false })
+    let collecting = false
+    try { collecting = !!(await SESSION_ONLY_TARGETS[bridgeKey].apply?.(state)) }
+    catch (e) { console.error(`session-bridge ${bridgeKey}:`, e.message) }
+    return res.json({ ok: true, vendor: bridgeKey, cookies: state.cookies.length, origins: state.origins.length, collecting })
   }
   const account = getAccount(req.body?.account_id)
   if (!account) return res.status(404).json({ error: 'Compte introuvable' })
@@ -420,6 +431,74 @@ router.post('/session-bridge/push', (req, res) => {
     cookies: state.cookies.length, origins: state.origins.length,
     collecting: collectAfterPush(getAccount(account.id)),
   })
+})
+
+// « Envoyer ce document » : le module capture l'onglet ouvert (le PDF lui-même,
+// une image, ou la page imprimée en PDF) et le dépose ici, dans l'extracteur —
+// même chemin que les collecteurs, donc même dédup par contenu.
+const DOC_EXT = { 'application/pdf': '.pdf', 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' }
+router.post('/session-bridge/document', async (req, res) => {
+  const ext = DOC_EXT[String(req.body?.mime || '').toLowerCase()]
+  if (!ext) return res.status(400).json({ error: 'Type de document non pris en charge' })
+  const buffer = Buffer.from(String(req.body?.data || ''), 'base64')
+  if (buffer.length < 100) return res.status(400).json({ error: 'Document vide' })
+  const base = String(req.body?.name || req.body?.title || 'document').replace(/[\\/:*?"<>|\r\n]+/g, ' ').trim().slice(0, 120) || 'document'
+  const originalName = base.toLowerCase().endsWith(ext) ? base : `${base}${ext}`
+  const { ingestReceiptBuffer } = await import('../services/receiptIngest.js')
+  const r = ingestReceiptBuffer({ buffer, originalName, ext, source: 'navigateur', userId: req.user?.id || null })
+  res.json({ ok: true, status: r.status, id: r.id })
+})
+
+// Lecture des profils Instagram par le module, depuis un onglet instagram.com
+// ouvert : le serveur, lui, se fait refuser au bout de quelques profils.
+router.get('/session-bridge/instagram/due', async (req, res) => {
+  const { dueForBrowser } = await import('../services/instagramProfiles.js')
+  const { getSegmentConfig } = await import('../services/instagramSegments.js')
+  const cfg = getSegmentConfig()
+  const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 10))
+  res.json({ usernames: dueForBrowser(limit, Math.max(1, Number(cfg.profile_refresh_days) || 30)) })
+})
+
+// Journal du module : ce qu'il fait (ou pourquoi il ne fait rien), lisible
+// côté serveur sans avoir accès au navigateur.
+router.post('/session-bridge/log', (req, res) => {
+  const msg = String(req.body?.msg || '').slice(0, 500)
+  if (msg) console.log(`[module ${String(req.query.v || '?')}] ${msg}`)
+  res.json({ ok: true })
+})
+
+// Commentaires lus par le module (toutes les 3 h au plus, onglet Instagram ouvert).
+router.get('/session-bridge/instagram/scrape-plan', async (req, res) => {
+  const { browserScrapePlan } = await import('../services/instagramCommentScrape.js')
+  res.json(browserScrapePlan())
+})
+
+router.post('/session-bridge/instagram/comments', async (req, res) => {
+  const posts = Array.isArray(req.body?.posts) ? req.body.posts.slice(0, 200) : []
+  const { ingestBrowserScrape } = await import('../services/instagramCommentScrape.js')
+  const errors = Array.isArray(req.body?.errors) ? req.body.errors.slice(0, 10).map(e => String(e).slice(0, 200)) : []
+  const r = await ingestBrowserScrape(posts, { trigger: 'module navigateur', errors })
+  res.json(r)
+  // Lecture réussie : tri, messages, et la liste de la semaine à Phil si elle
+  // n'est pas encore partie.
+  if (r.ok) {
+    import('../services/instagramRefresh.js')
+      .then(({ refreshAfterReconnect }) => refreshAfterReconnect({ trigger: 'lecture par le navigateur', sendDigest: true, scraped: r }))
+      .catch(e => console.error('instagram refresh (navigateur):', e.message))
+  }
+})
+
+router.post('/session-bridge/instagram/profiles', async (req, res) => {
+  const items = Array.isArray(req.body?.profiles) ? req.body.profiles : []
+  res.json({ ok: true, received: items.length })
+  // L'analyse (photos comprises) prend du temps : le module n'attend pas.
+  try {
+    const { ingestBrowserProfiles } = await import('../services/instagramProfiles.js')
+    const seg = await import('../services/instagramSegments.js')
+    const cfg = seg.getSegmentConfig()
+    const r = await ingestBrowserProfiles(items, { model: cfg.profile_model })
+    if (r.ids.length) await seg.runSegmentation({ force: true, trigger: `profils lus par le navigateur (${r.read} lus)`, ids: r.ids, profiles: false })
+  } catch (e) { console.error('instagram profils (navigateur):', e.message) }
 })
 
 // Le bouton « Tout récolter ». Les portails défilent l'un après l'autre : un

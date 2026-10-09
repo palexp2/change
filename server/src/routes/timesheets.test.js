@@ -15,42 +15,13 @@ before(async () => {
 })
 after(async () => { await closeServer(server) })
 
-test('une semaine va du dimanche au samedi, même au changement d’année', async () => {
+test('mode semaine retiré : plus de total hebdo, la journée se saisit librement', async () => {
   const { token } = createTestUser()
-  for (const [start, dates, next] of [
-    ['2026-09-06', ['2026-09-06', '2026-09-07', '2026-09-12'], '2026-09-13'],
-    ['2025-12-28', ['2025-12-28', '2026-01-01', '2026-01-03'], '2026-01-04'],
-    ['2026-03-08', ['2026-03-08', '2026-03-09', '2026-03-14'], '2026-03-15'],
-  ]) {
-    const saved = await apiFetch(base, token, 'PUT', '/api/timesheets/week', { date: dates[1], minutes: 2100 })
-    assert.equal(saved.status, 201)
-    assert.equal(saved.body.week_start, start)
-    for (const date of dates) {
-      const found = await apiFetch(base, token, 'GET', `/api/timesheets/week?date=${date}`)
-      assert.equal(found.status, 200)
-      assert.equal(found.body.id, saved.body.id)
-    }
-    const following = await apiFetch(base, token, 'GET', `/api/timesheets/week?date=${next}`)
-    assert.equal(following.body, null)
-  }
-})
-
-test('les contrôles de double saisie incluent dimanche et samedi, sans déborder', async () => {
-  for (const date of ['2026-09-06', '2026-09-12']) {
-    const { token } = createTestUser()
-    const day = await apiFetch(base, token, 'POST', '/api/timesheets/day', { date, mode: 'simple' })
-    assert.equal(day.status, 201)
-    assert.equal((await apiFetch(base, token, 'PATCH', `/api/timesheets/day/${day.body.id}`, { start_time: '09:00', end_time: '10:00' })).status, 200)
-    assert.equal((await apiFetch(base, token, 'PUT', '/api/timesheets/week', { date: '2026-09-09', minutes: 2100 })).status, 409)
-    assert.equal((await apiFetch(base, token, 'PUT', '/api/timesheets/week', { date: '2026-09-13', minutes: 2100 })).status, 201)
-  }
-  const { token } = createTestUser()
-  assert.equal((await apiFetch(base, token, 'PUT', '/api/timesheets/week', { date: '2026-09-06', minutes: 2100 })).status, 201)
-  for (const [date, expected] of [['2026-09-05', 200], ['2026-09-06', 409], ['2026-09-12', 409], ['2026-09-13', 200]]) {
-    const day = await apiFetch(base, token, 'POST', '/api/timesheets/day', { date, mode: 'simple' })
-    assert.equal(day.status, 201)
-    assert.equal((await apiFetch(base, token, 'PATCH', `/api/timesheets/day/${day.body.id}`, { start_time: '09:00', end_time: '10:00' })).status, expected, date)
-  }
+  assert.equal((await apiFetch(base, token, 'PUT', '/api/timesheets/week', { date: '2026-09-09', minutes: 2100 })).status, 404)
+  assert.equal((await apiFetch(base, token, 'PATCH', '/api/timesheets/preferences', { default_mode: 'week' })).status, 400)
+  const day = await apiFetch(base, token, 'POST', '/api/timesheets/day', { date: '2026-09-09', mode: 'simple' })
+  assert.equal(day.status, 201)
+  assert.equal((await apiFetch(base, token, 'PATCH', `/api/timesheets/day/${day.body.id}`, { start_time: '09:00', end_time: '10:00' })).status, 200)
 })
 
 test('migration : totaux, identifiants et suppressions conservés, sans second décalage', () => {

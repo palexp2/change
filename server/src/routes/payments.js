@@ -14,6 +14,8 @@ import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_E
 import { parsePage } from '../utils/pagination.js'
 import { usdCadRateLookup } from '../services/fx.js'
 import { depositCreditAccount } from '../services/paymentDepositLink.js'
+import { linkTxnToQbEntity } from '../services/bankDebitLookup.js'
+import { getStripeClient } from '../services/stripeInvoices.js'
 
 // Relation de lecture des paiements : la VUE `payments_v` si elle existe (elle
 // expose en plus les champs custom virtuels — formule/lookup/rollup), sinon la
@@ -454,7 +456,7 @@ router.get('/facture/:factureId', (req, res) => {
 // POST /api/payments — saisie manuelle d'un paiement (in) ou remboursement (out) hors-Stripe
 // Les paiements Stripe sont créés automatiquement par le webhook invoice.paid (method='stripe').
 router.post('/', async (req, res) => {
-  const { facture_id, direction, method, received_at, amount, currency, notes, skip_qb, qb_skip_reason, clear_paid_status } = req.body || {}
+  const { facture_id, direction, method, received_at, amount, currency, notes, skip_qb, qb_skip_reason, clear_paid_status, bank_txn_id, mark_stripe_paid } = req.body || {}
 
   if (!facture_id) return res.status(400).json({ error: 'facture_id requis' })
   if (direction !== 'in' && direction !== 'out') return res.status(400).json({ error: 'direction doit être "in" ou "out"' })
@@ -488,9 +490,21 @@ router.post('/', async (req, res) => {
   if (!receivedIso || Number.isNaN(Date.parse(receivedIso))) return res.status(400).json({ error: 'received_at invalide' })
 
   const facture = db.prepare(
-    'SELECT id, paid_at, paid_charge_id, paid_payment_intent, due_date FROM factures WHERE id = ?'
+    'SELECT id, paid_at, paid_charge_id, paid_payment_intent, due_date, total_amount, invoice_id FROM factures WHERE id = ?'
   ).get(facture_id)
   if (!facture) return res.status(404).json({ error: 'Facture introuvable' })
+
+  // Un encaissement de trop = un Deposit QB de trop. Le 2026-10-03, trois clics
+  // sur « Marquer payée » ont posé trois Deposits pour une seule facture : on
+  // refuse un paiement reçu sur une facture que les paiements locaux soldent déjà.
+  if (direction === 'in' && Number(facture.total_amount) > 0) {
+    const paidIn = db.prepare(
+      "SELECT COALESCE(SUM(amount), 0) AS t FROM payments WHERE facture_id = ? AND direction = 'in'"
+    ).get(facture_id).t
+    if (Number(paidIn) >= Number(facture.total_amount) - 0.01) {
+      return res.status(409).json({ error: 'Facture déjà payée — paiement déjà enregistré' })
+    }
+  }
 
   // clear_paid_status=true : la facture est marquée payée hors bande dans Stripe
   // (paid_at posé sans charge ni payment_intent) et on saisit ici l'encaissement
@@ -570,6 +584,37 @@ router.post('/', async (req, res) => {
     }
   }
 
+  // Depuis le rapprochement : la ligne du relevé est l'encaissement. Elle passe
+  // « comptabilisée » sur le Deposit qu'on vient de poser (même devise seulement).
+  let bankLinked = false
+  if (bank_txn_id && qbResult?.qb_deposit_id) {
+    const t = db.prepare(`SELECT t.id, a.currency FROM bank_transactions t JOIN bank_accounts a ON a.id = t.account_id
+      WHERE t.id = ? AND t.deleted_at IS NULL`).get(bank_txn_id)
+    if (t && String(t.currency || 'CAD').toUpperCase() === cur) {
+      bankLinked = linkTxnToQbEntity(t.id, { qbTxnId: qbResult.qb_deposit_id, qbTxnType: 'deposit' })
+    }
+  }
+
+  // La facture Stripe reste « ouverte » chez Stripe tant qu'on ne lui dit pas
+  // que l'argent est entré ailleurs : relances et lien de paiement continueraient.
+  let stripe = null
+  if (mark_stripe_paid && direction === 'in' && /^in_/.test(facture.invoice_id || '')) {
+    const after = db.prepare('SELECT balance_due FROM factures WHERE id = ?').get(facture_id)
+    if (Number(after?.balance_due) <= 0.01) {
+      try {
+        const sc = getStripeClient()
+        const inv = await sc.invoices.retrieve(facture.invoice_id)
+        if (inv.status === 'open') {
+          await sc.invoices.pay(facture.invoice_id, { paid_out_of_band: true })
+          stripe = { marked: true }
+        } else stripe = { marked: false, status: inv.status }
+      } catch (e) {
+        console.error(`Stripe paid_out_of_band échoué pour ${facture.invoice_id}:`, e.message)
+        stripe = { marked: false, error: e.message }
+      }
+    }
+  }
+
   const created = db.prepare('SELECT * FROM payments WHERE id = ?').get(id)
   if (qbResult?.qb_deposit_id) qbResult.qb_deposit_url = qbEntityUrl('deposit', qbResult.qb_deposit_id)
   // Temps réel : le solde dû et le statut viennent de changer, et la liste des
@@ -577,7 +622,7 @@ router.post('/', async (req, res) => {
   // soient déjà en base quand le client recharge.
   emitFacturePaymentsChanged(facture_id, req.user?.id)
   emitFacture('updated', facture_id, req.user?.id)
-  res.status(201).json({ payment: created, qb: qbResult, qb_error: qbError, qb_skipped: !!skip_qb, qb_skip_reason: skipReason })
+  res.status(201).json({ payment: created, qb: qbResult, qb_error: qbError, qb_skipped: !!skip_qb, qb_skip_reason: skipReason, bank_linked: bankLinked, stripe })
 })
 
 // POST /api/payments/:id/retry-qb — re-tente la pose comptable QB pour un payment

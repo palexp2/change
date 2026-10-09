@@ -73,11 +73,18 @@ import JournalEntries from './pages/JournalEntries.jsx'
 import StockMovements from './pages/StockMovements.jsx'
 import Fournitures from './pages/Fournitures.jsx'
 import MarketingForms from './pages/MarketingForms.jsx'
+import Meetings from './pages/Meetings.jsx'
+import MeetingBooking from './pages/MeetingBooking.jsx'
+import StripeCatalog from './pages/StripeCatalog.jsx'
+import Acceptations from './pages/Acceptations.jsx'
+import EmailTemplates from './pages/EmailTemplates.jsx'
+import ContractSign from './pages/ContractSign.jsx'
 import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import ReglesBancaires from './pages/ReglesBancaires.jsx'
 import QbReconcile from './pages/QbReconcile.jsx'
 import Employees from './pages/Employees.jsx'
 import FeuilleDeTemps from './pages/FeuilleDeTemps.jsx'
+import HeuresRsde from './pages/HeuresRsde.jsx'
 import CodesActivite from './pages/CodesActivite.jsx'
 import Paies from './pages/Paies.jsx'
 import Contacts from './pages/Contacts.jsx'
@@ -221,6 +228,11 @@ function AppRoutes() {
       <Route path="/d/:token" element={<DiscoveryFormPage />} />
       {/* Sondage de satisfaction envoyé par SMS — public, le jeton est le secret. */}
       <Route path="/s/:token" element={<TicketSurvey />} />
+      {/* Prise de rendez-vous — publique ; gestion par jeton (déplacer / annuler). */}
+      <Route path="/rdv/gestion/:token" element={<MeetingBooking />} />
+      <Route path="/rdv/:slug" element={<MeetingBooking />} />
+      {/* Signature d'un contrat — publique, le jeton est le secret. */}
+      <Route path="/contrat/:token" element={<ContractSign />} />
 
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/dashboard/:section" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
@@ -298,6 +310,7 @@ function AppRoutes() {
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/fournitures" element={<ProtectedRoute><Fournitures /></ProtectedRoute>} />
       <Route path="/formulaires" element={<ProtectedRoute><MarketingForms /></ProtectedRoute>} />
+      <Route path="/rendez-vous" element={<ProtectedRoute><Meetings /></ProtectedRoute>} />
       <Route path="/achats-fournitures" element={<Navigate to="/fournitures" replace />} />
       <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
       <Route path="/regles-bancaires" element={<ProtectedRoute><ReglesBancaires /></ProtectedRoute>} />
@@ -306,6 +319,7 @@ function AppRoutes() {
       <Route path="/rapprochement-qbo" element={<ProtectedRoute><QbReconcile /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
+      <Route path="/heures-rsde" element={<ProtectedRoute hrOnly><HeuresRsde /></ProtectedRoute>} />
       <Route path="/codes-activite" element={<ProtectedRoute hrOnly><CodesActivite /></ProtectedRoute>} />
       <Route path="/paies" element={<ProtectedRoute><Paies /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
@@ -319,6 +333,9 @@ function AppRoutes() {
       <Route path="/admin/:tab" element={<AdminRedirect />} />
 
       <Route path="/public-files" element={<ProtectedRoute><PublicFiles /></ProtectedRoute>} />
+      <Route path="/catalogue-vente" element={<ProtectedRoute><StripeCatalog /></ProtectedRoute>} />
+      <Route path="/acceptations" element={<ProtectedRoute><Acceptations /></ProtectedRoute>} />
+      <Route path="/modeles-courriel" element={<ProtectedRoute><EmailTemplates /></ProtectedRoute>} />
       <Route path="/problemes-operations" element={<ProtectedRoute><OpsIssues /></ProtectedRoute>} />
       <Route path="/activity" element={<ProtectedRoute adminOnly><ActivityFeed /></ProtectedRoute>} />
       <Route path="/parametres" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />

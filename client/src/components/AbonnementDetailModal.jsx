@@ -27,6 +27,17 @@ const FactureDetail = lazy(() => import('../pages/FactureDetail.jsx'))
 // fiche d'une entreprise, d'une facture…).
 // `stripeButton` : le lien Stripe devient un bouton en tête de fiche (fiche
 // entreprise) au lieu d'une petite cellule de la grille.
+
+// Infobulle d'un produit : métadonnées Stripe de sa ligne, puis de l'abonnement
+// (ex. erp_contact_id = signataire d'une page avec acceptation).
+function metadataTooltip(item) {
+  const lines = [
+    ...(item.metadata || []).map(([k, v]) => `${k} : ${v}`),
+    ...((item.subscription_metadata || []).length ? ['— abonnement —', ...item.subscription_metadata.map(([k, v]) => `${k} : ${v}`)] : []),
+  ]
+  return lines.length ? lines.join('\n') : undefined
+}
+
 export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeButton = false }) {
   // Facture ouverte par-dessus le panneau abonnement (clic sur une ligne de la
   // section « Factures »).
@@ -96,6 +107,19 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
     }
   }
 
+  async function handleContactChange(newContactId) {
+    setSavingCompany(true)
+    try {
+      await api.abonnements.patch(aboState.id, { contact_id: newContactId || null })
+      const fresh = await api.abonnements.get(aboState.id)
+      const updated = { ...aboState, contact_id: fresh.contact_id, contact_name: fresh.contact_name }
+      setLocalAbo(updated)
+      onChange?.(updated)
+    } finally {
+      setSavingCompany(false)
+    }
+  }
+
   // Montant avant taxes au cycle : en-tête, ligne « Rabais » et pied du tableau
   // lisent les mêmes totaux. Fallback sur intervalAmount pendant le chargement.
   const totals = details?.items?.length ? subscriptionTotals(details) : null
@@ -119,6 +143,16 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
               getHref={c => `/companies/${c.id}`}
               saving={savingCompany}
               onChange={handleCompanyChange}
+            />
+            <div className="text-sm text-slate-500 mt-2 mb-1">Contact</div>
+            <LinkedRecordField
+              name="contact_id"
+              value={aboState.contact_id}
+              options={aboState.contact_id ? [{ id: aboState.contact_id, name: aboState.contact_name }] : []}
+              searchTarget="contacts"
+              getHref={c => `/contacts/${c.id}`}
+              saving={savingCompany}
+              onChange={handleContactChange}
             />
           </div>
           <div className="flex items-center gap-3">
@@ -162,7 +196,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
                   <tbody>
                     {details.items.map(item => (
                       <tr key={item.id} className="border-b border-slate-100 last:border-0">
-                        <td className="px-4 py-2.5">
+                        <td className="px-4 py-2.5" title={metadataTooltip(item)} data-testid="abo-item">
                           <div className="font-medium text-slate-800">{item.product_name}</div>
                           {item.description && <div className="text-xs text-slate-400 mt-0.5">{item.description}</div>}
                           {item.interval && <div className="text-xs text-slate-400">/ {item.interval_count > 1 ? `${item.interval_count} ` : ''}{item.interval === 'month' ? 'mois' : item.interval === 'year' ? 'an' : item.interval}</div>}

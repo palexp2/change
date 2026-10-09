@@ -1,40 +1,49 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { existsSync, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
+import { existsSync, readdirSync, statSync, mkdirSync, linkSync, copyFileSync, utimesSync, rmSync } from 'node:fs'
 import { resolve, join } from 'node:path'
 
 // Un onglet ouvert continue à importer les noms hachés de son ancien build.
-// Capturer avant que Vite vide outDir, puis restaurer sans écraser le nouveau
-// build. Les dates originales bornent la rétention, même après plusieurs builds.
+// Mettre de côté avant que Vite vide outDir, puis relier sans écraser le
+// nouveau build. Les dates originales bornent la rétention (1 jour), même
+// après plusieurs builds ; au-delà, l'onglet se recharge seul.
+// Liens physiques, jamais de lecture : charger ~450 builds (~1,8 Go) en
+// mémoire faisait swapper le serveur (build de 20 s → 8 min).
+const linkOrCopy = (source, file, mtime) => {
+  try { linkSync(source, file) } catch { copyFileSync(source, file); utimesSync(file, mtime, mtime) }
+}
 export function retainRecentAssets() {
-  let outputDir
+  let outputDir, staging
   let retained = new Map()
   return {
     name: 'retain-recent-assets',
     apply: 'build',
     configResolved(config) {
       outputDir = resolve(config.root, config.build.outDir)
-      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+      staging = resolve(config.root, `.retained-assets-${process.pid}`)
+      rmSync(staging, { recursive: true, force: true })
+      mkdirSync(staging, { recursive: true })
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000
       for (const directory of [resolve(config.root, 'dist/assets'), resolve(config.root, 'dist.prev/assets')]) {
         if (!existsSync(directory)) continue
         for (const name of readdirSync(directory)) {
           const file = join(directory, name)
           const stat = statSync(file)
           if (!stat.isFile() || stat.mtimeMs < cutoff || retained.has(name)) continue
-          retained.set(name, { data: readFileSync(file), mtime: stat.mtime })
+          linkOrCopy(file, join(staging, name), stat.mtime)
+          retained.set(name, stat.mtime)
         }
       }
     },
     writeBundle() {
       const directory = join(outputDir, 'assets')
       mkdirSync(directory, { recursive: true })
-      for (const [name, { data, mtime }] of retained) {
+      for (const [name, mtime] of retained) {
         const file = join(directory, name)
-        if (existsSync(file)) continue
-        writeFileSync(file, data)
-        utimesSync(file, mtime, mtime)
+        if (!existsSync(file)) linkOrCopy(join(staging, name), file, mtime)
       }
       retained.clear()
+      rmSync(staging, { recursive: true, force: true })
     },
   }
 }

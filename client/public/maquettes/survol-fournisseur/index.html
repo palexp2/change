@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Survol fournisseur</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f4f5f8;--exp:#f7f8fa;--line:#e3e5e8;--line2:#c9ced4;--ink:#393a3d;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--bs:#e6f1fa;--a:#b86e00;--as:#fdf3e1;--r:#d52b1e;--rs:#fcebea;--p:#6b3fd1;--ps:#f1ecfc;--sh:0 1px 2px rgb(0 0 0/.05),0 10px 30px rgb(0 0 0/.08)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--exp:#1d2024;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--exp:#1d2024;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--p:#b597ff;--ps:#241c35}
+
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 120px}
+.wrap{max-width:1100px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer;z-index:99}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:visible;position:relative}
+.scroll{overflow-x:auto;overflow-y:visible}
+table{width:100%;border-collapse:collapse;min-width:700px}
+th{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;text-align:left;padding:9px 10px;border-bottom:1px solid var(--line2);white-space:nowrap}
+th:first-child,td:first-child{padding-left:18px}
+td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle;height:50px}
+tr.row:hover td{background:var(--exp)}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.m{color:var(--ink3);font-size:12.5px;white-space:nowrap}
+.vn{font-weight:600;cursor:default;border-bottom:1px dotted transparent;position:relative}
+.vn:hover{border-bottom-color:var(--ink4)}
+.vn.wait:after{content:"";position:absolute;left:0;bottom:-3px;height:2px;background:var(--g);animation:fill .9s linear forwards}
+@keyframes fill{from{width:0}to{width:100%}}
+.lb{font-size:11.5px;color:var(--ink3);font-family:ui-monospace,Menlo,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+.cat{color:var(--ink2);white-space:nowrap}
+.act{color:var(--b);font-weight:600;white-space:nowrap}
+.neg{color:var(--ink)}
+/* bulle */
+.pop{position:absolute;z-index:50;background:var(--s);border:1px solid var(--line2);border-radius:10px;box-shadow:0 12px 40px rgb(0 0 0/.18);width:380px;animation:in .14s ease-out}
+@keyframes in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.pop .hd{padding:12px 14px 10px;border-bottom:1px solid var(--line)}
+.pop .nm{font-size:15px;font-weight:700}
+.pop .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.pop .chip{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--ink2);white-space:nowrap}
+.pop .chip.usd{background:var(--bs);color:var(--b);font-weight:600}
+.pop .bd{padding:10px 14px;display:flex;flex-direction:column;gap:8px}
+.kv{display:grid;grid-template-columns:78px 1fr;gap:10px}
+.kv .k{color:var(--ink3);font-size:12px}
+.kv .v{color:var(--ink)}
+.kv.w .v{color:var(--a)}
+.pop .ft{padding:8px 14px;border-top:1px solid var(--line);display:flex;justify-content:flex-end}
+.pop .ft a{color:var(--b);font-weight:600;text-decoration:none;cursor:pointer}
+/* F2 */
+.pop.f2{width:330px}
+.pop.f2 .ln{display:flex;gap:9px;align-items:flex-start}
+.pop.f2 .ic{flex:none;width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;background:var(--soft);color:var(--ink3);font-size:12px;font-weight:700}
+.pop.f2 .ln.w{background:var(--as);border-radius:6px;padding:6px 8px;margin:0 -6px}
+.pop.f2 .ln.w .ic{background:transparent;color:var(--a)}
+/* F3 */
+tr.strip td{height:auto;padding:0;border-bottom:1px solid var(--line2);background:var(--exp)}
+tr.strip .in{padding:10px 18px 12px;display:flex;flex-wrap:wrap;gap:6px 22px;box-shadow:inset 3px 0 0 var(--b);animation:in .14s ease-out}
+tr.strip .it{display:flex;gap:6px;max-width:440px}
+tr.strip .it .k{color:var(--ink3);font-size:12px;white-space:nowrap}
+tr.strip .it.w .v{color:var(--a)}
+</style></head>
+<body><button class="theme" onclick="tg()">◐</button>
+<div class="wrap">
+<h1>Survol du fournisseur</h1>
+
+<h2><b>F1</b> La fiche en bulle <span>tout ce qui est dans la fiche</span></h2>
+<div class="scr" id="f1"></div>
+
+<h2><b>F2</b> L'essentiel <span>facture · taxes · à surveiller</span></h2>
+<div class="scr" id="f2"></div>
+
+<h2><b>F3</b> Bande sous la ligne <span>la ligne s'étire, rien ne cache la liste</span></h2>
+<div class="scr" id="f3"></div>
+</div>
+<script>
+const V = {
+  bell: { name:'Bell (Internet)', cur:'CAD', pay:'Master', cat:'76000 Serv. web & Téléphonie',
+    desc:'Compte 543955959 · Abonnement mensuel Fibe (± 109 $), facture datée ± le 22, période du 22 au 21.',
+    p:'Facture: sur le web mais il y a un délai entre le pmt et la disponibilité de la facture (+/- 2 semaines) Notes: La facture est dispo après le paiement. La facture est datée du mois précédent (ex: 22 mars) et le PPA passe à la BNC le mois suivant (ex: 11 avril)' },
+  ups: { name:'UPS (Canada)', cur:'CAD', pay:'Master', cat:'65000 Expédition, livraison', desc:'Frais de courtage de douane',
+    p:'Facture: sur le web. Aller sur UPS › Business Solutions › Understand & Pay Bills › Manage Your Bills Taxes et QB: TPS ne correspond pas à 5 %, s’assurer que les taxes sont bien ctb dans QB' },
+  openai: { name:'OpenAI', cur:'USD', pay:'Master', cat:'76000 Serv. web & Téléphonie', desc:'Abonnement 21 USD — Paramètres › Compte › Paiement › Historique',
+    p:'Facture: sur le web Abonnement mensuel: 11 du mois (21 USD) Dext: Inscrire en CAD Taxes: Hors-champ (Californie)' },
+  digikey: { name:'DigiKey', cur:'CAD', pay:'Master', cat:'14000 Pièces', desc:'',
+    p:'Facture: Aller sur le site Digikey › Factures de l’entreprise Taxes: TPS seulement (Minnesota) Livraison partielle: À surveiller' },
+  amazon: { name:'Amazon', cur:'CAD', pay:'Master', cat:'14000 Pièces · 67000 Fournitures · Perso',
+    desc:'Une note de crédit Mastercard peut suivre un acompte de frais d’importation — difficile à retracer.',
+    p:'Facture: sur le web Taxes: Cas par cas Remboursement: Vos commandes › Afficher les détails › bas du récapitulatif' },
+  newark: { name:'Newark (Premier Farnell)', cur:'CAD', pay:'Master', cat:'14000 Pièces · 67000 Fournitures', desc:'Composants électroniques',
+    p:'Facture: sur le web vs Newark Taxes: TPS et TVQ' },
+}
+const ROWS = [
+  ['2 oct.','bell','PPA BELL CANADA  MONTREAL QC','76000 Serv. web & Téléphonie','−109,23'],
+  ['1 oct.','ups','UPS*CANADA 1Z8W  LACHINE QC','65000 Expédition, livraison','−48,18'],
+  ['30 sept.','openai','OPENAI *CHATGPT SUBSCR  SAN FRANCISCO','76000 Serv. web & Téléphonie','−30,78'],
+  ['29 sept.','digikey','DKC*DIGI-KEY CORP  THIEF RIVER FALLS','14000 Pièces','−985,24'],
+  ['27 sept.','amazon','AMAZON.CA*RT4KX2  AMAZON.CA ON','67000 Fournitures','−17,50'],
+  ['26 sept.','newark','PREMIER FARNELL  CANADA  MISSISSAUGA','14000 Pièces','−212,06'],
+]
+const WARN = /délai|surveiller|ne correspond|attention|cas par cas|difficile|inscrire en cad|après le paiement/i
+const LBL = /(Facture à payer|Facture|Taxes et QB|Taxes|Notes?|Remboursement|Livraison partielle|Abonnement mensuel|Dext|Crédit)\s*:/g
+function parse(t){ const out=[]; let m, last=null, idx=0; LBL.lastIndex=0
+  while((m=LBL.exec(t))){ if(last) out.push([last, t.slice(idx,m.index).trim()]); last=m[1]; idx=m.index+m[0].length }
+  if(last) out.push([last, t.slice(idx).trim()]); return out.map(([k,v])=>[k.replace(/^Notes$/,'Note').replace('Taxes et QB','Taxes'), v.replace(/\.$/,'')]) }
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+
+function f1(v){ const kv=parse(v.p)
+  return `<div class="hd"><div class="nm">${v.name}</div><div class="chips"><span class="chip ${v.cur==='USD'?'usd':''}">${v.cur}</span><span class="chip">${v.pay}</span><span class="chip">${v.cat}</span></div></div>
+  <div class="bd">${kv.map(([k,x])=>`<div class="kv ${WARN.test(x)?'w':''}"><span class="k">${k}</span><span class="v">${esc(x)}</span></div>`).join('')}
+  ${v.desc?`<div class="kv"><span class="k">Description</span><span class="v">${esc(v.desc)}</span></div>`:''}</div>
+  <div class="ft"><a>Ouvrir la fiche ›</a></div>` }
+function f2(v){ const kv=parse(v.p), get=k=>kv.find(([a])=>a===k)?.[1]
+  const warn=[...kv.filter(([k,x])=>k!=='Facture'&&k!=='Taxes'&&WARN.test(x)).map(([k,x])=>x.length<20?k+' : '+x.toLowerCase():x), ...(v.desc&&WARN.test(v.desc)?[v.desc]:[]),
+    ...kv.filter(([k,x])=>(k==='Facture'||k==='Taxes')&&WARN.test(x)).map(x=>x[1])]
+  const fac=get('Facture'), tx=get('Taxes')
+  return `<div class="hd"><div class="nm">${v.name}</div><div class="chips"><span class="chip ${v.cur==='USD'?'usd':''}">${v.cur}</span><span class="chip">${v.cat.split(' ')[0]}</span></div></div><div class="bd">
+  ${fac?`<div class="ln"><span class="ic">F</span><span>${esc(fac.split(/ mais |\. /)[0])}</span></div>`:''}
+  ${tx?`<div class="ln"><span class="ic">%</span><span>${esc(tx.split(',')[0])}</span></div>`:''}
+  ${warn.slice(0,2).map(w=>`<div class="ln w"><span class="ic">!</span><span>${esc(w)}</span></div>`).join('')}</div>` }
+function f3(v){ const kv=parse(v.p)
+  return `<tr class="strip"><td colspan="5"><div class="in">${[['Devise',v.cur],['Catégorie',v.cat],...kv].map(([k,x])=>`<div class="it ${WARN.test(x)?'w':''}"><span class="k">${k}</span><span class="v">${esc(x)}</span></div>`).join('')}</div></td></tr>` }
+
+const st={f1:null,f2:null,f3:null}
+function render(id){ const el=document.getElementById(id)
+  const rows=ROWS.map(([d,k,lb,cat,amt],i)=>`<tr class="row"><td class="m">${d}</td><td><span class="vn" data-k="${k}" data-i="${i}">${V[k].name}</span><div class="lb">${lb}</div></td><td class="cat">${cat}</td><td class="r neg">${amt}</td><td class="act">Publier</td></tr>${id==='f3'&&st.f3===i?f3(V[k]):''}`).join('')
+  el.innerHTML=`<div class="scroll"><table><tr><th>Date</th><th>Fournisseur</th><th>Catégorie</th><th class="r">Montant</th><th>Action</th></tr>${rows}</table></div>`
+  wire(id) }
+function wire(id){ const el=document.getElementById(id)
+  el.querySelectorAll('.vn').forEach(n=>{ let t
+    n.onmouseenter=()=>{ n.classList.add('wait'); t=setTimeout(()=>{ n.classList.remove('wait'); show(id,n) },900) }
+    n.onmouseleave=()=>{ clearTimeout(t); n.classList.remove('wait'); if(id!=='f3') setTimeout(()=>{ if(!el.querySelector('.pop:hover')) hide(id) },150) }
+  }) }
+function hide(id){ document.querySelectorAll('#'+id+' .pop').forEach(p=>p.remove()) }
+function show(id,n){ const v=V[n.dataset.k]
+  if(id==='f3'){ st.f3 = st.f3===+n.dataset.i ? null : +n.dataset.i; render('f3'); return }
+  hide(id); const el=document.getElementById(id), p=document.createElement('div')
+  p.className='pop '+id; p.innerHTML=id==='f1'?f1(v):f2(v)
+  const a=n.getBoundingClientRect(), b=el.getBoundingClientRect()
+  p.style.left=Math.max(8,Math.min(a.left-b.left-6, b.width-(id==='f1'?390:340)))+'px'; p.style.top=(a.bottom-b.top+6)+'px'
+  p.onmouseleave=()=>p.remove(); el.appendChild(p) }
+render('f1');render('f2');render('f3')
+// première ligne ouverte pour voir tout de suite
+setTimeout(()=>{ show('f1',document.querySelector('#f1 .vn[data-k="ups"]')); show('f2',document.querySelector('#f2 .vn[data-k="digikey"]')); show('f3',document.querySelector('#f3 .vn[data-k="bell"]')) },50)
+function tg(){const r=document.documentElement,d=r.dataset.theme==='dark'||(!r.dataset.theme&&matchMedia('(prefers-color-scheme:dark)').matches);r.dataset.theme=d?'light':'dark'}
+</script>
+</body></html>

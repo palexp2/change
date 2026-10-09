@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rapprochement — colonnes</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f5f6f7;--s:#fff;--soft:#f8f9fa;--line:#eceef0;--line2:#dfe2e5;--ink:#1f2328;--ink2:#4a5058;--ink3:#7a8089;--ink4:#a6abb2;--g:#1d7f12;--gs:#eef7ec;--b:#0a6fbf;--bs:#eaf3fb;--a:#b86e00;--as:#fdf5e6;--r:#d1362a;--rs:#fcefee;--y:#fff8db;--sh:0 1px 2px rgb(0 0 0/.04),0 12px 32px rgb(0 0 0/.07)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#30353b;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--y:#2a2717}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1d2024;--line:#262a2f;--line2:#30353b;--ink:#eceef0;--ink2:#c3c8ce;--ink3:#8e959d;--ink4:#646b73;--g:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16232f;--a:#f0b04a;--as:#2e2617;--r:#ff7a6e;--rs:#33201e;--y:#2a2717}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:28px 16px 60px}
+h2{max-width:1100px;margin:40px auto 2px;font-size:18px}h2 b{color:var(--b);margin-right:8px}
+.sub{max-width:1100px;margin:0 auto 12px;color:var(--ink3)}
+.scr{max-width:1100px;margin:0 auto;background:var(--s);border-radius:14px;box-shadow:var(--sh);overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:760px}
+th{font-size:11.5px;font-weight:500;color:var(--ink3);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line2)}
+td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.m{color:var(--ink3);font-size:12px}
+.v{font-weight:500}.v small{display:block;font-weight:400;color:var(--ink3);font-size:11.5px;max-width:300px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.in{color:var(--g);font-weight:500}.out{color:var(--ink)}
+.cat{display:inline-flex;align-items:center;gap:6px}.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.btn{height:26px;padding:0 10px;border-radius:7px;border:0;background:var(--b);color:#fff;font:inherit;font-size:12px;font-weight:500}
+.ghost{background:none;border:1px solid var(--line2);color:var(--ink2)}
+tr.st-a td{background:var(--rs)}tr.st-f td{background:var(--bs)}tr.st-c td{background:var(--y)}tr.st-r td{background:var(--gs)}
+tr.h td .act{opacity:1}.act{opacity:.0}tr:hover .act{opacity:1}
+.pb{display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 4px 0 10px;border-radius:8px;background:var(--bs);color:var(--b);font-weight:500;border:1px solid color-mix(in srgb,var(--b) 30%,transparent);cursor:pointer;max-width:100%}
+.pb .vb{font-weight:600}.pb .go{background:var(--b);color:#fff;border-radius:6px;padding:2px 8px;font-size:12px}
+.pb.am{background:var(--as);color:var(--a);border-color:color-mix(in srgb,var(--a) 35%,transparent)}.pb.am .go{background:var(--a)}
+.done{color:var(--ink3);display:inline-flex;gap:6px;align-items:center}
+.sg{display:flex;align-items:center;gap:8px}.sg .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ok{width:26px;height:26px;border-radius:7px;background:var(--g);color:#fff;border:0;font-weight:700}.more{width:26px;height:26px;border-radius:7px;border:1px solid var(--line2);background:var(--s);color:var(--ink3)}
+.conf{font-size:11px;color:var(--ink3)}
+.pop{position:relative;margin:6px 0 2px;border:1px solid var(--line2);border-radius:12px;background:var(--s);box-shadow:var(--sh);padding:12px 14px;max-width:440px}
+.pop h5{margin:0 0 8px;font-size:12.5px;display:flex;gap:6px;align-items:center}.pop h5 span{color:var(--ink3);font-weight:400}
+.cmp{display:grid;grid-template-columns:90px 1fr 1fr 22px;gap:5px 10px;font-size:12.5px;align-items:center}
+.cmp .k{color:var(--ink3);font-size:11.5px}.cmp .hd{color:var(--ink4);font-size:11px}
+.y{color:var(--g);font-weight:700}.n{color:var(--a);font-weight:700}
+.row2{display:flex;gap:8px;margin-top:12px;align-items:center}.row2 .sp{flex:1}
+.lk{color:var(--b);font-size:12px}
+.cards{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.theme{position:fixed;top:12px;right:14px;color:var(--ink3);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;background:var(--s);font:inherit;font-size:12px;cursor:pointer}
+</style></head><body>
+<button class="theme" onclick="const r=document.documentElement;r.dataset.theme=r.dataset.theme==='dark'?'light':'dark'">◐</button>
+
+<h2><b>R0</b>Aujourd'hui</h2>
+<div class="sub">8 colonnes.</div>
+<div class="scr"><table>
+<tr><th>Date</th><th>Description</th><th>Fournisseur</th><th>Catégorie ou correspondance</th><th class="r">Dépense</th><th class="r">Dépôt</th><th class="r">Solde</th><th>Action</th></tr>
+<tr class="st-a"><td>30 sept.</td><td>DKC*DIGI-KEY CORP THIEF RIVER</td><td>DigiKey</td><td>Facture 132580242</td><td class="r">1 284,17</td><td></td><td class="r">48 212,90</td><td><button class="btn">Apparier</button></td></tr>
+<tr class="st-r"><td>29 sept.</td><td>DEPOT STRIPE TRANSFER</td><td>Stripe</td><td>Versement po_1Q…</td><td></td><td class="r">3 940,00</td><td class="r">49 497,07</td><td><button class="btn ghost">Ouvrir</button></td></tr>
+</table></div>
+
+<h2><b>R1</b>Un seul montant</h2>
+<div class="sub">Dépense et Dépôt fusionnés (entrée en vert, +) ; fournisseur au-dessus du libellé banque ; Solde masqué.</div>
+<div class="scr"><table>
+<tr><th style="width:90px">Date</th><th>Fournisseur</th><th>Catégorie ou correspondance</th><th class="r" style="width:130px">Montant</th><th style="width:110px"></th></tr>
+<tr class="st-a"><td class="m">30 sept.</td><td><div class="v">DigiKey<small>DKC*DIGI-KEY CORP THIEF RIVER</small></div></td><td><span class="cat"><span class="dot" style="background:var(--b)"></span>Facture 132580242</span></td><td class="r out">1 284,17</td><td><button class="btn">Apparier</button></td></tr>
+<tr class="st-r"><td class="m">29 sept.</td><td><div class="v">Stripe<small>DEPOT STRIPE TRANSFER</small></div></td><td><span class="cat"><span class="dot" style="background:var(--g)"></span>Versement po_1Q…</span></td><td class="r in">+ 3 940,00</td><td><button class="btn ghost">Ouvrir</button></td></tr>
+<tr class="st-c"><td class="m">28 sept.</td><td><div class="v">Hydro-Québec<small>HYDRO QUEBEC PAIEMENT</small></div></td><td><span class="cat"><span class="dot" style="background:var(--a)"></span>63100 · Électricité</span></td><td class="r out">318,02</td><td><button class="btn ghost">Ouvrir</button></td></tr>
+<tr><td class="m">27 sept.</td><td><div class="v">Virement<small>VIR 0807914 DESJ</small></div></td><td><span class="cat"><span class="dot" style="background:var(--ink4)"></span>→ Desjardins USD</span></td><td class="r out">2 000,00</td><td><button class="btn">Lier</button></td></tr>
+</table></div>
+
+<h2><b>R2</b>R1 + action au survol</h2>
+<div class="sub">4 colonnes ; le bouton n'apparaît qu'au survol de la ligne.</div>
+<div class="scr"><table>
+<tr><th style="width:90px">Date</th><th>Fournisseur</th><th>Catégorie ou correspondance</th><th class="r" style="width:220px">Montant</th></tr>
+<tr class="st-a h"><td class="m">30 sept.</td><td><div class="v">DigiKey<small>DKC*DIGI-KEY CORP THIEF RIVER</small></div></td><td><span class="cat"><span class="dot" style="background:var(--b)"></span>Facture 132580242</span></td><td class="r"><button class="btn act">Apparier</button>&nbsp;&nbsp;1 284,17</td></tr>
+<tr class="st-r"><td class="m">29 sept.</td><td><div class="v">Stripe<small>DEPOT STRIPE TRANSFER</small></div></td><td><span class="cat"><span class="dot" style="background:var(--g)"></span>Versement po_1Q…</span></td><td class="r in"><button class="btn ghost act">Ouvrir</button>&nbsp;&nbsp;+ 3 940,00</td></tr>
+<tr class="st-c"><td class="m">28 sept.</td><td><div class="v">Hydro-Québec<small>HYDRO QUEBEC PAIEMENT</small></div></td><td><span class="cat"><span class="dot" style="background:var(--a)"></span>63100 · Électricité</span></td><td class="r"><button class="btn ghost act">Ouvrir</button>&nbsp;&nbsp;318,02</td></tr>
+</table></div>
+
+<h2><b>R3</b>La suggestion est le bouton</h2>
+<div class="sub">Une colonne « À faire » : verbe + cible, un clic ; fait = texte gris ✓.</div>
+<div class="scr"><table>
+<tr><th style="width:90px">Date</th><th>Fournisseur</th><th>À faire</th><th class="r" style="width:130px">Montant</th></tr>
+<tr class="st-a"><td class="m">30 sept.</td><td><div class="v">DigiKey<small>DKC*DIGI-KEY CORP THIEF RIVER</small></div></td><td><span class="pb"><span class="vb">Apparier</span> Facture 132580242<span class="go">↵</span></span></td><td class="r out">1 284,17</td></tr>
+<tr class="st-f"><td class="m">29 sept.</td><td><div class="v">Hydro-Québec<small>HYDRO QUEBEC PAIEMENT</small></div></td><td><span class="pb"><span class="vb">Publier</span> 63100 · Électricité<span class="go">↵</span></span></td><td class="r out">318,02</td></tr>
+<tr><td class="m">27 sept.</td><td><div class="v">Virement<small>VIR 0807914 DESJ</small></div></td><td><span class="pb"><span class="vb">Lier</span> → Desjardins USD<span class="go">↵</span></span></td><td class="r out">2 000,00</td></tr>
+<tr class="st-a"><td class="m">26 sept.</td><td><div class="v">Bell<small>BELL CANADA PAD</small></div></td><td><span class="pb am"><span class="vb">Demander</span> la facture<span class="go">↵</span></span></td><td class="r out">142,70</td></tr>
+<tr class="st-r"><td class="m">25 sept.</td><td><div class="v">Stripe<small>DEPOT STRIPE TRANSFER</small></div></td><td><span class="done">✓ Versement po_1Q… · rapproché</span></td><td class="r in">+ 3 940,00</td></tr>
+</table></div>
+
+<h2><b>R4</b>Suggestion + ✓ / ⋯</h2>
+<div class="sub">La proposition se lit ; ✓ l'accepte, ⋯ ouvre les autres choix.</div>
+<div class="scr"><table>
+<tr><th style="width:90px">Date</th><th>Fournisseur</th><th>Catégorie ou correspondance</th><th class="r" style="width:130px">Montant</th></tr>
+<tr class="st-a"><td class="m">30 sept.</td><td><div class="v">DigiKey<small>DKC*DIGI-KEY CORP THIEF RIVER</small></div></td><td><div class="sg"><span class="t">Facture 132580242 <span class="conf">· très probable</span></span><button class="ok">✓</button><button class="more">⋯</button></div></td><td class="r out">1 284,17</td></tr>
+<tr class="st-f"><td class="m">29 sept.</td><td><div class="v">Hydro-Québec<small>HYDRO QUEBEC PAIEMENT</small></div></td><td><div class="sg"><span class="t">63100 · Électricité <span class="conf">· règle</span></span><button class="ok">✓</button><button class="more">⋯</button></div></td><td class="r out">318,02</td></tr>
+<tr class="st-a"><td class="m">26 sept.</td><td><div class="v">Bell<small>BELL CANADA PAD</small></div></td><td><div class="sg"><span class="t m">Aucune facture</span><button class="more" style="width:auto;padding:0 8px">Demander</button></div></td><td class="r out">142,70</td></tr>
+<tr class="st-r"><td class="m">25 sept.</td><td><div class="v">Stripe<small>DEPOT STRIPE TRANSFER</small></div></td><td><span class="done">✓ Versement po_1Q…</span></td><td class="r in">+ 3 940,00</td></tr>
+</table></div>
+
+<h2><b>R3+</b>Clic = l'essentiel pour décider</h2>
+<div class="sub">Chaque action montre seulement ce qui se vérifie pour elle.</div>
+<div class="cards">
+ <div class="pop"><h5>Apparier <span>· Facture 132580242</span></h5>
+  <div class="cmp"><span></span><span class="hd">Banque</span><span class="hd">Facture</span><span></span>
+   <span class="k">Montant</span><span>1 284,17</span><span>1 284,17</span><span class="y">✓</span>
+   <span class="k">Date</span><span>30 sept.</span><span>28 sept.</span><span class="y">✓</span>
+   <span class="k">Fournisseur</span><span>DKC*DIGI-KEY</span><span>DigiKey</span><span class="y">✓</span></div>
+  <div class="row2"><span class="lk">Voir la facture</span><span class="sp"></span><span class="lk">Autre</span><button class="btn">Apparier ↵</button></div></div>
+
+ <div class="pop"><h5>Publier <span>· Hydro-Québec</span></h5>
+  <div class="cmp" style="grid-template-columns:90px 1fr 22px">
+   <span class="k">Compte</span><span>63100 · Électricité</span><span class="y">✓</span>
+   <span class="k">Taxe</span><span>TPS/TVQ · 41,50 $</span><span class="y">✓</span>
+   <span class="k">Pièce</span><span>Facture sept. jointe</span><span class="y">✓</span></div>
+  <div class="row2"><span class="lk">Changer</span><span class="sp"></span><button class="btn">Publier ↵</button></div></div>
+
+ <div class="pop"><h5>Lier <span>· virement</span></h5>
+  <div class="cmp"><span></span><span class="hd">Sortie BNC</span><span class="hd">Entrée Desj. USD</span><span></span>
+   <span class="k">Montant</span><span>2 000,00 $</span><span>1 452,10 US$</span><span class="y">✓</span>
+   <span class="k">Taux</span><span colspan="2">1,3773</span><span></span><span class="y">✓</span>
+   <span class="k">Date</span><span>27 sept.</span><span>27 sept.</span><span class="y">✓</span></div>
+  <div class="row2"><span class="sp"></span><button class="btn">Lier ↵</button></div></div>
+
+ <div class="pop"><h5>Demander <span>· la facture Bell</span></h5>
+  <div class="cmp" style="grid-template-columns:90px 1fr 22px">
+   <span class="k">Dernière</span><span>août · 142,70 $</span><span class="y">✓</span>
+   <span class="k">Écart</span><span>0 $ vs mois passé</span><span class="y">✓</span>
+   <span class="k">À</span><span>#comptabilite · Slack</span><span class="n">!</span></div>
+  <div class="row2"><span class="lk">Déposer moi-même</span><span class="sp"></span><button class="btn" style="background:var(--a)">Demander ↵</button></div></div>
+</div>
+</body></html>

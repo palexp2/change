@@ -8,6 +8,7 @@ import { requireAdmin } from '../middleware/auth.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import { getClaudeUsage } from '../services/claudeUsage.js'
 import { KNOWN_MODELS } from '../services/agentModel.js'
+import { listAccounts } from '../services/claudeAccounts.js'
 import { getQuotaFloors, QUOTA_FLOOR_CHOICES, QUOTA_FLOOR_KEYS, QUOTA_FLOOR_PCT, syncQuotaGuard } from '../services/quotaGuard.js'
 import {
   runNextTask, isRunnerBusy, getCurrentTaskId, getCurrentActivity, getStreamBuffer,
@@ -116,13 +117,28 @@ router.put('/settings', (req, res) => {
       for (const k of Object.values(QUOTA_FLOOR_KEYS)) patch[k] = pct
     } else patch[key] = pct
   }
+  // `quotaFloorAccountId` : les seuils reçus ne valent que pour ce compte Claude
+  // (rangés dans quotaFloorsByAccount) — chaque compte a les siens.
+  const floorAccount = String(req.body.quotaFloorAccountId || '').trim()
+  if (floorAccount) {
+    if (!listAccounts().some(a => a.id === floorAccount)) {
+      return res.status(400).json({ error: `quotaFloorAccountId inconnu : ${floorAccount}` })
+    }
+    const byAccount = { ...(getSettings().quotaFloorsByAccount || {}) }
+    const own = { ...(byAccount[floorAccount] || {}) }
+    for (const [scope, k] of Object.entries(QUOTA_FLOOR_KEYS)) {
+      if (k in patch) { own[scope] = patch[k]; delete patch[k] }
+    }
+    byAccount[floorAccount] = own
+    patch.quotaFloorsByAccount = byAccount
+  }
   for (const key of ['generalPrompt', 'instantPrompt', 'conversationPrompt', 'executionPrompt', 'questionPrompt']) {
     if (key in req.body) patch[key] = String(req.body[key] ?? '')
   }
   const next = setSettings(patch)
   // Nouveau seuil : on repasse le garde-fou tout de suite — baisser le seuil doit
   // relancer la file séance tenante, le monter doit la couper sans attendre 2 min.
-  if (Object.values(QUOTA_FLOOR_KEYS).some(k => k in patch)) syncQuotaGuard().catch(() => {})
+  if ('quotaFloorsByAccount' in patch || Object.values(QUOTA_FLOOR_KEYS).some(k => k in patch)) syncQuotaGuard().catch(() => {})
   res.json(next)
 })
 
@@ -277,6 +293,8 @@ router.get('/usage', async (req, res) => {
       // front quelle clé de réglage porte quel plafond.
       quotaFloor: {
         ...getQuotaFloors(),
+        // Seuils propres à chaque compte (sélecteur sur la ligne du compte).
+        byAccount: Object.fromEntries(listAccounts().map(a => [a.id, getQuotaFloors(a.id)])),
         choices: QUOTA_FLOOR_CHOICES,
         default: QUOTA_FLOOR_PCT,
         keys: QUOTA_FLOOR_KEYS,

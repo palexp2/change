@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { HelpCircle, Send, ChevronsDown, ChevronsUp, Clock } from 'lucide-react'
 import api from './api.js'
+import { fmtDate, fmtDateTime, fmtTime } from './formatDate.js'
 import ThinkingOrb from '../components/ThinkingOrb'
 
 export const inputCls = 'px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
@@ -56,14 +57,14 @@ export function isScheduled(p) {
   return p.status === 'queued' && !!p.start_at && Date.parse(p.start_at) > Date.now()
 }
 
-/** Heure d'un départ différé, courte (« 19 h », « demain 19 h »). */
+/** Heure d'un départ différé, courte (« 19:00 », « 2026-10-08 19:00 »). */
 export function startAtLabel(iso) {
   const t = Date.parse(iso)
   if (Number.isNaN(t)) return ''
   const d = new Date(t)
-  const hm = d.toLocaleTimeString('fr-CA', { hour: 'numeric', minute: '2-digit' })
+  const hm = fmtTime(d)
   const sameDay = d.toDateString() === new Date().toDateString()
-  return sameDay ? hm : `${d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })} ${hm}`
+  return sameDay ? hm : `${fmtDate(d)} ${hm}`
 }
 
 export function pillStateOf(p) {
@@ -89,12 +90,12 @@ export function firstLine(text, max = 170) {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t
 }
 
-/** Date courte et lisible d'un item terminé (« 4 août, 14:07 »). */
+/** Date d'un item terminé (« 2026-08-04 14:07 »). */
 export function shortDate(iso) {
   if (!iso) return null
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
-  return d.toLocaleString('fr-CA', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+  return fmtDateTime(d)
 }
 
 export function StatusPill({ p }) {

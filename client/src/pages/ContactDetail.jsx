@@ -742,6 +742,9 @@ export default function ContactDetail({ recordId, onClose }) {
         onClose={() => setShowEmail(false)}
         contacts={[contact]}
         contactId={id}
+        companyName={((contact.companies || []).find(c => c.is_primary) || (contact.companies || [])[0])?.company_name || ''}
+        withTemplates
+        wide
         companyId={(contact.companies || []).find(c => c.is_primary)?.company_id || (contact.companies || [])[0]?.company_id}
         onSent={reloadInteractions}
       />

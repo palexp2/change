@@ -59,11 +59,11 @@ describe('Dashboard — deep-link vers une section', () => {
     assert.ok(top >= -50 && top < 200, `section scrollée en haut (top=${top})`)
   })
 
-  test('autre section : /dashboard/soldes-bancaires scrolle sur la Trésorerie', async () => {
-    await page.goto(URL + '/dashboard/soldes-bancaires', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-section-id="section_bank_accounts"]', { timeout: 15000 })
+  test('autre section : /dashboard/valeur-inventaire scrolle sur l\'Inventaire', async () => {
+    await page.goto(URL + '/dashboard/valeur-inventaire', { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('[data-section-id="section_inventory_valuation"]', { timeout: 15000 })
     await page.waitForTimeout(1200)
-    const top = await topOfSection('section_bank_accounts')
+    const top = await topOfSection('section_inventory_valuation')
     assert.ok(top !== null, 'section présente')
     assert.ok(top >= -50 && top < 200, `section scrollée en haut (top=${top})`)
   })

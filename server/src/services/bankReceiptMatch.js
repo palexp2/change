@@ -262,12 +262,14 @@ export function candidatePool(txn, { sources = ['receipt', 'achat'], windowDays 
     const rows = db.prepare(`
       SELECT id, company, receipt_date, order_date, due_date, total, bank_charged_total,
              currency, receipt_number, card_last4, payment_method, status, quickbooks_id,
-             archived_at, vendor_profile_id, quickbooks_type
+             archived_at, vendor_profile_id, quickbooks_type, original_name
       FROM sale_receipts
       WHERE deleted_at IS NULL
         AND ((:dir < 0 AND COALESCE(total, 0) >= 0 AND COALESCE(quickbooks_type, '') <> 'deposit')
           OR (:dir > 0 AND (total < 0 OR quickbooks_type = 'deposit')))
-        AND (:any = 1 OR COALESCE(receipt_date, order_date, due_date) BETWEEN :from AND :to)
+        -- Pièce sans aucune date (capture d'un sommaire de commande) : le jour
+        -- où elle est arrivée la situe. Sert au tri seulement, pas à la note.
+        AND (:any = 1 OR COALESCE(receipt_date, order_date, due_date, document_date, substr(created_at, 1, 10)) BETWEEN :from AND :to)
         AND (:any = 1
           OR ABS(ABS(COALESCE(bank_charged_total, total)) - :amt) <= :tol
           OR (:orig > 0 AND ABS(ABS(total) - :orig) <= 0.02)
@@ -286,6 +288,7 @@ export function candidatePool(txn, { sources = ['receipt', 'achat'], windowDays 
         bank_charged_total: r.bank_charged_total, currency: r.currency,
         doc_number: r.receipt_number, card_last4: r.card_last4, payment_method: r.payment_method,
         status: r.status, quickbooks_id: r.quickbooks_id, archived: !!r.archived_at,
+        notice: isPaymentNotice(r.original_name),
         names: [r.company, profile?.name, ...(profile?.aliases || [])].filter(Boolean),
         patterns: profile?.patterns || [],
       })
@@ -358,11 +361,21 @@ function isTwin(a, b) {
     && Math.abs(daysBetween(a.date, b.date) ?? 99) <= 2
 }
 
+// Avis de paiement (« Payment Receipt », « Reçu de paiement », « Payment
+// confirmation ») : un courriel qui confirme le prélèvement d'une facture déjà
+// reçue. Il ne vaut jamais la facture elle-même.
+export function isPaymentNotice(name) {
+  return /payment\s*(receipt|confirmation)|receipt for your payment|re[çc]u de paiement|confirmation de paiement/i.test(String(name || ''))
+}
+
 // Entre deux jumelles : jamais celle qui est déjà prise ailleurs, puis celle
 // qui est publiée à QuickBooks (l'écriture existe déjà), puis le reçu, qui
 // porte le PDF.
 function preferred(a, b) {
   if (!!a.taken !== !!b.taken) return a.taken ? b : a
+  // Le courriel « Payment Receipt » qui suit une facture n'est qu'un avis de
+  // paiement : la pièce, c'est la facture (cas Linode, Charles, 2026-10-03).
+  if (!!a.notice !== !!b.notice) return a.notice ? b : a
   if (!!a.quickbooks_id !== !!b.quickbooks_id) return a.quickbooks_id ? a : b
   if (a.type !== b.type) return a.type === 'receipt' ? a : b
   return a

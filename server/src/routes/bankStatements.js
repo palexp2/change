@@ -2,6 +2,7 @@
 // valide l'aperçu, puis — et seulement là — les transactions entrent en base.
 // Le service fait tout le travail : services/bankStatementImport.js.
 import { Router } from 'express'
+import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { makeUpload } from '../utils/upload.js'
 import { ensureUploadsDir } from '../config/uploads.js'
@@ -11,6 +12,8 @@ import {
   setUploadAccount, replanUpload, commitUpload, deleteUpload, sweepStaleUploads,
   sendUploadToExtractor,
 } from '../services/bankStatementImport.js'
+import { fileUploadToDrive, fileRecentUploads, statementChecklist, STATEMENTS_TASK_ID } from '../services/bankStatementDriveFiling.js'
+import { completeFromAutomation } from '../services/recurringWork.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -32,10 +35,18 @@ function sweepOnce() {
   try { sweepStaleUploads() } catch (e) { console.error('bankStatements.sweep:', e.message) }
 }
 
+// Un relevé mensuel complet part ranger au Drive (rien sinon) ; la carte suit.
+function fileInBackground(id, userId) {
+  fileUploadToDrive(id)
+    .then(() => fileRecentUploads('dépôt de relevé'))
+    .then((done) => { for (const r of done) emitEntity('bank_statement_upload', 'updated', r.id, getUpload(r.id), userId) })
+    .catch((e) => console.error('bankStatements.driveFiling:', e.message))
+}
+
 // Lecture en tâche de fond : la réponse part tout de suite, l'UI suit l'état.
 function analyzeInBackground(id, userId) {
   analyzeUpload(id)
-    .then((up) => emitEntity('bank_statement_upload', 'updated', id, up, userId))
+    .then((up) => { emitEntity('bank_statement_upload', 'updated', id, up, userId); fileInBackground(id, userId) })
     .catch((e) => console.error('bankStatements.analyze:', e.message))
 }
 
@@ -58,6 +69,22 @@ router.get('/', (req, res) => {
   res.json(listUploads(Number(req.query.limit) || 40))
 })
 
+// Relevés du mois au Drive, compte par compte (travail récurrent d'Antoine).
+router.get('/checklist', async (req, res) => {
+  try {
+    const month = String(req.query.month || '')
+    const list = await statementChecklist(month)
+    // Tous au Drive : le travail se coche tout de suite, sans attendre la veille
+    // du matin (relevés rangés à la main directement dans le Drive).
+    if (list.length && list.every((x) => x.done)) {
+      completeFromAutomation(STATEMENTS_TASK_ID, { periodKey: month, note: `${list.length} relevés au Drive` })
+    }
+    res.json(list)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 router.get('/:id', (req, res) => {
   const up = getUpload(req.params.id)
   if (!up) return res.status(404).json({ error: 'Not found' })
@@ -68,7 +95,11 @@ router.get('/:id', (req, res) => {
 router.patch('/:id', (req, res) => {
   try {
     if (!('account_id' in (req.body || {}))) return res.status(400).json({ error: 'account_id attendu' })
+    // Compte corrigé : un simple lien « déjà au Drive » pris sur l'ancien compte ne tient plus.
+    db.prepare(`UPDATE bank_statement_uploads SET drive_file_id=NULL, drive_filing=NULL, drive_file_name=NULL
+      WHERE id=? AND drive_filing IN ('deja','erreur') AND account_id IS NOT ?`).run(req.params.id, req.body.account_id || null)
     res.json(setUploadAccount(req.params.id, req.body.account_id || null))
+    fileInBackground(req.params.id, req.user.id)
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

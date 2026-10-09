@@ -9,10 +9,10 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 
 // Nouveau flux : la timeline ressemble à un fil de messagerie.
 // Le corps des emails s'affiche inline par défaut (stripé de la chaîne de
-// reply et de la signature). Cliquer sur une bulle ouvre une modale avec tous
+// reply et de la signature). Cliquer sur une bulle la déplie en place avec tous
 // les détails (date précise, from, to, contact) et un bouton pour révéler la
 // chaîne et la signature.
-describe('Timeline interactions — affichage thread-like avec modale détail', () => {
+describe('Timeline interactions — affichage thread-like, bulle dépliable', () => {
   let browser, ctx, page, contactId
 
   before(async () => {
@@ -66,23 +66,17 @@ describe('Timeline interactions — affichage thread-like avec modale détail', 
     )
   })
 
-  test('clic sur la bulle ouvre une modale avec détails et toggle chaîne/signature', async () => {
+  test('clic sur la bulle la déplie en place (sans modale) avec toggle chaîne/signature', async () => {
     await page.goto(`${URL}/contacts/${contactId}`, { waitUntil: 'networkidle' })
     await page.waitForSelector('text=/Courriel/', { timeout: 10000 })
 
     // Cliquer sur la première bulle Courriel
-    // On vise le conteneur cliquable (rounded-2xl avec cursor-pointer)
     const firstBubble = page.locator('[class*="cursor-pointer"]:has-text("Courriel")').first()
     await firstBubble.click()
 
-    // Modale ouverte
-    const modalTitle = page.locator('h2:has-text("Courriel")')
-    await modalTitle.waitFor({ state: 'visible', timeout: 3000 })
-
-    // Les champs détails From/À sont présents dans la modale
-    await page.locator('dt:has-text("De")').first().waitFor({ state: 'visible' })
-    await page.locator('dt:has-text("À")').first().waitFor({ state: 'visible' })
-    await page.locator('dt:has-text("Date")').first().waitFor({ state: 'visible' })
+    // Dépliée dans le fil, aucune modale
+    await page.locator('[data-expanded="true"]').first().waitFor({ state: 'visible', timeout: 3000 })
+    assert.equal(await page.locator('h2:has-text("Courriel")').count(), 0, 'aucune modale')
 
     // Bouton pour afficher la chaîne et signature
     const toggle = page.locator('button:has-text("Afficher chaîne et signature")').first()

@@ -23,6 +23,7 @@ import { resolveVendorProfileId } from './vendorProfiles.js'
 import { queueBillPaymentPush } from './billPaymentQb.js'
 import { newRecordId } from '../utils/recordId.js'
 import { qbGet } from '../connectors/quickbooks.js'
+import { resolveVendorFromBankLabel } from './scrapers/vendorFromBankLabel.js'
 
 export const PAYMENT_METHODS = ['interac', 'cheque', 'carte', 'transfert', 'code_paiement', 'autre']
 
@@ -326,6 +327,8 @@ export function resolveAccountsFromNote(note, accounts) {
   return out
 }
 
+const SYSTEM_NOTE = /^\s*(Payée dans QuickBooks|Importé du fichier)/i
+
 export function vendorPaymentHints() {
   const byKey = new Map()
   const accounts = db.prepare(
@@ -369,7 +372,9 @@ export function vendorPaymentHints() {
     }
     // La note, elle, peut venir d'un paiement plus ancien (le dernier n'en a pas
     // forcément) — on garde la plus récente non vide.
-    if (!hint.note && r.notes && String(r.notes).trim()) hint.note = String(r.notes).trim()
+    // Les notes posées par l'app (« Payée dans QuickBooks », import du fichier
+    // de solde) ne disent pas comment on paie : on les saute.
+    if (!hint.note && r.notes && String(r.notes).trim() && !SYSTEM_NOTE.test(r.notes)) hint.note = String(r.notes).trim()
   }
 
   // Profils fournisseurs : la note curée à la main comble les trous et fait
@@ -526,6 +531,18 @@ const amountsMatch = (a, b) => Math.abs(Math.abs(a) - Math.abs(b)) <= Math.max(1
 // L'appariement lui-même, SANS écriture : c'est cette fonction que le moteur de
 // propositions interroge. Extraite pour être testable et pour que « cocher »
 // redevienne un geste humain (services/bankProposals/).
+// La banque nomme un AUTRE fournisseur que le paiement : un montant voisin ne
+// suffit pas (le loyer Québourg n'est pas la facture d'Inverness du même mois).
+const foldWords = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4)
+function namesOtherVendor(t, p) {
+  const hit = resolveVendorFromBankLabel((t.details || '').trim() || t.description || '')
+  if (!hit?.profile?.name) return false
+  const vendor = p.achat_id ? db.prepare('SELECT vendor FROM achats_fournisseurs WHERE id=?').get(p.achat_id)?.vendor : null
+  const mine = new Set(foldWords(hit.profile.name))
+  return ![p.label, vendor].some((n) => foldWords(n).some((w) => mine.has(w)))
+}
+
 export function matchPaymentsToTxns({ accountName = null } = {}) {
   const pending = db.prepare(`
     SELECT * FROM treasury_payments
@@ -541,14 +558,15 @@ export function matchPaymentsToTxns({ accountName = null } = {}) {
   for (const p of pending) {
     const sign = p.direction === 'in' ? 1 : -1
     const rows = db.prepare(`
-      SELECT t.id, t.amount, t.txn_date, t.account_id FROM bank_transactions t
+      SELECT t.id, t.amount, t.txn_date, t.account_id, t.details, t.description FROM bank_transactions t
       JOIN bank_accounts b ON b.id = t.account_id
       WHERE t.deleted_at IS NULL AND b.deleted_at IS NULL AND b.name = ?
         AND COALESCE(t.pending, 0) = 0
         AND t.txn_date >= date(?, '-${CLEAR_DAY_WINDOW} days') AND t.txn_date <= date(?, '+${CLEAR_DAY_WINDOW} days')
     `).all(p.account || 'BNC CAD', p.payment_date, p.payment_date)
     const hit = rows.find(t => !used.has(t.id)
-      && Math.sign(t.amount) === sign && amountsMatch(t.amount, p.amount * sign))
+      && Math.sign(t.amount) === sign && amountsMatch(t.amount, p.amount * sign)
+      && !namesOtherVendor(t, p))
     if (!hit) continue
     used.add(hit.id)
     hits.push({ payment: p, txn: hit })

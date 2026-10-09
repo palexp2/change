@@ -31,7 +31,6 @@ const WIDGET_DEFS = [
   { id: 'section_shipments',     label: 'Livraisons par semaine', group: 'Graphiques',    slug: 'livraisons' },
   { id: 'section_productivity',  label: 'Productivité',           group: 'Opérations',    slug: 'productivite' },
   { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire', slug: 'valeur-inventaire' },
-  { id: 'section_bank_accounts', label: 'Trésorerie & soldes bancaires', group: 'Comptabilité', slug: 'soldes-bancaires' },
   // « Billets par mois » et « Billets par semaine » : retirés avec la date, le
   // statut et la durée d'un billet (migration 040).
 ]
@@ -745,7 +744,7 @@ function ShipmentsWeeklyChart({ data, costs }) {
           const y = padT + chartH - bh
           const isHovered = tooltip?.i === i
           const showLabel = i === 0 || i === n - 1 || w.date.getDate() <= 7
-          const label = w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+          const label = fmtDate(w.date)
           return (
             <g key={w.key}
               style={{ cursor: w.count > 0 ? 'pointer' : 'default' }}
@@ -777,7 +776,7 @@ function ShipmentsWeeklyChart({ data, costs }) {
         {tooltip && (() => {
           const tx = Math.min(Math.max(tooltip.x, 60), W - 60)
           const ty = Math.max(tooltip.y - 22, padT + 4)
-          const label = tooltip.w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+          const label = fmtDate(tooltip.w.date)
           return (
             <g pointerEvents="none">
               <rect x={tx - 48} y={ty - 14} width={96} height={46} rx="5" fill="#1e293b" opacity="0.92" />
@@ -982,7 +981,7 @@ function ProfitabilityChart({ data, recentOrders }) {
             const isSelected = selectedWeek === w.key
             const isLast4 = i >= n - 4
             const showLabel = i === 0 || i === n - 1 || w.date.getDate() <= 7
-            const label = w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+            const label = fmtDate(w.date)
             const color = weekMargins[i] >= 40 ? '#10b981' : weekMargins[i] >= 20 ? '#f59e0b' : '#ef4444'
             return (
               <g key={w.key}
@@ -1019,7 +1018,7 @@ function ProfitabilityChart({ data, recentOrders }) {
             const w = tooltip.w
             // Fin de la fenêtre 28j = dimanche de la semaine du point
             const endDate = new Date(w.date.getTime() + 6 * 86400000)
-            const label = endDate.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+            const label = fmtDate(endDate)
             const hasBreakdown = activeFilter === 'Tous' && (w.subRevenue > 0 || w.achatRevenue > 0)
             const tooltipH = hasBreakdown ? 82 : 66
             return (
@@ -1066,8 +1065,7 @@ function ProfitabilityChart({ data, recentOrders }) {
           const monday = new Date(yr, mo - 1, dy)
           weekEnd = new Date(monday.getTime() + 7 * 86400000)       // dimanche soir de la semaine du point
           weekStart = new Date(monday.getTime() - 21 * 86400000)    // 28 jours avant la fin de fenêtre
-          weekLabel = new Date(monday.getTime() + 6 * 86400000)
-            .toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+          weekLabel = fmtDate(new Date(monday.getTime() + 6 * 86400000))
         }
         // Point sélectionné → fenêtre 28j de ce point. Sinon → 28 derniers jours
         // (le serveur renvoie 140j pour couvrir tout le graphe, on borne ici l'affichage par défaut).
@@ -1220,10 +1218,10 @@ function ReplacementRateChart({ replacementRate }) {
 
   const filteredItems = selectedMonth
     ? items.filter(it => {
+        // Mois de la date affichée (et des barres, calculées côté serveur) :
+        // new Date('2026-10-01') = 30 sept. 20h à Montréal → mauvais mois.
         if (!it.shipped_at) return false
-        const d = new Date(it.shipped_at)
-        const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-        return k === selectedMonth
+        return fmtDate(it.shipped_at).slice(0, 7) === selectedMonth
       })
     : items
   const selectedMonthLabel = selectedMonth
@@ -1620,152 +1618,6 @@ function fmtCadCompact(n) {
 
 const fmtNumber = n => fmtNumberBase(n, { nullIsZero: true })
 
-const fmtMoney = (n, currency) => fmtMoneyBase(n, currency, { fallback: '' })
-
-export function BankAccountsPanel() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  // Le détail compte par compte est replié par défaut : la trésorerie et le
-  // coussin de marge suffisent au coup d'œil quotidien.
-  const [detailOpen, setDetailOpen] = useState(false)
-
-  const load = (opts = {}) => {
-    setLoading(true)
-    setError(null)
-    api.dashboard.bankAccounts(opts)
-      .then(r => { setData(r); setLoading(false) })
-      .catch(e => { setError(e?.message || 'Erreur'); setLoading(false) })
-  }
-
-  useEffect(() => { load() }, [])
-
-  if (loading && !data) {
-    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement des soldes…</div>
-  }
-  if (error) {
-    return (
-      <div className="text-sm text-rose-600">
-        Impossible de charger les soldes QuickBooks : {error}
-        <button onClick={load} className="ml-2 underline">Réessayer</button>
-      </div>
-    )
-  }
-  if (!data?.accounts?.length) {
-    return <div className="text-sm text-slate-500">Aucun compte bancaire ou carte de crédit renvoyé par QuickBooks.</div>
-  }
-
-  // Les comptes à 0,00 $ n'apprennent rien : ils sortent du détail (ils ne
-  // changent rien aux sous-totaux, qui viennent du serveur).
-  const shown = data.accounts.filter(a => Math.round((a.balance_cad ?? a.balance ?? 0) * 100) !== 0)
-  const banks = shown.filter(a => a.type === 'Bank')
-  const cards = shown.filter(a => a.type === 'Credit Card')
-
-  const treasury = data.treasury ?? data.totals?.net ?? 0
-  const creditLimit = data.credit_limit || 0
-  // Coussin restant avant d'atteindre la limite de la marge de crédit :
-  // la trésorerie peut descendre jusqu'à −limite avant que la marge soit pleine.
-  const headroom = treasury + creditLimit
-  const headroomPct = creditLimit ? Math.max(0, Math.min(1, headroom / creditLimit)) : 0
-  const gaugeColor = headroomPct > 0.5 ? 'bg-emerald-500' : headroomPct > 0.2 ? 'bg-amber-500' : 'bg-rose-500'
-
-  const renderGroup = (label, rows, total) => rows.length ? (
-    <>
-      <tr className="border-b border-slate-100 bg-slate-50 font-semibold text-slate-900">
-        <td className="py-1.5 px-3" colSpan={2}>{label}</td>
-      </tr>
-      {rows.map(a => (
-        <tr key={a.id} className="border-b border-slate-100 text-slate-600">
-          <td className="py-1.5 px-3">{a.name}</td>
-          {/* Tout est affiché en CAD : les soldes en devise étrangère sont
-              convertis côté serveur (balance_cad) pour éviter d'afficher deux
-              montants par ligne. */}
-          <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-            {fmtMoney(a.balance_cad ?? a.balance, data.currency)}
-          </td>
-        </tr>
-      ))}
-      <tr className="border-b border-slate-200 font-medium text-slate-800">
-        <td className="py-1.5 px-3">Sous-total {label.toLowerCase()}</td>
-        <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-          {fmtMoney(total, data.currency)}
-        </td>
-      </tr>
-    </>
-  ) : null
-
-  return (
-    <div data-testid="dashboard-bank-accounts">
-      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4" data-testid="dashboard-treasury">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <div>
-            <p className="text-xs text-slate-500 mb-0.5">Trésorerie (banques − cartes & marges de crédit)</p>
-            <p className={`text-2xl font-semibold tabular-nums ${treasury < 0 ? 'text-rose-600' : 'text-emerald-700'}`} data-testid="treasury-amount">
-              {fmtMoney(treasury, data.currency)}
-            </p>
-          </div>
-          {creditLimit > 0 && (
-            <div className="text-right">
-              <p className="text-xs text-slate-500 mb-0.5">Coussin avant la limite de marge ({fmtMoney(creditLimit, data.currency)})</p>
-              <p className="text-sm font-medium text-slate-800 tabular-nums" data-testid="treasury-headroom">
-                {fmtMoney(headroom, data.currency)} <span className="text-slate-400 font-normal">· {Math.round(headroomPct * 100)} %</span>
-              </p>
-            </div>
-          )}
-        </div>
-        {creditLimit > 0 && (
-          <div className="mt-3">
-            <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
-              <div className={`h-full rounded-full ${gaugeColor} transition-all`} style={{ width: `${headroomPct * 100}%` }} />
-            </div>
-            <div className="flex justify-between text-[11px] text-slate-400 mt-1 tabular-nums">
-              <span>−{fmtMoney(creditLimit, data.currency)} (marge pleine)</span>
-              <span>0 $</span>
-            </div>
-          </div>
-        )}
-      </div>
-      <div className="flex items-center justify-between mb-3 text-xs text-slate-500">
-        <button
-          type="button"
-          onClick={() => setDetailOpen(o => !o)}
-          aria-expanded={detailOpen}
-          data-testid="bank-accounts-detail-toggle"
-          className="flex items-center gap-1 -ml-1 rounded px-1 py-0.5 hover:bg-slate-50 hover:text-slate-800 transition-colors"
-        >
-          <ChevronDown size={14} className={`transition-transform ${detailOpen ? '' : '-rotate-90'}`} />
-          Détail des comptes ({shown.length})
-        </button>
-        <button onClick={() => load({ refresh: true })} className="link-record">Rafraîchir</button>
-      </div>
-      {detailOpen && (
-        <div data-testid="bank-accounts-detail">
-          <p className="mb-2 text-xs text-slate-400">
-            Soldes du jour · montants en {data.currency}
-            {Object.entries(data.exchange_rates || {}).map(([cur, rate]) => (
-              <span key={cur}> · 1 {cur} = {Number(rate).toFixed(4)} {data.currency}</span>
-            ))}
-          </p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <tbody>
-                {renderGroup('Comptes bancaires', banks, data.totals?.bank ?? 0)}
-                {renderGroup('Cartes de crédit', cards, data.totals?.credit_card ?? 0)}
-                <tr className="font-semibold text-slate-900">
-                  <td className="py-2 px-3">Trésorerie nette</td>
-                  <td className="py-2 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-                    {fmtMoney(treasury, data.currency)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ============================================================
 // Productivité — ventes QuickBooks ÷ heures travaillées aux Opérations
 // ============================================================
@@ -2136,15 +1988,6 @@ export default function Dashboard() {
         }
       >
         <ShipmentsWeeklyChart data={data?.weeklyShipments} costs={data?.weeklyShippingCostsByWeek} />
-      </CollapsibleCard>
-    ),
-    section_bank_accounts: (
-      <CollapsibleCard
-        {...cardProps('section_bank_accounts', { testId: 'section-bank-accounts' })}
-        title="Trésorerie — banques & cartes de crédit"
-        description="Trésorerie nette (banques − cartes et marges de crédit, converti en CAD) par rapport à la limite de marge de 360 000 $ — source QuickBooks (CurrentBalance)"
-      >
-        <BankAccountsPanel />
       </CollapsibleCard>
     ),
   }

@@ -1,67 +1,45 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, Plus, Trash2, Search, Copy, Maximize2 } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
+import { ChevronLeft, ChevronRight, Plus, Search } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
-import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { parseDurationToMinutes, formatMinutes } from '../lib/duration.js'
-import { parseWeekHours } from '../lib/weekDuration.js'
 import { localISODate } from '../lib/formatDate.js'
-import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
-import Spinner from '../components/Spinner.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { formatPercent } from '../lib/percent.js'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 function todayStr() { return localISODate() }
-function shiftDate(dateStr, days) {
-  const d = new Date(dateStr + 'T00:00:00')
-  d.setDate(d.getDate() + days)
-  return localISODate(d)
-}
-function weekdayLabel(dateStr) {
-  const d = new Date(dateStr + 'T00:00:00')
-  return d.toLocaleDateString('fr-CA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-}
 function weekdayShort(dateStr) {
   const d = new Date(dateStr + 'T00:00:00')
   return d.toLocaleDateString('fr-CA', { weekday: 'short' })
 }
-// Dimanche de la semaine contenant `dateStr` — clé du mode semaine.
-function weekStartOf(dateStr) {
-  const d = new Date(dateStr + 'T00:00:00')
-  return shiftDate(dateStr, -d.getDay())
+// Périodes de paie : 14 jours du dimanche au samedi, ancrées au 30 août 2026
+// (même ancre que /api/timesheets/period-totals).
+const PAY_PERIOD_ANCHOR = '2026-08-30'
+function addDaysISO(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
 }
-function weekRangeLabel(dateStr) {
-  const start = weekStartOf(dateStr)
-  return dateRangeLabel(start, shiftDate(start, 6))
-}
-// Périodes de 14 jours, du dimanche au samedi, ancrées au 12 septembre 2026.
 function payPeriodStartOf(dateStr) {
-  const anchor = '2026-08-30'
-  // Les dates ISO sont lues en UTC pour compter des jours civils, même aux
-  // changements d'heure ; shiftDate conserve ensuite les dates locales.
-  const days = (Date.parse(dateStr) - Date.parse(anchor)) / 86400000
-  return shiftDate(anchor, Math.floor(days / 14) * 14)
+  const days = Math.round((Date.parse(dateStr + 'T00:00:00Z') - Date.parse(PAY_PERIOD_ANCHOR + 'T00:00:00Z')) / 86400000)
+  return addDaysISO(PAY_PERIOD_ANCHOR, Math.floor(days / 14) * 14)
 }
-function dateRangeLabel(start, end) {
-  const fmt = (s, withYear) => new Date(s + 'T00:00:00')
-    .toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', ...(withYear ? { year: 'numeric' } : {}) })
-  return `${fmt(start)} — ${fmt(end, true)}`
+function periodLabel(start) {
+  return `${start} – ${addDaysISO(start, 13)}`
 }
 function timeToMin(t) {
   if (!t || typeof t !== 'string') return null
   const m = /^(\d{1,2}):(\d{2})$/.exec(t)
   if (!m) return null
   return parseInt(m[1], 10) * 60 + parseInt(m[2], 10)
-}
-function minToTime(min) {
-  if (min == null || !Number.isFinite(min)) return ''
-  const t = ((Math.round(min) % (24 * 60)) + 24 * 60) % (24 * 60)
-  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
 }
 
 // ---- Reusable searchable picker for FK (company / activity code) ----
@@ -274,296 +252,28 @@ function RefPicker({ value, items, labelOf, onChange, disabled, autoFocus, onCre
   )
 }
 
-// ---- Duration input — accepts "90" / "1:30", shows H:MM on blur ----
-function DurationInput({ minutes, onCommit, disabled }) {
-  const [raw, setRaw] = useState(formatMinutes(minutes || 0))
-  useEffect(() => { setRaw(formatMinutes(minutes || 0)) }, [minutes])
-  const commit = () => {
-    const parsed = parseDurationToMinutes(raw)
-    if (parsed == null) {
-      setRaw(formatMinutes(minutes || 0))
-      return
-    }
-    setRaw(formatMinutes(parsed))
-    if (parsed !== (minutes || 0)) onCommit(parsed)
-  }
-  return (
-    <input
-      className={inp + ' text-right w-24'}
-      value={raw}
-      onChange={e => setRaw(e.target.value)}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      disabled={disabled}
-    />
-  )
+// Heure « HH:MM » ↔ secondes depuis minuit (champs Durée Début / Fin).
+function clockToSec(t) {
+  const m = timeToMin(t)
+  return m == null ? null : m * 60
 }
-
-// Parse "8:30", "08:30", "8h30", "8h", "8" → "HH:MM" (or null si invalide)
-function parseTimeInput(raw) {
-  if (raw == null) return null
-  const v = String(raw).trim()
-  if (!v) return ''
-  let m = /^(\d{1,2}):(\d{2})$/.exec(v)
-  if (!m) m = /^(\d{1,2})h(\d{0,2})$/.exec(v)
-  if (!m) m = /^(\d{1,2})$/.exec(v) ? [v, v, '0'] : null
-  if (!m) return null
-  const h = parseInt(m[1], 10)
-  const min = m[2] ? parseInt(m[2], 10) : 0
-  if (!Number.isFinite(h) || !Number.isFinite(min) || h >= 24 || min >= 60) return null
-  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`
-}
-
-// Ne garde que chiffres et ":" (utile pour onChange / paste)
-const sanitizeTimeInput = (raw) => String(raw || '').replace(/[^\d:]/g, '')
-
-// ---- Plain text time input — pas de picker natif, parsing manuel ----
-function TimeTextInput({ value, onCommit, disabled, title }) {
-  const [local, setLocal] = useState(value || '')
-  useEffect(() => { setLocal(value || '') }, [value])
-  const commit = () => {
-    if ((local || '') === (value || '')) return
-    const parsed = parseTimeInput(local)
-    if (parsed === null) { setLocal(value || ''); return }
-    setLocal(parsed)
-    onCommit(parsed)
-  }
-  return (
-    <input
-      type="text"
-      className={inp + ' w-24 tabular-nums'}
-      value={local}
-      inputMode="numeric"
-      onChange={e => setLocal(sanitizeTimeInput(e.target.value))}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      disabled={disabled}
-      title={title}
-    />
-  )
-}
-
-// ---- End-time input — user types an end time, we derive duration from startMin ----
-function EndTimeInput({ value, startMin, onCommitDuration, disabled }) {
-  const [local, setLocal] = useState(value || '')
-  useEffect(() => { setLocal(value || '') }, [value])
-  const commit = () => {
-    if ((local || '') === (value || '')) return
-    const parsed = parseTimeInput(local)
-    if (!parsed) { setLocal(value || ''); return }
-    const endMin = timeToMin(parsed)
-    if (endMin == null || startMin == null || endMin < startMin) {
-      setLocal(value || '')
-      return
-    }
-    setLocal(parsed)
-    onCommitDuration(endMin - startMin)
-  }
-  return (
-    <input
-      type="text"
-      className={inp + ' w-24 tabular-nums'}
-      value={local}
-      inputMode="numeric"
-      onChange={e => setLocal(sanitizeTimeInput(e.target.value))}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      disabled={disabled || startMin == null}
-      title={startMin == null ? 'Renseigne d’abord l’heure de début' : undefined}
-    />
-  )
-}
-
-function TextCell({ value, onCommit, disabled, expandTitle = 'Description', testId }) {
-  const [local, setLocal] = useState(value ?? '')
-  const [focused, setFocused] = useState(false)
-  const [expanded, setExpanded] = useState(false)
-  const [pos, setPos] = useState(null)
-  const wrapRef = useRef(null)
-  const popRef = useRef(null)
-  const taRef = useRef(null)
-  useEffect(() => { setLocal(value ?? '') }, [value])
-  // `local` est lu dans les handlers globaux (clic extérieur) : une ref évite de
-  // re-brancher les listeners à chaque frappe.
-  const localRef = useRef(local)
-  localRef.current = local
-  // La fermeture de l'overlay et le blur du textarea peuvent se suivre dans le
-  // même geste : on mémorise la dernière valeur envoyée pour ne pas PATCHer deux fois.
-  const sentRef = useRef(value ?? '')
-  useEffect(() => { sentRef.current = value ?? '' }, [value])
-  const commit = () => {
-    const v = (localRef.current || '').trim()
-    if (v === (value ?? '') || v === sentRef.current) return
-    sentRef.current = v
-    onCommit(v === '' ? null : v)
-  }
-  const commitRef = useRef(commit)
-  commitRef.current = commit
-
-  // Overlay ancré sur la cellule (à la Airtable) : petit cadre flottant qui
-  // recouvre le champ et s'étend vers le bas, ou vers le haut si le bas manque.
-  const computePos = useCallback(() => {
-    const rect = wrapRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const PANEL = 200
-    const spaceBelow = window.innerHeight - rect.top
-    const openUp = spaceBelow < PANEL && rect.bottom > PANEL
-    const width = Math.max(rect.width, 300)
-    setPos({
-      top: openUp ? undefined : rect.top,
-      bottom: openUp ? window.innerHeight - rect.bottom : undefined,
-      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
-      width,
-    })
-  }, [])
-
-  const closeExpanded = useCallback(({ refocus = false } = {}) => {
-    setExpanded(false)
-    commitRef.current()
-    if (refocus) wrapRef.current?.querySelector('input')?.focus()
-  }, [])
-
-  const openExpanded = () => { computePos(); setExpanded(true) }
-
-  useEffect(() => {
-    if (!expanded) return
-    // Focus en fin de texte pour continuer à écrire directement.
-    const ta = taRef.current
-    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length) }
-    function onDown(e) {
-      if (popRef.current?.contains(e.target)) return
-      if (wrapRef.current?.contains(e.target)) return
-      closeExpanded()
-    }
-    function onReflow() { computePos() }
-    document.addEventListener('mousedown', onDown)
-    window.addEventListener('scroll', onReflow, true)
-    window.addEventListener('resize', onReflow)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('scroll', onReflow, true)
-      window.removeEventListener('resize', onReflow)
-    }
-  }, [expanded, computePos, closeExpanded])
-
-  // L'input mono-ligne ne peut pas rendre de retours de ligne (le navigateur les
-  // supprime du value) : on affiche donc une version aplatie, la valeur réelle
-  // reste dans `local` et n'est écrasée que si l'utilisateur édite en ligne.
-  const flat = (local ?? '').replace(/\s*\n+\s*/g, ' ')
-  const showExpand = (focused || expanded) && !disabled
-  return (
-    <div className="relative" ref={wrapRef}>
-      <input
-        className={inp + (showExpand ? ' pr-7' : '')}
-        value={flat}
-        onChange={e => setLocal(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => { setFocused(false); if (!expanded) commit() }}
-        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-        disabled={disabled}
-        data-testid={testId}
-      />
-      {showExpand && (
-        <button
-          type="button"
-          // preventDefault sur mousedown : garde le focus dans l'input, sinon le
-          // bouton disparaît avant que le clic soit traité.
-          onMouseDown={e => e.preventDefault()}
-          onClick={() => (expanded ? closeExpanded({ refocus: true }) : openExpanded())}
-          className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-          title="Agrandir (édition multiligne)"
-          aria-label="Agrandir"
-          data-testid={testId ? `${testId}-expand` : undefined}
-        >
-          <Maximize2 size={12} />
-        </button>
-      )}
-      {expanded && pos && createPortal(
-        <div
-          ref={popRef}
-          role="dialog"
-          aria-label={expandTitle}
-          style={{ position: 'fixed', top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width, zIndex: 60 }}
-          className="bg-white border border-brand-400 rounded-lg shadow-xl ring-4 ring-brand-100/60 p-1"
-          data-testid={testId ? `${testId}-overlay` : undefined}
-        >
-          <textarea
-            ref={taRef}
-            className="w-full min-h-[110px] max-h-[45vh] px-1.5 py-1 text-sm text-slate-900 bg-transparent border-0 focus:outline-none resize-y leading-relaxed"
-            value={local ?? ''}
-                onChange={e => setLocal(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeExpanded({ refocus: true }) }
-            }}
-            onBlur={commit}
-            data-testid={testId ? `${testId}-textarea` : undefined}
-          />
-          <div className="flex items-center justify-between gap-2 px-1.5 pb-0.5 pt-1 border-t border-slate-100">
-            <span className="text-[10px] text-slate-400">Entrée : nouvelle ligne · Échap : fermer</span>
-            {/* Pas un bouton d'enregistrement : l'autosave se fait au blur / à la fermeture. */}
-            <button
-              type="button"
-              onClick={() => closeExpanded({ refocus: true })}
-              className="text-[11px] text-slate-500 hover:text-slate-800 px-1.5 py-0.5 rounded hover:bg-slate-100 transition-colors"
-            >
-              Fermer
-            </button>
-          </div>
-        </div>,
-        document.body,
-      )}
-    </div>
-  )
+function secToClock(sec) {
+  const m = Math.round(sec / 60)
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
 }
 
 export default function FeuilleDeTemps() {
   const { user } = useAuth()
   const isAdmin = hasRole(user, 'rh')
-  const [date, setDate] = useState(todayStr())
-  const [day, setDay] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [deletingDay, setDeletingDay] = useState(false)
-  const [savingField, setSavingField] = useState({})
-  const [activityCodes, setActivityCodes] = useState([])
+  const [period, setPeriod] = useState(() => payPeriodStartOf(todayStr()))
   const [history, setHistory] = useState([])
-  const [weekHistory, setWeekHistory] = useState([])
-  const [weekRec, setWeekRec] = useState(null)
-  const [weekLoad, setWeekLoad] = useState({ key: null, error: null })
-  const [weekReload, setWeekReload] = useState(0)
-  const weekRequest = useRef(0)
-  // Remonte le champ de la semaine à sa valeur enregistrée quand une saisie est refusée.
-  const [weekResetKey, setWeekResetKey] = useState(0)
-  const [prefMode, setPrefMode] = useState('simple')
-  const [historyMode, setHistoryMode] = useState(null)
-  const [focusEntryId, setFocusEntryId] = useState(null)
   const [selectedUserId, setSelectedUserId] = useState(user?.id)
   const currentUserId = useRef(selectedUserId)
   currentUserId.current = selectedUserId
   const [users, setUsers] = useState([])
+  const pickUser = (id) => setSelectedUserId(id || user.id)
   const isViewingSelf = selectedUserId === user?.id
-  const confirm = useConfirm()
   const { addToast } = useToast()
-
-  // Mode de saisie : celui de l'employé CONSULTÉ (pas du gestionnaire qui regarde).
-  useEffect(() => {
-    if (!selectedUserId) return
-    let alive = true
-    api.timesheets.getPreferences({ user_id: selectedUserId })
-      .then(p => { if (alive) setPrefMode(p.default_mode || 'simple') })
-      .catch(() => {})
-    return () => { alive = false }
-  }, [selectedUserId])
-
-  // Codes d'activité : la liste dépend de l'user visualisé (filtre de visibilité).
-  // - Si je vois ma propre feuille : appel sans for_user_id → filtré par req.user (moi).
-  // - Si admin et je vois un autre user : appel avec for_user_id=selectedUserId → filtré comme ce user.
-  useEffect(() => {
-    if (!selectedUserId) return
-    const params = isViewingSelf ? {} : { for_user_id: selectedUserId }
-    api.activityCodes.list(params)
-      .then(r => setActivityCodes(r.data || r))
-      .catch(() => setActivityCodes([]))
-  }, [selectedUserId, isViewingSelf])
 
   // Liste des users — uniquement pour les admins (qui peuvent consulter la feuille d'un autre employé).
   useEffect(() => {
@@ -576,38 +286,7 @@ export default function FeuilleDeTemps() {
     return users.find(u => u.id === selectedUserId)?.name || '…'
   }, [isViewingSelf, selectedUserId, users, user])
 
-  // Le mode semaine est une façon de travailler (préférence de l'employé), pas
-  // une propriété d'une journée : il prime donc sur le mode de la journée ouverte.
-  const dailyMode = day?.mode || (prefMode === 'week' ? 'simple' : prefMode)
-  const effectiveMode = historyMode === 'day' ? dailyMode : (historyMode || (prefMode === 'week' ? 'week' : dailyMode))
-  const isWeekMode = effectiveMode === 'week'
-  const weekStart = weekStartOf(date)
-  const weekScope = `${selectedUserId}-${weekStart}`
-  const currentWeekScope = useRef(weekScope)
-  currentWeekScope.current = weekScope
-  const weekReady = weekLoad.key === weekScope && !weekLoad.error
-
-  const loadDay = useCallback(async () => {
-    if (!selectedUserId) return
-    setLoading(true)
-    try {
-      const existing = await api.timesheets.getDay({ date, user_id: selectedUserId })
-      setDay(existing)
-    } finally {
-      setLoading(false)
-    }
-  }, [date, selectedUserId])
-
-  useEffect(() => { loadDay() }, [loadDay])
-
-  useRealtimeChannel(day?.id ? `timesheet:${day.id}` : null, (msg) => {
-    const verb = msg.type?.split(':').slice(1).join(':')
-    if (verb === 'updated' && msg.payload) setDay(msg.payload)
-    else if (verb === 'deleted') setDay(null)
-  })
-
-  // Charge 12 mois de feuilles : sert à la sidebar historique (périodes complètes)
-  // ET au rapport RSDE mensuel en bas de page.
+  // Charge 12 mois de feuilles : alimente le tableau « Heures par jour ».
   const loadHistory = useCallback(async () => {
     if (!selectedUserId) return
     const t = new Date()
@@ -617,253 +296,49 @@ export default function FeuilleDeTemps() {
   }, [selectedUserId])
   useEffect(() => { loadHistory() }, [loadHistory])
 
-  // Totaux hebdomadaires (mode semaine) — même fenêtre que l'historique.
-  const loadWeekHistory = useCallback(async () => {
+  // Payé à la semaine (« Heures par semaine » de la fiche employé) : pas de
+  // Début / Fin / Pause / Total.
+  const [paidWeekly, setPaidWeekly] = useState(false)
+  useEffect(() => {
     if (!selectedUserId) return
-    const t = new Date()
-    const from = new Date(t.getFullYear(), t.getMonth() - 11, 1).toISOString().slice(0, 10)
-    const r = await api.timesheets.listWeeks({ from, user_id: selectedUserId })
-    if (currentUserId.current === selectedUserId) setWeekHistory(r.data || [])
+    let alive = true
+    setPaidWeekly(false)
+    api.timesheets.getPreferences({ user_id: selectedUserId })
+      .then(p => { if (alive) setPaidWeekly(!!p?.paid_weekly) })
+      .catch(() => {})
+    return () => { alive = false }
   }, [selectedUserId])
-  useEffect(() => { loadWeekHistory() }, [loadWeekHistory])
 
-  // La semaine affichée : chargée seulement quand le mode le demande.
-  useEffect(() => {
-    if (!selectedUserId || !isWeekMode) return
-    const request = ++weekRequest.current
-    // Vidé d'abord : sinon le total de la semaine précédente reste affiché le
-    // temps de l'aller-retour.
-    setWeekRec(null)
-    setWeekLoad({ key: null, error: null })
-    api.timesheets.getWeek({ date: weekStart, user_id: selectedUserId })
-      .then(w => {
-        if (request !== weekRequest.current) return
-        setWeekRec(w)
-        setWeekLoad({ key: weekScope, error: null })
-      })
-      .catch(e => {
-        if (request === weekRequest.current) setWeekLoad({ key: weekScope, error: e.message })
-      })
-    return () => { weekRequest.current = request + 1 }
-  }, [selectedUserId, weekStart, weekScope, isWeekMode, weekReload])
-
-  // Sidebar : environ 12 semaines, sans tronquer la première période de paie.
-  const sidebarHistory = useMemo(() => {
-    const cutoff = payPeriodStartOf(shiftDate(todayStr(), -84))
-    return history.filter(d => d.date >= cutoff)
-  }, [history])
-  const sidebarWeeks = useMemo(() => {
-    const cutoff = payPeriodStartOf(shiftDate(todayStr(), -84))
-    return weekHistory.filter(w => w.week_start >= cutoff)
-  }, [weekHistory])
-
-  async function ensureDay(mode) {
-    if (day) return day
-    // Si admin visualise un autre user et qu'aucun mode n'est explicite, on laisse le backend
-    // utiliser la préférence du user cible (au lieu d'imposer celle de l'admin).
-    let bodyMode = mode
-    if (bodyMode === undefined) bodyMode = isViewingSelf ? prefMode : undefined
-    // 'week' n'est pas un mode de journée — laisser le backend choisir son défaut.
-    if (bodyMode === 'week') bodyMode = undefined
-    const created = await api.timesheets.createDay({ date, mode: bodyMode, user_id: selectedUserId })
-    setDay(created)
-    return created
-  }
-
-  async function patchDay(patch) {
-    const d = await ensureDay(patch.mode || day?.mode || prefMode)
-    const k = Object.keys(patch)[0] || 'day'
-    setSavingField(s => ({ ...s, [k]: true }))
+  // Tableau « Heures par jour » : la journée d'une ligne est créée à sa
+  // première saisie, puis remplacée en place dans l'historique.
+  async function saveRow(rowDate, fn) {
+    const userId = selectedUserId
     try {
-      const updated = await api.timesheets.updateDay(d.id, patch)
-      setDay(updated)
-      // Le backend synchronise déjà la pref quand le user change le mode de sa propre journée —
-      // on reflète le changement côté client pour les prochains rendus (défaut sur un jour non créé).
-      // Si admin visualise un autre user, on ne touche pas à la pref locale.
-      if (patch.mode && (patch.mode === 'simple' || patch.mode === 'detailed') && isViewingSelf) {
-        setPrefMode(patch.mode)
-      }
+      const d = history.find(x => x.date === rowDate)
+        || await api.timesheets.createDay({ date: rowDate, user_id: userId })
+      const updated = await fn(d.id)
+      if (currentUserId.current !== userId || !updated) return
+      setHistory(h => [updated, ...h.filter(x => x.id !== updated.id)].sort((x, y) => y.date.localeCompare(x.date)))
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
       loadHistory()
-      return true
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-      return false
-    } finally {
-      setSavingField(s => ({ ...s, [k]: false }))
     }
   }
+  const patchRowDay = (rowDate, patch) => saveRow(rowDate, id => api.timesheets.updateDay(id, patch))
+  const saveRowRd = (rowDate, body) => saveRow(rowDate, id => api.timesheets.setDayRd(id, body))
 
-  // Bascule du mode de saisie. « Semaine » ne crée aucune journée : il n'y a
-  // qu'un chiffre par semaine, stocké à part — seule la préférence change.
-  async function setMode(mode) {
-    if (mode === effectiveMode || savingField.mode) return
-    if (mode === 'week' || isWeekMode) {
-      setSavingField(s => ({ ...s, mode: true }))
-      try {
-        await api.timesheets.updatePreferences({ default_mode: mode, user_id: selectedUserId })
-        setPrefMode(mode)
-        setHistoryMode(null)
-      } catch (e) {
-        addToast({ message: e.message, type: 'error' })
-        return
-      } finally {
-        setSavingField(s => ({ ...s, mode: false }))
-      }
-      if (mode === 'week') return
-    }
-    if (await patchDay({ mode })) setHistoryMode(null)
-  }
-
-  async function saveWeekMinutes(minutes) {
-    if (!weekReady || savingField.week_minutes) return
-    const request = weekRequest.current
-    setSavingField(s => ({ ...s, week_minutes: true }))
-    try {
-      const saved = await api.timesheets.saveWeek({ date: weekStart, minutes, user_id: selectedUserId })
-      if (request === weekRequest.current && currentWeekScope.current === weekScope) setWeekRec(saved)
-      loadWeekHistory()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-      if (request === weekRequest.current && currentWeekScope.current === weekScope) setWeekResetKey(k => k + 1)
-    } finally {
-      setSavingField(s => ({ ...s, week_minutes: false }))
-    }
-  }
-
-  async function addEntry() {
-    const d = await ensureDay('detailed')
-    if (d.mode !== 'detailed') {
-      await patchDay({ mode: 'detailed' })
-    }
-    const updated = await api.timesheets.addEntry(d.id, { duration_minutes: 0 })
-    setDay(updated)
-    // Focus le picker de code d'activité de la nouvelle ligne (la dernière).
-    const newEntry = updated?.entries?.[updated.entries.length - 1]
-    if (newEntry?.id) setFocusEntryId(newEntry.id)
-    loadHistory()
-  }
-
-  async function patchEntry(entryId, patch) {
-    const key = `entry-${entryId}-${Object.keys(patch)[0]}`
-    setSavingField(s => ({ ...s, [key]: true }))
-    try {
-      const updated = await api.timesheets.updateEntry(entryId, patch)
-      setDay(updated)
-      loadHistory()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setSavingField(s => ({ ...s, [key]: false }))
-    }
-  }
-
-  async function deleteEntry(entryId) {
-    if (!(await confirm('Supprimer cette activité ?'))) return
-    const updated = await api.timesheets.deleteEntry(entryId)
-    setDay(updated)
-    loadHistory()
-  }
-
-  async function deleteEmptyDay() {
-    if (!canDeleteDay || deletingDay || Object.values(savingField).some(Boolean)) return
-    const id = day.id
-    setDeletingDay(true)
-    try {
-      if (!(await confirm({
-        message: `Supprimer la journée du ${weekdayLabel(day.date)} ?`,
-        confirmLabel: 'Supprimer',
-      }))) return
-      await api.timesheets.deleteDay(id)
-      setDay(current => current?.id === id ? null : current)
-      setHistory(current => current.filter(d => d.id !== id))
-      addToast({ message: 'Journée supprimée', type: 'success' })
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setDeletingDay(false)
-    }
-  }
-
-  // Création d'un code d'activité à la volée depuis le picker de la feuille.
-  // Le nouveau code est public (visible à tous) et non pré-coché RSDE par défaut —
-  // ces réglages se font ensuite sur la page « Codes d'activité ».
-  // Renvoie l'id du code créé pour que le picker le sélectionne aussitôt.
-  async function createActivityCode(name) {
-    try {
-      const created = await api.activityCodes.create({ name })
-      setActivityCodes(cs => [...cs, created].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { sensitivity: 'base' })))
-      return created.id
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-      return null
-    }
-  }
-
-  // Raccourcis clavier de la page : Enter = nouvelle activité, a = aujourd'hui,
-  // flèche gauche = jour précédent, flèche droite = jour suivant.
+  // Raccourci « t » (Layout) : ma feuille du jour.
+  const location = useLocation()
   useEffect(() => {
-    function onKey(e) {
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      // On filtre sur e.target ET document.activeElement : quand un picker se
-      // ferme via Enter, le focus saute sur le bouton avant que le keydown
-      // remonte ici — sans le check sur e.target on créerait une nouvelle
-      // entrée à chaque sélection dans le picker code d'activité.
-      const isInteractive = el => {
-        if (!el) return false
-        const tag = el.tagName
-        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || el.isContentEditable
-      }
-      if (isInteractive(e.target) || isInteractive(document.activeElement)) return
-      // En mode semaine les flèches déplacent d'une semaine, et il n'y a pas
-      // d'activité à ajouter.
-      const step = isWeekMode ? 7 : 1
-      if (e.key === 'Enter') {
-        if (isWeekMode) return
-        e.preventDefault()
-        addEntry()
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault()
-        setDate(d => shiftDate(d, -step))
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault()
-        setDate(d => shiftDate(d, step))
-      } else if (e.key.toLowerCase() === 'a') {
-        e.preventDefault()
-        setDate(todayStr())
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-    // addEntry est stable (closure sur day/prefMode), on le recalcule à chaque
-    // render — pas besoin de le mettre en dépendance car la closure se renouvelle.
+    if (location.state?.timesheet !== 'today-detailed') return
+    setSelectedUserId(user?.id)
+    setPeriod(payPeriodStartOf(todayStr()))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [day, prefMode, isWeekMode])
-
-  // Totaux — un entry ne compte que si le code d'activité est payable (payable !== 0).
-  // Les entrées sans code d'activité comptent (par défaut on assume payable).
-  const entries = day?.entries || []
-  const canDeleteDay = !isWeekMode && !loading && day?.date === date
-    && day?.user_id === selectedUserId && entries.length === 0
-    && (day.mode === 'detailed' || (!day.start_time && !day.end_time && !Number(day.break_minutes)))
-    && day.status !== 'approved' && (day.status !== 'submitted' || isAdmin)
-  const isPayable = (e) => e.activity_code_payable == null || e.activity_code_payable === 1
-  const detailedTotalMin = entries
-    .filter(isPayable)
-    .reduce((s, e) => s + (Number(e.duration_minutes) || 0), 0)
-  const simpleTotalMin = (() => {
-    if (!day?.start_time || !day?.end_time) return 0
-    const toMin = (t) => { const [h, m] = t.split(':').map(n => parseInt(n, 10) || 0); return h * 60 + m }
-    const total = toMin(day.end_time) - toMin(day.start_time) - (Number(day.break_minutes) || 0)
-    return Math.max(0, total)
-  })()
-  const weekTotalMin = Number(weekRec?.minutes) || 0
-  const dailyTotal = isWeekMode
-    ? weekTotalMin
-    : (effectiveMode === 'detailed' ? detailedTotalMin : simpleTotalMin)
+  }, [location.key])
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center gap-3 mb-6 flex-wrap">
           <PageTitle>Feuille de temps</PageTitle>
           {isAdmin && users.length > 0 ? (
@@ -874,7 +349,7 @@ export default function FeuilleDeTemps() {
                   value={selectedUserId}
                   items={users}
                   labelOf={u => u.name}
-                  onChange={(id) => { setHistoryMode(null); setSelectedUserId(id || user.id) }}
+                  onChange={pickUser}
                 />
               </div>
             </div>
@@ -890,566 +365,203 @@ export default function FeuilleDeTemps() {
           >
             <span>Tu consultes la feuille de temps de <strong>{selectedUserName}</strong>. Toute modification sera enregistrée sur son compte.</span>
             <button
-              onClick={() => { setHistoryMode(null); setSelectedUserId(user.id) }}
+              onClick={() => setSelectedUserId(user.id)}
               className="text-xs px-2 py-1 border border-amber-300 rounded text-amber-900 hover:bg-amber-100 whitespace-nowrap"
             >Revenir à ma feuille</button>
           </div>
         )}
 
         <div className="flex flex-col lg:flex-row gap-6">
-          {/* History — gauche en desktop, bas en mobile */}
-          <aside className="lg:w-72 lg:flex-shrink-0 order-2 lg:order-1">
-            <HistoryTable
-              history={sidebarHistory}
-              weeks={sidebarWeeks}
-              currentDate={date}
-              currentWeek={weekStart}
-              isWeekMode={isWeekMode}
-              onJump={(d, mode) => { setHistoryMode(mode); setDate(d); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+          <main className="flex-1 min-w-0">
+            <HoursTable
+              period={period}
+              onPeriod={setPeriod}
+              history={history}
+              onPatchDay={patchRowDay}
+              onSaveRd={saveRowRd}
+              paidWeekly={paidWeekly}
             />
-          </aside>
-
-          {/* Édition du jour */}
-          <main className="flex-1 min-w-0 order-1 lg:order-2">
-            {/* Date nav */}
-            <div className="card p-4 mb-4 flex items-center justify-between gap-4 flex-wrap">
-              <div className="flex items-center gap-2">
-                <button onClick={() => setDate(d => shiftDate(d, isWeekMode ? -7 : -1))} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label={isWeekMode ? 'Semaine précédente' : 'Jour précédent'}>
-                  <ChevronLeft size={18} />
-                </button>
-                <div className="text-sm font-medium text-slate-700 capitalize tabular-nums min-w-[14rem] text-center" data-testid="period-label">
-                  {isWeekMode ? weekRangeLabel(date) : weekdayLabel(date)}
-                </div>
-                <button onClick={() => setDate(d => shiftDate(d, isWeekMode ? 7 : 1))} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label={isWeekMode ? 'Semaine suivante' : 'Jour suivant'}>
-                  <ChevronRight size={18} />
-                </button>
-                <button onClick={() => setDate(todayStr())} className="ml-1 text-xs link-record">{isWeekMode ? 'Cette semaine' : "Aujourd'hui"}</button>
-              </div>
-              <div className="text-right">
-                <div className="text-xs text-slate-400 uppercase tracking-wide">{isWeekMode ? 'Total payable de la semaine' : 'Total payable du jour'}</div>
-                <div className="text-xl font-semibold text-slate-900 tabular-nums">{isWeekMode && !weekReady ? '—' : formatMinutes(dailyTotal)}</div>
-              </div>
-            </div>
-
-            {/* Mode toggle */}
-            <div className="card p-4 mb-4 flex items-center gap-3">
-              <span className="text-sm font-medium text-slate-500">Mode :</span>
-              <div className="flex rounded-lg border border-slate-200 overflow-hidden">
-                <button
-                  onClick={() => setMode('simple')}
-                  disabled={savingField.mode || (!isWeekMode && day?.mode === 'detailed' && entries.length > 0)}
-                  title={!isWeekMode && day?.mode === 'detailed' && entries.length > 0 ? 'Supprimez d\'abord les activités détaillées pour revenir au mode simplifié.' : undefined}
-                  className={`px-3 py-1.5 text-sm ${effectiveMode === 'simple' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} disabled:bg-slate-50 disabled:text-slate-300 disabled:cursor-not-allowed disabled:hover:bg-slate-50`}
-                  aria-pressed={effectiveMode === 'simple'}
-                >Simplifié</button>
-                <button
-                  onClick={() => setMode('detailed')}
-                  disabled={savingField.mode}
-                  className={`px-3 py-1.5 text-sm border-l border-slate-200 ${effectiveMode === 'detailed' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-                  aria-pressed={effectiveMode === 'detailed'}
-                >Détaillé</button>
-                <button
-                  onClick={() => setMode('week')}
-                  disabled={savingField.mode}
-                  className={`px-3 py-1.5 text-sm border-l border-slate-200 ${isWeekMode ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-                  aria-pressed={isWeekMode}
-                >Semaine</button>
-              </div>
-              {!isWeekMode && day?.mode === 'detailed' && entries.length > 0 && (
-                <span className="text-xs text-slate-400">Mode verrouillé — {entries.length} activité{entries.length > 1 ? 's' : ''} présente{entries.length > 1 ? 's' : ''}</span>
-              )}
-              {savingField.mode && <span className="text-xs text-brand-500">enregistrement…</span>}
-            </div>
-
-            {/* Edit area */}
-            {canDeleteDay && (
-              <div className="flex justify-end mb-3">
-                <button
-                  type="button"
-                  onClick={deleteEmptyDay}
-                  disabled={deletingDay || Object.values(savingField).some(Boolean)}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Trash2 size={14} /> {deletingDay ? 'Suppression…' : 'Supprimer la journée'}
-                </button>
-              </div>
-            )}
-            {isWeekMode && weekLoad.key === weekScope && weekLoad.error ? (
-              <div className="card p-4" role="alert">
-                <p className="text-sm text-red-600">Impossible de charger cette semaine.</p>
-                <button className="text-sm link-record mt-2" onClick={() => setWeekReload(n => n + 1)}>Réessayer</button>
-              </div>
-            ) : isWeekMode && !weekReady ? (
-              <Spinner size="xs" label="Chargement de la semaine…" />
-            ) : isWeekMode ? (
-              <WeekForm
-                key={`${weekScope}-${weekResetKey}`}
-                minutes={weekTotalMin}
-                saving={savingField.week_minutes}
-                onCommit={saveWeekMinutes}
-              />
-            ) : loading ? (
-              <div className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
-            ) : effectiveMode === 'simple' ? (
-              <SimpleDayForm day={day} date={date} saving={savingField} onPatch={patchDay} />
-            ) : (
-              <DetailedDayForm
-                day={day}
-                entries={entries}
-                activityCodes={activityCodes}
-                saving={savingField}
-                onAddEntry={addEntry}
-                onPatchEntry={patchEntry}
-                onPatchDay={patchDay}
-                onDeleteEntry={deleteEntry}
-                onCreateCode={isAdmin ? createActivityCode : undefined}
-                focusEntryId={focusEntryId}
-                onFocusConsumed={() => setFocusEntryId(null)}
-              />
-            )}
-
-            {/* Pas de rapport RSDE en mode semaine : il n'y a aucune activité à ventiler. */}
-            {!isWeekMode && <RsdeReport history={history} />}
           </main>
         </div>
-
-        {isAdmin && (
-          <PayPeriodTotals
-            refreshKey={`${history.length}-${weekHistory.length}-${day?.updated_at || ''}-${weekRec?.minutes ?? ''}`}
-            selectedUserId={selectedUserId}
-            onPick={(id) => { setHistoryMode(null); setSelectedUserId(id) }}
-          />
-        )}
       </div>
     </Layout>
   )
 }
 
-// Mode semaine : un seul chiffre pour les sept jours. Rien d'autre à saisir —
-// c'est tout l'intérêt pour les employés qui ne détaillent pas leurs journées.
-function WeekForm({ minutes, saving, onCommit }) {
-  const [raw, setRaw] = useState(formatMinutes(minutes))
-  const [error, setError] = useState(null)
-  useEffect(() => { setRaw(formatMinutes(minutes)); setError(null) }, [minutes])
+// Heures par jour : toute la saisie se fait ici, une ligne par jour de la
+// période de paie, dans un DataTable en mode tableur. Une journée n'est créée
+// qu'à la première saisie.
+const CLOCK_COLUMNS = new Set(['start_time', 'end_time', 'break_str', 'total_str', 'rsde_pct'])
 
-  const commit = () => {
-    const parsed = parseWeekHours(raw)
-    if (parsed == null) {
-      setError('Saisissez de 0 à 168 h (ex. : 37,5 ou 37:30).')
-      return
-    }
-    setError(null)
-    setRaw(formatMinutes(parsed))
-    if (parsed !== minutes) onCommit(parsed)
-  }
-
-  return (
-    <div className="card p-5" data-testid="week-form">
-      <div className="max-w-xs">
-        <label className="label" htmlFor="week-hours">Heures de la semaine</label>
-        <input
-          id="week-hours"
-          className={inp + ' text-right w-28 tabular-nums'}
-          value={raw}
-          onChange={e => { setRaw(e.target.value); setError(null) }}
-          onBlur={commit}
-          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-          disabled={saving}
-          aria-invalid={!!error}
-          aria-describedby={error ? 'week-hours-error' : 'week-hours-hint'}
-        />
-        <p id="week-hours-hint" className="text-xs text-slate-400 mt-2">Ex. : 40 ou 37:30</p>
-        {error && <p id="week-hours-error" className="text-xs text-red-600 mt-2" role="alert">{error}</p>}
-        {saving && <p className="text-xs text-brand-500 mt-2" role="status">Enregistrement…</p>}
-      </div>
-    </div>
-  )
-}
-
-function SimpleDayForm({ day, date: _date, saving, onPatch }) {
-  return (
-    <div className="card p-5">
-      <div className="grid grid-cols-3 gap-4 max-w-xl">
-        <div>
-          <label className="label">Heure de début</label>
-          <TimeTextInput value={day?.start_time || ''} onCommit={v => onPatch({ start_time: v })} disabled={saving.start_time} />
-        </div>
-        <div>
-          <label className="label">Heure de fin</label>
-          <TimeTextInput value={day?.end_time || ''} onCommit={v => onPatch({ end_time: v })} disabled={saving.end_time} />
-        </div>
-        <div>
-          <label className="label">Temps de pause</label>
-          <DurationInput minutes={day?.break_minutes || 0} onCommit={v => onPatch({ break_minutes: v })} disabled={saving.break_minutes} />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPatchEntry, onPatchDay, onDeleteEntry, onCreateCode, focusEntryId, onFocusConsumed }) {
-  // Sélection d'un code : si le code est marqué « pré-coché RSDE », on coche
-  // automatiquement la case RSDE de l'entrée dans le même PATCH. L'employé peut
-  // toujours décocher ensuite — on ne force jamais le décochage.
-  const selectCode = (entry, codeId) => {
-    const code = activityCodes.find(a => a.id === codeId)
-    const patch = { activity_code_id: codeId }
-    if (code?.rsde_default && !entry.rsde) patch.rsde = 1
-    onPatchEntry(entry.id, patch)
-  }
-  // Quand le parent demande à focuser une entrée précise, on consomme la
-  // demande après mount du picker correspondant.
-  useEffect(() => {
-    if (focusEntryId) onFocusConsumed?.()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusEntryId])
-  // Première entrée → l'heure de début vient de day.start_time. Pour les suivantes,
-  // start = end de l'entrée précédente (cumul des durées).
-  const dayStartMin = timeToMin(day?.start_time)
-  const startMins = []
-  let acc = dayStartMin
-  for (const e of entries) {
-    startMins.push(acc)
-    if (acc != null) acc += Number(e.duration_minutes) || 0
-  }
-
-  return (
-    <div className="card p-4">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
-              <th className="px-2 py-2 w-28">Début</th>
-              <th className="px-2 py-2 w-48">Code d'activité</th>
-              <th className="px-2 py-2 w-28">Fin</th>
-              <th className="px-2 py-2">Description</th>
-              <th className="px-2 py-2 w-20 text-right">Durée</th>
-              <th className="px-2 py-2 w-16 text-center">RSDE</th>
-              <th className="w-8"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.length === 0 && (
-              <tr><td colSpan={7} className="text-center text-sm text-slate-400 py-6">Aucune activité. Cliquez sur « Ajouter » ci-dessous.</td></tr>
-            )}
-            {entries.map((e, i) => {
-              const nonPayable = e.activity_code_id && e.activity_code_payable === 0
-              const startMin = startMins[i]
-              const dur = Number(e.duration_minutes) || 0
-              // Champ Fin vide tant qu'aucune durée n'est saisie (sinon afficherait l'heure de début)
-              const endMin = startMin != null && dur > 0 ? startMin + dur : null
-              const isFirst = i === 0
-              return (
-                <tr key={e.id} className={`border-t border-slate-100 ${nonPayable ? 'bg-amber-50/40' : ''}`}>
-                  <td className="px-2 py-1.5">
-                    {isFirst ? (
-                      <TimeTextInput
-                        value={day?.start_time || ''}
-                        onCommit={v => onPatchDay({ start_time: v })}
-                        disabled={saving.start_time}
-                      />
-                    ) : (
-                      <span className="px-2 text-slate-500 tabular-nums">{startMin != null ? minToTime(startMin) : '—'}</span>
-                    )}
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <RefPicker value={e.activity_code_id} items={activityCodes} labelOf={a => a.name || '(sans nom)'} onChange={v => selectCode(e, v)} onCreate={onCreateCode} createLabel="Créer le code" disabled={saving[`entry-${e.id}-activity_code_id`]} autoFocus={focusEntryId === e.id} />
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <EndTimeInput
-                      value={endMin != null ? minToTime(endMin) : ''}
-                      startMin={startMin}
-                      onCommitDuration={mins => onPatchEntry(e.id, { duration_minutes: mins })}
-                      disabled={saving[`entry-${e.id}-duration_minutes`]}
-                    />
-                  </td>
-                  <td className="px-2 py-1.5"><TextCell value={e.description} onCommit={v => onPatchEntry(e.id, { description: v })} disabled={saving[`entry-${e.id}-description`]} expandTitle="Tâche / activité" testId={`entry-description-${e.id}`} /></td>
-                  <td className="px-2 py-1.5 text-right text-slate-500 tabular-nums">{formatMinutes(e.duration_minutes || 0)}</td>
-                  <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!e.rsde} onChange={ev => onPatchEntry(e.id, { rsde: ev.target.checked ? 1 : 0 })} className="rounded" data-testid={`entry-rsde-${e.id}`} /></td>
-                  <td className="px-1"><button onClick={() => onDeleteEntry(e.id)} className="p-1 text-slate-300 hover:text-red-500" title="Supprimer"><Trash2 size={14} /></button></td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="mt-3">
-        <button onClick={onAddEntry} className="text-sm link-record flex items-center gap-1">
-          <Plus size={14} /> Ajouter une activité
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// Une cellule du rapport RSDE = une seule ligne : un saut de ligne ou une tabulation
-// dans une description créerait une nouvelle rangée / colonne au collage du TSV.
-// Tout le texte est conservé, les séparateurs deviennent des espaces.
-const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
-
-function RsdeReport({ history }) {
-  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7))
+function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekly }) {
   const { addToast } = useToast()
-  const [copied, setCopied] = useState(false)
+  // Description saisie sur une ligne encore sans temps RSDE : gardée ici
+  // jusqu'à la saisie des heures, qui l'enregistre.
+  const [pendingDesc, setPendingDesc] = useState({})
+  const label = useMemo(() => periodLabel(period), [period])
+  const shiftPeriod = (delta) => onPeriod(addDaysISO(period, 14 * delta))
 
-  const monthLabel = useMemo(() => {
-    const [y, m] = month.split('-').map(Number)
-    return new Date(y, m - 1, 1).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
-  }, [month])
-
-  const shiftMonth = (delta) => {
-    const [y, m] = month.split('-').map(Number)
-    const d = new Date(y, m - 1 + delta, 1)
-    setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
-  }
-
-  // Agrège les entrées RSDE par jour, puis remplit toutes les dates du mois —
-  // les jours sans heure RSDE apparaissent à 0,00 h et description vide.
-  const rows = useMemo(() => {
-    const byDate = new Map()
-    for (const day of history || []) {
-      if (!day.date || !day.date.startsWith(month)) continue
-      for (const e of day.entries || []) {
-        if (!e.rsde) continue
-        const codeName = oneLine(e.activity_code_name)
-        const desc = oneLine(e.description)
-        const part = [codeName, desc].filter(Boolean).join(' — ')
-        const minutes = Number(e.duration_minutes) || 0
-        if (!byDate.has(day.date)) byDate.set(day.date, { minutes: 0, parts: [] })
-        const agg = byDate.get(day.date)
-        agg.minutes += minutes
-        if (part) agg.parts.push(part)
-      }
+  // Projet proposé : celui de la dernière journée R&D avant la ligne.
+  const projectBefore = useCallback((date) => {
+    for (const d of history || []) {
+      if (d.date >= date) continue
+      const p = (d.entries || []).find(e => e.rsde && e.activity_code_project)?.activity_code_project
+      if (p) return p
     }
-    const [y, m] = month.split('-').map(Number)
-    const daysInMonth = new Date(y, m, 0).getDate()
+    return ''
+  }, [history])
+
+  const rows = useMemo(() => {
+    const dayByDate = new Map((history || []).map(d => [d.date, d]))
     const out = []
-    for (let d = 1; d <= daysInMonth; d++) {
-      const date = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-      const agg = byDate.get(date)
-      out.push({
-        date,
-        hours: agg ? agg.minutes / 60 : 0,
-        description: agg ? agg.parts.join(' ; ') : '',
+    for (let i = 0; i < 14; i++) {
+      const date = addDaysISO(period, i)
+      const day = dayByDate.get(date) || null
+      const rdEntries = (day?.entries || []).filter(e => e.rsde)
+      const rdMinutes = rdEntries.reduce((s, e) => s + (Number(e.duration_minutes) || 0), 0)
+      const total = day ? dayTotal(day) : 0
+      const row = { id: date, date, day, rdMinutes, total }
+      const savedDesc = rdEntries.find(e => e.description)?.description || ''
+      Object.assign(row, {
+        rd: rdMinutes,
+        // Début / Fin / Pause / Total : champs Durée (secondes).
+        start_s: clockToSec(day?.start_time),
+        end_s: clockToSec(day?.end_time),
+        break_s: day?.break_minutes ? day.break_minutes * 60 : null,
+        total_s: total ? total * 60 : null,
+        rsde_str: rdMinutes ? formatMinutes(rdMinutes) : '',
+        // % de la journée = RSDE ÷ Total ; le saisir remplit RSDE.
+        rsde_pct: rdMinutes && total ? formatPercent(Math.round(rdMinutes / total * 100)) : '',
+        // Projet affiché seulement quand la ligne a du temps RSDE.
+        project: rdMinutes > 0
+          ? rdEntries.find(e => e.activity_code_project)?.activity_code_project || ''
+          : '',
+        description: rdMinutes > 0 ? savedDesc : (pendingDesc[date] ?? savedDesc),
       })
+      out.push(row)
     }
     return out
-  }, [history, month])
+  }, [history, period, pendingDesc])
 
-  const totalHours = rows.reduce((s, r) => s + r.hours, 0)
-  const fmtH = (h) => h.toFixed(2).replace('.', ',')
+  const totalPayable = rows.reduce((s, r) => s + r.total, 0)
+  const totalRd = rows.reduce((s, r) => s + r.rd, 0)
 
-  const copyAsTsv = async () => {
-    const lines = rows.map(r => `${r.date}\t${fmtH(r.hours)}\t${oneLine(r.description)}`)
-    try {
-      await navigator.clipboard.writeText(lines.join('\n'))
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch (e) {
-      addToast({ message: 'Échec de copie : ' + e.message, type: 'error' })
+  async function editCell(row, col, value) {
+    const v = value == null ? '' : String(value)
+    const refuse = (message) => addToast({ message, type: 'error' })
+    const parseDur = (raw) => (!raw.trim() ? 0 : parseDurationToMinutes(raw))
+    switch (col.id) {
+      case 'start_time':
+      case 'end_time': {
+        // Durée depuis minuit. Un nombre seul est lu en minutes par le champ
+        // Durée : « 8 » (≤ 23 min) vaut ici 8 h, comme avant.
+        let sec = value == null ? null : Math.round(Number(value) / 60) * 60
+        if (sec != null && sec > 0 && sec < 24 * 60 && sec % 60 === 0) sec *= 60
+        if (sec != null && sec >= 24 * 3600) return refuse('Heure invalide (ex. : 8:30).')
+        const parsed = sec == null ? '' : secToClock(sec)
+        if (parsed !== (row.day?.[col.id] || '')) return onPatchDay(row.date, { [col.id]: parsed })
+        return
+      }
+      case 'break_str': {
+        // Pause : un nombre seul de 1 à 4 = heures (« 1 » = 1 h), au-delà = minutes (« 30 »).
+        let min = value == null ? 0 : Math.round(Number(value) / 60)
+        if (min >= 1 && min <= 4) min *= 60
+        if (min !== (row.day?.break_minutes || 0)) return onPatchDay(row.date, { break_minutes: min })
+        return
+      }
+      case 'rsde_str': {
+        const parsed = parseDur(v)
+        if (parsed == null) return refuse('Durée invalide (ex. : 1:30).')
+        // Première saisie RSDE : le projet proposé est celui de la dernière journée R&D.
+        const project = row.rdMinutes > 0 ? row.project : projectBefore(row.date)
+        if (parsed !== row.rdMinutes) return onSaveRd(row.date, { minutes: parsed, project, description: row.description })
+        return
+      }
+      case 'rsde_pct': {
+        const pct = v.trim() ? Number(v.replace(/[%\s\u00a0]/g, '').replace(',', '.')) : 0
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) return refuse('Pourcentage invalide (ex. : 50).')
+        if (pct > 0 && !row.total) return refuse('Saisis d’abord Début et Fin.')
+        const minutes = Math.round(row.total * pct / 100)
+        const project = row.rdMinutes > 0 ? row.project : projectBefore(row.date)
+        if (minutes !== row.rdMinutes) return onSaveRd(row.date, { minutes, project, description: row.description })
+        return
+      }
+      case 'project':
+        if (row.rdMinutes > 0 && v !== row.project) return onSaveRd(row.date, { minutes: row.rdMinutes, project: v, description: row.description })
+        return
+      case 'description':
+        setPendingDesc(p => ({ ...p, [row.date]: v }))
+        if (row.rdMinutes > 0 && v !== row.description) return onSaveRd(row.date, { minutes: row.rdMinutes, project: row.project, description: v })
+        return
+      default:
     }
   }
 
+  const columns = useMemo(() => [
+    { id: 'date', label: 'Date', field: 'date', width: 150, type: 'date', render: r => <DateLabel date={r.date} /> },
+    { id: 'start_time', label: 'Début', field: 'start_s', type: 'duration', width: 90, editable: true },
+    { id: 'end_time', label: 'Fin', field: 'end_s', type: 'duration', width: 90, editable: true },
+    { id: 'break_str', label: 'Pause', field: 'break_s', type: 'duration', width: 90, editable: true },
+    { id: 'total_str', label: 'Total', field: 'total_s', type: 'duration', fieldType: 'formula', description: TOTAL_FORMULA, width: 90, footer: <span data-testid="hours-total">{formatMinutes(totalPayable)}</span> },
+    { id: 'rsde_pct', label: '% RSDE', field: 'rsde_pct', width: 80, editable: true },
+    { id: 'rsde_str', label: 'RSDE', field: 'rsde_str', width: 90, editable: true, footer: <span data-testid="hours-total-rsde">{formatMinutes(totalRd)}</span> },
+    { id: 'project', label: 'Projet', field: 'project', width: 200, editable: r => r.rdMinutes > 0, type: 'single_select', options: RD_PROJECTS },
+    { id: 'description', label: 'Description', field: 'description', editable: true },
+  ].filter(c => !paidWeekly || !CLOCK_COLUMNS.has(c.id)), [totalPayable, totalRd, paidWeekly])
+
   return (
-    <div className="card p-4 mt-4" data-testid="rsde-report">
-      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-        <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide">Rapport RSDE mensuel</h2>
-        <div className="flex items-center gap-2">
-          <button onClick={() => shiftMonth(-1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Mois précédent">
-            <ChevronLeft size={16} />
-          </button>
-          <span className="text-sm font-medium text-slate-700 capitalize tabular-nums min-w-[9rem] text-center">{monthLabel}</span>
-          <button onClick={() => shiftMonth(1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Mois suivant">
-            <ChevronRight size={16} />
-          </button>
-          <button
-            onClick={copyAsTsv}
-            className="ml-2 text-xs px-2 py-1 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 flex items-center gap-1"
-            data-testid="rsde-copy"
-          >
-            <Copy size={12} /> {copied ? 'Copié' : 'Copier'}
-          </button>
+    <div data-testid="rsde-report">
+      <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+        <div className="flex items-center gap-3">
+          <h2 className="font-semibold text-slate-900">Heures par jour</h2>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <button onClick={() => shiftPeriod(-1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Période précédente">
+              <ChevronLeft size={16} />
+            </button>
+            <span className="text-sm font-medium text-slate-700 tabular-nums min-w-[11rem] text-center" data-testid="pay-period-label">{label}</span>
+            <button onClick={() => shiftPeriod(1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Période suivante">
+              <ChevronRight size={16} />
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm" data-testid="rsde-table">
-          <thead>
-            <tr className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
-              <th className="px-2 py-2 w-32">Date</th>
-              <th className="px-2 py-2 w-24 text-right">Durée (h)</th>
-              <th className="px-2 py-2">Description</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i} className="border-t border-slate-100">
-                <td className="px-2 py-1.5 tabular-nums text-slate-700">{r.date}</td>
-                <td className="px-2 py-1.5 tabular-nums text-slate-700 text-right">{fmtH(r.hours)}</td>
-                <td className="px-2 py-1.5 text-slate-700">{r.description}</td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="border-t-2 border-slate-200 bg-slate-50">
-              <td className="px-2 py-1.5 font-semibold text-slate-700">Total</td>
-              <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900">{fmtH(totalHours)}</td>
-              <td></td>
-            </tr>
-          </tfoot>
-        </table>
+      <div data-testid="rsde-table">
+        <DataTable
+          table="timesheet_hours"
+          columns={columns}
+          data={rows}
+          onCellEdit={editCell}
+          height="auto"
+          selectedSelectChevron
+          selectedSelectClickOpens
+          fullHeightCells
+          seamlessCellInput
+          dragSelectCells
+        />
       </div>
     </div>
   )
 }
 
-// RH : heures de chaque employé par période de paie (14 jours).
-function PayPeriodTotals({ refreshKey, selectedUserId, onPick }) {
-  const [data, setData] = useState(null)
-  useEffect(() => {
-    let alive = true
-    api.timesheets.periodTotals({ periods: 6 })
-      .then(r => { if (alive) setData(r) })
-      .catch(() => { if (alive) setData({ periods: [], users: [] }) })
-    return () => { alive = false }
-  }, [refreshKey])
-  if (!data || !data.users.length) return null
-  const fmtH = (m) => m ? (m / 60).toFixed(2).replace('.', ',') : '—'
-  const short = (s) => new Date(s + 'T00:00:00').toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })
-  return (
-    <div className="card overflow-x-auto mt-6" data-testid="pay-period-totals">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-slate-50 text-xs text-slate-500">
-            <th className="text-left px-3 py-2 font-semibold">Heures par période</th>
-            {data.periods.map(p => (
-              <th key={p} className="text-right px-3 py-2 font-semibold whitespace-nowrap">{short(p)} — {short(shiftDate(p, 13))}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.users.map(u => (
-            <tr key={u.user_id} className={`border-t border-slate-100 ${u.user_id === selectedUserId ? 'bg-brand-50' : ''}`}>
-              <td className="px-3 py-1.5">
-                <button type="button" className="link-record" onClick={() => onPick(u.user_id)}>{u.name}</button>
-              </td>
-              {data.periods.map(p => (
-                <td key={p} className="px-3 py-1.5 text-right tabular-nums text-slate-700">{fmtH(u.totals[p])}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
+function DateLabel({ date }) {
+  return <><span className="capitalize text-slate-400 mr-1.5">{weekdayShort(date)}</span>{date}</>
 }
 
-function HistoryTable({ history, weeks, currentDate, currentWeek, isWeekMode, onJump }) {
-  const grouped = useMemo(() => {
-    const byPeriod = new Map()
-    const bucket = (k) => {
-      if (!byPeriod.has(k)) byPeriod.set(k, { days: [], weeks: [] })
-      return byPeriod.get(k)
-    }
-    for (const d of history) bucket(payPeriodStartOf(d.date)).days.push(d)
-    // Une semaine déclarée d'un seul chiffre n'a aucune journée : sans ça, elle
-    // n'apparaîtrait nulle part dans l'historique.
-    for (const w of weeks || []) if (w.minutes) bucket(payPeriodStartOf(w.week_start)).weeks.push(w)
-    return Array.from(byPeriod.entries()).sort((a, b) => b[0].localeCompare(a[0]))
-  }, [history, weeks])
+const PROJECT_DOT = { 'Fiabilité': 'bg-sky-500', 'Intelligence de contrôle': 'bg-violet-500' }
+const RD_PROJECTS = Object.keys(PROJECT_DOT)
 
-  if (grouped.length === 0) return null
-
-  return (
-    <div>
-      <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">Périodes de paie</h2>
-      <div className="space-y-4">
-        {grouped.map(([period, { days, weeks: periodWeeks }]) => {
-          const periodTotal = days.reduce((s, d) => s + dayTotal(d), 0)
-            + periodWeeks.reduce((s, w) => s + (Number(w.minutes) || 0), 0)
-          return (
-            <div key={period} className="card overflow-hidden" data-testid={`history-pay-period-${period}`}>
-              <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100">
-                <div className="text-xs font-semibold text-slate-600">{dateRangeLabel(period, shiftDate(period, 13))}</div>
-                <div className="text-xs text-slate-500 tabular-nums font-semibold text-slate-900" data-testid="history-pay-period-total">{(periodTotal / 60).toFixed(2).replace('.', ',')} h</div>
-              </div>
-              <table className="w-full text-sm">
-                <tbody>
-                  {periodWeeks.map(weekRec => (
-                    <WeekRow
-                      key={weekRec.id}
-                      week={weekRec}
-                      isActive={isWeekMode && weekRec.week_start === currentWeek}
-                      onJump={onJump}
-                    />
-                  ))}
-                  {days.map(d => (
-                    <DayRow key={d.id} day={d} isActive={!isWeekMode && d.date === currentDate} onJump={onJump} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
+// Colonne Total = formule. Même règle que le total payé côté serveur
+// (timesheetHours.js) : Fin − Début − Pause si Début et Fin sont remplis,
+// sinon la somme des lignes payables.
+const TOTAL_FORMULA = 'Fin − Début − Pause'
 function dayTotal(d) {
-  if (d.mode === 'detailed') {
-    return (d.entries || [])
-      .filter(e => e.activity_code_payable == null || e.activity_code_payable === 1)
-      .reduce((s, e) => s + (Number(e.duration_minutes) || 0), 0)
-  }
   if (d.start_time && d.end_time) {
-    const toMin = (t) => { const [h, m] = t.split(':').map(n => parseInt(n, 10) || 0); return h * 60 + m }
-    return Math.max(0, toMin(d.end_time) - toMin(d.start_time) - (Number(d.break_minutes) || 0))
+    return Math.max(0, timeToMin(d.end_time) - timeToMin(d.start_time) - (Number(d.break_minutes) || 0))
   }
-  return 0
-}
-
-function WeekRow({ week, isActive, onJump }) {
-  const baseRow = isActive
-    ? 'bg-brand-50 border-l-2 border-brand-500'
-    : 'border-l-2 border-transparent hover:bg-slate-50'
-  return (
-    <tr
-      className={`border-t border-slate-100 cursor-pointer ${baseRow}`}
-      onClick={() => onJump(week.week_start, 'week')}
-      data-testid={`history-week-row-${week.week_start}`}
-      data-active={isActive ? 'true' : 'false'}
-    >
-      <td className={`pl-2.5 pr-2 py-1.5 tabular-nums ${isActive ? 'text-brand-700 font-semibold' : 'text-brand-600 font-medium'}`}>
-        <span className="text-slate-500 font-normal mr-1.5">sem.</span>
-        {week.week_start}
-        <span className="ml-1.5 text-[10px] text-slate-400 font-normal">H</span>
-      </td>
-      <td className="px-2 py-1.5 text-right tabular-nums text-slate-700">{formatMinutes(week.minutes)}</td>
-    </tr>
-  )
-}
-
-function DayRow({ day, isActive, onJump }) {
-  const total = dayTotal(day)
-  const date = day.date
-  const modeBadge = day.mode === 'detailed' ? 'D' : 'S'
-  const baseRow = isActive
-    ? 'bg-brand-50 border-l-2 border-brand-500'
-    : 'border-l-2 border-transparent hover:bg-slate-50'
-  return (
-    <tr
-      className={`border-t border-slate-100 cursor-pointer ${baseRow}`}
-      onClick={() => onJump(date, 'day')}
-      data-testid={`history-day-row-${date}`}
-      data-active={isActive ? 'true' : 'false'}
-    >
-      <td className={`pl-2.5 pr-2 py-1.5 tabular-nums ${isActive ? 'text-brand-700 font-semibold' : 'text-brand-600 font-medium'}`}>
-        <span className="capitalize text-slate-500 font-normal mr-1.5">{weekdayShort(date)}</span>
-        {date}
-        <span className="ml-1.5 text-[10px] text-slate-400 font-normal">{modeBadge}</span>
-      </td>
-      <td className="px-2 py-1.5 text-right tabular-nums text-slate-700">{formatMinutes(total)}</td>
-    </tr>
-  )
+  return (d.entries || [])
+    .filter(e => e.activity_code_payable == null || e.activity_code_payable === 1)
+    .reduce((s, e) => s + (Number(e.duration_minutes) || 0), 0)
 }

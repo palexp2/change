@@ -6,6 +6,7 @@ import { systemFromSoumissionItems, ensureSoumissionSystemBuilder, AUTOMATION_ID
 import { linkFactureToProject, projectIdFromStripeMetadata } from './stripeProjectLink.js'
 
 initTestDb()
+;(await import('../db/migrations/124-subscription-partnership-marks.js')).up(db)
 // Colonnes perdues par le rebuild de document_items sur une DB vierge (présentes en prod).
 try { db.exec('ALTER TABLE document_items ADD COLUMN group_name TEXT') } catch {}
 

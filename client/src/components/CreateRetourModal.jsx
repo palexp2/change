@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Search } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import Spinner from './Spinner.jsx'
@@ -21,7 +22,7 @@ const isSerial = c => c.kind === 'serial'
 const keyOf = c => (isSerial(c) ? `s:${c.id}` : `i:${c.id}`)
 const Hint = ({ children, className = '' }) => <p className={`text-xs text-slate-500 ${className}`}>{children}</p>
 
-export function CreateRetourModal({ isOpen, onClose, companyId, tickets = [], adresses = [], orders = [], onCreated }) {
+export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], tickets = [], adresses = [], orders = [], onCreated }) {
   const { addToast } = useToast()
   const { fields } = useCustomFields('return_items')
   const reasons = useMemo(() => {
@@ -34,6 +35,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, tickets = [], ad
   const [candidates, setCandidates] = useState(null)
   const [products, setProducts] = useState([])
   const [ticketId, setTicketId] = useState('')
+  const [contactId, setContactId] = useState('')
   const [picked, setPicked] = useState({}) // key → { qty, reason, notes, sub }
   const [search, setSearch] = useState('')
   const [allReason, setAllReason] = useState('')
@@ -46,7 +48,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, tickets = [], ad
 
   useEffect(() => {
     if (!isOpen) return
-    setCandidates(null); setPicked({}); setTicketId(''); setSearch(''); setAllReason(''); setAllNotes('')
+    setCandidates(null); setPicked({}); setTicketId(''); setContactId(contacts.length === 1 ? contacts[0].id : ''); setSearch(''); setAllReason(''); setAllNotes('')
     setExchange(false); setOrderMode('new'); setOrderId('')
     const principal = adresses.find(a => a.address_type === 'Livraison' && a.address_rank === 'Principale')
       || adresses.find(a => a.address_type === 'Livraison') || adresses[0]
@@ -97,7 +99,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, tickets = [], ad
   }
 
   const openOrders = orders.filter(o => o.status !== 'Envoyé')
-  const valid = pickedKeys.length > 0
+  const valid = Boolean(contactId) && pickedKeys.length > 0
     && pickedKeys.every(k => picked[k].reason)
     && (!exchange || orderMode === 'new' || orderId)
 
@@ -116,6 +118,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, tickets = [], ad
       })
       const r = await api.retours.create({
         company_id: companyId,
+        contact_id: contactId,
         ticket_id: ticketId || null,
         items,
         exchange: exchange ? { order_id: orderMode === 'existing' ? orderId : null, address_id: addressId || null } : null,
@@ -141,6 +144,18 @@ export function CreateRetourModal({ isOpen, onClose, companyId, tickets = [], ad
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Nouveau retour" size="xl">
       <div className="space-y-5" data-testid="create-retour-modal">
+        <div>
+          <label className="label">Contact *</label>
+          <SearchableSelect
+            value={contactId}
+            onChange={setContactId}
+            size="sm"
+            className="input text-sm w-full"
+            options={contacts.map(c => ({ value: c.id, label: [`${c.first_name || ''} ${c.last_name || ''}`.trim(), c.email].filter(Boolean).join(' · ') }))}
+            testId="retour-contact"
+          />
+        </div>
+
         <div>
           <label className="label">Billet</label>
           <SearchableSelect
@@ -169,13 +184,16 @@ export function CreateRetourModal({ isOpen, onClose, companyId, tickets = [], ad
               data-testid="retour-select-all"
             />
             <label className="label mb-0">Articles</label>
-            <input className="input text-sm flex-1" value={search} onChange={e => setSearch(e.target.value)} aria-label="Rechercher" />
           </div>
           <Hint className="mb-2">Cochez ce qui revient, puis donnez une raison à chaque article. Le bandeau gris applique la même raison et précision à tous les articles cochés.</Hint>
           <div className="flex flex-wrap items-center gap-2 mb-2 p-2 rounded-lg bg-slate-50">
             {reasonSelect(allReason, setAllReason, 'retour-all-reason')}
             <input className="input text-sm flex-1 min-w-[160px]" value={allNotes} onChange={e => setAllNotes(e.target.value)} aria-label="Précision" title="Précision" />
             <button type="button" className="btn-secondary text-sm" disabled={!pickedKeys.length} onClick={applyAll}>Appliquer à tous</button>
+          </div>
+          <div className="relative mb-2">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <input type="search" className="input text-sm w-full pl-8" value={search} onChange={e => setSearch(e.target.value)} aria-label="Rechercher" />
           </div>
           <div className="border border-slate-200 rounded-lg max-h-[40vh] overflow-y-auto divide-y divide-slate-100">
             {candidates === null ? (

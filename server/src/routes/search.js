@@ -41,7 +41,7 @@ router.get('/', requireAuth, (req, res) => {
   // cherche par son nom, et sa ville sert de sous-titre.
   const companies = db.prepare(`
     SELECT id, name, city FROM companies
-    WHERE ${allWords('name')}
+    WHERE deleted_at IS NULL AND ${allWords('name')}
     ORDER BY ${prefixRank('name')}, length(name), name
     LIMIT 8
   `).all(...wordParams(), prefixParam())
@@ -58,7 +58,7 @@ router.get('/', requireAuth, (req, res) => {
            co.name AS company_name
     FROM contacts c
     LEFT JOIN companies co ON co.id = c.company_id
-    WHERE ${allWords(cat('c.first_name', 'c.last_name', 'c.email', 'c.phone'))}
+    WHERE c.deleted_at IS NULL AND ${allWords(cat('c.first_name', 'c.last_name', 'c.email', 'c.phone'))}
     ORDER BY ${rankBy(contactName)}, c.last_name, c.first_name
     LIMIT 8
   `).all(...wordParams(), ...rankParams())
@@ -72,7 +72,7 @@ router.get('/', requireAuth, (req, res) => {
   // Projects (pipeline)
   const projects = db.prepare(`
     SELECT id, name, status FROM projects
-    WHERE ${allWords('name')}
+    WHERE deleted_at IS NULL AND ${allWords('name')}
     ORDER BY ${prefixRank('name')}, length(name), name
     LIMIT 6
   `).all(...wordParams(), prefixParam())

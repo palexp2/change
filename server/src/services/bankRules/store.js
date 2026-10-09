@@ -55,6 +55,7 @@ const FIELDS = [
   'amount_min', 'amount_max', 'day_of_month', 'tolerance_days',
   'vendor_profile_id', 'vendor_name', 'expense_account_id', 'tax_code_id',
   'memo', 'qb_type', 'origin', 'conditions',
+  'action', 'transfer_account_id', 'splits',
 ]
 
 const clean = (body) => {
@@ -62,13 +63,39 @@ const clean = (body) => {
   for (const k of FIELDS) {
     if (!(k in body)) continue
     const v = body[k]
-    out[k] = v === '' ? null : v
+    out[k] = v === '' ? null : (k === 'splits' || k === 'conditions') && v && typeof v === 'object' ? JSON.stringify(v) : v
   }
   return out
 }
 
+export const RULE_ACTIONS = ['depense', 'virement', 'exclure']
+
+// La répartition d'une règle, lisible : `null` quand il n'y en a pas (moins de
+// deux comptes ne répartit rien).
+export function parseRuleSplits(raw) {
+  let o = raw
+  if (typeof raw === 'string') { try { o = JSON.parse(raw) } catch { return null } }
+  const lines = (o?.lines || []).filter((l) => l?.account_id && Number(l.value) > 0)
+  if (lines.length < 2) return null
+  return { mode: o.mode === 'amount' ? 'amount' : 'pct', lines: lines.map((l) => ({ account_id: String(l.account_id), value: Number(l.value) })) }
+}
+
+function checkAction(values) {
+  if ('action' in values && values.action && !RULE_ACTIONS.includes(values.action)) throw new Error('Action inconnue')
+  if (values.action === 'virement' && !values.transfer_account_id) throw new Error('Compte du virement requis')
+  if ('splits' in values && values.splits) {
+    const s = parseRuleSplits(values.splits)
+    if (!s) { values.splits = null; return }
+    if (s.mode === 'pct' && Math.abs(s.lines.reduce((n, l) => n + l.value, 0) - 100) > 0.01) {
+      throw new Error('La répartition doit faire 100 %')
+    }
+    values.splits = JSON.stringify(s)
+  }
+}
+
 export function createRule(body = {}, userId = null) {
   const values = clean(body)
+  checkAction(values)
   const name = String(values.name || '').trim()
   if (!name) throw new Error('Nom requis')
   // Une règle sans condition attraperait tout le relevé : on la refuse.
@@ -104,6 +131,7 @@ export function createRule(body = {}, userId = null) {
 
 export function updateRule(id, body = {}) {
   const values = clean(body)
+  checkAction(values)
   if (!Object.keys(values).length) return getRule(id)
   const sets = Object.keys(values).map((k) => `${k}=?`).join(', ')
   db.prepare(`UPDATE bank_rules SET ${sets}, updated_at=${NOW} WHERE id=? AND deleted_at IS NULL`)

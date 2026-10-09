@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Bouton Publier</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cinzel:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root{--c-bg:#faf6ef;--c-surface:#fff;--c-surface-2:#f1ebe0;--c-border:#e5ddcf;--c-border-2:#d6ccbb;--c-ink:#3b342b;--c-ink-3:#857b6d;--c-accent:#21b14b;--c-on-accent:#fff;--c-title:#21b14b;--pnl:#e9e2d4;--p-bg:#2a2620;--p-acc:#21b14b;--p-ink:#f1e8d4}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--c-bg);color:var(--c-ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:20px 16px 80px;transition:background .3s,color .3s}
+.wrap{max-width:1120px;margin:0 auto}
+.bar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin-bottom:22px}
+.bar h1{font:600 19px Cinzel,serif;letter-spacing:.04em;margin:0 12px 0 0;color:var(--c-title)}
+.grp{display:flex;gap:5px;align-items:center}
+.lk{width:44px;height:28px;border-radius:6px;border:0;cursor:pointer;display:flex;overflow:hidden;padding:0;box-shadow:0 1px 3px rgb(0 0 0/.2);transition:transform .15s}
+.lk:hover{transform:translateY(-1px)}
+.lk i{width:28%}.lk b{flex:1;margin:2px 2px 2px 0;border-radius:3px;position:relative}
+.lk b:after{content:"";position:absolute;left:30%;right:30%;top:30%;height:2px;background:var(--t)}
+.lk.on{outline:2px solid var(--c-accent);outline-offset:2px}
+.nm{font-size:12px;color:var(--c-ink-3);min-width:130px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:18px}
+.card{background:var(--c-surface);border:1px solid var(--c-border);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 1px 2px rgb(0 0 0/.05),0 12px 28px -18px rgb(0 0 0/.35)}
+.tag{padding:12px 16px 0;font-weight:700;font-size:14px;display:flex;gap:8px;align-items:baseline}
+.tag b{color:var(--c-title)}
+.fake{padding:10px 16px 6px;display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;opacity:.6}
+.fake div{font-size:11px;color:var(--c-ink-3)}.fake div i{display:block;font-style:normal;color:var(--c-ink);font-size:12.5px;border-bottom:1px solid var(--c-border);padding:3px 0}
+.foot{margin-top:auto;padding:14px 16px 16px;border-top:1px solid var(--c-border);background:color-mix(in srgb,var(--c-surface) 92%,var(--c-ink))}
+button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
+.btn{width:100%;display:inline-flex;align-items:center;justify-content:center;gap:10px;position:relative;overflow:hidden;transition:all .2s ease}
+.btn:active{transform:scale(.985)}
+.btn svg{width:16px;height:16px;flex:none}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:sp .7s linear infinite;display:none}
+@keyframes sp{to{transform:rotate(360deg)}}
+.btn.busy .spin{display:inline-block}.btn.busy .ic{display:none}
+.ok{display:none}.btn.done .ok{display:inline}.btn.done .ic,.btn.done .spin{display:none}
+.amt{font-variant-numeric:tabular-nums;font-weight:500;font-family:Inter}
+.cz{font-family:Cinzel,serif;font-weight:600;letter-spacing:.16em;text-transform:uppercase;font-size:13px}
+
+/* T1 Ex-libris : couleur du panneau, filet d'or */
+.t1{height:48px;border-radius:8px;background:var(--p-bg);color:var(--p-acc);box-shadow:0 10px 22px -14px var(--p-bg)}
+.t1:before{content:"";position:absolute;inset:4px;border:1px solid color-mix(in srgb,var(--p-acc) 45%,transparent);border-radius:5px;transition:inset .2s,border-color .2s}
+.t1:hover:before{inset:3px;border-color:var(--p-acc)}
+.t1 .fl{opacity:.6;font-size:11px;transition:transform .3s}.t1:hover .fl{transform:rotate(90deg);opacity:1}
+
+/* T2 Filet : surface, titre en Cinzel, trait d'accent qui se dessine */
+.t2{height:46px;border-radius:8px;background:var(--c-surface);border:1px solid var(--c-border-2);color:var(--c-title)}
+.t2:after{content:"";position:absolute;left:50%;right:50%;bottom:0;height:2px;background:var(--c-accent);transition:left .3s,right .3s}
+.t2:hover:after{left:0;right:0}
+.t2 .ar{transition:transform .2s}.t2:hover .ar{transform:translateX(4px)}
+
+/* T3 Cachet : plein accent + sceau couleur panneau */
+.t3{height:50px;border-radius:10px;background:var(--c-accent);color:var(--c-on-accent);justify-content:flex-start;padding:0 16px 0 52px;box-shadow:0 1px 0 rgb(255 255 255/.22) inset,0 12px 24px -14px var(--c-accent);font-weight:600;font-size:14px}
+.t3 .seal{position:absolute;left:8px;width:34px;height:34px;border-radius:50%;background:var(--p-bg);color:var(--p-acc);display:grid;place-items:center;box-shadow:0 0 0 2px color-mix(in srgb,var(--c-on-accent) 35%,transparent);transition:transform .3s}
+.t3:hover .seal{transform:rotate(-12deg) scale(1.06)}
+.t3 .amt{margin-left:auto;opacity:.85}
+.t3:before{content:"";position:absolute;inset:0;background:linear-gradient(100deg,transparent 35%,rgb(255 255 255/.28) 50%,transparent 65%);transform:translateX(-100%)}
+.t3:hover:before{transition:transform .8s;transform:translateX(100%)}
+.t3.busy .seal{animation:st .45s ease infinite alternate}@keyframes st{to{transform:scale(.85)}}
+
+/* T4 Signet : ruban d'accent qui pend */
+.t4{height:46px;border-radius:8px;background:var(--c-surface);border:1px solid var(--c-border-2);color:var(--c-ink);justify-content:flex-start;padding-left:16px;overflow:visible;font-weight:600}
+.t4 .rb{position:absolute;right:18px;top:-1px;width:18px;height:30px;background:var(--c-accent);clip-path:polygon(0 0,100% 0,100% 100%,50% 78%,0 100%);transition:height .25s}
+.t4:hover .rb{height:40px}
+.t4 .amt{margin-left:auto;margin-right:50px;color:var(--c-ink-3)}
+.t4.done .rb{height:46px}
+
+/* T5 Lumière : accent profond, lueur douce */
+.t5{height:46px;border-radius:999px;background:linear-gradient(180deg,color-mix(in srgb,var(--c-accent) 88%,#fff),color-mix(in srgb,var(--c-accent) 82%,#000));color:var(--c-on-accent);font-weight:600;box-shadow:0 1px 0 rgb(255 255 255/.3) inset,0 0 0 1px color-mix(in srgb,var(--c-accent) 60%,#000),0 10px 26px -10px var(--c-accent)}
+.t5:hover{box-shadow:0 1px 0 rgb(255 255 255/.3) inset,0 0 0 1px color-mix(in srgb,var(--c-accent) 60%,#000),0 12px 34px -6px var(--c-accent)}
+.t5 .dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7;animation:pl 2s infinite}@keyframes pl{50%{opacity:.2}}
+
+/* T6 Reliure : deux tons, panneau + surface */
+.t6{height:48px;border-radius:8px;background:var(--c-surface-2);color:var(--c-ink);justify-content:space-between;padding:0 0 0 16px;border:1px solid var(--c-border-2);font-weight:600}
+.t6 .sp{height:100%;width:52px;background:var(--p-bg);color:var(--p-acc);display:grid;place-items:center;border-left:2px solid var(--p-acc);transition:width .25s}
+.t6:hover .sp{width:64px}
+.t6 .l{display:flex;gap:10px;align-items:center}.t6 .amt{color:var(--c-ink-3);font-weight:500}
+.btn kbd{font:500 10.5px Inter,system-ui;letter-spacing:0;text-transform:none;padding:1px 5px;border-radius:4px;border:1px solid color-mix(in srgb,currentColor 35%,transparent);opacity:.6;transition:opacity .2s}
+.btn:hover kbd{opacity:.9}
+.t1 kbd,.t2 kbd,.t5 kbd{position:absolute;right:14px}
+.t4 kbd{margin-right:50px;margin-left:10px}.t4 .amt{margin-right:0}
+.t3 kbd{margin-left:10px}
+.card.cur{box-shadow:0 0 0 2px var(--c-accent),0 12px 28px -18px rgb(0 0 0/.35)}
+.btn.flash{filter:brightness(1.15)}
+</style></head><body><div class="wrap">
+<div class="bar"><h1>Publier</h1><div class="grp" id="lk"></div><span class="nm" id="nm"></span></div>
+<div class="grid" id="g"></div>
+</div>
+<script>
+const LOOKS=[{"id":"light","name":"Boréal","mode":"light","v":{"--c-bg":"#faf6ef","--c-surface":"#ffffff","--c-surface-2":"#f1ebe0","--c-border":"#e5ddcf","--c-border-2":"#d6ccbb","--c-ink":"#3b342b","--c-ink-3":"#857b6d","--c-accent":"#21b14b","--c-on-accent":"#ffffff","--c-title":"#21b14b","--pnl":"#e9e2d4"},"p":{"--c-bg":"#2a2620","--c-accent":"#21b14b","--c-ink":"#f1e8d4"}},{"id":"dark","name":"Boréal nuit","mode":"dark","v":{"--c-bg":"#16130e","--c-surface":"#1f1b15","--c-surface-2":"#29241c","--c-border":"#332d23","--c-border-2":"#423a2e","--c-ink":"#e8e2d8","--c-ink-3":"#a59d90","--c-accent":"#4fc978","--c-on-accent":"#0f0d0a","--c-title":"#4fc978","--pnl":"#0f0d0a"},"p":{"--c-bg":"#0f0d0a","--c-accent":"#4fc978","--c-ink":"#e8e2d8"}},{"id":"creamnavy","name":"Navy","mode":"light","v":{"--c-bg":"#f2ecdf","--c-surface":"#f9f6ef","--c-surface-2":"#ebe4d6","--c-border":"#dcd3c1","--c-border-2":"#cdc5b7","--c-ink":"#1d2a40","--c-ink-3":"#57595f","--c-accent":"#75561d","--c-on-accent":"#f1e8d4","--c-title":"#75561d","--pnl":"#2c3e5c"},"p":{"--c-bg":"#1f2b40","--c-accent":"#e2bf76","--c-ink":"#f1e8d4"}},{"id":"nightnavy","name":"Navy, starlit","mode":"dark","v":{"--c-bg":"#182233","--c-surface":"#1d293d","--c-surface-2":"#212e44","--c-border":"#41516c","--c-border-2":"#526179","--c-ink":"#e4e2dc","--c-ink-3":"#aaa79f","--c-accent":"#d8d2c2","--c-on-accent":"#15171b","--c-title":"#d8d2c2","--pnl":"#111823"},"p":{"--c-bg":"#141c29","--c-accent":"#d8d2c2","--c-ink":"#e4e2dc"}},{"id":"creamteal","name":"Slate teal","mode":"light","v":{"--c-bg":"#f2ecdf","--c-surface":"#f9f6ef","--c-surface-2":"#ebe4d6","--c-border":"#dcd3c1","--c-border-2":"#cdc5b7","--c-ink":"#1b2b2f","--c-ink-3":"#575959","--c-accent":"#75561d","--c-on-accent":"#f1e8d4","--c-title":"#75561d","--pnl":"#2e454b"},"p":{"--c-bg":"#203035","--c-accent":"#e2bf76","--c-ink":"#f1e8d4"}},{"id":"nightteal","name":"Slate teal, starlit","mode":"dark","v":{"--c-bg":"#192629","--c-surface":"#1e2e32","--c-surface-2":"#223338","--c-border":"#43585d","--c-border-2":"#54666b","--c-ink":"#e4e2dc","--c-ink-3":"#aaa79f","--c-accent":"#d8d2c2","--c-on-accent":"#15171b","--c-title":"#d8d2c2","--pnl":"#111a1d"},"p":{"--c-bg":"#151f22","--c-accent":"#d8d2c2","--c-ink":"#e4e2dc"}},{"id":"creamolive","name":"Dark olive","mode":"light","v":{"--c-bg":"#f2ecdf","--c-surface":"#f9f6ef","--c-surface-2":"#ebe4d6","--c-border":"#dcd3c1","--c-border-2":"#cdc5b7","--c-ink":"#252815","--c-ink-3":"#5a584f","--c-accent":"#75561d","--c-on-accent":"#f1e8d4","--c-title":"#75561d","--pnl":"#363a1f"},"p":{"--c-bg":"#262916","--c-accent":"#e2bf76","--c-ink":"#f1e8d4"}},{"id":"nightolive","name":"Dark olive, starlit","mode":"dark","v":{"--c-bg":"#1e2011","--c-surface":"#242614","--c-surface-2":"#282b17","--c-border":"#4a4e35","--c-border-2":"#5a5d47","--c-ink":"#e4e2dc","--c-ink-3":"#aaa79f","--c-accent":"#d8d2c2","--c-on-accent":"#15171b","--c-title":"#d8d2c2","--pnl":"#15160c"},"p":{"--c-bg":"#181a0e","--c-accent":"#d8d2c2","--c-ink":"#e4e2dc"}},{"id":"creamrose","name":"Rosewood","mode":"light","v":{"--c-bg":"#f2ecdf","--c-surface":"#f9f6ef","--c-surface-2":"#ebe4d6","--c-border":"#dcd3c1","--c-border-2":"#cdc5b7","--c-ink":"#2e1618","--c-ink-3":"#5e5150","--c-accent":"#75561d","--c-on-accent":"#f1e8d4","--c-title":"#75561d","--pnl":"#3b1a1c"},"p":{"--c-bg":"#291214","--c-accent":"#e2bf76","--c-ink":"#f1e8d4"}},{"id":"nightrose","name":"Rosewood, starlit","mode":"dark","v":{"--c-bg":"#200e0f","--c-surface":"#271112","--c-surface-2":"#2c1315","--c-border":"#4f3133","--c-border-2":"#5e4345","--c-ink":"#e4e2dc","--c-ink-3":"#aaa79f","--c-accent":"#d8d2c2","--c-on-accent":"#15171b","--c-title":"#d8d2c2","--pnl":"#160a0b"},"p":{"--c-bg":"#1b0c0d","--c-accent":"#d8d2c2","--c-ink":"#e4e2dc"}},{"id":"creamcandle","name":"Candlelit","mode":"light","v":{"--c-bg":"#f2ecdf","--c-surface":"#f9f6ef","--c-surface-2":"#ebe4d6","--c-border":"#dcd3c1","--c-border-2":"#cdc5b7","--c-ink":"#2b1d12","--c-ink-3":"#5d544e","--c-accent":"#8a5a1f","--c-on-accent":"#f1e8d4","--c-title":"#8a5a1f","--pnl":"#3a2716"},"p":{"--c-bg":"#291b0f","--c-accent":"#e2bf76","--c-ink":"#f1e8d4"}},{"id":"candle","name":"Candlelit library","mode":"dark","v":{"--c-bg":"#1a120c","--c-surface":"#221710","--c-surface-2":"#2a1d13","--c-border":"#3a2a1b","--c-border-2":"#4a3622","--c-ink":"#e8d3ad","--c-ink-3":"#b59c78","--c-accent":"#e0a95a","--c-on-accent":"#1a120c","--c-title":"#e0a95a","--pnl":"#20160e"},"p":{"--c-bg":"#1d140d","--c-accent":"#e0a95a","--c-ink":"#e8d3ad"}}];
+const book='<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h6a4 4 0 0 1 4 4v12a3 3 0 0 0-3-3H2z"/><path d="M22 4h-6a4 4 0 0 0-4 4v12a3 3 0 0 1 3-3h7z"/></svg>';
+const arrow='<svg class="ic ar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+const quill='<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 4C10 4 6 10 5 19"/><path d="M5 19c5-1 10-5 12-11"/></svg>';
+const K='<kbd>⌘↵</kbd>';const S='<span class="spin"></span>',O='<span class="ok">✓</span>';
+const fake='<div class="fake"><div>Fournisseur<i>OpenAI</i></div><div>Total<i>128,40 $ US</i></div><div>Compte<i>6480 · Logiciels</i></div><div>Taxe<i>Hors-champ</i></div></div>';
+const T=[
+ ['T1','Ex-libris','<button class="btn t1">'+S+O+'<span class="fl ic">◆</span><span class="t cz">Publier</span><span class="fl ic">◆</span>'+K+'</button>'],
+ ['T2','Filet','<button class="btn t2">'+S+O+'<span class="t cz">Publier</span>'+arrow+K+'</button>'],
+ ['T3','Cachet','<button class="btn t3"><span class="seal">'+quill+S+O+'</span><span class="t">Publier</span><span class="amt">128,40 $ US</span>'+K+'</button>'],
+ ['T4','Signet','<button class="btn t4">'+S+O+'<span class="t">Publier</span><span class="amt">128,40 $ US</span>'+K+'<span class="rb"></span></button>'],
+ ['T5','Lumière','<button class="btn t5">'+S+O+'<span class="dot ic"></span><span class="t">Publier</span>'+K+'</button>'],
+ ['T6','Reliure','<button class="btn t6"><span class="l">'+'<span class="t">Publier</span><span class="amt">128,40 $ US</span>'+K+'</span><span class="sp">'+S+O+book+'</span></button>'],
+];
+const g=document.getElementById('g');
+for(const [k,n,h] of T) g.insertAdjacentHTML('beforeend','<div class="card"><div class="tag"><b>'+k+'</b>'+n+'</div>'+fake+'<div class="foot">'+h+'</div></div>');
+document.querySelectorAll('.btn').forEach(b=>b.addEventListener('click',()=>{
+ if(b.classList.contains('busy')||b.classList.contains('done'))return;
+ const t=b.querySelector('.t'),o=t.textContent;b.classList.add('busy');t.textContent='Publication…';
+ setTimeout(()=>{b.classList.remove('busy');b.classList.add('done');t.textContent='Publié';setTimeout(()=>{b.classList.remove('done');t.textContent=o},1600)},1100);
+}));
+const lk=document.getElementById('lk'),nm=document.getElementById('nm');
+function apply(l){const r=document.documentElement.style;for(const [k,v] of Object.entries(l.v))r.setProperty(k,v);
+ r.setProperty('--p-bg',l.p['--c-bg']);r.setProperty('--p-acc',l.p['--c-accent']);r.setProperty('--p-ink',l.p['--c-ink']);
+ nm.textContent=l.name;document.querySelectorAll('.lk').forEach(x=>x.classList.toggle('on',x.dataset.id===l.id));try{localStorage.setItem('bp-look',l.id)}catch{}}
+LOOKS.forEach((l,i)=>{const b=document.createElement('button');b.className='lk';b.dataset.id=l.id;b.title=l.name;
+ b.style.background=l.p['--c-bg'];b.innerHTML='<i></i><b style="background:'+l.v['--c-bg']+';--t:'+l.v['--c-title']+'"></b>';
+ b.onclick=()=>apply(l);lk.appendChild(b);if(i%2)lk.insertAdjacentHTML('beforeend','<span style="width:6px"></span>')});
+let start=LOOKS[0];try{start=LOOKS.find(l=>l.id===localStorage.getItem('bp-look'))||start}catch{}
+let cur=null;document.querySelectorAll('.card').forEach((c,i)=>{c.addEventListener('mouseenter',()=>{cur&&cur.classList.remove('cur');cur=c;c.classList.add('cur')});if(!i){cur=c;c.classList.add('cur')}});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.metaKey||e.ctrlKey)&&cur){e.preventDefault();const b=cur.querySelector('.btn');b.classList.add('flash');setTimeout(()=>b.classList.remove('flash'),150);b.click()}});
+apply(start);
+</script></body></html>

@@ -24,7 +24,7 @@ import sharp from 'sharp'
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { logSync } from './syncLog.js'
-import { parseStatementTable, importTransactions, autoMatchAccount, applyStatesFromRows, findSupersededPending, promoteSupersededPending } from './bankReconciliation.js'
+import { parseStatementTable, importTransactions, autoMatchAccount, applyStatesFromRows, findSupersededPending, promoteSupersededPending, findShiftedTwins, findRevisedAmounts, applyRevisedAmounts, findSumDuplicates } from './bankReconciliation.js'
 import { planImportFromCounts, existingSignatureCounts, statementInvertsSign } from './bankTrxSheet.js'
 import { shiftDate } from '../utils/datetime.js'
 
@@ -498,7 +498,7 @@ const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toL
 // Faisceau de preuves, chacune lisible par l'humain qui validera l'aperçu.
 // `overlaps` : nb de lignes (date|montant) du relevé déjà présentes sur ce
 // compte — la preuve la plus difficile à tromper.
-export function scoreAccount(account, extracted, overlaps = 0, fileName = '') {
+export function scoreAccount(account, extracted, overlaps = 0, fileName = '', chains = 0) {
   const evidence = []
   let score = 0
   // Un export de banque ne dit souvent rien de lui-même, mais son NOM si :
@@ -556,7 +556,14 @@ export function scoreAccount(account, extracted, overlaps = 0, fileName = '') {
     score += Math.min(overlaps, 8) * 1.5
     evidence.push({ label: 'Recoupement', detail: `${overlaps} ligne${overlaps > 1 ? 's' : ''} déjà au compte` })
   }
-  return { score, evidence, overlaps }
+  // Un document entièrement neuf (aucune ligne connue) se reconnaît encore à
+  // son SOLDE : le solde d'avant sa première ligne est le dernier solde connu
+  // d'un seul compte, au cent près.
+  if (chains > 0) {
+    score += 6
+    evidence.push({ label: 'Solde', detail: 'suit le dernier solde connu' })
+  }
+  return { score, evidence, overlaps, chains }
 }
 
 // Combien de lignes du relevé existent déjà, compte par compte.
@@ -575,14 +582,44 @@ function overlapsByAccount(rows) {
   return out
 }
 
+// Soldes d'avant-ligne du document (solde − montant, dans les deux sens : le
+// signe d'un export n'est tranché qu'après la détection) retrouvés comme
+// solde porté par une transaction connue, compte par compte.
+const CHAIN_WINDOW_DAYS = 45
+export function chainsByAccount(rows, extracted = {}) {
+  const cents = (x) => Math.round(Number(x) * 100)
+  const wanted = new Set()
+  const add = (x) => { if (x != null && Number.isFinite(Number(x)) && Math.abs(Number(x)) >= 1) wanted.add(cents(x)) }
+  add(numOrNull(extracted?.opening_balance))
+  for (const r of rows) {
+    if (r.balance == null || !Number.isFinite(Number(r.balance))) continue
+    add(r.balance); add(Number(r.balance) - r.amount); add(Number(r.balance) + r.amount)
+  }
+  const dates = rows.map((r) => r.txn_date).filter(Boolean).sort()
+  if (!wanted.size || !dates.length) return new Map()
+  const found = db.prepare(`
+    SELECT account_id, balance FROM bank_transactions
+    WHERE balance IS NOT NULL AND deleted_at IS NULL
+      AND txn_date BETWEEN date(?, '-${CHAIN_WINDOW_DAYS} days') AND ?
+  `).all(dates[0], dates[dates.length - 1])
+  const out = new Map()
+  for (const r of found) {
+    if (!wanted.has(cents(r.balance))) continue
+    const set = out.get(r.account_id) || new Set()
+    set.add(cents(r.balance))
+    out.set(r.account_id, set)
+  }
+  return new Map([...out].map(([k, v]) => [k, v.size]))
+}
+
 // En dessous, on ne pré-sélectionne RIEN : « Desjardins CAD » et « Marge
 // Desjardins » ont la même institution, la même devise et le même type — un
 // choix arbitraire serait pris pour une certitude.
 export const MIN_DETECT_CONFIDENCE = 0.3
 
-export function detectAccount(extracted, rows, accounts, overlaps = new Map(), fileName = '') {
+export function detectAccount(extracted, rows, accounts, overlaps = new Map(), fileName = '', chains = new Map()) {
   const scored = accounts.map((a) => {
-    const s = scoreAccount(a, extracted, overlaps.get(a.id) || 0, fileName)
+    const s = scoreAccount(a, extracted, overlaps.get(a.id) || 0, fileName, chains.get(a.id) || 0)
     return { account: a, ...s }
   }).sort((x, y) => y.score - x.score)
   const best = scored[0]
@@ -597,6 +634,12 @@ export function detectAccount(extracted, rows, accounts, overlaps = new Map(), f
   const next = byOverlap[1]
   if (top?.overlaps >= 2 && top.overlaps >= 2 * (next?.overlaps || 0)) {
     return { account_id: top.account.id, confidence: 1, evidence: top.evidence }
+  }
+  // Un seul compte dont le solde enchaîne avec le document, et rien qui le
+  // contredise (devise, type) : c'est lui.
+  const chained = scored.filter((x) => x.chains > 0)
+  if (!top?.overlaps && chained.length === 1 && chained[0].score > 0) {
+    return { account_id: chained[0].account.id, confidence: 1, evidence: chained[0].evidence }
   }
   // Confiance = à quel point le premier se détache du second. Deux comptes qui
   // marquent pareil (BNC CAD vs BNC Épargne sur un relevé sans numéro) doivent
@@ -665,7 +708,13 @@ export function planStatementRows(accountId, rows) {
   const { toInsert, skipped } = planImportFromCounts(rows, existing, { maxDate })
   // Un achat déjà entré « En attente » à une autre date n'est pas neuf.
   const superseded = findSupersededPending(accountId, rows)
-  const fresh = new Set(toInsert.filter((r) => !superseded.has(rows.indexOf(r))))
+  // Ni un achat déjà connu à une autre date (référence, ou montant + marchand).
+  const twins = findShiftedTwins(accountId, rows, new Set(superseded.keys()))
+  // Ni un achat déjà connu à un autre montant (en attente, puis passé).
+  const revised = findRevisedAmounts(accountId, rows, new Set([...superseded.keys(), ...twins]))
+  // Ni le total d'un paiement déjà détaillé (intérêts + capital de la marge).
+  const totals = findSumDuplicates(accountId, rows)
+  const fresh = new Set(toInsert.filter((r) => { const i = rows.indexOf(r); return !superseded.has(i) && !twins.has(i) && !revised.has(i) && !totals.has(i) }))
   const kept = toInsert.filter((r) => fresh.has(r))
   return { fresh: kept, duplicates: skipped + (toInsert.length - kept.length), flags: rows.map((r) => fresh.has(r)) }
 }
@@ -781,7 +830,7 @@ export async function analyzeUpload(id, { extract = extractStatement, refine = r
     if (!rows.length && !emptyMonth) throw new Error(readErrors[0] || 'Aucune transaction reconnue dans ce fichier')
 
     const accounts = listAccounts()
-    const det = detectAccount(extracted, rows, accounts, overlapsByAccount(rows), up.original_name || '')
+    const det = detectAccount(extracted, rows, accounts, overlapsByAccount(rows), up.original_name || '', chainsByAccount(rows, extracted))
     if (accountId && accountHint) {
       det.account_id = accountHint.id
       det.confidence = 1
@@ -894,9 +943,12 @@ export function commitUpload(id, userId, { only = null } = {}) {
   if (up.document_kind === 'facture') throw new Error("Ce document est une facture : elle est partie à l'extraction de données")
   if (!up.account_id) throw new Error('Aucun compte choisi')
   const superseded = findSupersededPending(up.account_id, up.rows_json)
+  const twins = only ? new Set() : findShiftedTwins(up.account_id, up.rows_json, new Set(superseded.keys()))
+  const revised = only ? new Map() : findRevisedAmounts(up.account_id, up.rows_json, new Set([...superseded.keys(), ...twins]))
+  const totals = only ? new Set() : findSumDuplicates(up.account_id, up.rows_json)
   const picked = up.rows_json
     .map((r, i) => ({ r, i }))
-    .filter(({ r, i }) => !superseded.has(i) && (only ? only.includes(i) : r._new))
+    .filter(({ r, i }) => !superseded.has(i) && !twins.has(i) && !revised.has(i) && !totals.has(i) && (only ? only.includes(i) : r._new))
     .map(({ r }) => {
       const { _new: _ignored, ...row } = r
       return row
@@ -905,6 +957,7 @@ export function commitUpload(id, userId, { only = null } = {}) {
   // qu'il retrouve (« En attente » devenu « Autorisée »).
   const restated = applyStatesFromRows(up.account_id, up.rows_json)
     + promoteSupersededPending(up.account_id, up.rows_json, superseded)
+    + applyRevisedAmounts(up.account_id, up.rows_json, revised)
   if (!picked.length) {
     if (restated) {
       touch(id, { status: 'importe', inserted_count: 0, duplicate_count: up.rows_json.length })

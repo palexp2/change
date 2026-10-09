@@ -1,5 +1,5 @@
 import { roofVentAnswers, thermalScreen } from './discoveryRoofs.js'
-import { sideVentsOnly } from './discoveryFormSchema.js'
+import { sideVentOther, sideVentsOnly } from './discoveryFormSchema.js'
 
 // Réponses « Je ne sais pas » encore présentes dans un System builder : tant
 // qu'il en reste une, la commande ne peut pas être créée (fiche et serveur).
@@ -13,20 +13,24 @@ const isUnknown = v => v === DONT_KNOW || v === 'unknown'
 export function unknownAnswers(response, { questionLabel = () => 'Autre réponse' } = {}) {
   const out = []
   const add = (greenhouse, label) => out.push({ greenhouse, label })
-  if (response?.wifi_ssid === DONT_KNOW) add(null, 'Wi-Fi')
-  else if (response?.wifi_password === DONT_KNOW) add(null, 'Mot de passe Wi-Fi')
+  // Serres à portée du contrôleur existant : le Wi-Fi n'est pas demandé.
+  const nearExisting = response?.is_new_site === 'add_to_existing' && response.within_central_controller_range === true
+  if (!nearExisting && response?.wifi_ssid === DONT_KNOW) add(null, 'Wi-Fi')
+  else if (!nearExisting && response?.wifi_password === DONT_KNOW) add(null, 'Mot de passe Wi-Fi')
   for (const [id, v] of Object.entries(response?.custom_answers || {})) if (isUnknown(v)) add(null, questionLabel(id))
 
   ;(Array.isArray(response?.greenhouses) ? response.greenhouses : []).forEach((g, i) => {
     const n = i + 1
-    if (g.has_side_vents === true) {
-      if (g.side_vent_height_range === 'unknown' || g.side_vent_height === DONT_KNOW) add(n, 'Hauteur côtés')
+    // Côté « Autre » : les réponses roll-up ne servent plus.
+    const rollup = !sideVentOther(g)
+    if (g.has_side_vents === true && rollup) {
+      if (!(g.has_existing_side_vent_motors && g.side_has_inverters === true) && (g.side_vent_height_range === 'unknown' || g.side_vent_height === DONT_KNOW)) add(n, 'Hauteur côtés')
       if (g.side_pipe_type === 'unknown') add(n, 'Tuyau de côté')
       if (g.side_pipe_diameter === DONT_KNOW) add(n, 'Diamètre côté')
-      if (g.guide_pipes_state === 'unknown') add(n, 'Tuyaux guides')
-      if (g.guide_pipe_diameter === DONT_KNOW && g.guide_pipes_state !== 'needed' && !g.wants_compatible_guide_pipes) add(n, 'Diamètre guides')
+      if (!g.has_existing_side_vent_motors && g.guide_pipes_state === 'unknown') add(n, 'Tuyaux guides')
+      if (!g.has_existing_side_vent_motors && g.guide_pipe_diameter === DONT_KNOW && !['needed', 'unknown'].includes(g.guide_pipes_state) && !g.wants_compatible_guide_pipes) add(n, 'Diamètre guides')
     }
-    if (g.has_existing_side_vent_motors) {
+    if (g.has_existing_side_vent_motors && rollup) {
       if (g.side_has_inverters === 'unknown') add(n, 'Inverseurs')
       else if (g.side_has_inverters === true && (g.side_inverter_ratio === 'unknown' || g.side_inverter_model === DONT_KNOW)) add(n, 'Inverseurs')
       if (g.side_has_inverters !== true && g.side_vent_motor_choice === 'unknown') add(n, 'Marque moteurs')

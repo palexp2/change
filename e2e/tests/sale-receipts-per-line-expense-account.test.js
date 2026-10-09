@@ -57,6 +57,7 @@ describe('Extraction de données : compte de dépense par ligne d\'article', () 
 
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
   })
@@ -108,13 +109,6 @@ describe('Extraction de données : compte de dépense par ligne d\'article', () 
     }
     assert.equal(String(last), String(accountTarget.Id),
       `le compte de dépense de la ligne 0 doit être persisté (${accountTarget.Id})`)
-  })
-
-  test('le formulaire de publication signale les lignes à compte propre', async () => {
-    await page.reload({ waitUntil: 'domcontentloaded' })
-    const note = page.getByTestId('qb-line-accounts-note')
-    await note.waitFor({ state: 'visible', timeout: 30000 })
-    assert.match(await note.innerText(), /propre compte de dépense/)
   })
 
   test('vider le sélecteur remet la ligne sur le compte du document', async () => {

@@ -191,6 +191,7 @@ export default function Tasks() {
             contacts={contacts}
             users={users}
             tickets={tickets}
+            linkifyDescription
             onSave={handleEdit}
             onClose={() => setEditing(null)}
           />

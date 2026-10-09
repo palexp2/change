@@ -1,16 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { Mail, Paperclip, AlertTriangle, X, Minus } from 'lucide-react'
+import { Mail, Paperclip, AlertTriangle, X, Minus, LayoutTemplate } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { nextModalZ, registerOverlay } from '../lib/overlayLayers.js'
 import Spinner from './Spinner.jsx'
 import { useUndoSend } from './UndoSendProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { splitEmailHtml, joinEmailHtml, isValidEmailList } from '../lib/emailHtml.js'
+import { splitEmailHtml, joinEmailHtml, isValidEmailList, textToHtml } from '../lib/emailHtml.js'
 import ErrorBanner from './ErrorBanner.jsx'
 import AttachmentPreview from './AttachmentPreview.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
-import { getEmailSignature, appendSignature } from '../lib/emailSignature.js'
+import { getSignatureFor, appendSignature, replaceSignature, getRecipientLanguage, normalizeLang } from '../lib/emailSignature.js'
 
 // Modale de composition unique pour TOUS les courriels partant de l'ERP
 // (instructions de retour, suivi d'un envoi, bon de commande au fournisseur…).
@@ -24,7 +24,9 @@ import { getEmailSignature, appendSignature } from '../lib/emailSignature.js'
 // Le corps est édité en place (contentEditable) : l'enveloppe du document
 // (<head>, styles du <body>) est conservée et recollée à l'envoi, cf.
 // lib/emailHtml.js. La signature de l'utilisateur (Paramètres › Ma boîte
-// Gmail) est ajoutée en bas du corps, modifiable comme le reste.
+// Gmail) est ajoutée en bas du corps, modifiable comme le reste — française ou
+// anglaise selon la langue du contact destinataire (fiche contact, sinon
+// `lang` du destinataire suggéré ou du brouillon).
 export default function EmailComposerModal({
   isOpen,
   onClose,
@@ -33,6 +35,7 @@ export default function EmailComposerModal({
   load,                 // async () => { to, cc, from, subject, bodyHtml, attachments, notice }
   draft: draftProp,     // brouillon fourni directement (quand la page l'a déjà)
   headerExtra = null,   // ex. sélecteur du compte expéditeur
+  fromAccount,          // boîte expéditrice choisie : la signature suit ce choix
   allowBcc = false,     // ajoute un champ Cci (copie conforme invisible)
   attachmentSize = 'compact', // taille des vignettes de pièces jointes (AttachmentPreview)
   bodyClassName = '',   // classes ajoutées à la zone du corps (ex. paragraphes espacés)
@@ -53,6 +56,15 @@ export default function EmailComposerModal({
   // Option : fenêtre ancrée en bas à droite (façon Gmail), sans voile — la
   // fiche reste consultable pendant la rédaction.
   docked = false,
+  // Variante de `docked` : fenêtre 20 % plus large (41rem au lieu de 34rem).
+  dockWide = false,
+  // Option : modèles de courriel ({ id, name, subject, body texte }) proposés
+  // dans une liste recherchable à côté de l'objet ; le choix remplace objet et
+  // corps, la signature est reposée.
+  templates = null,
+  // Option : remplit les variables d'un modèle ([First name], [Contract link]…)
+  // pour le destinataire courant — `(template, to) => ({ subject, html })`.
+  fillTemplate = null,
 }) {
   const scheduleSend = useUndoSend()
   const { addToast } = useToast()
@@ -70,6 +82,13 @@ export default function EmailComposerModal({
   const bodyRef = useRef(null)
   const partsRef = useRef({ prefix: '', suffix: '' })
   const autoRef = useRef({ subject: '', inner: '' })
+  const fromRef = useRef(fromAccount)
+  fromRef.current = fromAccount
+  const sigFromRef = useRef(undefined) // boîte dont la signature est dans le corps
+  const [lang, setLang] = useState('fr') // langue du destinataire → signature
+  const langRef = useRef('fr')
+  langRef.current = lang
+  const sigLangRef = useRef('fr') // langue de la signature dans le corps
 
   useEffect(() => {
     if (!isOpen) { setDraft(null); setError(''); setLoadError(''); return }
@@ -78,6 +97,7 @@ export default function EmailComposerModal({
     const apply = (d) => {
       if (!alive) return
       setDraft(d || {})
+      appliedRef.current = null // nouveau brouillon : aucun modèle à suivre
       setTo(d?.to || '')
       setCc(d?.cc || '')
       setShowCc(Boolean(d?.cc))
@@ -108,7 +128,10 @@ export default function EmailComposerModal({
     bodyRef.current.innerHTML = parts.inner
     autoRef.current = { subject: draft.subject || '', inner: bodyRef.current.innerHTML }
     let alive = true
-    getEmailSignature().then(sig => {
+    const sigFrom = fromRef.current
+    sigFromRef.current = sigFrom
+    sigLangRef.current = langRef.current
+    getSignatureFor(sigFrom, langRef.current).then(sig => {
       const el = bodyRef.current
       if (!alive || !el) return
       const untouched = el.innerHTML === autoRef.current.inner
@@ -116,6 +139,41 @@ export default function EmailComposerModal({
     })
     return () => { alive = false }
   }, [draft])
+
+  // Langue du destinataire « À » (premier courriel) : fiche contact, sinon
+  // langue fournie par la suggestion ou le brouillon, sinon français.
+  useEffect(() => {
+    if (!draft) return
+    const first = String(to || '').split(/[,;]/)[0].trim().toLowerCase()
+    const hint = normalizeLang(
+      (draft.recipients || []).find(r => r.email?.toLowerCase() === first)?.lang
+      ?? (draft.recipients || []).find(r => r.email?.toLowerCase() === first)?.language
+      ?? draft.lang ?? draft.language,
+    )
+    let alive = true
+    const t = setTimeout(() => {
+      getRecipientLanguage(first).then(l => { if (alive) setLang(l || hint || 'fr') })
+    }, 300)
+    return () => { alive = false; clearTimeout(t) }
+  }, [to, draft])
+
+  // Changement d'expéditeur ou de langue du destinataire → la signature du
+  // corps devient celle de la boîte choisie, dans la bonne langue.
+  useEffect(() => {
+    if (!draft) return
+    const from = fromAccount === undefined ? sigFromRef.current : fromAccount
+    if (from === sigFromRef.current && lang === sigLangRef.current) return
+    sigFromRef.current = from
+    sigLangRef.current = lang
+    let alive = true
+    getSignatureFor(from, lang).then(sig => {
+      const el = bodyRef.current
+      if (!alive || !el) return
+      const untouched = el.innerHTML === autoRef.current.inner
+      if (replaceSignature(el, sig) && untouched) autoRef.current.inner = el.innerHTML
+    })
+    return () => { alive = false }
+  }, [fromAccount, lang]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function pickRecipient(r) {
     setTo(r.email)
@@ -131,11 +189,70 @@ export default function EmailComposerModal({
       partsRef.current = { prefix: parts.prefix, suffix: parts.suffix }
       bodyRef.current.innerHTML = parts.inner
       auto.inner = bodyRef.current.innerHTML
-      getEmailSignature().then(sig => {
+      getSignatureFor(fromRef.current, langRef.current).then(sig => {
         const el = bodyRef.current
         if (el && el.innerHTML === auto.inner && appendSignature(el, sig)) auto.inner = el.innerHTML
       })
     }
+  }
+
+  // Modèle inséré : gardé pour le remplir à nouveau si le destinataire change.
+  const appliedRef = useRef(null) // { t, to, contactId }
+
+  function applyTemplate(t, { keepSubject = false } = {}) {
+    const filled = fillTemplate
+      ? fillTemplate(t, String(to || '').trim())
+      : { subject: t.subject || '', html: textToHtml(t.body || '') }
+    appliedRef.current = { t, to: String(to || '').trim(), contactId: filled.contactId || '' }
+    if (!keepSubject) setSubject(filled.subject)
+    const el = bodyRef.current
+    if (!el) return
+    el.innerHTML = filled.html
+    const auto = autoRef.current
+    if (!keepSubject) auto.subject = filled.subject
+    auto.inner = el.innerHTML
+    getSignatureFor(fromRef.current, langRef.current).then(sig => {
+      if (bodyRef.current === el && el.innerHTML === auto.inner && appendSignature(el, sig)) auto.inner = el.innerHTML
+    })
+  }
+
+  // Destinataire changé après l'insertion d'un modèle : texte non retouché →
+  // modèle rempli à nouveau ; retouché → seuls les liens ?contact= suivent.
+  useEffect(() => {
+    const applied = appliedRef.current
+    if (!applied || !fillTemplate) return undefined
+    const cur = String(to || '').trim()
+    if (cur === applied.to) return undefined
+    const timer = setTimeout(() => {
+      const el = bodyRef.current
+      const auto = autoRef.current
+      if (!el) return
+      if (el.innerHTML === auto.inner) {
+        applyTemplate(applied.t, { keepSubject: subject !== auto.subject })
+        return
+      }
+      const next = fillTemplate(applied.t, cur).contactId || ''
+      if (next !== applied.contactId) {
+        el.querySelectorAll('a[href]').forEach(a => {
+          const href = a.getAttribute('href')
+          const swapped = href.replace(/([?&]contact=)[^&#]*/, `$1${encodeURIComponent(next)}`)
+          if (swapped !== href) a.setAttribute('href', swapped)
+        })
+      }
+      appliedRef.current = { ...applied, to: cur, contactId: next }
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [to]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Un contentEditable n'ouvre pas ses liens : clic simple (pas une sélection)
+  // → nouvel onglet, sans quitter la fenêtre de rédaction.
+  function openBodyLink(e) {
+    const a = e.target.closest?.('a[href]')
+    if (!a) return
+    e.preventDefault()
+    if (e.button !== 0 || !window.getSelection()?.isCollapsed) return
+    const href = a.getAttribute('href')
+    if (href && !/^\s*javascript:/i.test(href)) window.open(a.href, '_blank', 'noopener,noreferrer')
   }
 
   function handleSend() {
@@ -171,7 +288,7 @@ export default function EmailComposerModal({
   const suggestions = recipientSelect ? [] : recipients.filter(r => r.email !== to)
 
   return (
-    <Frame docked={docked} isOpen={isOpen} onClose={onClose} title={title} size={size}>
+    <Frame docked={docked} wide={dockWide} isOpen={isOpen} onClose={onClose} title={title} size={size}>
       {loading ? (
         <Spinner center />
       ) : loadError ? (
@@ -268,14 +385,38 @@ export default function EmailComposerModal({
               </>
             )}
             <label className="text-xs text-slate-500" htmlFor="email-composer-subject">Objet</label>
-            <input
-              id="email-composer-subject"
-              readOnly={!editing}
-              className="input"
-              value={subject}
-              onChange={e => setSubject(e.target.value)}
-              data-testid="email-composer-subject"
-            />
+            <div className="flex items-center gap-2 min-w-0">
+              <input
+                id="email-composer-subject"
+                readOnly={!editing}
+                className="input flex-1 min-w-0"
+                value={subject}
+                onChange={e => setSubject(e.target.value)}
+                data-testid="email-composer-subject"
+              />
+              {templates && editing && templates.length > 0 && (
+                <div className="w-40 shrink-0">
+                  <SearchableSelect
+                    testId="email-composer-template"
+                    size="sm"
+                    className="input text-sm w-full cursor-pointer hover:bg-slate-50"
+                    value=""
+                    placeholder={(
+                      <span className="inline-flex items-center gap-2 text-slate-700">
+                        <LayoutTemplate size={15} className="text-brand-600 shrink-0" />
+                        Modèle
+                      </span>
+                    )}
+                    fitViewport
+                    options={templates}
+                    getOptionValue={t => t.id}
+                    getOptionLabel={t => t.name}
+                    filterOption={(t, q) => `${t.name} ${t.subject || ''}`.toLowerCase().includes(q)}
+                    onChange={id => { const t = templates.find(x => x.id === id); if (t) applyTemplate(t) }}
+                  />
+                </div>
+              )}
+            </div>
           </div>
 
           {editing && suggestions.length > 0 && (
@@ -298,7 +439,8 @@ export default function EmailComposerModal({
             contentEditable={editing}
             aria-label="Contenu du courriel"
             suppressContentEditableWarning
-            className={`border border-slate-200 rounded-xl bg-white px-4 py-3 text-sm overflow-y-auto focus:outline-none focus:border-brand-400 ${bodyClassName}`}
+            onClick={openBodyLink}
+            className={`border border-slate-200 rounded-xl bg-white px-4 py-3 text-sm overflow-y-auto focus:outline-none focus:border-brand-400 [&_a]:text-brand-700 [&_a]:underline [&_a]:cursor-pointer ${bodyClassName}`}
             style={{ maxHeight: 360, minHeight: 160 }}
             data-testid="email-composer-body"
           />
@@ -357,11 +499,11 @@ export default function EmailComposerModal({
   )
 }
 
-function Frame({ docked, ...props }) {
-  return docked ? <DockedWindow {...props} /> : <Modal {...props} />
+function Frame({ docked, wide, ...props }) {
+  return docked ? <DockedWindow wide={wide} {...props} /> : <Modal {...props} />
 }
 
-function DockedWindow({ isOpen, onClose, title, children }) {
+function DockedWindow({ isOpen, onClose, title, wide, children }) {
   const [minimized, setMinimized] = useState(false)
   const ref = useRef(null)
   const zRef = useRef(null)
@@ -383,7 +525,7 @@ function DockedWindow({ isOpen, onClose, title, children }) {
   if (!isOpen) return null
   return createPortal(
     <div ref={ref} role="dialog" aria-label={title} data-testid="email-composer-dock"
-      className="fixed bottom-0 right-6 w-[34rem] max-w-[calc(100vw-2rem)] bg-white rounded-t-xl shadow-2xl border border-slate-200 flex flex-col max-h-[85vh]"
+      className={`fixed bottom-0 right-20 ${wide ? 'w-[41rem]' : 'w-[34rem]'} max-w-[calc(100vw-6rem)] bg-white rounded-t-xl shadow-2xl border border-slate-200 flex flex-col max-h-[85vh]`}
       style={{ zIndex: z }}>
       <div className="flex items-center gap-1 pl-4 pr-2 py-2 bg-slate-800 text-white rounded-t-xl cursor-pointer select-none"
         onClick={() => setMinimized(m => !m)}>

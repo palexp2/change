@@ -29,7 +29,7 @@ function mutateFtpUsers(mutator) {
   return withFileLock(FTP_USERS_FILE, () => mutator(readFtpUsers()))
 }
 
-import { getAuthUrl as googleAuthUrl, exchangeCode as googleExchange } from '../connectors/google.js'
+import { getAuthUrl as googleAuthUrl, exchangeCode as googleExchange, scopesGrantCalendar } from '../connectors/google.js'
 import { getAuthUrl as airtableAuthUrl, exchangeCode as airtableExchange, airtableFetch, getAccessToken, getBaseTablesCached, invalidateBaseTables } from '../connectors/airtable.js'
 import { getAuthUrl as qbAuthUrl, exchangeCode as qbExchange, qbGet } from '../connectors/quickbooks.js'
 import { getAuthUrl as amazonAuthUrl, exchangeCode as amazonExchange, isAmazonConfigured } from '../connectors/amazon.js'
@@ -38,7 +38,7 @@ import { isDigikeyConfigured } from '../connectors/digikey.js'
 import { isUpsConfigured } from '../connectors/ups.js'
 import { isVennConfigured } from '../connectors/venn.js'
 import { syncDigikey } from '../services/digikey.js'
-import { syncAllAchatsToQB, importFromQB } from '../services/quickbooks.js'
+import { syncAllAchatsToQB, importFromQB, resolveTaxCodeRates } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
 import { syncDrive } from '../services/drive.js'
 import { syncCompanies, syncContacts, syncProjets, syncPieces, syncOrders, syncOrderItems, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements, syncInstagramProspects } from '../services/airtable.js'
@@ -306,10 +306,18 @@ router.get('/gmail/accounts', requireAuth, (req, res) => {
     WHERE connector='google' AND refresh_token IS NOT NULL
     ORDER BY account_email
   `).all()
-  res.json(rows.map(r => ({
-    ...r,
-    is_current_user: !!(myEmail && r.account_email?.toLowerCase() === myEmail),
-  })))
+  // Signature de l'utilisateur ERP propriétaire de la boîte : le composeur la
+  // met en bas du courriel quand on choisit cette boîte comme expéditeur.
+  const sigOf = db.prepare('SELECT email_signature, email_signature_en FROM users WHERE lower(email) = lower(?)')
+  res.json(rows.map(r => {
+    const u = (r.account_email && sigOf.get(r.account_email)) || {}
+    return {
+      ...r,
+      is_current_user: !!(myEmail && r.account_email?.toLowerCase() === myEmail),
+      signature: u.email_signature || '',
+      signature_en: u.email_signature_en || '',
+    }
+  }))
 })
 
 const SETTINGS_GMAIL = '/erp/parametres/gmail'
@@ -340,7 +348,8 @@ router.get('/google/connect', requireAuth, (req, res) => {
     user_id: req.user.id, adminOnly: !personal,
     ...(personal ? { ret: 'settings', expect: mine } : {}),
   })
-  res.redirect(googleAuthUrl(state, { loginHint }))
+  // ?calendar=1 : bouton « Brancher Google Agenda » (prise de rendez-vous).
+  res.redirect(googleAuthUrl(state, { loginHint, calendar: req.query.calendar === '1' }))
 })
 
 // ── Google OAuth callback
@@ -367,13 +376,13 @@ router.get('/google/callback', async (req, res) => {
     if (existing) {
       db.prepare(`
         UPDATE connector_oauth SET access_token=?, refresh_token=COALESCE(?,refresh_token),
-        expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
-      `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expiry_date || null, existing.id)
+        expiry_date=?, granted_scopes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
+      `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expiry_date || null, tokens.scope || null, existing.id)
     } else {
       db.prepare(`
-        INSERT INTO connector_oauth (id, connector, account_key, account_email, access_token, refresh_token, expiry_date)
-        VALUES (?,?,?,?,?,?,?)
-      `).run(newRecordId(), 'google', email, email, encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expiry_date || null)
+        INSERT INTO connector_oauth (id, connector, account_key, account_email, access_token, refresh_token, expiry_date, granted_scopes)
+        VALUES (?,?,?,?,?,?,?,?)
+      `).run(newRecordId(), 'google', email, email, encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expiry_date || null, tokens.scope || null)
     }
 
     res.redirect(`${back}?success=google`)
@@ -388,7 +397,7 @@ router.get('/google/my-mailbox', requireAuth, (req, res) => {
   const mine = myEmail(req.user.id)
   if (!mine) return res.json({ connected: false, email: null })
   const row = db.prepare(`
-    SELECT co.updated_at, gs.last_synced_at
+    SELECT co.updated_at, co.granted_scopes, gs.last_synced_at
     FROM connector_oauth co
     LEFT JOIN gmail_sync_state gs ON gs.connector_oauth_id = co.id
     WHERE co.connector='google' AND lower(co.account_email)=? AND co.refresh_token IS NOT NULL
@@ -398,6 +407,7 @@ router.get('/google/my-mailbox', requireAuth, (req, res) => {
     email: mine,
     updatedAt: row?.updated_at || null,
     lastSyncedAt: row?.last_synced_at || null,
+    calendar: !!row && scopesGrantCalendar(row.granted_scopes),
   })
 })
 
@@ -500,13 +510,14 @@ router.delete('/accounts/:id', requireAdmin, (req, res) => {
 })
 
 // ── Save connector config
-router.put('/config/:connector', requireAdmin, (req, res) => {
+router.put('/config/:connector', requireAdmin, async (req, res) => {
   const { connector } = req.params
   const allowed = {
     google: ['drive_folders', 'drive_folder_id', 'invoice_autodetect_mailboxes', 'invoice_trash_after_import_mailboxes', 'invoice_only_mailboxes', 'invoice_autodetect_senders'],
     quickbooks: ['webhook_verifier_token'],
     stripe: ['secret_key', 'webhook_secret', 'publishable_key'],
     hubspot: ['access_token'],
+    slack: ['user_token'],
   }[connector]
   if (!allowed || !req.body || Array.isArray(req.body) || Object.keys(req.body).some(key => !allowed.includes(key))) {
     return res.status(400).json({ error: 'Configuration non autorisée' })
@@ -514,15 +525,39 @@ router.put('/config/:connector', requireAdmin, (req, res) => {
   if (Object.values(req.body).some(value => value !== null && (typeof value !== 'string' || value.length > 100000))) {
     return res.status(400).json({ error: 'Valeur de configuration invalide' })
   }
+  // Jeton Slack personnel : on vérifie qu'il ouvre bien un compte de PERSONNE
+  // (pas le jeton de l'app, qui signerait « ERP Orisha »).
+  if (connector === 'slack' && req.body.user_token) {
+    const t = String(req.body.user_token).trim()
+    if (/^xoxb-/.test(t)) return res.status(400).json({ error: 'C’est le jeton de l’app (xoxb-). Il faut le « User OAuth Token » (xoxp-…).' })
+    try {
+      const r = await fetch('https://slack.com/api/auth.test', { method: 'POST', headers: { Authorization: `Bearer ${t}` } }).then(x => x.json())
+      if (!r.ok) return res.status(400).json({ error: `Slack refuse ce jeton : ${r.error}` })
+    } catch (e) { return res.status(400).json({ error: `Slack injoignable : ${e.message}` }) }
+    req.body.user_token = t
+  }
   for (const [key, value] of Object.entries(req.body)) {
     // Le masque renvoyé tel quel = « je n'y ai pas touché ».
     if (isSecretConfigKey(key) && value === SECRET_MASK) continue
+    // Vider un secret = le retirer, pas chiffrer « null ».
+    if (value === null && isSecretConfigKey(key)) {
+      db.prepare('DELETE FROM connector_config WHERE connector=? AND key=?').run(connector, key)
+      continue
+    }
     db.prepare(`
       INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
       ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
     `).run(connector, key, isSecretConfigKey(key) ? encryptCredentials(value) : (value ?? null))
   }
   res.json({ ok: true })
+})
+
+// Le compte Slack derrière le jeton personnel (messages privés envoyés en son nom).
+router.get('/slack/me', requireAuth, async (req, res) => {
+  const { slackUserIdentity, slackUserToken } = await import('../services/slack.js')
+  if (!slackUserToken()) return res.json({ configured: false })
+  try { res.json({ configured: true, ...(await slackUserIdentity()) }) }
+  catch (e) { res.json({ configured: true, error: e.message }) }
 })
 
 // ── Santé des sessions empruntées à un navigateur (Instagram, ManyChat…)
@@ -2849,6 +2884,16 @@ router.get('/quickbooks/tax-codes', requireAuth, async (req, res) => {
   }
 })
 
+// GET /api/connectors/quickbooks/tax-codes/:id/rates — taux d'ACHAT du code (la liste
+// des codes ne les porte pas). Sert à dire où iront les « Autres taxes » d'un reçu.
+router.get('/quickbooks/tax-codes/:id/rates', requireAuth, async (req, res) => {
+  try {
+    res.json(await resolveTaxCodeRates(req.params.id))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // GET /api/connectors/quickbooks/vendors — liste des fournisseurs QB (paginé)
 router.get('/quickbooks/vendors', requireAuth, async (req, res) => {
   try {
@@ -2864,6 +2909,39 @@ router.get('/quickbooks/vendors', requireAuth, async (req, res) => {
       startPos += pageSize
     }
     res.json(all)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// GET /api/connectors/quickbooks/payees?currency=CAD — la liste « Bénéficiaire »
+// de QuickBooks : fournisseurs, clients et employés actifs. Les fournisseurs et
+// clients d'une autre devise sont écartés (QuickBooks les refuserait). 5 min de cache.
+const payeesCache = new Map()
+router.get('/quickbooks/payees', requireAuth, async (req, res) => {
+  const currency = String(req.query.currency || '').toUpperCase() || null
+  const hit = payeesCache.get(currency)
+  if (hit && Date.now() - hit.at < 300_000) return res.json(hit.data)
+  try {
+    const fetchAll = async (entity) => {
+      const out = []
+      for (let start = 1; ; start += 1000) {
+        const q = encodeURIComponent(`SELECT * FROM ${entity} WHERE Active = true STARTPOSITION ${start} MAXRESULTS 1000`)
+        const batch = (await qbGet(`/query?query=${q}`)).QueryResponse?.[entity] || []
+        out.push(...batch)
+        if (batch.length < 1000) break
+      }
+      return out
+    }
+    const [vendors, customers, employees] = await Promise.all([fetchAll('Vendor'), fetchAll('Customer'), fetchAll('Employee')])
+    const sameCur = (e) => !currency || !e.CurrencyRef?.value || e.CurrencyRef.value === currency
+    const data = [
+      ...vendors.filter(sameCur).map((e) => ({ id: e.Id, name: e.DisplayName, type: 'Vendor' })),
+      ...customers.filter(sameCur).map((e) => ({ id: e.Id, name: e.DisplayName, type: 'Customer' })),
+      ...employees.map((e) => ({ id: e.Id, name: e.DisplayName, type: 'Employee' })),
+    ].filter((p) => p.name).sort((a, b) => a.name.localeCompare(b.name, 'fr'))
+    payeesCache.set(currency, { at: Date.now(), data })
+    res.json(data)
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

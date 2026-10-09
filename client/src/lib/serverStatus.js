@@ -97,3 +97,15 @@ export function subscribeServerRestart(fn) {
   restartSubs.add(fn)
   return () => restartSubs.delete(fn)
 }
+
+// Travail en cours qui suppose que l'onglet reste en vie même caché (ex. un PDF
+// généré puis versé dans un onglet qu'on vient d'ouvrir) : tant qu'il dure, la
+// nouvelle version ne recharge pas l'onglet caché. `holdReload()` rend la
+// fonction de libération.
+let reloadHolds = 0
+export function holdReload() {
+  reloadHolds++
+  let released = false
+  return () => { if (!released) { released = true; reloadHolds-- } }
+}
+export function isReloadHeld() { return reloadHolds > 0 }

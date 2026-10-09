@@ -12,6 +12,9 @@
 //   sur l'autre compte retrouve donc sa session.
 //   Ajouter un compte : claude-account-setup.sh <nom>, puis
 //   CLAUDE_CONFIG_DIR=~/.claude-accounts/<nom> claude auth login.
+// • Dès qu'au moins un compte dédié est connecté, le principal sort de la file
+//   (demande de Charles, 2026-10-09) : ~/.claude suit qui s'est connecté dans le
+//   terminal ; les comptes dédiés, eux, ne bougent jamais.
 import { existsSync, readdirSync } from 'fs'
 import { resolve } from 'path'
 
@@ -22,15 +25,10 @@ const ROOT = resolve(HOME, '.claude-accounts')
 const LIST_TTL_MS = 30_000
 let _list = null // { at, accounts }
 
-/** Comptes connus : le principal d'abord, puis chaque dossier connecté. */
+/** Comptes de la file : les dossiers dédiés connectés ; à défaut, le principal. */
 export function listAccounts() {
   if (_list && Date.now() - _list.at < LIST_TTL_MS) return _list.accounts
-  const accounts = [{
-    id: PRIMARY_ACCOUNT_ID,
-    configDir: resolve(HOME, '.claude'),
-    globalConfig: resolve(HOME, '.claude.json'),
-    env: {},
-  }]
+  const accounts = []
   let names = []
   try { names = readdirSync(ROOT, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort() } catch {}
   for (const name of names) {
@@ -38,6 +36,14 @@ export function listAccounts() {
     // Dossier préparé mais jamais connecté : ignoré tant qu'aucun jeton n'y est écrit.
     if (!existsSync(resolve(dir, '.credentials.json'))) continue
     accounts.push({ id: name, configDir: dir, globalConfig: resolve(dir, '.claude.json'), env: { CLAUDE_CONFIG_DIR: dir } })
+  }
+  if (!accounts.length) {
+    accounts.push({
+      id: PRIMARY_ACCOUNT_ID,
+      configDir: resolve(HOME, '.claude'),
+      globalConfig: resolve(HOME, '.claude.json'),
+      env: {},
+    })
   }
   _list = { at: Date.now(), accounts }
   return accounts
@@ -86,7 +92,8 @@ export function accountMargin(usage, floors = { session: 0, week: 0 }) {
 /**
  * Compte à utiliser : celui qui a le plus de marge, parmi ceux qui ne sont pas à sec.
  * `usageById` = { id → lecture des quotas }. Un compte sans chiffre lisible passe
- * après un compte mesuré ; à égalité, le principal.
+ * après un compte mesuré ; à égalité, le principal. `floors` : seuils communs, ou
+ * fonction id → seuils de ce compte (chaque compte a les siens).
  */
 export function pickAccount(usageById = {}, floors, now = Date.now()) {
   const all = listAccounts()
@@ -95,7 +102,7 @@ export function pickAccount(usageById = {}, floors, now = Date.now()) {
   let best = null
   let bestScore = -Infinity
   for (const a of pool) {
-    const m = accountMargin(usageById[a.id], floors)
+    const m = accountMargin(usageById[a.id], typeof floors === 'function' ? floors(a.id) : floors)
     const score = m == null ? -1000 : m
     if (score > bestScore) { best = a; bestScore = score }
   }

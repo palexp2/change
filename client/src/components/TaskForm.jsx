@@ -81,7 +81,34 @@ export function KeywordPicker({ value, onChange, hideLabel = false }) {
   )
 }
 
-export default function TaskForm({ initial = {}, companies = [], contacts = [], users = [], tickets = [], defaultAssignedTo = '', onSave, onClose }) {
+const URL_RE = /(https?:\/\/[^\s<>]+)/g
+
+// Textarea dont les URLs sont cliquables : hors focus, le texte est rendu avec
+// des liens ; un clic ailleurs que sur un lien repasse en édition.
+function LinkifiedTextarea({ value, onChange, onBlur, rows }) {
+  const [editing, setEditing] = useState(false)
+  const hasUrl = /https?:\/\/\S/.test(value || '')
+  if (editing || !hasUrl) {
+    return <textarea value={value} onChange={onChange} onBlur={e => { setEditing(false); onBlur?.(e) }} className="input" rows={rows} autoFocus={editing} />
+  }
+  const parts = value.split(URL_RE)
+  return (
+    <div
+      role="textbox"
+      tabIndex={0}
+      onClick={e => { if (!e.target.closest('a')) setEditing(true) }}
+      onFocus={e => { if (e.target === e.currentTarget) setEditing(true) }}
+      className="input whitespace-pre-wrap break-words cursor-text"
+      style={{ minHeight: `${rows * 1.5 + 1}rem` }}
+    >
+      {parts.map((p, i) => i % 2
+        ? <a key={i} href={p} target="_blank" rel="noreferrer" className="text-brand-600 hover:text-brand-800 underline break-all">{p}</a>
+        : p)}
+    </div>
+  )
+}
+
+export default function TaskForm({ initial = {}, companies = [], contacts = [], users = [], tickets = [], defaultAssignedTo = '', linkifyDescription = false, onSave, onClose }) {
   const [form, setForm] = useState({
     title: '', description: '', status: 'À faire', priority: 'Normal',
     due_date: '', company_id: '', contact_id: '', notes: '',
@@ -151,7 +178,9 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
       </div>
       <div>
         <label className="label">Description</label>
-        <textarea value={form.description} onChange={f('description')} onBlur={fBlur('description')} className="input" rows={2} />
+        {linkifyDescription
+          ? <LinkifiedTextarea value={form.description || ''} onChange={f('description')} onBlur={fBlur('description')} rows={2} />
+          : <textarea value={form.description} onChange={f('description')} onBlur={fBlur('description')} className="input" rows={2} />}
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>

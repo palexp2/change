@@ -170,6 +170,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
     subject: emailSubject,
     bodyHtml: textToHtml(emailBody),
     attachments: [`${po.po_number}.pdf`],
+    lang: po.lang,
     recipients: supplierContacts.map(c => ({
       email: c.email,
       name: c.name || c.email,
@@ -378,6 +379,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
         draft={emailDraft}
         onPickRecipient={pickRecipient}
         canSend={Boolean(fromAccount)}
+        fromAccount={fromAccount}
         headerExtra={
           <div>
             <label className="block text-xs text-slate-500 mb-1">Envoyer depuis</label>

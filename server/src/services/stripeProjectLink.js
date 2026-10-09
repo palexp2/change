@@ -49,6 +49,55 @@ function uniqueId(rows) {
   return ids.length === 1 ? ids[0] : null
 }
 
+/**
+ * Contact d'une facture d'après le courriel du client Stripe : celui de
+ * l'entreprise de la facture s'il y en a un, sinon le seul contact portant ce
+ * courriel. Plusieurs candidats sans départage → null. (2026-10-08)
+ */
+export function contactForFactureEmail(email, companyId) {
+  const e = norm(email)
+  if (!e) return null
+  const rows = db.prepare(`
+    SELECT id, company_id FROM contacts
+    WHERE lower(trim(email))=? AND deleted_at IS NULL
+  `).all(e)
+  if (companyId) {
+    const same = uniqueId(rows.filter(r => r.company_id === companyId))
+    if (same) return same
+  }
+  return uniqueId(rows)
+}
+
+/** Pose le contact d'une facture s'il est vide. Renvoie l'id posé ou null. */
+export function linkFactureContact(factureId) {
+  const f = db.prepare('SELECT contact_id, company_id, customer_email FROM factures WHERE id=?').get(factureId)
+  if (!f || f.contact_id) return null
+  const cid = contactForFactureEmail(f.customer_email, f.company_id)
+  if (!cid) return null
+  db.prepare(`
+    UPDATE factures SET contact_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE id=? AND (contact_id IS NULL OR contact_id='')
+  `).run(cid, factureId)
+  return cid
+}
+
+/**
+ * Pose le contact d'un abonnement s'il est vide : courriel du client Stripe,
+ * sinon le seul contact de ses factures. Renvoie l'id posé ou null.
+ */
+export function linkSubscriptionContact(subId) {
+  const s = db.prepare('SELECT id, stripe_id, contact_id, company_id, customer_email FROM subscriptions WHERE id=?').get(subId)
+  if (!s || s.contact_id) return null
+  const cid = contactForFactureEmail(s.customer_email, s.company_id)
+    || uniqueId(db.prepare(`
+      SELECT DISTINCT contact_id AS id FROM factures
+      WHERE subscription_id IN (?, ?) AND contact_id IS NOT NULL AND contact_id<>''
+    `).all(s.id, s.stripe_id || s.id))
+  if (!cid) return null
+  db.prepare("UPDATE subscriptions SET contact_id=? WHERE id=? AND (contact_id IS NULL OR contact_id='')").run(cid, s.id)
+  return cid
+}
+
 /** Entreprise d'une facture sans client Stripe reconnu : { id, how } ou null. */
 export function companyForStripeFacture({ projectId, subscriptionId, email, name }) {
   const fromProject = projectId ? db.prepare('SELECT company_id AS id FROM projects WHERE id=?').get(projectId)?.id : null
@@ -129,5 +178,12 @@ export function autoLinkStripeFacture(factureId, invoice) {
       if (changes) linked.project = p
     }
   }
+  const contactId = linkFactureContact(factureId)
+  if (contactId) linked.contact = { id: contactId, how: 'courriel du client Stripe' }
+  // L'abonnement de la facture hérite de son contact s'il n'en a pas.
+  const sub = f.subscription_id
+    ? db.prepare('SELECT id FROM subscriptions WHERE id=? OR stripe_id=?').get(f.subscription_id, f.subscription_id)
+    : null
+  if (sub) linkSubscriptionContact(sub.id)
   return linked
 }

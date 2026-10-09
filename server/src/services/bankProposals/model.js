@@ -13,14 +13,14 @@ import crypto from 'node:crypto'
 
 export const KINDS = [
   'qb_link', 'doc_match', 'vendor_expense', 'invoice_found',
-  'payment_clear', 'paie_debit', 'aga_repartition', 'debt_payment',
+  'payment_clear', 'paie_debit', 'aga_repartition', 'debt_payment', 'qb_habit',
 ]
 
 // Les natures dont l'acceptation ÉCRIT dans QuickBooks. Elles ne partent
 // jamais en lot : un clic humain par écriture publiée, c'est l'invariant du
 // moteur. Ici (module pur) parce que la route, le store et l'applicateur en ont
 // tous besoin, et qu'une liste recopiée finit toujours par diverger.
-export const PUBLISHES_TO_QB = new Set(['aga_repartition', 'vendor_expense'])
+export const PUBLISHES_TO_QB = new Set(['aga_repartition', 'vendor_expense', 'qb_habit'])
 
 // Ce qu'une confirmation en lot a le droit de toucher : tout sauf ce qui
 // publierait dans QuickBooks.
@@ -31,7 +31,7 @@ export function isBatchAcceptable(kind) { return !PUBLISHES_TO_QB.has(kind) }
 export const KIND_ORDER = [
   'qb_link', 'doc_match', 'invoice_found',
   'paie_debit', 'debt_payment', 'aga_repartition',
-  'payment_clear', 'vendor_expense',
+  'payment_clear', 'qb_habit', 'vendor_expense',
 ]
 
 export function proposalFingerprint(p) {

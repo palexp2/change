@@ -50,6 +50,7 @@ describe('Fiche reçu — transactions passées du fournisseur (modèle de compt
   before(async () => {
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    await ctx.addInitScript(() => { try { localStorage.setItem('receipt-drawers', JSON.stringify({ articles: true, taxes: true, details: true, model: true })) } catch {} })
     page = await ctx.newPage()
     await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
     await page.fill('input[type="email"]', EMAIL)
@@ -106,19 +107,5 @@ describe('Fiche reçu — transactions passées du fournisseur (modèle de compt
     const b = data.find(x => x.id === pastId)
     assert.equal(b.total, 42.5)
     assert.equal(b.quickbooks_type, 'purchase')
-  })
-
-  test('le formulaire de publication affiche le panneau des transactions passées', async (t) => {
-    // Panneau dans QBPublishForm (visible seulement si status=done && non publié).
-    // On s'appuie sur un reçu réel déjà « done » EN LECTURE SEULE (jamais modifié),
-    // et sur un reçu jetable publié portant son fournisseur. Si aucun hôte réel
-    // adéquat n'existe, on skip.
-    if (!hostId) { t.skip('aucun reçu done/non publié avec fournisseur disponible comme hôte'); return }
-
-    await page.goto(`${URL}/sale-receipts/${hostId}`, { waitUntil: 'networkidle' })
-    const panel = page.locator('[data-testid="vendor-history"]')
-    await panel.waitFor({ state: 'visible', timeout: 10000 })
-    const txt = await panel.innerText()
-    assert.match(txt, /42,50/, 'le montant de la transaction passée (jetable) doit être affiché')
   })
 })

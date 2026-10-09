@@ -16,7 +16,7 @@ export const SETTINGS_ROUTE = '/parametres'
 export const SETTINGS_SECTIONS = [
   { key: 'menu',        label: 'Menu de gauche', icon: SlidersHorizontal, group: 'Mon compte' },
   { key: 'adresses',    label: 'Adresses',       icon: MapPin,            group: 'Mon compte' },
-  { key: 'gmail',       label: 'Gmail',          icon: Mail,              group: 'Mon compte' },
+  { key: 'gmail',       label: 'Google',         icon: Mail,              group: 'Mon compte' },
   { key: 'quickbooks',  label: 'QuickBooks',     icon: BookOpen,          group: 'Mon compte' },
   { key: 'raccourcis',  label: 'Raccourcis',     icon: Keyboard,          group: 'Boréal' },
   { key: 'nouveautes',  label: 'Nouveautés',     icon: Sparkles,          group: 'Boréal', full: true },

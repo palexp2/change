@@ -394,21 +394,19 @@ const soumissionPaysStmt = () => db.prepare(`
 // faire perdre la mémoire du DM déjà envoyé, ce qui rouvrirait la porte à un
 // second contact).
 //
-// ⚠️ Constat repris tel quel de la fonction historique, à vérifier avec
-// Guillaume : la case « Contacté » d'Airtable arrive en BOOLÉEN, or `getVal` la
-// rend en texte (« true ») avant la comparaison à `true`/`1`/`'1'`. Résultat :
-// une case cochée dans Airtable retombe à 0 côté ERP. Le moteur reproduit ce
-// comportement à la lettre — le corriger changerait des données, ce n'est pas
-// une décision de bascule.
 function instagramDerive(fields, rec, fieldMap) {
   if (fieldMapDirection('instagram', 'contacted') === 'push') return {}
   const atField = fieldMap?.contacted
   if (!atField) return {}
   const val = getVal(fields, atField)
-  const contacted = (val === true || val === 1 || val === '1') ? 1 : 0
-  if (!contacted) return { contacted: 0, contacted_at: null }
+  // `getVal` rend la case cochée en texte « true » : sans ce cas, chaque fiche
+  // traitée renvoyée vers Airtable revenait « à traiter » au sync suivant.
+  const contacted = (val === true || val === 1 || val === '1' || val === 'true') ? 1 : 0
+  const existing = db.prepare('SELECT contacted, contacted_at FROM instagram_prospects WHERE airtable_id=? AND deleted_at IS NULL').get(rec.id)
+  // Une case vide dans Airtable ne dé-traite jamais une fiche traitée dans
+  // Boréal (rangée par Philippe, conclue, hors sujet…).
+  if (!contacted) return existing?.contacted ? {} : { contacted: 0, contacted_at: null }
   // Déjà daté : on garde la date d'origine, c'est elle qui fait foi.
-  const existing = db.prepare('SELECT contacted_at FROM instagram_prospects WHERE airtable_id=? AND deleted_at IS NULL').get(rec.id)
   return existing?.contacted_at ? { contacted: 1 } : { contacted: 1, contacted_at: new Date().toISOString() }
 }
 

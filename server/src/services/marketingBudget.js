@@ -290,9 +290,9 @@ const fmtMoney = (n, currency = 'CAD') => {
   catch { return `${Number(n).toFixed(2)} ${currency}` }
 }
 
+// Dates en YYYY-MM-DD dans Slack comme dans l'app (Charles, 2026-10-08).
 function fmtDateFr(dayIso) {
-  const d = new Date(`${dayIso}T12:00:00Z`)
-  return new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(d)
+  return String(dayIso).slice(0, 10)
 }
 
 // Le message hebdo annonce toujours les dépenses de la semaine PRÉCÉDENTE
@@ -307,12 +307,7 @@ export function previousWeekRangeFr(dayIso) {
   start.setUTCDate(thisMonday.getUTCDate() - 7)
   const end = new Date(start)
   end.setUTCDate(start.getUTCDate() + 6)
-  const sameMonth = start.getUTCMonth() === end.getUTCMonth()
-  const startLabel = sameMonth
-    ? new Intl.DateTimeFormat('fr-CA', { day: 'numeric', timeZone: 'UTC' }).format(start)
-    : new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(start)
-  const endLabel = new Intl.DateTimeFormat('fr-CA', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(end)
-  return `${startLabel} au ${endLabel}`
+  return `${start.toISOString().slice(0, 10)} au ${end.toISOString().slice(0, 10)}`
 }
 
 // Dépenses validées pertinentes pas encore annoncées à Émilie.

@@ -46,8 +46,8 @@ export const SEGMENT_DEFAULT_CONFIG = {
     "Elle nous suit sans rien avoir demandé. Aborde-la simplement, sans rien vendre, et demande-lui " +
     "ce qu'elle cultive.",
   msg_question:
-    "Elle pose une vraie question technique. Ne l'invente pas : propose une réponse prudente en une " +
-    "phrase, dis qu'un de nos gens va lui confirmer, et laisse la porte ouverte. Philippe relira.",
+    "Elle pose une vraie question technique. N'y réponds pas et n'avance aucun chiffre : remercie-la, " +
+    "dis qu'un de nos experts va lui répondre, et laisse la porte ouverte. Philippe relira.",
   msg_commentaire:
     "Elle a simplement réagi à une publication. Une phrase chaleureuse qui reprend ce qu'elle a dit, " +
     "puis UNE question ouverte sur ce qu'elle cultive. Pas de lien, pas d'offre.",
@@ -184,22 +184,35 @@ export function markAlreadyHandled({ ids = null } = {}) {
  * répondre. On la range dans les traités ; elle revient si elle réécrit.
  * Chaque dernier message n'est jugé qu'une fois.
  */
-export async function markConcluded(model) {
-  const rows = db.prepare(`
+export async function markConcluded(model, { recheck = false } = {}) {
+  let rows = db.prepare(`
     SELECT p.id, p.ig_username, t.user_id, t.last_incoming_at
     FROM instagram_prospects p
     JOIN manychat_threads t ON t.prospect_id = p.id OR t.user_id = p.manychat_subscriber_id
     WHERE p.deleted_at IS NULL AND t.last_direction = 'in' AND t.last_incoming_at IS NOT NULL
       AND (p.contacted = 0 OR t.last_incoming_at > COALESCE(p.contacted_at, ''))
-      AND t.last_incoming_at > COALESCE(p.concluded_check_at, '')
+      AND (? OR t.last_incoming_at > COALESCE(p.concluded_check_at, ''))
       AND EXISTS (SELECT 1 FROM manychat_messages m WHERE m.user_id = t.user_id AND m.direction = 'out')
     GROUP BY p.id
     LIMIT 200
-  `).all()
+  `).all(recheck ? 1 : 0)
+  // Seul un VRAI mot de la personne, écrit après une réponse humaine d'Orisha,
+  // peut conclure : un « Coach » commenté puis un clic sur le lien automatique,
+  // c'est une piste chaude, pas une conversation finie.
+  const lastHuman = db.prepare(`
+    SELECT MAX(sent_at) AS at FROM manychat_messages WHERE user_id = ? AND kind = 'msgout_echo_instagram'
+  `)
+  const wordsAfter = db.prepare(`
+    SELECT text FROM manychat_messages WHERE user_id = ? AND direction = 'in' AND sent_at > ? AND COALESCE(text,'') <> ''
+  `)
+  rows = rows.filter(r => {
+    const at = lastHuman.get(String(r.user_id))?.at
+    return at && wordsAfter.all(String(r.user_id), at).some(m => !/^(📝|💬 A |💬 Réponse|📣|🔗|✨|📎|📷|🎬|🎧|👤)/u.test(String(m.text).trim()))
+  })
   if (!rows.length) return 0
   const recent = db.prepare(`
     SELECT direction, text FROM manychat_messages WHERE user_id = ? AND COALESCE(text,'') <> ''
-    ORDER BY sent_at DESC LIMIT 6
+    ORDER BY sent_at DESC LIMIT 8
   `)
   const checked = db.prepare('UPDATE instagram_prospects SET concluded_check_at = ? WHERE id = ?')
   const close = db.prepare(`
@@ -216,9 +229,12 @@ export async function markConcluded(model) {
       return `#${k}\n${msgs.join('\n')}`
     }).join('\n\n')
     const results = await askJson(model,
-      "Pour chaque conversation Instagram, dis si elle est CLAIREMENT conclue : le dernier message de la " +
-      "personne ferme l'échange (remerciement, « à bientôt », « parfait », « see you there », émoji d'accord…) " +
-      "et n'attend aucune réponse. S'il reste une question, une demande ou un doute, ce n'est PAS conclu. " +
+      "Pour chaque conversation Instagram, dis si elle est conclue : la FIN de l'échange (pas seulement le tout " +
+      "dernier message) n'attend plus rien d'Orisha. Conclu : la personne remercie ou salue (« thanks », « merci », " +
+      "« perfect », « see you there », « I'll be in touch »…), même si une image, une vidéo, un émoji ou un clic " +
+      "de lien suit ; ou sa seule réponse est un message automatique (« thanks for contacting us, we'll get back " +
+      "to you », « we can't answer on social media, email us »…). PAS conclu : il reste une question, une demande, " +
+      "une promesse d'Orisha non tenue (« I'll look into it »), ou la personne répond à une question d'Orisha. " +
       'Réponds en JSON strict : { "results": [ { "i": <numéro>, "conclu": true|false } ] }.',
       lines)
     const byIndex = new Map(results.map(r => [Number(r.i), r]))
@@ -268,7 +284,7 @@ function candidates(limit, onlyIds = null) {
     LEFT JOIN manychat_threads t ON t.prospect_id = p.id OR t.user_id = p.manychat_subscriber_id
     WHERE p.deleted_at IS NULL AND p.ig_username IS NOT NULL
       AND p.segment_source IS NOT 'manual'
-      AND (p.segment IS NULL OR p.segment_at IS NULL)
+      AND (${onlyIds?.length ? '1=1 OR ' : ''}p.segment IS NULL OR p.segment_at IS NULL)
       ${onlyIds?.length ? `AND p.id IN (${onlyIds.map(() => '?').join(',')})` : ''}
     GROUP BY p.id
     ORDER BY COALESCE(p.last_event_at, p.created_at) DESC
@@ -290,6 +306,13 @@ function saidByPerson(p, incoming) {
   return [...new Set(parts.filter(Boolean))].join(' · ').slice(0, 600)
 }
 
+// Une ferme de fleurs le dit souvent dans son nom (« Jenny Creek Flowers ») :
+// c'est une preuve suffisante tant que le profil n'a pas pu être lu.
+const FLOWER_NAME = /flower|floral|florist|bloom|blossom|fleur|dahlia|peon(y|ies)|petal|tulip|zinnia|ranunculus/i
+function flowerByName(p, profile) {
+  return FLOWER_NAME.test(`${p.ig_username || ''} ${p.full_name || ''} ${profile?.bio || ''}`)
+}
+
 /** Ce qui se décide sans modèle : le mot-clé, et la fiche muette. */
 function ruleSegment(p, said) {
   if (/\bcoach(ing)?\b/i.test(`${p.keyword || ''} ${p.capture_label || ''} ${said}`)) return 'coach'
@@ -305,13 +328,17 @@ async function askModel(model, batch) {
     "Tu tries des contacts Instagram d'Orisha, qui vend du contrôle du climat en serre. " +
     'Pour CHAQUE personne, donne : ' +
     '"segment" parmi "coach" (elle demande le programme de coaching), "fleurs" (UNIQUEMENT si son ' +
-    'profil dit « activité : Fleurs coupées » — jamais sur un commentaire seul, un émoji 🌱 ou le mot ' +
-    '« plants » ; sans profil lu, jamais "fleurs"), "question" (elle pose une vraie question, technique ou ' +
+    'profil dit « activité : Fleurs coupées » OU si son nom/sa bio dit clairement une ferme de fleurs ' +
+    '(indice « nom de ferme de fleurs ») — jamais sur un commentaire seul, un émoji 🌱 ou le mot « plants »), "question" (elle pose une vraie question, technique ou ' +
     'commerciale, qui attend une réponse), "commentaire" (elle a seulement réagi : compliment, blague, ' +
     'remarque, critique), "abonne" (elle n\'a rien écrit du tout) ; ' +
     'et "bot" : true seulement si c\'est manifestement un faux compte, un démarcheur, une arnaque ' +
-    'de récupération de compte ou un vendeur d\'abonnés — un vrai maraîcher maladroit n\'est PAS un bot. ' +
-    'Réponds en JSON strict : { "results": [ { "i": <numéro>, "segment": "…", "bot": true|false } ] }.'
+    'de récupération de compte ou un vendeur d\'abonnés — un vrai maraîcher maladroit n\'est PAS un bot ; ' +
+    'et "hors_sujet" : true si rien ne mérite un message d\'Orisha : candidature à un emploi, moquerie ou ' +
+    'insulte, débat politique ou environnemental, message adressé à une autre personne ou à une autre ferme ' +
+    '(« Farmer Ryan! », client d\'une ferme voisine), « Yo what ». Un producteur qui fait un compliment, une ' +
+    'remarque technique ou une critique constructive n\'est PAS hors sujet. ' +
+    'Réponds en JSON strict : { "results": [ { "i": <numéro>, "segment": "…", "bot": true|false, "hors_sujet": true|false } ] }.'
   const lines = batch.map((b, i) => {
     const bits = [`#${i} @${b.p.ig_username}`]
     if (b.p.full_name) bits.push(`nom: ${b.p.full_name}`)
@@ -321,6 +348,7 @@ async function askModel(model, batch) {
     if (b.profile?.bio) bits.push(`bio: ${String(b.profile.bio).replace(/\s+/g, ' ').slice(0, 160)}`)
     if (b.said) bits.push(`dit: « ${b.said} »`)
     if (b.signals.reasons.length) bits.push(`indices: ${b.signals.reasons.join(', ')}`)
+    if (flowerByName(b.p, b.profile)) bits.push('indice: nom de ferme de fleurs')
     return bits.join(' | ')
   }).join('\n')
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -446,6 +474,12 @@ export async function runSegmentation({ force = false, trigger = 'schedule', ids
 
     const problems = []
     const changed = []
+    let offTopic = 0
+    const closeOffTopic = db.prepare(`
+      UPDATE instagram_prospects SET contacted = 1, contacted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+        contacted_source = 'hors_sujet', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE id = ? AND contacted = 0
+    `)
     for (let i = 0; i < toAsk.length; i += 15) {
       const batch = toAsk.slice(i, i + 15)
       let results = []
@@ -464,23 +498,27 @@ export async function runSegmentation({ force = false, trigger = 'schedule', ids
         let seg = SEGMENT_KEYS.has(r?.segment) ? r.segment : (ruleSegment(b.p, b.said) || 'commentaire')
         // « Fleurs » exige la preuve du profil : sans elle, le message fleurs
         // tombe à côté (un potager de cuisine n'est pas une ferme de fleurs).
-        if (seg === 'fleurs' && !b.profile?.ai?.flowers_main) seg = ruleSegment(b.p, b.said) || 'commentaire'
+        if (seg === 'fleurs' && !b.profile?.ai?.flowers_main && !flowerByName(b.p, b.profile)) seg = ruleSegment(b.p, b.said) || 'commentaire'
+        // Une vraie question attend sa réponse avant tout message « fleurs ».
+        if (seg === 'fleurs' && ruleSegment(b.p, b.said) === 'question') seg = 'question'
         if (seg !== b.p.segment) changed.push(b.p.id)
         setSegment(b.p.id, seg, 'ai')
         classed++
+        // Rien à lui écrire : rangée dans les traités, d'où on la repêche d'un clic.
+        if (r?.hors_sujet === true && seg !== 'coach') offTopic += closeOffTopic.run(b.p.id).changes
       })
     }
 
     const rewritten = await rewriteStaleDrafts(changed)
     const summary = `${classed} fiche(s) rangée(s) dont ${changed.length} changée(s) de pile, ` +
-      `${robots} robot(s) supprimé(s), ${handled} déjà traitée(s), ${concluded} conversation(s) conclue(s)` +
+      `${robots} robot(s) supprimé(s), ${offTopic} hors sujet, ${handled} déjà traitée(s), ${concluded} conversation(s) conclue(s)` +
       (prof ? ` · ${prof.read || 0} profil(s) lu(s)` + (prof.stopped ? ` — lecture arrêtée : ${prof.stopped}` : '') : '') +
       (problems.length ? ` · ${problems.length} échec(s)` : '')
     logSystemRun(SEGMENT_AUTOMATION_ID, {
       status: problems.length && !classed ? 'error' : 'success',
       duration_ms: Date.now() - t0, triggerData: { trigger }, result: summary,
     })
-    return { ok: true, classed, changed, robots, handled, concluded, rewritten, profiles: prof, problems, summary }
+    return { ok: true, classed, changed, robots, offTopic, handled, concluded, rewritten, profiles: prof, problems, summary }
   } catch (e) {
     logSystemRun(SEGMENT_AUTOMATION_ID, { status: 'error', duration_ms: Date.now() - t0, triggerData: { trigger }, error: e })
     return { error: e.message }

@@ -53,3 +53,12 @@ client/.build.last-start
 
 # Rapports de plantage Node (contiennent les variables d’environnement)
 server/report.*.json
+
+# Base de test créée par erreur, scripts de mise au point jetables
+server/:memory:
+server/_*.mjs
+server/_*.cjs
+e2e/diag*.cjs
+
+# File de travaux de l'agent : état vivant, propre au serveur
+agent-tasks.json

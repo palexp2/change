@@ -14,18 +14,20 @@ router.get('/', (req, res) => {
   const { unread, limit = 30 } = req.query
   const limitVal = parseLimit(limit, { def: 30, max: 100 })
   const onlyUnread = unread === '1' || unread === 'true'
+  // `?since=YYYY-MM-DD` : la cloche ignore ce qui précède sa mise en service.
+  const since = /^\d{4}-\d{2}-\d{2}/.test(req.query.since || '') ? req.query.since : '0000'
 
   const rows = db.prepare(`
     SELECT id, user_id, type, title, body, link, read, created_at
     FROM notifications
-    WHERE user_id = ? ${onlyUnread ? 'AND read = 0' : ''}
+    WHERE user_id = ? AND created_at >= ? ${onlyUnread ? 'AND read = 0' : ''}
     ORDER BY created_at DESC, id DESC
     LIMIT ?
-  `).all(req.user.id, limitVal)
+  `).all(req.user.id, since, limitVal)
 
   const unreadCount = db.prepare(
-    'SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read = 0'
-  ).get(req.user.id).c
+    'SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND read = 0 AND created_at >= ?'
+  ).get(req.user.id, since).c
 
   res.json({ data: rows, unread_count: unreadCount })
 })

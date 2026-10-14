@@ -8,4 +8,6 @@
 // Elle reste visible dans « Toutes les commandes ».
 export const ENVOI_PILL_LABEL = 'À envoyer'
 
-export const hasItemsToShip = o => (o.items_count || 0) > 0
+// `items_count` est la SOMME des quantités : une commande de retrait (ex. -2
+// déshumidificateurs) est négative mais a bien quelque chose à faire.
+export const hasItemsToShip = o => Number(o.items_count || 0) !== 0

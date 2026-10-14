@@ -1,4 +1,5 @@
 import db from '../db/database.js'
+import { companyIdForStripeCustomer } from './stripeCustomerCompany.js'
 
 // Projet d'un paiement Stripe lancé depuis le PDF d'une soumission : les
 // boutons « S'abonner » / « Acheter » posent erp_project_id (et
@@ -99,7 +100,9 @@ export function linkSubscriptionContact(subId) {
 }
 
 /** Entreprise d'une facture sans client Stripe reconnu : { id, how } ou null. */
-export function companyForStripeFacture({ projectId, subscriptionId, email, name }) {
+export function companyForStripeFacture({ projectId, subscriptionId, email, name, orderId, documentNumber }) {
+  const fromOrder = orderId ? db.prepare('SELECT company_id AS id FROM orders WHERE id=?').get(orderId)?.id : null
+  if (fromOrder) return { id: fromOrder, how: 'commande' }
   const fromProject = projectId ? db.prepare('SELECT company_id AS id FROM projects WHERE id=?').get(projectId)?.id : null
   if (fromProject) return { id: fromProject, how: 'projet de la soumission' }
   const fromSub = subscriptionId ? db.prepare('SELECT company_id AS id FROM subscriptions WHERE id=?').get(subscriptionId)?.id : null
@@ -113,6 +116,16 @@ export function companyForStripeFacture({ projectId, subscriptionId, email, name
     if (byContact) return { id: byContact, how: 'courriel du contact' }
     const byCompany = uniqueId(db.prepare('SELECT id FROM companies WHERE lower(trim(email))=?').all(e))
     if (byCompany) return { id: byCompany, how: "courriel de l'entreprise" }
+  }
+  // Préfixe Stripe du numéro (« 8CBFE0EF-0045 ») : propre à un client, ses
+  // autres factures disent à qui il appartient.
+  const prefix = String(documentNumber || '').match(/^([0-9A-Z]{8})-\d{4}$/i)?.[1]
+  if (prefix) {
+    const bySibling = uniqueId(db.prepare(`
+      SELECT DISTINCT company_id AS id FROM factures
+      WHERE document_number LIKE ? AND company_id IS NOT NULL AND company_id<>''
+    `).all(`${prefix}-%`))
+    if (bySibling) return { id: bySibling, how: 'autres factures du client Stripe' }
   }
   const n = norm(name)
   if (n) {
@@ -149,7 +162,7 @@ export function autoLinkStripeFacture(factureId, invoice) {
   const metaProject = linkFactureToProject(factureId, invoice)
   if (metaProject) linked.project = { id: metaProject, how: 'soumission payée' }
 
-  const f = db.prepare('SELECT company_id, project_id, subscription_id, customer_email FROM factures WHERE id=?').get(factureId)
+  const f = db.prepare('SELECT company_id, project_id, subscription_id, customer_email, order_id, document_number FROM factures WHERE id=?').get(factureId)
   if (!f) return linked
   let companyId = f.company_id || null
   if (!companyId) {
@@ -158,6 +171,8 @@ export function autoLinkStripeFacture(factureId, invoice) {
       subscriptionId: f.subscription_id,
       email: f.customer_email || invoice?.customer_email,
       name: invoice?.customer_name,
+      orderId: f.order_id,
+      documentNumber: f.document_number,
     })
     if (co) {
       db.prepare(`
@@ -186,4 +201,48 @@ export function autoLinkStripeFacture(factureId, invoice) {
     : null
   if (sub) linkSubscriptionContact(sub.id)
   return linked
+}
+
+/**
+ * Factures Stripe restées sans entreprise : rattachées après coup par leur
+ * client Stripe, leur commande, leurs factures sœurs… Sans cela la page des
+ * revenus perçus d'avance affiche un numéro à la place du client. Renvoie le
+ * nombre de factures rattachées.
+ */
+function orphanStripeFactures() {
+  return db.prepare(`
+    SELECT id, customer_id, project_id, subscription_id, customer_email, order_id, document_number
+    FROM factures
+    WHERE (company_id IS NULL OR company_id='') AND sync_source='Factures Stripe'
+  `).all()
+}
+
+function relinkOne(f) {
+  const id = companyIdForStripeCustomer(f.customer_id) || companyForStripeFacture({
+    projectId: f.project_id, subscriptionId: f.subscription_id, email: f.customer_email,
+    orderId: f.order_id, documentNumber: f.document_number,
+  })?.id
+  if (!id) return 0
+  return db.prepare(`
+    UPDATE factures SET company_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE id=? AND (company_id IS NULL OR company_id='')
+  `).run(id, f.id).changes
+}
+
+export function relinkOrphanStripeFactures() {
+  let n = 0
+  for (const f of orphanStripeFactures()) n += relinkOne(f)
+  return n
+}
+
+/** Même passe, une facture à la fois en rendant la main entre deux : au
+ *  démarrage, la version d'un bloc figeait l'API ~0,7 s (recherches par
+ *  courriel non indexées). */
+export async function relinkOrphanStripeFacturesGently() {
+  let n = 0
+  for (const f of orphanStripeFactures()) {
+    await new Promise(r => setImmediate(r))
+    n += relinkOne(f)
+  }
+  return n
 }

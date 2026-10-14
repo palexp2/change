@@ -16,6 +16,8 @@ import { uploadsPath } from '../config/uploads.js'
 import { consolidateSingleItemCharges } from './saleReceiptSingleItem.js'
 import { canonicalVendorName } from './vendorIdentity.js'
 import { invoiceNetHtCents, recognitionNetAmount } from './invoiceAccountingAmounts.js'
+import { findVendorProfile, nextWeekdayDue } from './vendorProfiles.js'
+import { TZ } from '../utils/datetime.js'
 
 const SALE_RECEIPT_MIME = {
   '.jpg':  'image/jpeg',
@@ -1091,6 +1093,13 @@ async function pushReceiptAsDeposit(rec, params) {
   return qbId
 }
 
+function weekdayDueFor(rec) {
+  const p = (rec.vendor_profile_id && db.prepare('SELECT due_weekday FROM vendor_profiles WHERE id=? AND deleted_at IS NULL').get(rec.vendor_profile_id))
+    || findVendorProfile(rec.company)
+  if (p?.due_weekday == null) return null
+  return nextWeekdayDue(p.due_weekday, new Date().toLocaleDateString('en-CA', { timeZone: TZ }))
+}
+
 export async function pushSaleReceiptToQB(receiptId, params = {}) {
   const rec = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(receiptId)
   if (!rec) throw new Error('Reçu introuvable')
@@ -1591,10 +1600,15 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     }
     if (params.dueDate) bill.DueDate = params.dueDate
     else if (accrualDate && type === 'purchase') bill.DueDate = txnDate
+    // Fournisseur payé un jour fixe de la semaine (BTTH : le mardi) : l'échéance
+    // est ce jour-là à partir d'aujourd'hui, quoi que dise le document.
+    const weekdayDue = weekdayDueFor(rec)
+    if (weekdayDue) bill.DueDate = weekdayDue
     if (rec.receipt_number) bill.DocNumber = qbDocNumber(rec.receipt_number)
     if (privateNote) bill.PrivateNote = privateNote
     const result = await qbPost('/bill', bill)
     qbId = result.Bill.Id
+    if (weekdayDue) db.prepare('UPDATE sale_receipts SET due_date=? WHERE id=?').run(weekdayDue, receiptId)
     // Facture instantanément appariée par QB à une ligne bancaire téléchargée → tracé
     // au journal du reçu (elle apparaîtrait « payée » sans explication).
     scheduleBillAutoPaymentCheck(receiptId, qbId)
@@ -4328,6 +4342,7 @@ export const STRIPE_PAYOUT_PUSH_DEFAULTS = {
   // par une garde, erreur, payout en souffrance) alerte toujours.
   slack_on_success: '0',
   slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+  slack_channel: 'C0BC7KSM1D5', // #comptabilité (= SLACK_WEBHOOK_TREASURY)
 }
 
 export function getStripePayoutPushConfig() {
@@ -4377,11 +4392,9 @@ export function selectStalePayouts({ push_since, staleDays, today = new Date() }
   `).all(push_since, staleBefore)
 }
 
-async function sendPayoutPushSlack(envName, text) {
-  const url = process.env[envName]
-  if (!url) throw new Error(`Variable d'environnement manquante : ${envName}`)
-  const { postSlack } = await import('./slack.js')
-  await postSlack(url, text)
+async function sendPayoutPushSlack(cfg, text) {
+  const { sendSlackConfigured } = await import('./slack.js')
+  await sendSlackConfigured(cfg, text)
 }
 
 // Orchestre le job « Comptabilisation QB des Stripe payouts » (quotidien) :
@@ -4497,7 +4510,7 @@ export async function syncAndPushStripePayouts({ dryRun = false } = {}) {
       lines.push('→ À corriger après coup : le Deposit est publié, ajuster la ligne dans QuickBooks.')
     }
     try {
-      await sendPayoutPushSlack(config.slack_webhook_env, lines.join('\n'))
+      await sendPayoutPushSlack(config, lines.join('\n'))
       slack = 'envoyé'
     } catch (e) {
       slack = `échec (${e.message})`

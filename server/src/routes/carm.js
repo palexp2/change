@@ -221,7 +221,12 @@ router.patch('/transactions/:id', (req, res) => {
     const manual = ['kind', 'payer', 'broker', 'duty_amount', 'gst_amount', 'category']
       .some(k => req.body?.[k] !== undefined) && req.body?.split_source === undefined
     if (manual) db.prepare(`UPDATE carm_transactions SET split_source = 'manuel' WHERE id = ?`).run(req.params.id)
-    if (PATCH_IMPACTS_POSTING.some(k => req.body?.[k] !== undefined)) recomputeCarm()
+    // Le courtier (« Fournisseur ») décide si la ligne est à nous : FedEx paie
+    // et refacture, Axxess non. Il se change même sur une ligne comptabilisée.
+    if (req.body?.party !== undefined) {
+      db.prepare(`UPDATE carm_transactions SET broker = NULL WHERE id = ? AND COALESCE(split_source,'auto') = 'auto'`).run(req.params.id)
+    }
+    if (PATCH_IMPACTS_POSTING.some(k => req.body?.[k] !== undefined) || req.body?.party !== undefined) recomputeCarm()
   }
   res.json(db.prepare('SELECT * FROM carm_transactions WHERE id = ?').get(req.params.id))
 })

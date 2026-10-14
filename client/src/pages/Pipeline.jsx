@@ -331,6 +331,7 @@ export default function Pipeline() {
         onClose={() => setCustomFieldModal(null)}
         erpTable="projects"
         editing={customFieldModal?.editing || null}
+        siblingFields={COLUMNS_WITH_CUSTOM}
         mappingSlot={customFieldModal?.editing ? (
           <FieldAirtableMapping
             table="projects"

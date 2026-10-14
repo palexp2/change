@@ -29,7 +29,7 @@
 // uniquement le couple créance/revenu, pour le SEUL écart estimation ↔ réel.
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
-import { qbPost } from '../connectors/quickbooks.js'
+import { qbGet, qbPost } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
 import { getProvision, listProvisions, lastDayOfMonth } from './monthEnd.js'
@@ -253,4 +253,49 @@ export async function regularizeSubsidy(provisionId, { userId = null } = {}) {
   `).run(id, provisionId, recon.outstanding, description, String(jeId), userId)
   logSync('month_end', 'manual', { status: 'success', modified: 1 })
   return { qb_je_id: String(jeId), provision_id: provisionId, amount: recon.outstanding, adjustment_id: id }
+}
+
+// Fin de la subvention : solde de la créance (12400) TEL QUE QuickBooks le
+// porte — pas l'écart calculé par l'ERP, qui ne voit pas toutes les écritures
+// d'avant l'ERP. C'est ce solde qu'il faut vider.
+export async function receivableBalance(provisionId) {
+  const provision = getProvision(provisionId)
+  if (!provision?.debit_acctnum) throw new Error('Provision introuvable')
+  const accountId = await resolveAccountByAcctNum(provision.debit_acctnum)
+  if (!accountId) throw new Error(`Compte QB #${provision.debit_acctnum} introuvable`)
+  const data = await qbGet(`/query?query=${encodeURIComponent(`select * from Account where Id = '${accountId}'`)}`)
+  const account = data?.QueryResponse?.Account?.[0]
+  if (!account) throw new Error(`Compte QB #${provision.debit_acctnum} introuvable`)
+  return { acctnum: provision.debit_acctnum, name: account.Name, balance: round2(Number(account.CurrentBalance || 0)), account_id: accountId }
+}
+
+// Vide la créance : Dr revenu (49000) / Cr créance (12400) du solde QB entier.
+export async function clearReceivable(provisionId, { userId = null } = {}) {
+  const provision = getProvision(provisionId)
+  const bal = await receivableBalance(provisionId)
+  if (!(Math.abs(bal.balance) > 0.005)) throw new Error('Compte déjà à zéro')
+  const incomeId = await resolveAccountByAcctNum(provision.credit_acctnum)
+  if (!incomeId) throw new Error(`Compte QB #${provision.credit_acctnum} introuvable`)
+  const amount = Math.abs(bal.balance)
+  const positive = bal.balance > 0
+  const description = `Fin subvention — radiation ${provision.label}`
+  const je = {
+    TxnDate: today(),
+    PrivateNote: `${description} (ERP, travaux)`,
+    Line: [
+      { DetailType: 'JournalEntryLineDetail', Amount: amount, Description: description,
+        JournalEntryLineDetail: { PostingType: positive ? 'Debit' : 'Credit', AccountRef: { value: incomeId } } },
+      { DetailType: 'JournalEntryLineDetail', Amount: amount, Description: description,
+        JournalEntryLineDetail: { PostingType: positive ? 'Credit' : 'Debit', AccountRef: { value: bal.account_id } } },
+    ],
+  }
+  const result = await qbPost('/journalentry', je)
+  const jeId = result.JournalEntry?.Id
+  if (!jeId) throw new Error("QB n'a pas retourné d'Id pour le JournalEntry")
+  db.prepare(`
+    INSERT INTO wage_subsidy_adjustments (id, provision_id, amount, memo, qb_je_id, created_by)
+    VALUES (?,?,?,?,?,?)
+  `).run(newRecordId(), provisionId, bal.balance, description, String(jeId), userId)
+  logSync('month_end', 'manual', { status: 'success', modified: 1 })
+  return { qb_je_id: String(jeId), amount: bal.balance }
 }

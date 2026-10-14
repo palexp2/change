@@ -578,6 +578,8 @@ chrome.storage.local.get('runningVersion').then(({ runningVersion }) => {
 // dans l'onglet part dans l'extracteur de l'ERP. Trois façons de la capturer,
 // de la plus fidèle à la plus grossière :
 //   1. l'onglet affiche un PDF ou une image → le fichier lui-même ;
+//   1b. une page (messagerie, portail) qui montre un PDF ou une grande image
+//       → ce fichier seul, pas la page autour ;
 //   2. une page web (facture en ligne) → la page entière imprimée en PDF ;
 //   3. sinon → une capture de ce qui est visible à l'écran.
 // L'onglet n'est lu qu'au clic : `activeTab` suffit, aucun accès permanent.
@@ -593,6 +595,80 @@ async function readTabDocument() {
   let name = ''
   try { name = decodeURIComponent(location.pathname.split('/').pop() || '') } catch { /* nom illisible */ }
   return { kind: 'file', mime: (blob.type || ct).split(';')[0], data: btoa(bin), name: name || document.title }
+}
+
+// Exécutée dans chaque cadre : le PDF intégré ou la plus grande image visible.
+function findEmbeddedDocument() {
+  const vw = window.innerWidth, vh = window.innerHeight
+  const visibleArea = (el) => {
+    const r = el.getBoundingClientRect()
+    const w = Math.min(r.right, vw) - Math.max(r.left, 0)
+    const h = Math.min(r.bottom, vh) - Math.max(r.top, 0)
+    return w > 0 && h > 0 ? w * h : 0
+  }
+  const ct = String(document.contentType || '')
+  if (window !== window.top && (ct === 'application/pdf' || ct.startsWith('image/'))) {
+    return { url: location.href, mime: ct, area: vw * vh }
+  }
+  let best = null
+  const consider = (url, mime, area) => {
+    if (!url || area <= 0 || /^(javascript|about):/i.test(url)) return
+    if (!best || area > best.area) best = { url, mime, area }
+  }
+  for (const el of document.querySelectorAll('embed, object, iframe')) {
+    const url = el.src || el.data || ''
+    const type = String(el.type || '').toLowerCase()
+    if (type === 'application/pdf' || /\.pdf($|[?#])|mimetype=application(%2f|\/)pdf/i.test(url)) {
+      consider(url, 'application/pdf', visibleArea(el) * 2)
+    }
+  }
+  for (const img of document.images) {
+    if (img.naturalWidth < 300 || img.naturalHeight < 300) continue
+    const area = visibleArea(img)
+    if (area < vw * vh * 0.12) continue
+    consider(img.currentSrc || img.src, '', area)
+  }
+  return best
+}
+
+// Exécutée dans le cadre qui porte le fichier : mêmes témoins que lui.
+async function fetchInFrame(url, mime) {
+  const blob = await (await fetch(url, { credentials: 'include' })).blob()
+  const bytes = new Uint8Array(await blob.arrayBuffer())
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  let name = ''
+  try { name = decodeURIComponent(new URL(url, location.href).pathname.split('/').pop() || '') } catch { /* nom illisible */ }
+  return { kind: 'file', mime: (blob.type || mime || 'application/octet-stream').split(';')[0], data: btoa(bin), name }
+}
+
+async function captureEmbedded(tab, srcUrl) {
+  let pick = null
+  if (srcUrl) pick = { frameId: 0, url: srcUrl, mime: '' }
+  else {
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, func: findEmbeddedDocument })
+    for (const r of results || []) {
+      if (r?.result && (!pick || r.result.area > pick.area)) pick = { frameId: r.frameId, ...r.result }
+    }
+  }
+  if (!pick) return null
+  let doc = null
+  try {
+    const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id, frameIds: [pick.frameId] }, func: fetchInFrame, args: [pick.url, pick.mime] })
+    doc = r?.result || null
+  } catch { /* lecture refusée dans le cadre : on tente depuis le module */ }
+  if (!doc && /^https?:/i.test(pick.url)) {
+    try {
+      const r = await fetch(pick.url, { credentials: 'include' })
+      if (r.ok) {
+        const mime = (r.headers.get('content-type') || pick.mime || '').split(';')[0]
+        doc = { kind: 'file', mime, data: await bufferToB64(await r.arrayBuffer()), name: '' }
+      }
+    } catch { /* tant pis */ }
+  }
+  if (!doc || !(doc.mime === 'application/pdf' || doc.mime.startsWith('image/'))) return null
+  if (!doc.name || !/\.[a-z0-9]{2,5}$/i.test(doc.name)) doc.name = (tab.title || 'document').trim()
+  return doc
 }
 
 async function bufferToB64(buf) {
@@ -613,8 +689,12 @@ async function printTabToPdf(tabId) {
   }
 }
 
-async function captureTab(tab) {
+async function captureTab(tab, srcUrl = '') {
   const fallbackName = (tab.title || 'document').trim()
+  if (srcUrl) {
+    const doc = await captureEmbedded(tab, srcUrl).catch(() => null)
+    if (doc) return doc
+  }
   let found = null
   try {
     const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readTabDocument })
@@ -635,6 +715,8 @@ async function captureTab(tab) {
   }
 
   if (found?.kind === 'page') {
+    const doc = await captureEmbedded(tab).catch(() => null)
+    if (doc) return doc
     try { return { kind: 'file', mime: 'application/pdf', data: await printTabToPdf(tab.id), name: fallbackName } }
     catch { /* débogueur refusé (outils de développement ouverts…) */ }
   }
@@ -650,12 +732,12 @@ async function flashBadge(text, color) {
   } catch { /* sans importance */ }
 }
 
-async function sendDocument(tab) {
+async function sendDocument(tab, srcUrl = '') {
   if (!tab?.id) throw new Error('Aucun onglet actif')
   await chrome.storage.local.set({ lastDoc: { running: true, at: Date.now(), title: tab.title || '' } })
   await flashBadge('…', '#2563eb')
   try {
-    const doc = await captureTab(tab)
+    const doc = await captureTab(tab, srcUrl)
     const res = await call('/document', { method: 'POST', body: { ...doc, title: tab.title || '', url: tab.url || '' }, timeoutMs: 60000 })
     const { erpUrl } = await settings()
     const link = res.id ? `${normalizeErpUrl(erpUrl)}/erp/sale-receipts/${res.id}` : ''
@@ -679,13 +761,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 
 const DOC_MENU = 'orisha-send-document'
 chrome.runtime.onInstalled?.addListener(() => {
-  chrome.contextMenus?.create({ id: DOC_MENU, title: 'Envoyer à l’extracteur Orisha', contexts: ['page', 'frame', 'image', 'link', 'selection'] }, () => void chrome.runtime.lastError)
+  chrome.contextMenus?.create({ id: DOC_MENU, title: 'Envoyer à l’extracteur Boréal', contexts: ['page', 'frame', 'image', 'link', 'selection'] }, () => void chrome.runtime.lastError)
 })
 chrome.contextMenus?.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === DOC_MENU) sendDocument(tab).catch(() => {})
+  if (info.menuItemId !== DOC_MENU) return
+  const src = info.mediaType === 'image' ? info.srcUrl : (/\.pdf($|[?#])/i.test(info.linkUrl || '') ? info.linkUrl : '')
+  sendDocument(tab, src || '').catch(() => {})
 })
 chrome.commands?.onCommand.addListener(async (command, tab) => {
   if (command !== 'send-document') return
   const t = tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]
   sendDocument(t).catch(() => {})
+})
+
+// ── Capture pour Claude ──────────────────────────────────────────────────────
+// Image glissée ou collée dans la fenêtre du module → l'ERP la range là où
+// l'agent la lit.
+chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
+  if (msg?.type !== 'send-screenshot') return false
+  call('/screenshot', { method: 'POST', body: { mime: msg.mime, data: msg.data, note: msg.note || '' }, timeoutMs: 60000 })
+    .then(r => { flashBadge('✓', '#7c3aed'); reply({ ok: true, ...r }) }, e => reply({ ok: false, error: e.message }))
+  return true
 })

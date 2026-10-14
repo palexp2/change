@@ -62,6 +62,42 @@ router.get('/', (req, res) => {
   res.json(rows)
 })
 
+// Solde total des dettes en fin de mois, d'après les cédules : `back` mois
+// passés, le mois courant, puis `ahead` mois projetés. Le solde d'un mois est
+// le balance_after du dernier versement prévu à cette date ; avant le premier
+// versement, le solde d'ouverture de la cédule (ou le capital, sans cédule).
+router.get('/history', (req, res) => {
+  const back = Math.min(Math.max(parseInt(req.query.back, 10) || 12, 0), 120)
+  const ahead = Math.min(Math.max(parseInt(req.query.ahead, 10) || 0, 0), 120)
+  const debts = db.prepare(`SELECT id, label, principal FROM lt_debts WHERE deleted_at IS NULL ORDER BY label COLLATE NOCASE`).all()
+  const pay = db.prepare(`
+    SELECT payment_date, principal, balance_after FROM lt_debt_payments
+    WHERE debt_id = ? AND deleted_at IS NULL ORDER BY payment_date
+  `)
+  const schedules = debts.map(d => ({ ...d, rows: pay.all(d.id) }))
+  const now = new Date()
+  const currentMonth = now.toISOString().slice(0, 7)
+  const months = []
+  for (let i = -back; i <= ahead; i++) {
+    const m = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1))
+    const key = m.toISOString().slice(0, 7)
+    const end = new Date(Date.UTC(m.getUTCFullYear(), m.getUTCMonth() + 1, 0)).toISOString().slice(0, 10)
+    const row = { month: key, is_forecast: key > currentMonth, total: 0 }
+    for (const d of schedules) {
+      let bal
+      const last = d.rows.filter(p => p.payment_date <= end).pop()
+      if (last) bal = last.balance_after ?? 0
+      else if (d.rows[0]?.balance_after != null) bal = d.rows[0].balance_after + d.rows[0].principal
+      else bal = d.principal || 0
+      row[d.id] = round2(bal)
+      row.total += bal
+    }
+    row.total = round2(row.total)
+    months.push(row)
+  }
+  res.json({ debts: debts.map(d => ({ id: d.id, label: d.label })), months })
+})
+
 router.post('/', (req, res) => {
   const b = req.body
   if (!b.label || !String(b.label).trim()) return res.status(400).json({ error: 'label requis' })

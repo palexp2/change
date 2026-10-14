@@ -2,7 +2,7 @@ import '../test-helpers/testEnv.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { db, initTestDb } from '../test-helpers/testApp.js'
-import { linkStripeCustomerByEmail, companyIdForStripeCustomer } from './stripeCustomerCompany.js'
+import { linkStripeCustomerByEmail, companyIdForStripeCustomer, fillUnknownContactNames } from './stripeCustomerCompany.js'
 
 test('client Stripe du site web : rattaché par courriel, entreprise créée au besoin', () => {
   initTestDb()
@@ -42,4 +42,15 @@ test('client Stripe du site web : rattaché par courriel, entreprise créée au 
   assert.equal(linkStripeCustomerByEmail({ id: 'cus_5', email: 'ann@ferme.ca' }).companyId, 'co1')
 
   assert.equal(linkStripeCustomerByEmail({ id: 'cus_6' }), null)
+})
+
+test('contact « Inconnu » : prend le nom du client Stripe, jamais un nom d’entreprise', () => {
+  initTestDb()
+  try { db.exec('ALTER TABLE contacts ADD COLUMN deleted_at TEXT') } catch {}
+  db.prepare(`INSERT INTO contacts (id, first_name, last_name, email) VALUES
+    ('u1', '', 'Inconnu', 'eve@x.ca'), ('u2', 'Max', 'Inconnu', 'eve@x.ca'), ('u3', '', 'Inconnu', 'biz@x.ca')`).run()
+  assert.equal(fillUnknownContactNames({ email: 'EVE@x.ca', name: 'Eve Marie Roy' }), 1)
+  assert.deepEqual({ ...db.prepare("SELECT first_name, last_name FROM contacts WHERE id='u1'").get() }, { first_name: 'Eve', last_name: 'Marie Roy' })
+  assert.equal(db.prepare("SELECT last_name FROM contacts WHERE id='u2'").get().last_name, 'Inconnu')
+  assert.equal(fillUnknownContactNames({ email: 'biz@x.ca', name: 'Ferme Biz inc', business_name: 'Ferme Biz inc' }), 0)
 })

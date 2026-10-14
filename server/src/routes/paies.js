@@ -9,6 +9,7 @@ import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { parsePage } from '../utils/pagination.js'
 import { nextPaiePeriod } from '../services/paieSchedule.js'
+import { buildPaieVerification } from '../services/paieVerification.js'
 
 function myEmployeeId(userId) {
   const row = db.prepare('SELECT employee_id FROM users WHERE id = ?').get(userId)
@@ -308,6 +309,24 @@ router.post('/next', ensureHR, (req, res) => {
 })
 
 // POST /api/paies/:id/import-timesheets — resynchronisation manuelle (admin/rh)
+// Vérification : chaque montant à côté de sa source (lecture seule).
+router.get('/:id/verification', ensureHR, (req, res) => {
+  const out = buildPaieVerification(req.params.id)
+  if (!out) return res.status(404).json({ error: 'Not found' })
+  res.json(out)
+})
+
+// Approuver (ou rouvrir, { undo: true }) la vérification de la paie.
+router.post('/:id/verify', ensureHR, (req, res) => {
+  const paie = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
+  if (!paie) return res.status(404).json({ error: 'Not found' })
+  const undo = !!req.body?.undo
+  db.prepare(`UPDATE paies SET verified_by = ?, verified_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+    .run(undo ? null : (req.user?.name || req.user?.email || null), undo ? null : new Date().toISOString(), req.params.id)
+  emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
+  res.json(buildPaieVerification(req.params.id))
+})
+
 router.post('/:id/import-timesheets', ensureHR, (req, res) => {
   const paie = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!paie) return res.status(404).json({ error: 'Not found' })

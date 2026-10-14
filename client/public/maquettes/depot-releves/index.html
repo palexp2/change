@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Dépôt de relevés</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#eef0f3;--s:#fff;--soft:#f6f7f9;--line:#e6e8eb;--line2:#d0d4d9;--ink:#24262a;--ink2:#4a4d53;--ink3:#6f7279;--ink4:#a0a3a9;--g:#2ca01c;--gd:#1f7a12;--gs:#e9f6e6;--b:#0077c5;--bs:#e5f1fa;--r:#d52b1e;--rs:#fcebea;--a:#b86e00;--as:#fdf3e1;--p:#6d4bd8;--ps:#efeafd;--veil:rgb(20 22 26/.38);--sh:0 1px 2px rgb(0 0 0/.06),0 24px 60px rgb(0 0 0/.18)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33291a;--p:#a58cf5;--ps:#251f3a;--veil:rgb(0 0 0/.55)}}
+:root[data-theme="dark"]{--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33291a;--p:#a58cf5;--ps:#251f3a;--veil:rgb(0 0 0/.55)}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1100px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:18px;margin:48px 0 12px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.stage{background:var(--veil);border-radius:14px;padding:36px 16px;display:flex;justify-content:center}
+.m{background:var(--s);border-radius:14px;box-shadow:var(--sh);width:100%;max-width:760px;overflow:hidden}
+.m.wide{max-width:1000px}
+.mh{display:flex;align-items:center;gap:10px;padding:16px 20px 12px}
+.mh h3{margin:0;font-size:15px;font-weight:600;flex:1}
+.x{color:var(--ink4);font-size:18px;line-height:1}
+.mb{padding:0 20px 16px}
+.mf{display:flex;align-items:center;gap:10px;padding:12px 20px;border-top:1px solid var(--line);background:var(--soft)}
+.mf .sp{flex:1}
+.btn{border:1px solid var(--line2);background:var(--s);color:var(--ink2);border-radius:8px;height:34px;padding:0 14px;font:inherit;font-weight:500}
+.go{background:var(--g);color:#fff;border:0;border-radius:8px;height:34px;padding:0 16px;font:inherit;font-weight:600;white-space:nowrap}
+.n{font-variant-numeric:tabular-nums}
+.mute{color:var(--ink3)}.faint{color:var(--ink4)}
+.ok{color:var(--gd)}.bad{color:var(--r)}.warn{color:var(--a)}
+.pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.pill.g{background:var(--gs);color:var(--gd)}.pill.r{background:var(--rs);color:var(--r)}.pill.a{background:var(--as);color:var(--a)}.pill.b{background:var(--bs);color:var(--b)}.pill.p{background:var(--ps);color:var(--p)}.pill.s{background:var(--soft);color:var(--ink3)}
+.ico{width:32px;height:38px;border-radius:5px;flex:none;display:flex;align-items:flex-end;justify-content:center;font-size:8.5px;font-weight:700;color:#fff;padding-bottom:4px;position:relative}
+.ico::after{content:"";position:absolute;top:0;right:0;border-style:solid;border-width:0 9px 9px 0;border-color:transparent var(--s) transparent transparent;opacity:.9}
+.ico.pdf{background:#e2574c}.ico.csv{background:#2ca01c}.ico.img{background:#7a5af5}.ico.xls{background:#1d6f42}
+.acc{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:1px solid var(--line2);border-radius:7px;font-weight:500;white-space:nowrap;background:var(--s)}
+.acc i{font-style:normal;color:var(--ink4);font-size:10px}
+.bank{width:18px;height:18px;border-radius:4px;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:8.5px;font-weight:800;color:#fff}
+.bnc{background:#e31937}.dj{background:#00874e}.mc{background:#eb001b}
+.drop{border:1.5px dashed var(--line2);border-radius:12px;display:flex;align-items:center;justify-content:center;gap:12px;color:var(--ink3)}
+.drop b{color:var(--ink);font-weight:600}
+.kbd{font-size:11px;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--ink3);background:var(--s)}
+.spin{width:14px;height:14px;border:2px solid var(--line2);border-top-color:var(--b);border-radius:50%;display:inline-block;animation:r 1s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+.bar{height:4px;border-radius:2px;background:var(--line);overflow:hidden}.bar i{display:block;height:100%;background:var(--b);border-radius:2px}
+.scroll{overflow-x:auto}
+
+/* D1 */
+.d1row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.d1row:last-child{border:0}
+.d1main{flex:1;min-width:0}
+.d1main .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.d1main .s{font-size:12px;color:var(--ink3)}
+.d1lines{margin:-4px 0 6px 44px;background:var(--soft);border-radius:8px;padding:4px 12px}
+.d1lines div{display:flex;gap:14px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12px}
+.d1lines div:last-child{border:0}
+.d1lines .d{width:52px;color:var(--ink3)}.d1lines .l{flex:1}.d1lines .a{text-align:right}
+.d1lines .old{color:var(--ink4)}
+
+/* D2 */
+.lanes{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px}
+@media (max-width:760px){.lanes{grid-template-columns:1fr}}
+.lane{background:var(--soft);border-radius:10px;padding:10px}
+.lane h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink3);display:flex;justify-content:space-between}
+.card{background:var(--s);border:1px solid var(--line);border-radius:9px;padding:10px;margin-bottom:8px}
+.card .top{display:flex;gap:8px;align-items:center}
+.card .nm{font-weight:600;font-size:12.5px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .meta{display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:12px}
+.mini{width:22px;height:26px;font-size:7px}
+
+/* D3 */
+.d3{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+@media (max-width:700px){.d3{grid-template-columns:1fr}}
+.slot{border:1px solid var(--line);border-radius:11px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.slot.need{border:1.5px dashed var(--line2);background:var(--soft)}
+.slot .hd{display:flex;align-items:center;gap:8px}.slot .hd b{flex:1}
+.months{display:grid;grid-template-columns:repeat(6,1fr);gap:3px}
+.months span{height:22px;border-radius:4px;font-size:10px;display:flex;align-items:center;justify-content:center;color:var(--ink3);background:var(--line)}
+.months .y{background:var(--gs);color:var(--gd);font-weight:600}
+.months .new{background:var(--g);color:#fff;font-weight:700}
+.months .miss{background:var(--s);border:1.5px dashed var(--r);color:var(--r);font-weight:700}
+.slot .ft{display:flex;justify-content:space-between;align-items:center;font-size:12px}
+
+/* D4 */
+.d4{display:grid;grid-template-columns:220px 1fr 300px;min-height:440px;border-top:1px solid var(--line)}
+@media (max-width:900px){.d4{grid-template-columns:1fr}}
+.d4 .files{border-right:1px solid var(--line);padding:10px}
+.fi{display:flex;gap:8px;align-items:center;padding:8px;border-radius:8px;margin-bottom:2px}
+.fi.on{background:var(--bs)}
+.fi .nm{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fi .sb{font-size:11px;color:var(--ink3)}
+.doc{background:var(--soft);padding:18px;display:flex;justify-content:center}
+.paper{background:#fff;color:#222;width:100%;max-width:380px;border-radius:4px;box-shadow:0 2px 10px rgb(0 0 0/.12);padding:18px 20px;font-size:10.5px}
+.paper .lg{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.paper .lg b{color:#e31937;font-size:13px}
+.paper .rw{display:flex;gap:10px;padding:3px 4px;border-radius:3px}
+.paper .rw .a{margin-left:auto}
+.paper .hl{background:rgb(44 160 28/.16);box-shadow:inset 2px 0 0 #2ca01c}
+.paper .hl2{background:rgb(0 119 197/.13);box-shadow:inset 2px 0 0 #0077c5}
+.paper hr{border:0;border-top:1px solid #ddd;margin:6px 0}
+.side{border-left:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:16px}
+.lbl{font-size:11px;color:var(--ink3);margin-bottom:5px}
+.eq{background:var(--soft);border-radius:10px;padding:12px}
+.eq div{display:flex;justify-content:space-between;padding:3px 0}
+.eq .tot{border-top:1px solid var(--line2);margin-top:4px;padding-top:7px;font-weight:700}
+.big{font-size:26px;font-weight:700;letter-spacing:-.02em}
+</style></head><body><div class="wrap">
+
+<h1>Déposer des relevés ou des factures</h1>
+
+<!-- ============ D1 ============ -->
+<h2><b>D1</b> La pile <span>une ligne par fichier, verdict à droite</span></h2>
+<div class="stage"><div class="m">
+  <div class="mh"><h3>Déposer</h3><span class="x">×</span></div>
+  <div class="mb">
+    <div class="drop" style="height:64px"><b>Glisser des fichiers</b> · <span class="kbd">⌘V</span> capture · <span style="text-decoration:underline">parcourir</span> · <span style="text-decoration:underline">coller des lignes</span></div>
+    <div style="margin-top:6px">
+      <div class="d1row">
+        <div class="ico pdf">PDF</div>
+        <div class="d1main"><div class="t">releve_BNC_2026-09.pdf</div><div class="s n">1 sept → 30 sept</div></div>
+        <span class="acc"><span class="bank bnc">N</span>BNC CAD <i>▾</i></span>
+        <span class="pill g">✓ Équilibré</span>
+        <span class="n" style="width:84px;text-align:right"><b>23</b> <span class="mute">neuves</span></span>
+        <span class="faint">⌃</span>
+      </div>
+      <div class="d1lines n">
+        <div><span class="d">28 sept</span><span class="l">HYDRO-QUEBEC</span><span class="a bad">−412,18</span></div>
+        <div><span class="d">27 sept</span><span class="l">STRIPE PAYOUT</span><span class="a ok">+3 940,00</span></div>
+        <div><span class="d">26 sept</span><span class="l">DIGI-KEY CORP</span><span class="a bad">−1 288,07</span></div>
+        <div class="old"><span class="d">25 sept</span><span class="l">VIR. MASTERCARD</span><span class="a">−2 100,00</span></div>
+      </div>
+      <div class="d1row">
+        <div class="ico csv">CSV</div>
+        <div class="d1main"><div class="t">export_desjardins.csv</div><div class="s n">15 sept → 12 oct</div></div>
+        <span class="acc"><span class="bank dj">D</span>Desjardins <i>▾</i></span>
+        <span class="pill r">Écart 84,20</span>
+        <span class="n" style="width:84px;text-align:right"><b>9</b> <span class="mute">neuves</span></span>
+        <span class="faint">⌄</span>
+      </div>
+      <div class="d1row">
+        <div class="ico img">PNG</div>
+        <div class="d1main"><div class="t">capture-2026-10-13.png</div><div class="s">Solde 18 402,55</div></div>
+        <span class="acc" style="border-color:var(--a)"><span class="bank mc">M</span>MasterCard BNC ? <i>▾</i></span>
+        <span class="pill s">Rien de nouveau</span>
+        <span style="width:84px"></span><span class="faint">⌄</span>
+      </div>
+      <div class="d1row">
+        <div class="ico pdf">PDF</div>
+        <div class="d1main"><div class="t">INV-132580242.pdf</div><div class="s">Digi-Key · 1 288,07</div></div>
+        <span class="pill b">Facture → extraction ↗</span>
+        <span style="width:84px"></span><span class="faint">⌄</span>
+      </div>
+      <div class="d1row">
+        <div class="ico pdf">PDF</div>
+        <div class="d1main"><div class="t">estado_cuenta_oct.pdf</div><div class="bar" style="margin-top:6px;width:60%"><i style="width:55%"></i></div></div>
+        <span class="spin"></span><span style="width:84px"></span><span class="faint">⌄</span>
+      </div>
+    </div>
+  </div>
+  <div class="mf"><span class="sp"></span><button class="btn">Fermer</button><button class="go">Importer 32</button></div>
+</div></div>
+
+<!-- ============ D2 ============ -->
+<h2><b>D2</b> Le tri <span>Boréal range chaque fichier dans sa colonne</span></h2>
+<div class="stage"><div class="m wide">
+  <div class="mh"><h3>Déposer</h3><span class="x">×</span></div>
+  <div class="mb">
+    <div class="drop" style="height:52px;margin-bottom:12px"><b>Glisser ici</b> <span class="kbd">⌘V</span></div>
+    <div class="lanes">
+      <div class="lane"><h4>Relevés <span>32 lignes</span></h4>
+        <div class="card"><div class="top"><div class="ico pdf mini">PDF</div><span class="nm">releve_BNC_2026-09.pdf</span><span class="pill g">✓</span></div>
+          <div class="meta"><span class="acc"><span class="bank bnc">N</span>BNC CAD</span><span class="n mute">sept · <b style="color:var(--ink)">23</b> neuves</span></div></div>
+        <div class="card"><div class="top"><div class="ico csv mini">CSV</div><span class="nm">export_desjardins.csv</span><span class="pill r">−84,20</span></div>
+          <div class="meta"><span class="acc"><span class="bank dj">D</span>Desjardins</span><span class="n mute">15/09–12/10 · <b style="color:var(--ink)">9</b> neuves</span></div></div>
+        <div class="card" style="opacity:.7"><div class="top"><span class="spin"></span><span class="nm">estado_cuenta_oct.pdf</span></div><div class="bar" style="margin-top:8px"><i style="width:55%"></i></div></div>
+      </div>
+      <div class="lane"><h4>Factures <span>2</span></h4>
+        <div class="card"><div class="top"><div class="ico pdf mini">PDF</div><span class="nm">INV-132580242.pdf</span></div>
+          <div class="meta"><b>Digi-Key</b><span class="n">1 288,07 $</span></div></div>
+        <div class="card"><div class="top"><div class="ico img mini">JPG</div><span class="nm">recu-costco.jpg</span></div>
+          <div class="meta"><b>Costco</b><span class="n">212,44 $</span></div></div>
+      </div>
+      <div class="lane"><h4>Soldes <span>1</span></h4>
+        <div class="card"><div class="top"><div class="ico img mini">PNG</div><span class="nm">capture-2026-10-13.png</span></div>
+          <div class="meta"><span class="acc"><span class="bank mc">M</span>MC BNC</span><span class="pill s">= Boréal</span></div></div>
+      </div>
+    </div>
+  </div>
+  <div class="mf"><span class="mute">Glisser une carte d'une colonne à l'autre pour corriger</span><span class="sp"></span><button class="btn">Fermer</button><button class="go">Importer 32 · Envoyer 2</button></div>
+</div></div>
+
+<!-- ============ D3 ============ -->
+<h2><b>D3</b> Ce qui manque <span>les comptes attendent leurs relevés ; un fichier vient remplir sa case</span></h2>
+<div class="stage"><div class="m">
+  <div class="mh"><h3>Relevés · 2026</h3><span class="pill r">2 manquants</span><span class="x" style="margin-left:8px">×</span></div>
+  <div class="mb">
+    <div class="d3">
+      <div class="slot">
+        <div class="hd"><span class="bank bnc">N</span><b>BNC CAD</b><span class="pill g">✓ +23</span></div>
+        <div class="months n"><span class="y">avr</span><span class="y">mai</span><span class="y">juin</span><span class="y">juil</span><span class="y">août</span><span class="new">sept</span></div>
+        <div class="ft"><span class="mute">releve_BNC_2026-09.pdf</span><span class="ok">Équilibré</span></div>
+      </div>
+      <div class="slot">
+        <div class="hd"><span class="bank dj">D</span><b>Desjardins</b><span class="pill r">Écart 84,20</span></div>
+        <div class="months n"><span class="y">avr</span><span class="y">mai</span><span class="y">juin</span><span class="y">juil</span><span class="y">août</span><span class="new">sept</span></div>
+        <div class="ft"><span class="mute">export_desjardins.csv</span><span>+9</span></div>
+      </div>
+      <div class="slot need">
+        <div class="hd"><span class="bank bnc">N</span><b>BNC USD</b></div>
+        <div class="months n"><span class="y">avr</span><span class="y">mai</span><span class="y">juin</span><span class="y">juil</span><span class="y">août</span><span class="miss">sept</span></div>
+        <div class="ft"><span class="mute">Déposer ici</span><span class="bad">sept manquant</span></div>
+      </div>
+      <div class="slot need">
+        <div class="hd"><span class="bank mc">M</span><b>MasterCard BNC</b></div>
+        <div class="months n"><span class="y">avr</span><span class="y">mai</span><span class="y">juin</span><span class="y">juil</span><span class="y">août</span><span class="miss">sept</span></div>
+        <div class="ft"><span class="mute">relevé du 14 oct</span><span class="warn">dans 1 j</span></div>
+      </div>
+      <div class="slot">
+        <div class="hd"><span class="bank dj">D</span><b>Desjardins USD</b><span class="pill s">à jour</span></div>
+        <div class="months n"><span class="y">avr</span><span class="y">mai</span><span class="y">juin</span><span class="y">juil</span><span class="y">août</span><span class="y">sept</span></div>
+      </div>
+      <div class="slot" style="border-style:dashed;align-items:center;justify-content:center;color:var(--ink3)">
+        <div><b style="color:var(--ink)">+ Factures</b> → extraction</div>
+        <div class="n">1 reçue · Digi-Key 1 288,07</div>
+      </div>
+    </div>
+  </div>
+  <div class="mf"><span class="kbd">⌘V</span><span class="mute">ou glisser n'importe où</span><span class="sp"></span><button class="btn">Fermer</button><button class="go">Importer 32</button></div>
+</div></div>
+
+<!-- ============ D4 ============ -->
+<h2><b>D4</b> Côte à côte <span>le document à gauche, ce que Boréal a lu surligné</span></h2>
+<div class="stage"><div class="m wide">
+  <div class="mh"><h3>Déposer</h3><span class="x">×</span></div>
+  <div class="d4">
+    <div class="files">
+      <div class="fi on"><div class="ico pdf mini">PDF</div><div style="min-width:0"><div class="nm">releve_BNC_2026-09</div><div class="sb ok">✓ 23 neuves</div></div></div>
+      <div class="fi"><div class="ico csv mini">CSV</div><div style="min-width:0"><div class="nm">export_desjardins</div><div class="sb bad">Écart 84,20</div></div></div>
+      <div class="fi"><div class="ico img mini">PNG</div><div style="min-width:0"><div class="nm">capture-10-13</div><div class="sb">Rien de nouveau</div></div></div>
+      <div class="fi"><div class="ico pdf mini">PDF</div><div style="min-width:0"><div class="nm">INV-132580242</div><div class="sb" style="color:var(--b)">Facture ↗</div></div></div>
+      <div class="drop" style="height:70px;margin-top:10px;font-size:12px">+ <span class="kbd">⌘V</span></div>
+    </div>
+    <div class="doc">
+      <div class="paper n">
+        <div class="lg"><b>Banque Nationale</b><span>Compte ••• 4471</span></div>
+        <div class="rw hl2"><span>Solde au 31 août</span><span class="a">41 207,63</span></div><hr/>
+        <div class="rw hl"><span>02/09</span><span>LOYER INVERNESS</span><span class="a">−3 450,00</span></div>
+        <div class="rw hl"><span>05/09</span><span>STRIPE PAYOUT</span><span class="a">2 118,40</span></div>
+        <div class="rw"><span style="color:#999">08/09</span><span style="color:#999">VIR. MASTERCARD</span><span class="a" style="color:#999">−2 100,00</span></div>
+        <div class="rw hl"><span>12/09</span><span>DESJARDINS ASSUR.</span><span class="a">−186,50</span></div>
+        <div class="rw hl"><span>19/09</span><span>PAIE NETHRIS</span><span class="a">−14 220,91</span></div>
+        <div class="rw hl"><span>26/09</span><span>DIGI-KEY CORP</span><span class="a">−1 288,07</span></div>
+        <div class="rw hl"><span>27/09</span><span>STRIPE PAYOUT</span><span class="a">3 940,00</span></div>
+        <div class="rw hl"><span>28/09</span><span>HYDRO-QUEBEC</span><span class="a">−412,18</span></div>
+        <div class="rw" style="color:#999;justify-content:center">· · ·</div><hr/>
+        <div class="rw hl2"><b>Solde au 30 sept</b><b class="a">38 744,19</b></div>
+      </div>
+    </div>
+    <div class="side">
+      <div><div class="lbl">Compte</div><span class="acc"><span class="bank bnc">N</span>BNC CAD <i>▾</i></span> <span class="faint" style="font-size:11px">••• 4471</span></div>
+      <div><div class="lbl">Nouvelles lignes</div><div class="big n">23 <span class="faint" style="font-size:14px;font-weight:500">/ 31</span></div></div>
+      <div class="eq n">
+        <div><span class="mute">Ouverture</span><span>41 207,63</span></div>
+        <div><span class="mute">Mouvements</span><span>−2 463,44</span></div>
+        <div class="tot"><span>Fermeture</span><span class="ok">38 744,19 ✓</span></div>
+      </div>
+      <div class="pill g" style="align-self:flex-start">Rangé au Drive</div>
+      <div style="margin-top:auto;font-size:12px" class="mute"><u>c'est une facture</u> · <u>relire</u> · <u>retirer</u></div>
+    </div>
+  </div>
+  <div class="mf"><span class="sp"></span><button class="btn">Fermer</button><button class="go">Importer 32</button></div>
+</div></div>
+
+</div></body></html>

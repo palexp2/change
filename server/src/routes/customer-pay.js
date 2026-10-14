@@ -8,6 +8,11 @@ import { recordSoumissionLinkClick } from '../services/soumissionLinkClick.js'
 import { pagePayPlan, createPageCheckout, applyPageUpgrade } from '../services/pageCheckout.js'
 import { getPageByToken } from '../services/hostedPages.js'
 import { createPaymentFailedTask } from '../services/paymentFailedTask.js'
+import { placeAutocomplete, placeDetails } from '../services/geocode.js'
+import { readFileSync } from 'node:fs'
+
+// Formulaire d'adresse maison de la page de carte (voir assets/pay-address.js).
+const PAY_ADDRESS_JS = readFileSync(new URL('./assets/pay-address.js', import.meta.url), 'utf8')
 
 const router = Router()
 
@@ -80,7 +85,7 @@ function upgradePage(p, action) {
   const sum = list => list.reduce((t, l) => t + l.cents, 0)
   const now = sum(p.current)
   const after = now + sum(p.added) - (p.offCents || 0)
-  const when = p.startsAt && new Date(p.startsAt.at * 1000).toLocaleDateString(fr ? 'fr-CA' : 'en-CA', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'America/Montreal' })
+  const when = p.startsAt && new Date(p.startsAt.at * 1000).toLocaleDateString('en-CA', { timeZone: 'America/Montreal' })
   const t = fr
     ? { title: 'Ajouter à votre abonnement', cur: 'Actuel', add: when ? `Ajout le ${when}` : 'Ajout', off: 'Rabais', total: 'Nouveau total mensuel, avant taxes', btn: 'Approuver',
       note: !when ? 'Le mois en cours est facturé au prorata sur votre carte enregistrée.' : p.startsAt.prorate ? `Rien à payer avant le ${when} ; ce premier mois sera facturé au prorata sur votre carte enregistrée.` : `Rien à payer avant le ${when}, sur votre carte enregistrée.` }
@@ -100,9 +105,7 @@ function separatePage(p, action) {
   const money = cents => new Intl.NumberFormat(fr ? 'fr-CA' : 'en-CA', { style: 'currency', currency: p.currency.toUpperCase() }).format(cents / 100)
   const per = { month: fr ? 'mois' : 'month', year: fr ? 'an' : 'year', week: fr ? 'semaine' : 'week', day: fr ? 'jour' : 'day' }[p.price.recurring?.interval] || ''
   const card = `${esc(String(p.card.brand || '').replace(/^\w/, ch => ch.toUpperCase()))}${p.card.last4 ? ` •••• ${esc(p.card.last4)}` : ''}`
-  const when = p.billingStart
-    ? new Date(`${p.billingStart.date}T12:00:00Z`).toLocaleDateString(fr ? 'fr-CA' : 'en-CA', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
-    : null
+  const when = p.billingStart?.date || null
   const t = fr
     ? { title: 'Confirmer votre abonnement', note: p.like ? 'Abonnement séparé de vos abonnements actuels.' : '', tax: 'avant taxes', pay: `Premier paiement ${when ? `le ${when}` : 'aujourd’hui'} sur ${card}.`, btn: 'Approuver' }
     : { title: 'Confirm your subscription', note: p.like ? 'Separate from your current subscriptions.' : '', tax: 'before taxes', pay: `First payment ${when ? `on ${when}` : 'today'} on ${card}.`, btn: 'Approve' }
@@ -113,6 +116,107 @@ function separatePage(p, action) {
 <p class="muted">${t.tax}${t.note ? ` · ${t.note}` : ''}</p>
 <p>${t.pay}</p>
 <form method="post" action="${esc(action)}"><button type="submit">${t.btn}</button></form>`, 200, { brand: true }).html
+}
+
+// Nouvel abonnement : notre page de carte (Stripe Elements sur la session
+// Checkout) — même session, mêmes taxes, mais bouton « Confirmer ».
+function stripePublishableKey() {
+  return db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='publishable_key'").get()?.value || ''
+}
+function cardPage(p, { session, needsEmail }, billing = {}) {
+  const fr = p.isFr
+  const money = cents => new Intl.NumberFormat(fr ? 'fr-CA' : 'en-CA', { style: 'currency', currency: p.currency.toUpperCase() }).format(cents / 100)
+  const per = { month: fr ? 'mois' : 'month', year: fr ? 'an' : 'year', week: fr ? 'semaine' : 'week', day: fr ? 'jour' : 'day' }[p.price.recurring?.interval] || ''
+  const when = p.billingStart?.date || null
+  const t = fr
+    ? { title: 'Votre abonnement', tax: 'avant taxes', taxes: 'Taxes', total: 'Total, taxes incluses', addr: 'selon l’adresse', first: when ? `Premier paiement le ${when}.` : '', today: 'Aujourd’hui', btn: 'Confirmer', err: 'Le paiement n’a pas pu être confirmé.' }
+    : { title: 'Your subscription', tax: 'before taxes', taxes: 'Taxes', total: 'Total, taxes included', addr: 'based on address', first: when ? `First payment on ${when}.` : '', today: 'Due today', btn: 'Confirm', err: 'The payment could not be confirmed.' }
+  const cfg = { pk: stripePublishableKey(), secret: session.client_secret, needsEmail, locale: fr ? 'fr-CA' : 'en', currency: p.currency.toUpperCase(), err: t.err, fr,
+    addrUrl: `/erp/pay/page/${encodeURIComponent(p.c.token)}/adresse`, initial: billing.initial || null, defaultCountry: billing.defaultCountry || 'CA' }
+  return htmlPage(t.title, `<style>table{width:100%;border-collapse:collapse;margin:4px 0 6px}td{padding:6px 0;border-bottom:1px solid #f1f5f9;font-weight:600}.r{text-align:right;white-space:nowrap}
+.el{margin:14px 0}button{width:100%;background:#1a5c2a;color:#fff;border:0;padding:13px 28px;border-radius:999px;font-weight:600;font-size:15px;cursor:pointer;margin-top:12px}button:hover{background:#25b14e}button:disabled{opacity:.5;cursor:default}#today{font-weight:400}td.sub{font-weight:400;color:#64748b}#msg{margin-top:10px}</style>
+<h1>${t.title}</h1>
+<table><tr><td>${esc(p.price.product.name)}</td><td class="r">${money(p.price.unit_amount || 0)} / ${per}</td></tr>
+<tbody id="taxes"><tr><td class="sub">${t.taxes}</td><td class="r sub">${t.addr}</td></tr></tbody>
+<tr id="tot" hidden><td>${t.total}</td><td class="r"><span id="totv"></span> / ${per}</td></tr></table>
+${t.first ? `<p class="muted">${t.first}</p>` : ''}
+<form id="f">${needsEmail ? '<div id="contact" class="el"></div>' : ''}<div id="address" class="el"></div><div id="payment" class="el"></div>
+<p class="muted" id="today"></p>
+<button id="go" type="submit" disabled>${t.btn}</button><p id="msg" class="error"></p></form>
+<script src="https://js.stripe.com/dahlia/stripe.js"></script>
+<script>${PAY_ADDRESS_JS.replace(/<\//g, '<\\/')}</script>
+<script>
+(function(){
+  var cfg = ${JSON.stringify(cfg).replace(/</g, '\\u003c')};
+  var stripe = Stripe(cfg.pk, { locale: cfg.locale });
+  var checkout = stripe.initCheckoutElementsSdk({ clientSecret: cfg.secret, elementsOptions: { appearance: { theme: 'stripe', variables: { colorPrimary: '#1a5c2a', borderRadius: '8px' } } } });
+  var go = document.getElementById('go'), msg = document.getElementById('msg');
+  var actionsP = checkout.loadActions(), canConfirm = false;
+  var addr = PayAddress.mount(document.getElementById('address'), { fr: cfg.fr, endpoint: cfg.addrUrl, initial: cfg.initial, defaultCountry: cfg.defaultCountry, onChange: function (a) {
+    refresh(); if (lastSession) render(lastSession);
+    // Adresse complète → Stripe recalcule les taxes.
+    if (a.valid()) pushAddress();
+  } });
+  function pushAddress() {
+    actionsP.then(function (r) { if (r.type !== 'error') return r.actions.updateBillingAddress(addr.value()) })
+      .then(function (u) { if (u && u.type === 'error') console.warn('[pay] adresse', u.error && u.error.message) })
+      .catch(function (e) { console.warn('[pay] adresse', e && e.message) });
+  }
+  function refresh() { go.disabled = !(canConfirm && addr.valid()); }
+  if (addr.valid()) pushAddress();
+  var lastSession = null;
+  checkout.on('change', function (s) {
+    lastSession = s; canConfirm = s.canConfirm; refresh();
+    try { document.getElementById('today').textContent = ${JSON.stringify(t.today)} + ' : ' + s.total.total.amount; } catch (e) {}
+    render(s);
+  });
+  function render(s) {
+    // Mensualité (prochaine échéance — 0 $ aujourd'hui pendant l'essai) ; ventilation
+    // TPS/TVQ par les pourcentages connus, sinon une seule ligne « Taxes ».
+    try {
+      var n = s.recurring && s.recurring.dueNext, tot = n ? n.total : s.total.total
+      var tax = n ? n.taxExclusive : s.total.taxExclusive, base = n ? n.subtotal : s.total.subtotal
+      var ready = !s.tax || s.tax.status === 'ready'
+      // Stripe calcule l'aperçu sur l'adresse au dossier du client tant que le
+      // paiement n'est pas confirmé : adresse modifiée → taxes « selon l'adresse ».
+      var src = s.tax && s.tax.automaticTax && s.tax.automaticTax.addressSource
+      if (src === 'customer' && addr.edited()) {
+        document.getElementById('taxes').hidden = false; document.getElementById('tot').hidden = true
+        document.getElementById('taxes').innerHTML = '<tr><td class="sub">' + ${JSON.stringify(t.taxes)} + '</td><td class="r sub">' + ${JSON.stringify(t.addr)} + '</td></tr>'
+        return
+      }
+      // Aucune taxe une fois l'adresse connue (ex. client aux É.-U.) : ni ligne Taxes ni total.
+      document.getElementById('taxes').hidden = ready && !(tax && tax.minorUnitsAmount)
+      if (!tax || !tax.minorUnitsAmount) { document.getElementById('tot').hidden = true; return }
+      var fmt = function (c) { return new Intl.NumberFormat(cfg.locale === 'en' ? 'en-CA' : 'fr-CA', { style: 'currency', currency: cfg.currency }).format(c / 100) }
+      var pcts = (s.taxAmounts || []).filter(function (x) { return x.percentage && !x.inclusive })
+      var rows = pcts.length ? pcts.map(function (x) { return [x.displayName + ' (' + x.percentage + ' %)', fmt(Math.round(base.minorUnitsAmount * x.percentage / 100))] })
+        : [[${JSON.stringify(t.taxes)}, tax.amount]]
+      document.getElementById('taxes').innerHTML = rows.map(function (r) {
+        var d = document.createElement('td'); d.className = 'sub'; d.textContent = r[0]
+        var v = document.createElement('td'); v.className = 'r sub'; v.textContent = r[1]
+        return '<tr>' + d.outerHTML + v.outerHTML + '</tr>'
+      }).join('')
+      document.getElementById('totv').textContent = tot.amount
+      document.getElementById('tot').hidden = false
+    } catch (e) {}
+  }
+  if (cfg.needsEmail) checkout.createContactDetailsElement().mount('#contact');
+  checkout.createPaymentElement({ wallets: { googlePay: 'never', link: 'never' }, fields: { billingDetails: { name: 'never', address: 'never' } } }).mount('#payment');
+  document.getElementById('f').addEventListener('submit', async function (e) {
+    e.preventDefault(); if (!addr.valid()) return; go.disabled = true; msg.textContent = '';
+    try {
+      var r = await actionsP;
+      if (r.type === 'error') throw r.error;
+      // Taxes automatiques : l'adresse passe par updateBillingAddress, jamais par confirm().
+      var u = await r.actions.updateBillingAddress(addr.value());
+      if (u && u.type === 'error') throw u.error;
+      var c = await r.actions.confirm();
+      if (c.type === 'error') { msg.textContent = c.error.message || cfg.err; go.disabled = false; }
+    } catch (err) { msg.textContent = (err && err.message) || cfg.err; go.disabled = false; }
+  });
+})();
+</script>`, 200, { brand: true }).html
 }
 
 // Session payée (ou sans montant dû : rabais de 100 %), et bien celle de cette soumission.
@@ -229,9 +333,67 @@ router.post('/soumission/:id/abonnement/approuver', async (req, res) => {
 // ── Page hébergée avec paiement : bouton « Payer » du bloc d'acceptation.
 // GET /pay/page/:token/merci — retour de Stripe (nouvel abonnement).
 router.get('/page/:token/merci', (req, res) => {
-  const fr = getPageByToken(req.params.token)?.config.language !== 'en'
+  const page = getPageByToken(req.params.token)
+  if (page?.config.thanks) return res.redirect(303, page.config.thanks)
+  const fr = page?.config.language !== 'en'
   return res.type('html').send(upgradeDonePage(fr, 'new'))
 })
+
+// Autocomplétion d'adresse de la page de carte (publique : jeton de page exigé,
+// débit limité par IP pour ne pas offrir la clé Google au premier venu).
+const addrHits = new Map()
+function addrGuard(req, res) {
+  if (!getPageByToken(req.params.token)) { res.status(404).json({ predictions: [] }); return false }
+  const now = Date.now(), h = addrHits.get(req.ip) || { n: 0, t: now }
+  if (now - h.t > 60_000) { h.n = 0; h.t = now }
+  h.n += 1; addrHits.set(req.ip, h)
+  if (addrHits.size > 5000) addrHits.clear()
+  if (h.n > 90) { res.status(429).json({ predictions: [] }); return false }
+  return true
+}
+router.get('/page/:token/adresse', async (req, res) => {
+  if (!addrGuard(req, res)) return
+  try {
+    res.json({ predictions: await placeAutocomplete(String(req.query.q || '').slice(0, 200), { sessionToken: String(req.query.s || ''), country: String(req.query.c || '') }) })
+  } catch (e) {
+    console.error('[pay] autocomplétion adresse', e.message)
+    res.json({ predictions: [] })
+  }
+})
+router.get('/page/:token/adresse/:placeId', async (req, res) => {
+  if (!addrGuard(req, res)) return
+  try {
+    res.json((await placeDetails(req.params.placeId, { sessionToken: String(req.query.s || '') })) || {})
+  } catch (e) {
+    console.error('[pay] détail adresse', e.message)
+    res.json({})
+  }
+})
+
+// Adresse de départ du formulaire : celle du client Stripe, sinon le pays de
+// l'entreprise au dossier.
+const COUNTRY_CODES = { canada: 'CA', 'united states': 'US', usa: 'US', 'états-unis': 'US', 'etats-unis': 'US' }
+async function billingPrefill(stripe, plan, session) {
+  const company = plan.contact?.company_id ? db.prepare('SELECT name, country FROM companies WHERE id=?').get(plan.contact.company_id) : null
+  const raw = String(company?.country || '').trim()
+  const defaultCountry = /^[A-Z]{2}$/.test(raw) ? raw : (COUNTRY_CODES[raw.toLowerCase()] || 'CA')
+  const id = typeof session.customer === 'string' ? session.customer : session.customer?.id || plan.customer
+  const name = plan.a?.name || ''
+  if (!id) return { defaultCountry, initial: name ? { name } : null }
+  const cus = await stripe.customers.retrieve(id).catch(() => null)
+  const a = cus?.address
+  return {
+    defaultCountry,
+    initial: {
+      name: cus?.name || name,
+      address: a?.country ? { country: a.country, line1: a.line1, line2: a.line2, city: a.city, state: a.state, postal_code: a.postal_code } : null,
+    },
+  }
+}
+async function sendCardPage(res, stripe, plan) {
+  const checkout = await createPageCheckout({ stripe, plan })
+  return res.type('html').send(cardPage(plan, checkout, await billingPrefill(stripe, plan, checkout.session)))
+}
 
 // GET /pay/page/:token/:acceptanceId — client abonné : page d'approbation ;
 // sinon Checkout d'un nouvel abonnement.
@@ -249,7 +411,21 @@ router.get('/page/:token/:acceptanceId', async (req, res) => {
       return res.type('html').send(upgradePage(plan,
         `${appBaseUrl()}/erp/pay/page/${encodeURIComponent(token)}/${encodeURIComponent(acceptanceId)}/approuver`))
     }
-    return res.redirect(303, await createPageCheckout({ stripe, plan }))
+    return sendCardPage(res, stripe, plan)
+  } catch (e) {
+    return soumissionErrorPage(res, e, token, 'page')
+  }
+})
+
+// GET /pay/page/:token/:acceptanceId/carte — abonnement séparé refusé sur la
+// carte au dossier : nouvelle carte sur notre page.
+router.get('/page/:token/:acceptanceId/carte', async (req, res) => {
+  const { token, acceptanceId } = req.params
+  try {
+    const stripe = getStripeClient()
+    const plan = await pagePayPlan({ stripe, token, acceptanceId })
+    if (plan.mode !== 'new' && plan.mode !== 'separate') return res.redirect(303, `${appBaseUrl()}/erp/pay/page/${encodeURIComponent(token)}/${encodeURIComponent(acceptanceId)}`)
+    return sendCardPage(res, stripe, plan)
   } catch (e) {
     return soumissionErrorPage(res, e, token, 'page')
   }
@@ -268,9 +444,11 @@ router.post('/page/:token/:acceptanceId/approuver', async (req, res) => {
       if (e.code !== 'payment_failed' && e.code !== 'needs_checkout') throw e
       const plan = await pagePayPlan({ stripe, token, acceptanceId })
       if (plan.mode !== 'separate') throw e
-      return res.redirect(303, await createPageCheckout({ stripe, plan }))
+      return res.redirect(303, `${appBaseUrl()}/erp/pay/page/${encodeURIComponent(token)}/${encodeURIComponent(acceptanceId)}/carte`)
     }
-    const fr = getPageByToken(token)?.config.language !== 'en'
+    const page = getPageByToken(token)
+    if (page?.config.thanks && !r.already) return res.redirect(303, page.config.thanks)
+    const fr = page?.config.language !== 'en'
     return res.type('html').send(upgradeDonePage(fr, r.already ? 'already' : r.separate ? 'new' : r.scheduled ? 'scheduled' : 'added'))
   } catch (e) {
     if (e.code === 'payment_failed') createPaymentFailedTask({ source: 'page', token, acceptanceId, error: e.message })

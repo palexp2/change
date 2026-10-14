@@ -67,3 +67,12 @@ test('rien à sortir : un seul article, aucune ligne de frais, ou ventilation di
   assert.equal(extractChargeLines([a, b, { ...frais, tax_code_id: '__none__' }]), null)
   assert.equal(extractChargeLines([a, b, { ...frais, purchase_id: 'p1' }]), null)
 })
+
+test('« Fret » est une ligne de transport (Scaled Instruments, LIA-2007)', () => {
+  const out = consolidateSingleItemCharges([
+    { description: 'LIA-2007\tAnémomètre davis', total: 1920, purchase_id: 'p1', lia_ref: 'LIA-2007' },
+    { description: 'Fret', total: 134.24 },
+  ])
+  assert.equal(out.length, 1)
+  assert.equal(out[0].total, 2054.24)
+})

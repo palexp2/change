@@ -81,3 +81,66 @@ doc.addEventListener('click', async () => {
   const res = await chrome.runtime.sendMessage({ type: 'send-document', tabId: tab?.id }).catch(e => ({ ok: false, error: e.message }))
   if (!res?.ok) paintDoc({ running: false, error: res?.error || 'le module n’a pas répondu' })
 })
+
+// ── Capture pour Claude ──────────────────────────────────────────────────────
+const shot = document.getElementById('shot')
+const shotOut = document.getElementById('shotOut')
+const pick = document.getElementById('pick')
+
+function preview(file) {
+  shot.querySelector('img')?.remove()
+  const img = document.createElement('img')
+  img.src = URL.createObjectURL(file)
+  shot.append(img)
+}
+
+async function sendShot(file, buf) {
+  if (!file?.type?.startsWith('image/')) { shotOut.className = 'erreur'; shotOut.textContent = '✕ Image attendue'; return }
+  shotOut.className = 'd'; shotOut.textContent = 'Envoi…'
+  preview(file)
+  buf ||= new Uint8Array(await file.arrayBuffer())
+  let bin = ''
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000))
+  const res = await chrome.runtime.sendMessage({ type: 'send-screenshot', mime: file.type, data: btoa(bin) })
+    .catch(e => ({ ok: false, error: e.message }))
+  shotOut.className = res?.ok ? 'ok' : 'erreur'
+  shotOut.textContent = res?.ok ? '✓ Reçue — dis à Claude « regarde ma capture »' : `✕ ${res?.error || 'le module n’a pas répondu'}`
+  return !!res?.ok
+}
+
+shot.addEventListener('dragover', (e) => { e.preventDefault(); shot.classList.add('over') })
+shot.addEventListener('dragleave', () => shot.classList.remove('over'))
+document.addEventListener('dragover', e => e.preventDefault())
+document.addEventListener('drop', (e) => {
+  e.preventDefault(); shot.classList.remove('over')
+  sendShot(e.dataTransfer?.files?.[0])
+})
+document.addEventListener('paste', (e) => {
+  const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'))
+  if (item) sendShot(item.getAsFile())
+})
+shot.addEventListener('click', () => pick.click())
+pick.addEventListener('change', () => sendShot(pick.files?.[0]))
+document.getElementById('tab').addEventListener('click', (e) => {
+  e.preventDefault()
+  chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') })
+})
+
+// Capture prise dans le presse-papiers (⌘⌃⇧4 sur Mac) : envoyée dès qu'on ouvre
+// le module — une seule fois par image (empreinte retenue).
+async function fromClipboard() {
+  try {
+    for (const item of await navigator.clipboard.read()) {
+      const type = item.types.find(t => t.startsWith('image/'))
+      if (!type) continue
+      const blob = await item.getType(type)
+      const buf = new Uint8Array(await blob.arrayBuffer())
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join('')
+      const { lastShotHash } = await chrome.storage.local.get('lastShotHash')
+      if (hash === lastShotHash) return
+      if (await sendShot(new File([blob], 'capture', { type }), buf)) await chrome.storage.local.set({ lastShotHash: hash })
+      return
+    }
+  } catch { /* presse-papiers illisible : glisser ou coller reste possible */ }
+}
+fromClipboard()

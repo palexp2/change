@@ -24,6 +24,7 @@ import { newRecordId } from '../utils/recordId.js'
 import { qbGet, qbPost, qbEntityUrl } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
+import { relinkOrphanStripeFactures } from './stripeProjectLink.js'
 
 export const DEFERRAL_ACCTNUM = '23900'   // Revenus perçus d'avance (passif)
 export const SALES_ACCTNUM = '40000'      // Ventes de produits
@@ -103,6 +104,7 @@ export async function ledgerLines({ start = '2019-01-01', end } = {}) {
       if (row.ColData?.[0]?.value) {
         const [date, type, docNum, name, memo, debit, credit] = row.ColData.map(c => c.value)
         rows.push({
+          txn_id: row.ColData[1]?.id || null,
           date, type, doc_num: docNum || '', name: name || '', memo: memo || '',
           debit: parseAmount(debit), credit: parseAmount(credit),
         })
@@ -111,7 +113,32 @@ export async function ledgerLines({ start = '2019-01-01', end } = {}) {
     }
   }
   walk((report?.Report || report)?.Rows)
+  await nameJournalLines(rows, accountId)
   return rows
+}
+
+// Le rapport laisse la colonne « Nom » vide sur une écriture de journal, même
+// quand QuickBooks y affiche le client (il est porté par la ligne, pas par
+// l'écriture). Sans cette relecture, l'écriture n° 550 de Canticle Farm
+// tombait dans « Sans nom ».
+async function nameJournalLines(rows, accountId) {
+  const ids = [...new Set(rows.filter(r => !r.name && r.txn_id && /journal/i.test(r.type)).map(r => r.txn_id))]
+  const names = new Map()
+  for (let i = 0; i < ids.length; i += 50) {
+    const list = ids.slice(i, i + 50).map(id => `'${id}'`).join(',')
+    try {
+      const data = await qbGet(`/query?query=${encodeURIComponent(`select * from JournalEntry where Id in (${list})`)}`)
+      for (const je of data?.QueryResponse?.JournalEntry || []) {
+        const lines = (je.Line || []).map(l => l.JournalEntryLineDetail).filter(Boolean)
+        // Seulement le nom porté par la ligne du 23900 : une autre ligne de la
+        // même écriture peut nommer un tiers (Revenu Québec sur le solde
+        // d'ouverture).
+        const name = lines.find(d => String(d.AccountRef?.value) === String(accountId))?.Entity?.EntityRef?.name
+        if (name) names.set(String(je.Id), name)
+      }
+    } catch { /* le nom reste vide : on ne bloque pas la page pour ça */ }
+  }
+  for (const r of rows) if (!r.name && names.has(String(r.txn_id))) r.name = names.get(String(r.txn_id))
 }
 
 // Solde du compte, tel que QuickBooks le porte. On interroge le compte
@@ -136,9 +163,13 @@ export function erpDeposits() {
            f.paid_amount, f.total_amount,
            f.deferred_revenue_at, f.deferred_revenue_amount_cad,
            f.revenue_recognized_at, f.revenue_recognized_je_id,
-           c.name AS company_name
+           c.name AS company_name,
+           f.order_id, o.order_number, o.status AS order_status,
+           (SELECT MAX(s.shipped_at) FROM shipments s
+             WHERE s.order_id = f.order_id AND s.deleted_at IS NULL AND s.shipped_at IS NOT NULL) AS shipped_at
     FROM factures f
     LEFT JOIN companies c ON c.id = f.company_id
+    LEFT JOIN orders o ON o.id = f.order_id
     WHERE f.kind = 'order'
       AND (f.deferred_revenue_at IS NOT NULL
            OR (f.paid_at IS NOT NULL AND f.revenue_recognized_at IS NULL AND COALESCE(f.status,'') = 'Payé'))
@@ -270,7 +301,23 @@ export function groupLedger(lines, factures, directory = new Map()) {
     openFor(keyFor(f), f.company_name, f)
   }
 
-  return mergeLooseNames([...groups.values()]).map(summarize)
+  return mergeUnnamedTwins(mergeLooseNames([...groups.values()])).map(summarize)
+}
+
+// Le tas « Sans nom » (solde d'ouverture, écriture sans client) rejoint le
+// SEUL dossier dont le solde l'annule au cent près : le solde d'ouverture 2019
+// de 7 650 $ est le dépôt de Ferme d'Orée, libéré en avril 2019 (Charles,
+// 2026-10-10). Deux candidats ou plus : on ne devine pas.
+export function mergeUnnamedTwins(groups) {
+  const net = g => r2(g.lines.reduce((s, l) => s + (l.credit || 0) - (l.debit || 0), 0))
+  const unnamed = groups.find(g => g.key === 'n:sans-nom')
+  if (!unnamed) return groups
+  const amount = net(unnamed)
+  if (Math.abs(amount) < EPS) return groups
+  const twins = groups.filter(g => g !== unnamed && Math.abs(net(g) + amount) < EPS)
+  if (twins.length !== 1) return groups
+  twins[0].lines.push(...unnamed.lines)
+  return groups.filter(g => g !== unnamed)
 }
 
 // Dernier passage : un dossier ouvert sous un simple nom (« Coopérative Gaïa »,
@@ -303,8 +350,11 @@ export function summarize(group) {
   const solde = r2(encaisse - libere)
   const dates = group.lines.map(l => l.date).filter(Boolean).sort()
 
-  const expediees = (group.factures || []).filter(f => f.revenue_recognized_at)
-  const ouvertes = (group.factures || []).filter(f => !f.revenue_recognized_at)
+  // Expédiée = constatée par l'app, OU partie selon l'envoi (la constatation
+  // automatique a pu manquer) : dans les deux cas le passif doit sortir.
+  const parti = f => f.revenue_recognized_at || f.shipped_at
+  const expediees = (group.factures || []).filter(parti)
+  const ouvertes = (group.factures || []).filter(f => !parti(f))
   const posees = (group.factures || []).filter(f => f.deferred_revenue_at)
 
   const anomalies = []
@@ -327,14 +377,28 @@ export function summarize(group) {
     anomalies.push({ code: 'absent_du_grand_livre', label: 'Rien au grand livre', amount: 0, fix: null })
   }
 
+  // Date de la constatation = date d'expédition (la plus récente du dossier).
+  const shippedDates = expediees.map(f => String(f.shipped_at || f.revenue_recognized_at).slice(0, 10)).sort()
+  const shipped_at = shippedDates[shippedDates.length - 1] || null
+  const ref = ouvertes[0] || expediees[expediees.length - 1] || null
+  const file = anomalies.some(a => a.code === 'jamais_libere') ? 'constater'
+    : (solde < -EPS || anomalies.length) ? 'corriger'
+      : solde > EPS ? 'attente' : 'regle'
+
   return {
     ...group,
+    file,
+    shipped_at,
+    order_id: ref?.order_id || null,
+    order_number: ref?.order_number ?? null,
+    order_status: ref?.order_status || null,
     encaisse,
     libere,
     solde,
     factures: (group.factures || []).map(f => ({
       id: f.id, document_number: f.document_number,
       recognized_at: f.revenue_recognized_at, deferred_at: f.deferred_revenue_at,
+      shipped_at: f.shipped_at || null,
     })),
     versements: credits.length,
     multi_versements: credits.length > 1,
@@ -349,6 +413,8 @@ export function summarize(group) {
 
 export async function buildState({ end } = {}) {
   const asOf = end || new Date().toISOString().slice(0, 10)
+  // Une facture sans entreprise s'afficherait sous son numéro, pas son client.
+  try { relinkOrphanStripeFactures() } catch (e) { console.warn('[deferred] rattachement:', e.message) }
   const factures = erpDeposits()
   const lines = await ledgerLines({ end: asOf })
   const groups = groupLedger(lines, factures, factureDirectory())
@@ -359,6 +425,7 @@ export async function buildState({ end } = {}) {
     || String(a.company_name).localeCompare(String(b.company_name)))
 
   suggestPairs(groups)
+  for (const g of groups) g.correction = correctionFor(g) || constatationFor(g)
 
   const open = groups.filter(g => Math.abs(g.solde) > EPS)
   const totals = {
@@ -415,14 +482,21 @@ export function correctionFor(group) {
   const amount = r2(anomaly.amount)
   if (!(amount > 0)) return null
   const who = group.document_number ? `#${group.document_number}` : group.company_name
+  const liberer = anomaly.fix === 'liberer'
   return {
     key: group.key,
     code: anomaly.code,
     amount,
-    txn_date: new Date().toISOString().slice(0, 10),
-    memo: anomaly.fix === 'remettre'
+    // Une constatation se date du jour où la commande est partie.
+    txn_date: (liberer && group.shipped_at) || new Date().toISOString().slice(0, 10),
+    // Les factures que cette constatation solde : marquées constatées à l'envoi,
+    // pour que la constatation automatique ne repasse pas derrière.
+    facture_ids: liberer
+      ? (group.factures || []).filter(f => !f.recognized_at && !f.revenue_recognized_at).map(f => f.id)
+      : [],
+    memo: !liberer
       ? `Correction ${who} — passif 23900 libéré en trop, remis`
-      : `Constatation ${who} — passif 23900 libéré (commande expédiée)`,
+      : `${group.company_name}: constatation ${who}`,
     lines: anomaly.fix === 'remettre'
       ? [
         { posting: 'Debit', acctnum: SALES_ACCTNUM, amount, label: `Annulation de la libération en double — ${who}` },
@@ -432,6 +506,26 @@ export function correctionFor(group) {
         { posting: 'Debit', acctnum: DEFERRAL_ACCTNUM, amount, label: `Passif libéré — ${who}` },
         { posting: 'Credit', acctnum: SALES_ACCTNUM, amount, label: `Vente constatée — ${who}` },
       ],
+  }
+}
+
+// Constater à la main un dépôt encore ouvert, même si la commande n'est pas
+// vue partie : l'humain sait ce que l'app ignore. Datée du jour, modifiable.
+export function constatationFor(group) {
+  const amount = r2(group.solde)
+  if (!(amount > EPS)) return null
+  const who = group.document_number ? `#${group.document_number}` : group.company_name
+  return {
+    key: group.key,
+    code: 'constatation_manuelle',
+    amount,
+    txn_date: group.shipped_at || new Date().toISOString().slice(0, 10),
+    facture_ids: (group.factures || []).filter(f => !f.recognized_at && !f.revenue_recognized_at).map(f => f.id),
+    memo: `${group.company_name}: constatation ${who}`,
+    lines: [
+      { posting: 'Debit', acctnum: DEFERRAL_ACCTNUM, amount, label: `Passif libéré — ${who}` },
+      { posting: 'Credit', acctnum: SALES_ACCTNUM, amount, label: `Vente constatée — ${who}` },
+    ],
   }
 }
 
@@ -453,7 +547,7 @@ export function recentCorrections() {
 // Publie l'écriture telle qu'elle est affichée. La trace est posée AVANT
 // l'envoi et retirée si QuickBooks refuse — on ne veut pas d'une correction
 // notée mais jamais partie.
-export async function publishCorrection({ key, lines, memo, txn_date, userId = null }) {
+export async function publishCorrection({ key, lines, memo, txn_date, facture_ids = [], userId = null }) {
   const entries = (lines || []).filter(l => Number(l.amount) > 0)
   if (!entries.length) throw new Error('Aucun montant à envoyer')
   const total = r2(entries.filter(l => l.posting === 'Debit').reduce((s, l) => s + Number(l.amount), 0))
@@ -488,6 +582,9 @@ export async function publishCorrection({ key, lines, memo, txn_date, userId = n
     if (!jeId) throw new Error("QuickBooks n'a pas retourné d'identifiant d'écriture")
     db.prepare('UPDATE deferred_deposit_corrections SET qb_je_id=?, pushed_at=? WHERE id=?')
       .run(String(jeId), now, id)
+    const mark = db.prepare(`UPDATE factures SET revenue_recognized_at = ?, revenue_recognized_je_id = ?
+      WHERE id = ? AND revenue_recognized_at IS NULL`)
+    for (const fid of facture_ids || []) mark.run(now, String(jeId), fid)
     logSync('deferred_deposits', 'manual', { status: 'success', modified: 1 })
     return { id, qb_je_id: String(jeId), qb_je_url: qbEntityUrl('journal', String(jeId)), amount: total }
   } catch (e) {

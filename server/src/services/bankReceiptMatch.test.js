@@ -128,10 +128,17 @@ test('pièce notée CAD qui tombe juste une fois lue en USD', () => {
 test('converti + ~2,5 % de frais de change de la carte', () => {
   const txn = { ...ANTH, description: 'ANTHROPIC SAN FRANCISCO' }
   const r = scoreDoc(txn, anthDoc({ currency: 'USD' }), ctx({ rate: 1.4002, text: txn.description }))
-  assert.ok(r.reasons.includes('converti + ~2,5 % de frais de change'))
+  assert.ok(r.reasons.includes('converti + frais de change'))
   const near = scoreDoc({ ...txn, amount: -148.2 }, anthDoc({ currency: 'USD' }), ctx({ rate: 1.4002, text: txn.description }))
   assert.ok(near.reasons.includes('montant proche une fois converti'))
   assert.ok(r.score > near.score)
+})
+
+test('converti + 4 % de frais de change du marchand (Circle, Stripe)', () => {
+  // 145,95 USD × 1,4271 = 208,29 ; débité 216,44 CAD (« includes 4% conversion fee »).
+  const txn = { ...ANTH, amount: -216.44, description: 'Circle' }
+  const r = scoreDoc(txn, anthDoc({ currency: 'USD', total: 145.95 }), ctx({ rate: 1.4271, text: txn.description }))
+  assert.ok(r.reasons.includes('converti + frais de change'), r.reasons.join(' | '))
 })
 
 // ── Entrées d'argent payées par une pièce négative (cas ARC du 2026-09-22) ───
@@ -181,4 +188,14 @@ test('abonnement : un fournisseur différent au même montant n’est pas touch�
   const list = [abonnement('2026-09-28'), abonnement('2026-08-28', { company: 'Anthropic' })]
   demoteOtherPeriods(list, '2026-09-28')
   assert.equal(list[1].score, 100)
+})
+
+test('abonnement : même fournisseur sous un autre nom (profil) — l’ancien mois recule', () => {
+  const list = [
+    abonnement('2026-10-13', { company: 'ActiveCampaign', names: ['ActiveCampaign', 'Postmark USD'] }),
+    abonnement('2026-09-13', { type: 'achat', company: 'Postmark USD', names: ['Postmark USD'] }),
+  ]
+  demoteOtherPeriods(list, '2026-10-13')
+  assert.equal(list[0].score, 100)
+  assert.equal(list[1].score, 75)
 })

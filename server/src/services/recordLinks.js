@@ -125,6 +125,9 @@ export const RESOLVABLE_TABLES = Object.keys(SPECS)
 // fiche ne produirait pas de lien, juste un libellé.
 export const LINKABLE_TABLES = Object.keys(SPECS).filter(t => !!SPECS[t].path)
 
+/** Préfixe d'URL de la fiche d'une table (« /orders »), null sans fiche. */
+export const recordPathOf = table => SPECS[table]?.path || null
+
 // Nombre max de clés résolues par appel — borne la taille de la requête SQL et
 // de l'URL côté client (le client découpe par lots).
 export const MAX_KEYS = 200

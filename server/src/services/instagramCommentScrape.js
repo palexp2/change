@@ -56,7 +56,7 @@ const MAX_COMMENT_PAGES = 20
 export const INSTAGRAM_SCRAPE_DEFAULT_CONFIG = {
   accounts: 'orisha_auto, growingformarketmagazine', // comptes dont on lit les publications (virgules)
   our_accounts: 'orisha_auto',   // une publication n'est retenue que si un de ces comptes en est l'auteur ou le co-auteur
-  keywords: 'coach',             // ne filtre plus rien (tout le monde est capté) — sert à prioriser/étiqueter
+  keywords: 'coach,partner',     // ne filtre plus rien (tout le monde est capté) — sert à prioriser/étiqueter
   lookback_days: '7',            // la semaine qui vient de finir (tournée = lundi minuit)
   own_accounts: 'orisha_auto, growingformarketmagazine', // jamais des prospects
   run_weekday: '1',              // ISO : 1 = lundi — minuit dans la nuit de dimanche à lundi
@@ -423,6 +423,12 @@ async function fetchComments(mediaId, session, ownUsernames) {
 }
 
 /** Marque une fiche contactée avec sa source, sans jamais écraser une marque existante. */
+export const AUTO_REPLY_MS = 5 * 60 * 1000
+export function isAutoReply(c) {
+  if (!c.repliedAt || !c.created_at) return false
+  return new Date(c.repliedAt) - new Date(c.created_at) < AUTO_REPLY_MS
+}
+
 function markContacted(prospectId, source, when) {
   db.prepare(`
     UPDATE instagram_prospects
@@ -482,7 +488,9 @@ export async function ingestPostComments(withComments, { cfg, own, commentsOf })
       // déjà connu (dédupliqué) : une fiche créée avant que ce signal existe,
       // ou lue une semaine puis répondue la suivante, doit être rattrapée —
       // pas seulement les commentaires tout juste ingérés.
-      if (c.repliedByUs && res.prospect?.id && !res.prospect.contacted) {
+      // Une réponse publique arrivée dans les minutes du commentaire vient d'un
+      // robot (réponse automatique) : personne n'a encore parlé à la personne.
+      if (c.repliedByUs && res.prospect?.id && !res.prospect.contacted && !isAutoReply(c)) {
         markContacted(res.prospect.id, 'public_reply', c.repliedAt)
         repliedByUsCount++
         toPush.add(res.prospect.id)

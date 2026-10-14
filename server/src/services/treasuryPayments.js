@@ -633,6 +633,19 @@ const closeAmounts = (a, b) => Math.abs(Number(a) - Number(b)) <= Math.max(1, Ma
 const daysApart = (a, b) =>
   Math.abs(Math.round((new Date(`${dayOnly(a)}T12:00:00Z`) - new Date(`${dayOnly(b)}T12:00:00Z`)) / 86400000))
 
+// Paiements en attente qui peuvent encore couvrir une AUTRE facture que la leur.
+// Un lien vers une facture ouverte la couvre déjà. Un lien posé en payant la
+// facture elle-même (« J'ai payé » de la cédule, paiement venu de QuickBooks,
+// écriture de paiement publiée) n'est jamais erroné, même une fois la facture
+// soldée : sans ça, payer l'une de deux factures BTTH identiques (même montant,
+// même échéance) faisait aussi disparaître l'autre de la liste « à payer ».
+export function paymentsFreeToCover(payments, openBillIds) {
+  return (payments || []).filter(p => !p.achat_id || (
+    !openBillIds.has(p.achat_id)
+    && p.source !== 'schedule' && p.source !== 'qb' && !p.qb_billpayment_id
+  ))
+}
+
 // bills : factures ouvertes projetées (sans lien achat_id — déjà filtrées par
 // achatIdsWithPayment). payments : paiements 'out' en attente, hors ceux liés à
 // une autre facture ouverte (ils couvrent déjà la leur). Retourne

@@ -15,13 +15,16 @@ export const tableLabel = t => TABLE_LABELS[t] || t
 // Tables que le bloc « Trouver » peut lire (READABLE_TABLES du serveur).
 export const READABLE_TABLES = Object.keys(TABLE_LABELS)
 // Tables suivies en continu par le déclencheur « enregistrement ».
-export const WATCHED_TABLES = ['factures', 'products', 'orders', 'shipments', 'companies', 'contacts', 'serial_numbers']
+export const WATCHED_TABLES = ['factures', 'products', 'orders', 'shipments', 'companies', 'contacts', 'serial_numbers', 'return_items']
+// Tables que le bloc « Modifier » peut écrire (WRITABLE_TABLES du serveur).
+export const WRITABLE_TABLES = ['factures', 'products', 'orders', 'shipments', 'companies', 'contacts', 'serial_numbers']
 
 export const OPS = [
   { value: 'eq', label: 'est' },
   { value: 'ne', label: 'n’est pas' },
   { value: 'gt', label: '>' },
   { value: 'lt', label: '<' },
+  { value: 'in', label: 'est l’une des' },
   { value: 'not_null', label: 'n’est pas vide' },
 ]
 export const opLabel = op => OPS.find(o => o.value === op)?.label || op
@@ -42,7 +45,7 @@ export const BLOCKS = {
   task:    { Icon: CheckSquare, bg: '#dcfce7', label: 'Créer une tâche', fields: [['title', 'Titre', 'text'], ['assigned_to', 'Assigné à', 'user'], ['priority', 'Priorité', 'priority'], ['due_in_days', 'Échéance (jours)', 'number'], ['description', 'Description', 'area']] },
   slack:   { Icon: MessageSquare, bg: '#ede9fe', label: 'Message Slack', fields: [['channel', 'Destinataire', 'slack_channel'], ['text', 'Message', 'area']] },
   email:   { Icon: Mail, bg: '#dbeafe', label: 'Envoyer un courriel', fields: [['to', 'À', 'text'], ['subject', 'Objet', 'text'], ['body', 'Message', 'area']] },
-  update:  { Icon: Pencil, bg: '#fef3c7', label: 'Modifier l’enregistrement', fields: [['fields', 'Champs', 'fields']] },
+  update:  { Icon: Pencil, bg: '#fef3c7', label: 'Modifier un enregistrement', fields: [['table', 'Table', 'writable'], ['record_id', 'Enregistrement', 'text'], ['fields', 'Champs', 'fields']] },
   find:    { Icon: Search, bg: '#f1f5f9', label: 'Trouver des enregistrements', fields: [['table', 'Table', 'readable'], ['conditions', 'Conditions', 'conditions'], ['limit', 'Maximum', 'number']] },
   hubspot: { Icon: Users, bg: '#ffedd5', label: 'HubSpot', fields: [['object', 'Objet', 'object'], ['record', 'Contact (id ou courriel)', 'text'], ['property', 'Propriété', 'text'], ['value', 'Valeur', 'text']] },
   qb:      { Icon: BookOpen, bg: '#dcfce7', label: 'QuickBooks', fields: [['debit', 'Débit (n° de compte)', 'text'], ['credit', 'Crédit (n° de compte)', 'text'], ['amount', 'Montant', 'text'], ['memo', 'Mémo', 'text'], ['date', 'Date (AAAA-MM-JJ)', 'text']] },
@@ -69,7 +72,7 @@ export function stepSummary(step, users = []) {
     case 'task': return [c.title, users.find(u => u.id === c.assigned_to)?.name].filter(Boolean).join(' · ')
     case 'slack': return c.channel
     case 'email': return [c.to, c.subject].filter(Boolean).join(' · ')
-    case 'update': return (c.fields || []).map(f => f.column).filter(Boolean).join(', ')
+    case 'update': return [c.table && tableLabel(c.table), (c.fields || []).map(f => f.column).filter(Boolean).join(', ')].filter(Boolean).join(' · ')
     case 'find': return tableLabel(c.table) + ((c.conditions || []).length ? ` · ${c.conditions.length} condition(s)` : '')
     case 'hubspot': return [c.object === 'companies' ? 'Entreprise' : 'Contact', c.property].filter(Boolean).join(' · ')
     case 'qb': return c.debit || c.credit ? `Écriture · Dr ${c.debit || '?'} / Cr ${c.credit || '?'}` : ''
@@ -82,7 +85,7 @@ export function stepSummary(step, users = []) {
 export const SUB_TOKENS = [
   ['email', 'Courriel du contact'], ['contact_name', 'Nom du contact'], ['first_name', 'Prénom'], ['last_name', 'Nom'],
   ['hubspot_record_id', 'Id HubSpot'], ['role', 'Rôle (contact / signataire)'], ['stripe_id', 'Abonnement Stripe'],
-  ['produits', 'Produits'], ['cause', 'Départ (annulé / retiré)'], ['maintenant', 'Maintenant (date)'], ['maintenant_ms', 'Maintenant (ms)'],
+  ['lien_fiche', 'Lien du contact'], ['lien_abonnement', 'Lien de l’abonnement'], ['produits', 'Produits'], ['cause', 'Départ (annulé / retiré)'], ['maintenant', 'Maintenant (date)'], ['maintenant_ms', 'Maintenant (ms)'],
 ].map(([value, label]) => ({ value, label }))
 
 export const triggerKindOf = (a, tc) => (a.kind !== 'flow' ? 'field_rule' : tc?.type === 'subscription_product' ? 'subscription_product' : 'schedule')
@@ -103,6 +106,13 @@ export function triggerSummary(a, tc, labelOf = c => c, productLabel = p => p) {
     return tc.freq === 'day' ? `${f} à ${tc.time}` : f
   }
   const rules = (tc.conditions?.rules || []).filter(r => r.column)
-  const conj = tc.conditions?.conjunction === 'OR' ? ' ou ' : ' et '
-  return `${tableLabel(tc.erp_table)}${rules.length ? ' · ' + rules.map(r => `${labelOf(r.column)} ${opLabel(r.op)}${r.op === 'not_null' ? '' : ' ' + (r.value ?? '')}`).join(conj) : ' · aucune condition'}`
+  return `${tableLabel(tc.erp_table)} · ${rules.length ? rulesSummary(tc.conditions, labelOf) : 'aucune condition'}`
+}
+
+const valueText = v => (Array.isArray(v) ? v.join(', ') : v ?? '')
+/** « Raison est l’une des A, B et # de série n’est pas vide ». */
+export function rulesSummary(conds, labelOf = c => c) {
+  const conj = conds?.conjunction === 'OR' ? ' ou ' : ' et '
+  return (conds?.rules || []).filter(r => r.column)
+    .map(r => `${labelOf(r.column)} ${opLabel(r.op)}${r.op === 'not_null' ? '' : ' ' + valueText(r.value)}`).join(conj)
 }

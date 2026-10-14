@@ -1,31 +1,20 @@
 // Écritures QuickBooks du compte ASFC.
 //
-// Le compte ASFC EST le solde du fournisseur « ASFC » dans les Comptes
-// fournisseurs (21000) — pas de compte de passage à créer, rien dans les frais
-// payés d'avance, et la fiche fournisseur QB reproduit le relevé du portail :
-//   • notre versement  → Dépense sur la carte, une ligne imputée à 21000 ;
-//   • charge (B3, C1, intérêts, pénalité) → ÉCRITURE DE JOURNAL (pas une
-//     facture fournisseur) : droits en coût (65000) et TPS à l'importation en
-//     CTI 100 % récupérable, portée au compte d'attente TPS/TVH
-//     (gst_suspense_acctnum, le même que celui où l'automatisme des factures
-//     pose la TPS), en contrepartie du solde fournisseur (21000, EntityRef
-//     ASFC) ;
-//   • correction créditrice → même JE, sens inverse ;
-//   • ligne réglée par un courtier → rien (sa facture porte déjà tout).
-// Le crédit laissé au portail (202,68 $ le 2026-08-03) tombe tout seul : le
-// versement dépasse les charges consommées, le fournisseur ASFC est débiteur
-// d'autant.
-//
-// Pourquoi une JE et pas une facture fournisseur (changé le 2026-09-01,
-// demande de Guillaume) : une facture reste « à payer » indéfiniment dans QB
-// tant que personne ne l'applique manuellement au crédit du fournisseur — rien
-// dans ce module ne le fait. Une JE n'a pas de statut payé/impayé, ne
-// nécessite aucun geste supplémentaire, et garde le même solde 21000 comme
-// clearing entre le versement (carte) et la consommation (charges). Attention
-// à ne SURTOUT PAS repasser une charge/crédit en Dépense sur la carte : la
-// carte n'a bougé qu'une fois pour le vrai versement (ex. 500 $) — une charge
-// qui recréditerait la carte compterait cet argent deux fois et fausserait le
-// rapprochement bancaire.
+// MODÈLE (aligné le 2026-10-10 sur ce que la comptable fait à la main —
+// décision de Charles ; procédure CTB du fichier Drive « ASFC_Suivi_Trx ») :
+//   • charges d'un lot (B3, C1, intérêts, pénalités — nettes des corrections)
+//     → UNE FACTURE FOURNISSEUR « ASFC » : droits en 65000, intérêts en 79200,
+//     pénalités en 70100, TPS à l'importation portée par la taxe de la facture
+//     (CTI 100 %). Ex. facture 18031 du 2026-08-01, mémo « Pour ctb les
+//     transactions non réglées à l'ASFC (du … au …) » ;
+//   • notre versement → PAIEMENT DE FACTURE (carte ou banque) qui règle les
+//     factures ASFC ouvertes ; le surplus → DÉPENSE « Trop versé à l'ASFC »
+//     imputée aux Comptes fournisseurs (21000, fournisseur ASFC débiteur).
+//     Ex. 500 $ du 2026-08-03 = paiement 18033 (267,12) + dépense 18032 (232,88) ;
+//   • lignes FedEx → rien : FedEx paie l'ASFC et nous refacture (sa facture
+//     porte la TPS). Axxess ne paie pas : ses lignes sont à nous.
+// Remplace le modèle « écriture de journal » du 2026-09-01 : les JE 17945/17946
+// ont été supprimées dans QB et refaites à la main en facture.
 //
 // SONDÉ SUR LE VRAI FICHIER QB (2026-08-22, transactions créées puis supprimées) :
 //   1. une ligne de dépense imputée aux Comptes fournisseurs avec EntityRef
@@ -36,7 +25,7 @@
 import db from '../db/database.js'
 import { mainQbAccount } from '../utils/qbBankAccount.js'
 import { qbPost, qbGet, qbRequest } from '../connectors/quickbooks.js'
-import { resolveAccountByAcctNum, resolveTaxCodeIdsByName, findOrCreateVendor } from './quickbooks.js'
+import { resolveAccountByAcctNum, resolveTaxCodeIdsByName, findOrCreateVendor, loadAccountsCache } from './quickbooks.js'
 import { getCarmConfig } from './carmAccount.js'
 import { KIND_LABELS } from './carmRules.js'
 import { logSync } from './syncLog.js'
@@ -192,32 +181,116 @@ export function buildChargeJournalPayload(groups, ids, cfg) {
   return { entity: 'journalentry', body, account_source: `fournisseur ${cfg.vendor_name} (écriture de journal)` }
 }
 
-// Regroupe les groupes « prêts » de même nature (charge / note de crédit) en
-// une seule unité de comptabilisation ; les versements restent 1:1 avec la
-// sortie bancaire réelle et les groupes bloqués restent visibles séparément
-// (à ventiler avant de rejoindre le lot fusionné).
+// Regroupe les groupes « prêts » (charges ET corrections, nettées) en une seule
+// facture ASFC ; les versements restent 1:1 avec la sortie bancaire réelle et
+// les groupes bloqués restent visibles séparément (à ventiler d'abord).
 export function mergeGroupsForPosting(groups) {
-  const mergeType = type => {
-    const ready = groups.filter(g => g.type === type && !g.blockers.length)
-    const blocked = groups.filter(g => g.type === type && g.blockers.length)
-    if (ready.length < 2) return [...ready, ...blocked]
-    const merged = {
-      id: `${type}-merged`, type, date: ready.reduce((mx, g) => (g.date > mx ? g.date : mx), ready[0].date),
-      number: null,
-      lines: ready.flatMap(g => g.lines),
-      duty: round2(ready.reduce((s, g) => s + g.duty, 0)),
-      gst: round2(ready.reduce((s, g) => s + g.gst, 0)),
-      interest: round2(ready.reduce((s, g) => s + g.interest, 0)),
-      penalty: round2(ready.reduce((s, g) => s + g.penalty, 0)),
-      total: round2(ready.reduce((s, g) => s + g.total, 0)),
-      blockers: [], warnings: [],
-      source_groups: ready,
-    }
-    return [merged, ...blocked]
-  }
   const payments = groups.filter(g => g.type === 'paiement')
-  return [...mergeType('charge'), ...mergeType('credit'), ...payments]
-    .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
+  // Charges et corrections d'un lot se nettent dans UNE facture (comme la
+  // comptable : 345,10 − 79,46 − 231,13 dans la même facture). Les factures
+  // passent avant les versements, qui les règlent.
+  const charges = groups.filter(g => g.type !== 'paiement')
+  const ready = charges.filter(g => !g.blockers.length)
+  const blocked = charges.filter(g => g.blockers.length)
+  const sgn = g => (g.type === 'credit' ? -1 : 1)
+  const sum = k => round2(ready.reduce((t, g) => t + sgn(g) * g[k], 0))
+  const out = [...blocked]
+  if (ready.length) {
+    const dates = ready.flatMap(g => g.lines.map(l => l.transaction_date)).sort()
+    const total = sum('total')
+    const merged = {
+      id: ready.length === 1 ? ready[0].id : 'lot', type: total < 0 ? 'credit' : 'charge',
+      date: dates[dates.length - 1], from: dates[0], number: ready.length === 1 ? ready[0].number : null,
+      lines: ready.flatMap(g => g.lines),
+      duty: sum('duty'), gst: sum('gst'), interest: sum('interest'), penalty: sum('penalty'), total,
+      blockers: [], warnings: [], source_groups: ready,
+    }
+    // Facture → tout positif ; note de crédit → tout négatif. Un mélange
+    // (ex. droits négatifs, TPS positive) ne s'écrit pas en un seul document.
+    const parts = [merged.duty, merged.gst, merged.interest, merged.penalty].filter(v => Math.abs(v) > 0.004)
+    if (parts.some(v => Math.sign(v) !== Math.sign(total))) merged.blockers.push('droits et TPS de signes opposés — ventiler à la main')
+    for (const k of ['duty', 'gst', 'interest', 'penalty', 'total']) merged[k] = Math.abs(merged[k])
+    if (merged.total > 0.004) out.unshift(merged)
+  }
+  return [...out, ...payments.sort((a, b) => a.date.localeCompare(b.date))]
+}
+
+// Facture (ou note de crédit) ASFC d'un lot : mêmes lignes que l'historique QB
+// (droits portant le code TPS, sinon couple +0,01/−0,01) et taxe figée.
+const fmtD = d => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : '')
+export function buildBillPayload(g, ids) {
+  const credit = g.type === 'credit'
+  const note = credit
+    ? `Correction ASFC (du ${fmtD(g.from || g.date)} au ${fmtD(g.date)})`
+    : `Pour ctb les transactions non réglées à l'ASFC (du ${fmtD(g.from || g.date)} au ${fmtD(g.date)})`
+  const tax = buildGstTaxDetail(g.gst, ids)
+  const body = {
+    VendorRef: { value: ids.vendor },
+    TxnDate: g.date,
+    DocNumber: `ASFC ${g.date}`.slice(0, 21),
+    PrivateNote: note,
+    GlobalTaxCalculation: 'TaxExcluded',
+    Line: buildChargeLines(g, ids),
+    ...(tax ? { TxnTaxDetail: tax } : {}),
+  }
+  return { entity: credit ? 'vendorcredit' : 'bill', body, account_source: `fournisseur ASFC (${credit ? 'note de crédit' : 'facture'})` }
+}
+
+// Versement : règle d'abord les factures ASFC ouvertes (paiement de facture),
+// le reste part en « Trop versé à l'ASFC » sur les Comptes fournisseurs.
+export function buildPaymentPlan(g, openBills, account) {
+  let left = round2(g.total)
+  const applied = []
+  for (const b of [...openBills].sort((x, y) => String(x.date).localeCompare(String(y.date)))) {
+    if (left <= 0.004) break
+    const amt = round2(Math.min(left, b.balance))
+    if (amt > 0.004) { applied.push({ id: b.id, amount: amt }); left = round2(left - amt) }
+  }
+  const out = []
+  if (applied.length) {
+    const total = round2(applied.reduce((t, a) => t + a.amount, 0))
+    out.push({
+      entity: 'billpayment',
+      body: {
+        VendorRef: { value: account.vendor },
+        PayType: account.isCard ? 'CreditCard' : 'Check',
+        ...(account.isCard
+          ? { CreditCardPayment: { CCAccountRef: { value: account.id } } }
+          : { CheckPayment: { BankAccountRef: { value: account.id } } }),
+        TotalAmt: total,
+        TxnDate: g.date,
+        PrivateNote: 'Paiement compte ASFC',
+        Line: applied.map(a => ({ Amount: a.amount, LinkedTxn: [{ TxnId: String(a.id), TxnType: 'Bill' }] })),
+      },
+    })
+  }
+  if (left > 0.004) {
+    out.push({
+      entity: 'purchase',
+      body: {
+        PaymentType: account.isCard ? 'CreditCard' : 'Check',
+        AccountRef: { value: account.id },
+        EntityRef: { value: account.vendor, type: 'Vendor' },
+        TxnDate: g.date,
+        PrivateNote: 'Trop versé à l\'ASFC',
+        GlobalTaxCalculation: 'NotApplicable',
+        Line: [expenseLine(left, account.ap, account.noTax, 'Trop versé à l\'ASFC')],
+      },
+    })
+  }
+  return out
+}
+
+// Factures ASFC encore ouvertes dans QB (solde > 0), les plus anciennes d'abord.
+async function openAsfcBills(vendorId) {
+  const r = await qbRequest('GET', `/query?query=${encodeURIComponent(`select Id, TxnDate, Balance from Bill where VendorRef = '${vendorId}' and Balance > '0'`)}`)
+  return (r.QueryResponse?.Bill || []).map(b => ({ id: b.Id, date: b.TxnDate, balance: Number(b.Balance) || 0 }))
+}
+
+async function paymentAccount(g, ids) {
+  const { accountId, source } = paymentAccountFor(g, ids)
+  const a = await qbGet(`/account/${accountId}`)
+  return { id: accountId, source, isCard: a.Account?.AccountType === 'Credit Card', vendor: ids.vendor, ap: ids.ap, noTax: ids.noTax }
 }
 
 // Taxe figée : sans TaxLine explicite, QB recalcule 5 % du sous-total et le
@@ -318,10 +391,49 @@ export function buildPayload(g, ids, cfg) {
       },
     }
   }
-  return buildChargeJournalPayload(g.source_groups || [g], ids, cfg)
+  return buildBillPayload(g, ids, cfg)
 }
 
 // ── Aperçu et exécution ──────────────────────────────────────────────────────
+
+// L'écriture telle qu'elle tombera au grand livre : document QB → lignes
+// débit / crédit, comptes nommés. Ce que l'utilisateur contrôle avant d'engager.
+const DOC_TITLES = { bill: 'Facture fournisseur', vendorcredit: 'Note de crédit fournisseur', billpayment: 'Paiement de facture', purchase: 'Dépense' }
+export function describeEntry(doc, ids, cfg, accountName = id => `compte ${id}`) {
+  const b = doc.body
+  const rows = []
+  const add = (account, description, amount, debit) => {
+    const a = round2(amount)
+    if (Math.abs(a) < 0.005) return
+    const dr = a < 0 ? !debit : debit
+    rows.push({ account, description, debit: dr ? Math.abs(a) : null, credit: dr ? null : Math.abs(a) })
+  }
+  const ap = `${accountName(ids.ap)} · ${cfg.vendor_name}`
+  const expense = l => accountName(l.AccountBasedExpenseLineDetail.AccountRef.value)
+  if (doc.entity === 'bill' || doc.entity === 'vendorcredit') {
+    const dr = doc.entity === 'bill'
+    for (const l of b.Line) add(expense(l), l.Description, l.Amount, dr)
+    const tax = Number(b.TxnTaxDetail?.TotalTax) || 0
+    add('TPS à recouvrer (CTI)', 'TPS à l\'importation', tax, dr)
+    add(ap, null, b.Line.reduce((t, l) => t + l.Amount, 0) + tax, !dr)
+  } else if (doc.entity === 'billpayment') {
+    add(ap, `${b.Line.length} facture(s) ASFC réglée(s)`, b.TotalAmt, true)
+    add(accountName(b.CreditCardPayment?.CCAccountRef.value || b.CheckPayment?.BankAccountRef.value), null, b.TotalAmt, false)
+  } else if (doc.entity === 'purchase') {
+    for (const l of b.Line) add(l.AccountBasedExpenseLineDetail.AccountRef.value === ids.ap ? ap : expense(l), l.Description, l.Amount, true)
+    add(accountName(b.AccountRef.value), null, b.Line.reduce((t, l) => t + l.Amount, 0), false)
+  }
+  return { title: DOC_TITLES[doc.entity] || doc.entity, date: b.TxnDate, number: b.DocNumber || null, memo: b.PrivateNote || null, rows }
+}
+
+async function accountNamer() {
+  let cache = null
+  try { cache = await loadAccountsCache() } catch { /* noms indisponibles : on montre l'Id */ }
+  return id => {
+    const a = cache?.byId.get(String(id))
+    return a ? [a.acctNum, a.name].filter(Boolean).join(' ') : `compte ${id}`
+  }
+}
 
 function postableLines() {
   return db.prepare(`
@@ -331,11 +443,93 @@ function postableLines() {
   `).all()
 }
 
+// ── Déjà saisi à la main dans QuickBooks ? ──────────────────────────────────
+// Avant de proposer quoi que ce soit, on relit les documents du fournisseur
+// ASFC : une ligne déjà couverte n'est jamais écrite deux fois.
+//   • charge → facture / note de crédit dont le mémo couvre sa date
+//     (« … (du 01/05/2026 au 31/07/2026) », format de la comptable) ;
+//   • versement → paiement de facture et/ou dépense ASFC du même montant
+//     total, à 5 jours près (ex. 267,12 + 232,88 = 500 $ du 3 août).
+const parseD = d => (d ? `${d.slice(6, 10)}-${d.slice(3, 5)}-${d.slice(0, 2)}` : null)
+export function matchExistingQb(lines, docs) {
+  const links = new Map() // line id → [{ entity, id }]
+  const free = lines.filter(l => l.posting_state === 'a_comptabiliser')
+  const periods = docs.filter(d => d.entity === 'bill' || d.entity === 'vendorcredit').map(d => {
+    const m = String(d.note || '').match(/du (\d{2}\/\d{2}\/\d{4}) au (\d{2}\/\d{2}\/\d{4})/)
+    return m ? { ...d, from: parseD(m[1]), to: parseD(m[2]) } : null
+  }).filter(Boolean)
+  for (const l of free.filter(x => x.kind !== 'paiement')) {
+    const hit = periods.find(d => l.transaction_date >= d.from && l.transaction_date <= d.to)
+    if (hit) links.set(l.id, [{ entity: hit.entity, id: hit.id }])
+  }
+  const pays = docs.filter(d => d.entity === 'billpayment' || d.entity === 'purchase')
+  const used = new Set()
+  const byGroup = new Map()
+  for (const l of free.filter(x => x.kind === 'paiement' && x.payer !== 'courtier')) {
+    const k = `${l.transaction_date}|${l.transaction_number || l.id}`
+    if (!byGroup.has(k)) byGroup.set(k, [])
+    byGroup.get(k).push(l)
+  }
+  for (const group of byGroup.values()) {
+    const total = round2(group.reduce((t, l) => t - l.amount, 0))
+    const near = pays.filter(d => !used.has(d.id) && daysApart(d.date, group[0].transaction_date) <= 5)
+    let hit = near.filter(d => Math.abs(d.total - total) < 0.005).slice(0, 1)
+    if (!hit.length) {
+      for (const a of near) {
+        const b = near.find(x => x !== a && x.date === a.date && Math.abs(a.total + x.total - total) < 0.005)
+        if (b) { hit = [a, b]; break }
+      }
+    }
+    if (!hit.length) continue
+    hit.forEach(d => used.add(d.id))
+    for (const l of group) links.set(l.id, hit.map(d => ({ entity: d.entity, id: d.id })))
+  }
+  return links
+}
+const daysApart = (a, b) => Math.abs((Date.parse(a) - Date.parse(b)) / 86400000)
+
+async function asfcDocs(vendorId, since) {
+  const out = []
+  const ask = async (entity, cols) => {
+    const r = await qbRequest('GET', `/query?query=${encodeURIComponent(`select ${cols} from ${entity} where TxnDate >= '${since}' MAXRESULTS 1000`)}`)
+    return r.QueryResponse?.[entity] || []
+  }
+  for (const b of await ask('Bill', '*')) if (b.VendorRef?.value === vendorId) out.push({ entity: 'bill', id: b.Id, date: b.TxnDate, total: Number(b.TotalAmt), note: b.PrivateNote })
+  for (const b of await ask('VendorCredit', '*')) if (b.VendorRef?.value === vendorId) out.push({ entity: 'vendorcredit', id: b.Id, date: b.TxnDate, total: Number(b.TotalAmt), note: b.PrivateNote })
+  for (const b of await ask('BillPayment', '*')) if (b.VendorRef?.value === vendorId) out.push({ entity: 'billpayment', id: b.Id, date: b.TxnDate, total: Number(b.TotalAmt), note: b.PrivateNote })
+  for (const b of await ask('Purchase', '*')) if (b.EntityRef?.value === vendorId) out.push({ entity: 'purchase', id: b.Id, date: b.TxnDate, total: Number(b.TotalAmt), note: b.PrivateNote })
+  return out
+}
+
+// Relie aux documents QB existants les lignes déjà saisies (à la main ou par
+// une version précédente) ; elles passent « comptabilisé » sans rien créer.
+export async function linkExistingQb(ids) {
+  const lines = postableLines().filter(l => l.posting_state === 'a_comptabiliser')
+  if (!lines.length) return 0
+  const first = lines.reduce((m, l) => (l.transaction_date < m ? l.transaction_date : m), lines[0].transaction_date)
+  const since = new Date(Date.parse(first) - 15 * 86400000).toISOString().slice(0, 10)
+  const links = matchExistingQb(lines, await asfcDocs(ids.vendor, since))
+  const upd = db.prepare(`
+    UPDATE carm_transactions SET posting_state = 'comptabilise', qb_txn_id = ?, qb_txn_type = ?,
+      posting_group = ?, posting_error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE id = ? AND deleted_at IS NULL AND posting_state = 'a_comptabiliser'
+  `)
+  const tx = db.transaction(() => {
+    for (const [lineId, docs] of links) {
+      upd.run(docs[0].id, docs[0].entity, `existant:${docs.map(d => `${d.entity}:${d.id}`).join(',')}`, lineId)
+    }
+  })
+  tx()
+  return links.size
+}
+
 export async function previewCarmPostings() {
   const cfg = getCarmConfig()
-  const groups = mergeGroupsForPosting(buildPostingGroups(postableLines()))
-  let ids = null, error = null
+  let ids = null, error = null, already = 0
   try { ids = await resolveIds(cfg) } catch (e) { error = e.message }
+  if (ids) { try { already = await linkExistingQb(ids) } catch (e) { error = `Lecture QuickBooks : ${e.message}` } }
+  const groups = mergeGroupsForPosting(buildPostingGroups(postableLines()))
+  const accountName = ids ? await accountNamer() : null
   const out = groups.map(g => {
     const view = {
       id: g.id, type: g.type, date: g.date, number: g.number, total: g.total,
@@ -345,20 +539,43 @@ export async function previewCarmPostings() {
       labels: g.lines.map(l => `${KIND_LABELS[l.kind] || l.kind} ${Math.abs(l.amount).toFixed(2)} $`),
       blockers: [...g.blockers], warnings: [...g.warnings],
     }
-    if (ids) {
+    if (ids && g.type !== 'paiement') {
       const p = buildPayload(g, ids, cfg)
       view.entity = p.entity
       view.account_source = p.account_source
       view.payload = p.body
+      view.entries = [describeEntry(p, ids, cfg, accountName)]
     }
     return view
   })
+  // Versements : ce qu'ils régleront (factures ouvertes + lot en cours) et le surplus.
+  if (ids) {
+    let open = []
+    try { open = await openAsfcBills(ids.vendor) } catch { /* aperçu sans QB */ }
+    const pending = groups.find(g => g.type === 'charge' && !g.blockers.length)
+    if (pending) open.push({ id: 'nouvelle', date: pending.date, balance: pending.total })
+    for (const v of out.filter(x => x.type === 'paiement')) {
+      const g = groups.find(x => x.id === v.id)
+      const { accountId } = paymentAccountFor(g, ids)
+      const plan = buildPaymentPlan(g, open, { id: accountId, isCard: true, vendor: ids.vendor, ap: ids.ap, noTax: ids.noTax })
+      v.entries = plan.map(p => describeEntry(p, ids, cfg, accountName))
+      const paid = plan.find(p => p.entity === 'billpayment')?.body.TotalAmt || 0
+      const extra = plan.find(p => p.entity === 'purchase')?.body.Line[0].Amount || 0
+      v.entity = paid ? 'billpayment' : 'purchase'
+      v.account_source = [paid && `règle ${paid.toFixed(2)} $ de factures`, extra && `${extra.toFixed(2)} $ en trop-versé`].filter(Boolean).join(' · ')
+      for (const b of open) {
+        const a = plan.find(p => p.entity === 'billpayment')?.body.Line.find(l => l.LinkedTxn[0].TxnId === String(b.id))
+        if (a) b.balance = round2(b.balance - a.Amount)
+      }
+    }
+  }
   const max = Number(cfg.max_batch) || 50
   return {
     groups: out,
     ready: out.filter(g => !g.blockers.length).length,
     blocked: out.filter(g => g.blockers.length).length,
     max_batch: max,
+    already_in_qb: already,
     config_error: error,
   }
 }
@@ -370,6 +587,7 @@ export async function postCarmGroups({ groupIds = null, userId = null, trigger =
   const t0 = Date.now()
   const cfg = getCarmConfig()
   const ids = await resolveIds(cfg)
+  await linkExistingQb(ids)
   const all = mergeGroupsForPosting(buildPostingGroups(postableLines()))
   const max = Number(cfg.max_batch) || 50
   const wanted = all
@@ -400,17 +618,28 @@ export async function postCarmGroups({ groupIds = null, userId = null, trigger =
       results.push({ id: g.id, skipped: 'déjà comptabilisé' })
       continue
     }
-    const { entity, body } = buildPayload(g, ids, cfg)
+    let entity
     try {
-      const r = await qbPost(`/${entity}`, body)
-      const key = entity === 'purchase' ? 'Purchase' : entity === 'journalentry' ? 'JournalEntry' : entity === 'bill' ? 'Bill' : 'VendorCredit'
-      const txnId = r[key]?.Id
-      if (!txnId) throw new Error(`QuickBooks n'a pas retourné d'Id pour ${entity}`)
+      const docs = g.type === 'paiement'
+        ? buildPaymentPlan(g, await openAsfcBills(ids.vendor), await paymentAccount(g, ids))
+        : [buildPayload(g, ids, cfg)]
+      const made = []
+      for (const d of docs) {
+        const r = await qbPost(`/${d.entity}`, d.body)
+        const txnId = r[QB_ENTITY_KEY[d.entity]]?.Id
+        if (!txnId) throw new Error(`QuickBooks n'a pas retourné d'Id pour ${d.entity}`)
+        made.push({ entity: d.entity, id: String(txnId) })
+      }
+      // La ligne pointe le premier document ; posting_group garde tous les
+      // documents créés (paiement de facture + trop-versé) pour l'annulation.
+      entity = made[0].entity
+      const txnId = made[0].id
+      const group = made.map(m => `${m.entity}:${m.id}`).join(',')
       const tx = db.transaction(() => {
-        for (const l of g.lines) markPosted.run(String(txnId), entity, g.id, l.id)
+        for (const l of g.lines) markPosted.run(txnId, entity, group, l.id)
       })
       tx()
-      results.push({ id: g.id, entity, qb_txn_id: String(txnId), total: g.total })
+      results.push({ id: g.id, entity, qb_txn_id: txnId, total: g.total })
     } catch (e) {
       const tx = db.transaction(() => { for (const l of g.lines) markError.run(e.message, l.id) })
       tx()
@@ -433,20 +662,35 @@ export async function postCarmGroups({ groupIds = null, userId = null, trigger =
 // au prochain push, avec la logique de comptabilisation en vigueur au moment
 // du nouveau push). Sert à corriger une écriture posée avec une ancienne
 // version des règles de comptabilisation (ex. facture fournisseur → JE).
-const QB_ENTITY_KEY = { purchase: 'Purchase', journalentry: 'JournalEntry', bill: 'Bill', vendorcredit: 'VendorCredit' }
+const QB_ENTITY_KEY = { purchase: 'Purchase', journalentry: 'JournalEntry', bill: 'Bill', vendorcredit: 'VendorCredit', billpayment: 'BillPayment' }
 
 export async function unpostCarmGroup(qbTxnId) {
   const rows = db.prepare(`
-    SELECT id, qb_txn_type FROM carm_transactions WHERE qb_txn_id = ? AND deleted_at IS NULL
+    SELECT id, qb_txn_type, posting_group FROM carm_transactions WHERE qb_txn_id = ? AND deleted_at IS NULL
   `).all(String(qbTxnId))
   if (!rows.length) throw new Error('Aucune ligne comptabilisée avec cet identifiant QuickBooks')
-  const entity = rows[0].qb_txn_type
-  const key = QB_ENTITY_KEY[entity]
-  if (!key) throw new Error(`Type de transaction QuickBooks inconnu : ${entity}`)
-  const current = await qbGet(`/${entity}/${qbTxnId}`)
-  const syncToken = current[key]?.SyncToken
-  if (syncToken == null) throw new Error(`${key} #${qbTxnId} introuvable dans QuickBooks`)
-  await qbRequest('POST', `/${entity}?operation=delete`, { Id: String(qbTxnId), SyncToken: syncToken })
+  // Lignes reliées à une saisie manuelle : on délie seulement, on ne supprime
+  // jamais dans QB ce que Boréal n'a pas créé.
+  if (String(rows[0].posting_group || '').startsWith('existant:')) {
+    const reset = db.prepare(`UPDATE carm_transactions SET posting_state = 'a_comptabiliser', qb_txn_id = NULL, qb_txn_type = NULL, posting_group = NULL WHERE id = ?`)
+    db.transaction(() => { for (const r of rows) reset.run(r.id) })()
+    return rows.length
+  }
+  const docs = String(rows[0].posting_group || '').split(',').map(x => x.split(':'))
+    .filter(([e, id]) => QB_ENTITY_KEY[e] && id)
+  if (!docs.some(([, id]) => id === String(qbTxnId))) docs.unshift([rows[0].qb_txn_type, String(qbTxnId)])
+  // Le paiement d'abord (il bloque la suppression de la facture qu'il règle).
+  docs.sort(([a], [b]) => (a === 'billpayment' ? -1 : b === 'billpayment' ? 1 : 0))
+  for (const [entity, id] of docs) {
+    const key = QB_ENTITY_KEY[entity]
+    if (!key) throw new Error(`Type de transaction QuickBooks inconnu : ${entity}`)
+    let current = null
+    try { current = await qbGet(`/${entity}/${id}`) } catch { current = null }
+    const syncToken = current?.[key]?.SyncToken
+    // Déjà supprimée dans QB (ex. refaite à la main) : rien à défaire.
+    if (syncToken == null) continue
+    await qbRequest('POST', `/${entity}?operation=delete`, { Id: String(id), SyncToken: syncToken })
+  }
   const upd = db.prepare(`
     UPDATE carm_transactions SET posting_state = 'a_comptabiliser', qb_txn_id = NULL, qb_txn_type = NULL,
       posting_group = NULL, posting_error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')

@@ -42,12 +42,14 @@ import {
   listRequests as listInvoiceRequests, addRequests as addInvoiceRequests,
   removeRequest as removeInvoiceRequest, setInSend as setInvoiceRequestInSend,
   buildMessage as buildInvoiceRequestMessage, sendRequests as sendInvoiceRequests, releaseFoundRequests,
+  listPeople as listInvoiceRequestPeople,
 } from '../services/missingInvoiceRequests.js'
 import {
   openReconcile, reconcileAccount, isRobotRunning, RECONCILE_AUTOMATION_ID, CAPTURE_DIR as QB_RECONCILE_CAPTURES,
 } from '../services/qbReconcileRobot.js'
 import { isSystemAutomationActive, logSystemRun } from '../services/systemAutomations.js'
 import { monthCloseStatus } from '../services/bankMonthClose.js'
+import { listMessages as listClaudeMessages, openCounts as claudeOpenCounts, dismissMessage as dismissClaudeMessage, addUserMessage as addClaudeUserMessage, replyTo as claudeReplyTo, readyFixes as claudeReadyFixes } from '../services/bankClaude.js'
 import { aiGuessFor, guessSource } from '../services/bankAiGuess.js'
 import { basename, join as joinPath } from 'path'
 import { existsSync as fileExists } from 'fs'
@@ -133,6 +135,34 @@ router.delete('/accounts/:id', (req, res) => {
 
 // Liste d'un compte. Rafraîchit d'abord les statuts (une facture poussée à QB
 // depuis le dernier passage fait avancer les lignes bleu → jaune toute seule).
+// ── Bulle « Claude » du rapprochement (services/bankClaude.js) ──
+router.get('/claude/counts', (req, res) => {
+  res.json(Object.fromEntries(claudeOpenCounts().map((r) => [r.account_id, r.n])))
+})
+
+router.get('/accounts/:id/claude', (req, res) => {
+  res.json(listClaudeMessages(req.params.id))
+})
+
+router.post('/accounts/:id/claude', (req, res) => {
+  const text = String(req.body?.text || '').trim().slice(0, 2000)
+  if (!text) return res.status(400).json({ error: 'Message vide' })
+  const txnId = req.body?.txn_id || null
+  addClaudeUserMessage(req.params.id, text, req.user?.id || null, txnId)
+  claudeReplyTo(req.params.id, txnId).catch(() => {})
+  res.json({ ok: true })
+})
+
+router.get('/accounts/:id/claude/fixes', async (req, res) => {
+  try { res.json(await claudeReadyFixes(req.params.id)) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+router.post('/claude/:msgId/dismiss', (req, res) => {
+  const acct = dismissClaudeMessage(req.params.msgId)
+  if (!acct) return res.status(404).json({ error: 'Message introuvable' })
+  res.json({ ok: true })
+})
+
 router.get('/accounts/:id/transactions', (req, res) => {
   const account = getAccount(req.params.id)
   if (!account) return res.status(404).json({ error: 'Not found' })
@@ -504,6 +534,64 @@ router.post('/accounts/:id/qb-reconcile', requireAdmin, (req, res) => {
     logSystemRun(RECONCILE_AUTOMATION_ID, { status: 'error', error: e.message, triggerData: { account_id: account.id } })
   }).finally(() => { reconcileStartedAt.delete(account.id) })
   res.status(202).json({ running: true })
+})
+
+// ── Flux bancaire QuickBooks (« Opérations bancaires » → « En attente ») ──
+//
+// Les lignes que QuickBooks télécharge restent « En attente » tant qu'on ne
+// les a pas appariées dans son écran, même quand Boréal les a déjà liées à
+// leur écriture. Le robot fait l'appariement (jamais « Publier », qui
+// doublerait l'écriture). Un passage dure une à trois minutes : 202, puis on relit.
+const QB_FEED_AUTOMATION_ID = 'sys_bank_qb_feed_match'
+const feedRunning = new Set() // comptes dont un passage lancé au bouton tourne
+
+router.get('/accounts/:id/qb-feed', async (req, res) => {
+  const account = getAccount(req.params.id)
+  if (!account) return res.status(404).json({ error: 'Not found' })
+  const { lastFeedRun } = await import('../services/qbBankFeed.js')
+  res.json({ running: feedRunning.has(account.id), last: lastFeedRun(account.id) })
+})
+
+router.post('/accounts/:id/qb-feed/match', requireAdmin, async (req, res) => {
+  const account = getAccount(req.params.id)
+  if (!account) return res.status(404).json({ error: 'Not found' })
+  if (!account.qb_account_id) return res.status(409).json({ error: 'Compte non mappé à QuickBooks' })
+  if (!isSystemAutomationActive(QB_FEED_AUTOMATION_ID)) return res.status(409).json({ error: 'Robot désactivé (Automations)' })
+  const { matchFeed, recordFeedRun, isFeedRobotBusy } = await import('../services/qbBankFeed.js')
+  if (feedRunning.has(account.id) || isFeedRobotBusy()) return res.status(409).json({ error: 'Le robot du flux QuickBooks est déjà en cours' })
+  const txnIds = Array.isArray(req.body?.txn_ids) && req.body.txn_ids.length ? req.body.txn_ids.map(String) : null
+  const started = Date.now()
+  feedRunning.add(account.id)
+  matchFeed(account.id, { txnIds }).then((out) => {
+    const last = recordFeedRun(account.id, out)
+    logSystemRun(QB_FEED_AUTOMATION_ID, {
+      status: out.ok && !last.failed.length ? 'success' : 'error',
+      result: out.ok ? `${account.name} : ${last.matched} appariée(s) · ${last.failed.length} échec(s) · ${last.skipped} sans lien Boréal` : null,
+      error: out.ok ? (last.failed.map((f) => `${f.row || f.txn_id} : ${f.error}`).join(' · ') || null) : out.error,
+      duration_ms: Date.now() - started,
+      triggerData: { account_id: account.id, account: account.name, trigger: 'bouton', results: out.results || [] },
+    })
+    if (last.matched) broadcast('bank:qb-feed', { type: 'bank:qb-feed:done', payload: { account_id: account.id, matched: last.matched } })
+  }).catch((e) => {
+    recordFeedRun(account.id, { ok: false, error: e.message })
+    logSystemRun(QB_FEED_AUTOMATION_ID, { status: 'error', error: e.message, triggerData: { account_id: account.id } })
+  }).finally(() => feedRunning.delete(account.id))
+  res.status(202).json({ running: true })
+})
+
+// « Exclure » une ligne du flux QuickBooks (doublon, mouvement à ignorer).
+router.post('/transactions/:id/qb-feed-exclude', requireAdmin, async (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  if (!isSystemAutomationActive(QB_FEED_AUTOMATION_ID)) return res.status(409).json({ error: 'Robot désactivé (Automations)' })
+  const { excludeFeed } = await import('../services/qbBankFeed.js')
+  const r = await excludeFeed(txn.account_id, txn.id)
+  logSystemRun(QB_FEED_AUTOMATION_ID, {
+    status: r.ok ? 'success' : 'error', result: r.ok ? `Exclue : ${r.row}` : null, error: r.ok ? null : r.error,
+    triggerData: { account_id: txn.account_id, txn_id: txn.id, action: 'exclude' },
+  })
+  if (!r.ok) return res.status(400).json({ error: r.error, capture: r.capture || null })
+  res.json({ ok: true, row: r.row })
 })
 
 router.get('/qb-reconcile/captures/:name', requireAdmin, (req, res) => {
@@ -1095,7 +1183,12 @@ router.delete('/transactions/:id/qb-link', (req, res) => {
 // sélection du relevé (décision de Charles, 2026-09-29) : la détection
 // automatique reste la pastille « sans facture », qui ne la touche pas.
 router.get('/invoice-requests', (req, res) => {
-  res.json({ requests: listInvoiceRequests(), message: buildInvoiceRequestMessage() })
+  const person = req.query.person ? String(req.query.person) : null
+  res.json({
+    requests: listInvoiceRequests(),
+    message: buildInvoiceRequestMessage(null, { person }),
+    people: listInvoiceRequestPeople().map((p) => p.name),
+  })
 })
 
 router.post('/invoice-requests', (req, res) => {
@@ -1121,9 +1214,13 @@ router.patch('/invoice-requests/:txnId', (req, res) => {
 
 router.post('/invoice-requests/send', async (req, res) => {
   try {
-    const out = await sendInvoiceRequests({ user: req.user?.name || req.user?.email || null })
-    if (!out.sent) return res.status(400).json({ error: out.reason === 'vide' ? 'Aucune facture dans l\'envoi' : 'Envoi désactivé' })
-    res.json({ ...out, message: buildInvoiceRequestMessage(out.requests) })
+    const person = req.body?.person ? String(req.body.person) : null
+    const out = await sendInvoiceRequests({ user: req.user?.name || req.user?.email || null, person })
+    if (!out.sent) {
+      const error = { vide: 'Aucune facture dans l\'envoi', personne: 'Destinataire inconnu' }[out.reason] || 'Envoi désactivé'
+      return res.status(400).json({ error })
+    }
+    res.json({ ...out, message: buildInvoiceRequestMessage(out.requests, { person }) })
   } catch (e) {
     res.status(502).json({ error: e.message })
   }
@@ -1148,6 +1245,25 @@ router.post('/transactions/:id/review', (req, res) => {
 // Édition libre : commentaire, statut ignore, date/montant (correction de collage).
 const TXN_FIELDS = ['comment', 'txn_date', 'description', 'details', 'reference', 'amount', 'balance', 'interest_cad']
 
+// Exclure une ligne l'exclut aussi du flux bancaire QuickBooks — un seul bouton
+// (Charles, 2026-10-10). Le robot (~40 s, un à la fois) passe en file, en
+// arrière-plan ; chaque passage est journalisé dans Automations.
+let qbExcludeChain = Promise.resolve()
+function queueQbFeedExclude(txn) {
+  const account = getAccount(txn.account_id)
+  if (!account?.qb_account_id || txn.qb_txn_id || !isSystemAutomationActive(QB_FEED_AUTOMATION_ID)) return
+  qbExcludeChain = qbExcludeChain.then(async () => {
+    if (getTxn(txn.id)?.status !== 'ignore') return
+    const { excludeFeed, isFeedRobotBusy } = await import('../services/qbBankFeed.js')
+    for (let i = 0; i < 60 && isFeedRobotBusy(); i++) await new Promise((r) => setTimeout(r, 5_000))
+    const r = await excludeFeed(txn.account_id, txn.id)
+    logSystemRun(QB_FEED_AUTOMATION_ID, {
+      status: r.ok ? 'success' : 'error', result: r.ok ? `Exclue : ${r.row}` : null, error: r.ok ? null : r.error,
+      triggerData: { account_id: txn.account_id, txn_id: txn.id, action: 'exclude' },
+    })
+  }).catch(() => {})
+}
+
 router.patch('/transactions/:id', (req, res) => {
   const txn = getTxn(req.params.id)
   if (!txn) return res.status(404).json({ error: 'Not found' })
@@ -1156,6 +1272,7 @@ router.patch('/transactions/:id', (req, res) => {
       return res.status(400).json({ error: 'Seuls les statuts ignore et a_traiter sont éditables directement' })
     }
     db.prepare(`UPDATE bank_transactions SET status=?, updated_at=${NOW} WHERE id=?`).run(req.body.status, txn.id)
+    if (req.body.status === 'ignore' && txn.status !== 'ignore') queueQbFeedExclude(txn)
   }
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: TXN_FIELDS, nonNullable: new Set(['txn_date', 'amount']),
@@ -1421,8 +1538,12 @@ router.post('/transactions/:id/transfer', async (req, res) => {
   if (!txn) return res.status(404).json({ error: 'Not found' })
   const other = getTxn(req.body?.counterpart_txn_id)
 
+  // Déjà liées l'une à l'autre mais l'écriture QuickBooks a échoué : on la
+  // retente sans refaire le lien.
+  const relink = other && txn.transfer_txn_id === other.id && other.transfer_txn_id === txn.id
+    && !txn.qb_txn_id && !other.qb_txn_id
   try {
-    linkTransfer(txn, other, { amount: req.body?.amount })
+    if (!relink) linkTransfer(txn, other, { amount: req.body?.amount })
   } catch (e) {
     if (e instanceof BankActionError) return res.status(e.status).json({ error: e.message, field: e.field })
     throw e

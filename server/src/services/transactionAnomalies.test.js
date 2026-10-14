@@ -31,7 +31,8 @@ bootDb.exec(`
     tps REAL,
     tvq REAL,
     service_period TEXT,
-    items TEXT DEFAULT '[]'
+    items TEXT DEFAULT '[]',
+    original_name TEXT
   );
   CREATE TABLE transaction_anomalies (
     id TEXT PRIMARY KEY,
@@ -66,12 +67,12 @@ let seq = 0
 function insertReceipt(fields) {
   const id = fields.id || `r-${++seq}`
   db.prepare(`
-    INSERT INTO sale_receipts (id, status, company, receipt_number, receipt_date, total, currency, quickbooks_id, quickbooks_type, source, deleted_at, archived_at, tps, tvq, service_period, items)
-    VALUES (@id, @status, @company, @receipt_number, @receipt_date, @total, @currency, @quickbooks_id, @quickbooks_type, @source, @deleted_at, @archived_at, @tps, @tvq, @service_period, @items)
+    INSERT INTO sale_receipts (id, status, company, receipt_number, receipt_date, total, currency, quickbooks_id, quickbooks_type, source, deleted_at, archived_at, tps, tvq, service_period, items, original_name)
+    VALUES (@id, @status, @company, @receipt_number, @receipt_date, @total, @currency, @quickbooks_id, @quickbooks_type, @source, @deleted_at, @archived_at, @tps, @tvq, @service_period, @items, @original_name)
   `).run({
     status: 'done', company: null, receipt_number: null, receipt_date: null,
     total: null, currency: 'CAD', quickbooks_id: null, quickbooks_type: null, source: 'upload', deleted_at: null,
-    archived_at: null, tps: null, tvq: null, service_period: null, items: '[]',
+    archived_at: null, tps: null, tvq: null, service_period: null, items: '[]', original_name: null,
     ...fields, id,
   })
   return db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
@@ -529,4 +530,36 @@ test('sans écriture équivalente → severity high ; une panne réseau ne crée
   const out = await verifyPublishedQbLinks({ fetchEntity: async () => { throw new Error('ECONNRESET') } })
   assert.equal(out.missing, 0)
   assert.equal(db.prepare(`SELECT COUNT(*) c FROM transaction_anomalies`).get().c, 0)
+})
+
+test('facture + reçu de paiement (cas Plaid) : numéros distincts, 9 j d\'écart → paire signalée, la facture non publiée devient obsolète', () => {
+  reset()
+  insertReceipt({ id: 'plaid-pay', company: 'Plaid Inc.', receipt_number: '888081234', receipt_date: '2026-10-09', total: 0.3, quickbooks_id: '18175', quickbooks_type: 'purchase', original_name: 'Payment_888081234.pdf' })
+  const inv = insertReceipt({ id: 'plaid-inv', company: 'Plaid', receipt_number: 'S-MQEXZXDJ97-2609', receipt_date: '2026-09-30', total: 0.3, service_period: 'septembre 2026', original_name: 'Plaid-2026-10-Invoice.pdf' })
+  const dup = detectReceiptAnomalies(inv).find(a => a.kind === 'duplicate_amount')
+  assert.ok(dup?.details.invoice_payment)
+  syncReceiptAnomalies('plaid-inv')
+  const ob = receiptObsolescence('plaid-inv')
+  assert.equal(ob.reason, 'duplicate_published')
+  assert.equal(ob.qb_id, '18175')
+  assert.equal(ob.invoice_payment, true)
+})
+
+test('facture + reçu : le reçu d\'octobre ne se marie pas à la facture de septembre', () => {
+  reset()
+  insertReceipt({ id: 'sep-inv', company: 'Plaid', receipt_number: 'S-1', receipt_date: '2026-09-30', total: 0.3, original_name: 'Plaid-2026-10-Invoice.pdf' })
+  insertReceipt({ id: 'sep-pay', company: 'Plaid', receipt_number: '1', receipt_date: '2026-10-09', total: 0.3, original_name: 'Payment_1.pdf' })
+  const octInv = insertReceipt({ id: 'oct-inv', company: 'Plaid', receipt_number: 'S-2', receipt_date: '2026-10-31', total: 0.3, original_name: 'Plaid-2026-11-Invoice.pdf' })
+  const octPay = insertReceipt({ id: 'oct-pay', company: 'Plaid', receipt_number: '2', receipt_date: '2026-11-09', total: 0.3, original_name: 'Payment_2.pdf' })
+  const others = a => a.details?.other_receipt_id
+  assert.deepEqual(detectReceiptAnomalies(octInv).filter(a => a.details?.invoice_payment).map(others), ['oct-pay'])
+  assert.deepEqual(detectReceiptAnomalies(octPay).filter(a => a.details?.invoice_payment).map(others), ['oct-inv'])
+})
+
+test('facture + reçu : une facture archivée plus proche garde son reçu (cas Celonis)', () => {
+  reset()
+  insertReceipt({ id: 'jun-inv', company: 'Celonis Inc.', receipt_number: 'X-25', receipt_date: '2026-06-03', total: 10.59, quickbooks_id: '17488', original_name: 'Invoice-X-25.pdf' })
+  insertReceipt({ id: 'jul-inv', company: 'Celonis Inc.', receipt_number: 'X-26', receipt_date: '2026-07-06', total: 10.59, archived_at: '2026-07-07', original_name: 'Invoice-X-26.pdf' })
+  const julPay = insertReceipt({ id: 'jul-pay', company: 'Celonis Inc.', receipt_number: '2661', receipt_date: '2026-07-06', total: 10.59, quickbooks_id: '17645', original_name: 'Receipt-2661.pdf' })
+  assert.equal(detectReceiptAnomalies(julPay).filter(a => a.details?.other_receipt_id === 'jun-inv').length, 0)
 })

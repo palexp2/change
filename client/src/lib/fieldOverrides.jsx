@@ -94,6 +94,7 @@ export function kindLabel(kind) {
     formula:            'Formule',
     lookup:             'Lookup',
     rollup:             'Rollup',
+    count:              'Comptage',
     button:             'Bouton',
     link:               'Lien',
     created_time:       'Créé le',

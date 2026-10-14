@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Haut des transactions</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f4f5f8;--line:#e3e5e8;--line2:#c9ced4;--ink:#393a3d;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--r:#d52b1e;--rs:#fcebea;--a:#b86e00;--sh:0 1px 2px rgb(0 0 0/.05),0 10px 30px rgb(0 0 0/.08);
+--t-red:#fde0de;--t-blue:#d6e4ff;--t-yel:#fff0b3;--t-grn:#cdeec3}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--t-red:#3a2220;--t-blue:#1c2a40;--t-yel:#3a3218;--t-grn:#1d3420}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--t-red:#3a2220;--t-blue:#1c2a40;--t-yel:#3a3218;--t-grn:#1d3420}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:hidden}
+.n{font-variant-numeric:tabular-nums}
+.dot{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--r);color:#fff;font-size:10.5px;font-weight:700}
+.go{background:var(--g);color:#fff;border:0;border-radius:999px;height:32px;padding:0 14px;font:inherit;font-weight:600;white-space:nowrap}
+.more{border:1px solid var(--line2);border-radius:999px;width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;color:var(--ink3)}
+.k{display:flex;flex-direction:column}.k small{font-size:11px;color:var(--ink3)}.k b{font-size:15px;font-weight:600}
+.bad{color:var(--r)}.ok{color:var(--gd)}
+.stages{display:flex;gap:22px;padding:0 18px;border-bottom:1px solid var(--line)}
+.stages span{padding:10px 0;color:var(--ink3);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px}
+.stages span.on{color:var(--ink);font-weight:600;border-color:var(--ink)}
+.stages i{font-style:normal;color:var(--ink4);margin-left:5px}
+.chips{display:flex;gap:2px;flex-wrap:wrap;padding:8px 14px}
+.chip{padding:3px 9px;border-radius:7px;color:var(--ink2);white-space:nowrap}.chip i{font-style:normal;color:var(--ink4);font-weight:600;margin-left:4px}
+.chip.on{background:var(--ink);color:var(--s)}.chip.on i{color:inherit;opacity:.7}
+table{width:100%;border-collapse:collapse;min-width:640px}
+th{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line2);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--line);height:44px;white-space:nowrap}
+td:first-child,th:first-child{padding-left:18px}
+.r{text-align:right}
+.l2{font-size:11.5px;color:var(--ink3)}
+.act{color:var(--b);font-weight:600}
+.scroll{overflow-x:auto}
+/* H1 cartes */
+.cards{display:flex;gap:10px;padding:14px 18px;overflow-x:auto}
+.card{border:1px solid var(--line2);border-radius:8px;padding:9px 13px;min-width:170px;flex:none;position:relative}
+.card.on{border:2px solid var(--g);padding:8px 12px}
+.card .nm{font-weight:600;display:flex;justify-content:space-between;gap:8px}
+.card .kv{display:flex;justify-content:space-between;font-size:11.5px;color:var(--ink3)}.card .kv b{color:var(--ink);font-weight:500}
+.card.todo{background:var(--soft);border-style:dashed}
+/* H2 onglets haut */
+.tabs{display:flex;gap:4px;padding:10px 14px 0;border-bottom:1px solid var(--line);overflow-x:auto}
+.tab{padding:8px 14px;border:1px solid transparent;border-bottom:0;border-radius:8px 8px 0 0;color:var(--ink3);white-space:nowrap;display:flex;align-items:center;gap:7px;margin-bottom:-1px}
+.tab.on{background:var(--s);border-color:var(--line);color:var(--ink);font-weight:600}
+.tabs.under .tab{border:0;border-bottom:3px solid transparent;border-radius:0;padding:8px 4px;margin-right:14px}
+.tabs.under .tab.on{border-color:var(--g)}
+.bar{display:flex;align-items:center;gap:26px;padding:12px 18px;flex-wrap:wrap}
+/* H3 sélecteur */
+.pick{display:inline-flex;align-items:center;gap:8px;font-size:22px;font-weight:600;cursor:pointer;position:relative}
+.pick .car{font-size:13px;color:var(--ink3)}
+.menu{position:absolute;top:40px;left:0;background:var(--s);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--sh);width:330px;padding:6px;z-index:2;font-size:13px;font-weight:400}
+.menu div{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:6px}
+.menu div.on{background:var(--gs)}
+.menu .sep{border-top:1px solid var(--line);margin:4px 0;padding:0}
+/* H4 rail */
+.split{display:grid;grid-template-columns:220px 1fr}
+.rail{border-right:1px solid var(--line);padding:12px 8px;background:var(--soft)}
+.rail .it{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:7px;gap:6px}
+.rail .it.on{background:var(--s);box-shadow:0 1px 2px rgb(0 0 0/.08);font-weight:600}
+.rail .it small{display:block;font-weight:400;color:var(--ink3);font-size:11px}
+.rail .g{font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink4);padding:10px 10px 4px}
+/* H5 compact */
+.seg{display:inline-flex;background:var(--soft);border-radius:9px;padding:3px;gap:2px;overflow-x:auto;max-width:100%}
+.seg span{padding:5px 11px;border-radius:7px;white-space:nowrap;color:var(--ink3);display:flex;align-items:center;gap:6px}
+.seg span.on{background:var(--s);color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgb(0 0 0/.1)}
+.mini{display:flex;gap:16px;font-size:12px;color:var(--ink3);white-space:nowrap}.mini b{color:var(--ink);font-weight:600}
+@media (max-width:760px){.split{grid-template-columns:1fr}.rail{display:flex;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}.rail .g{display:none}.rail .it{flex:none}}
+</style></head><body><div class="wrap">
+<h1>Haut des transactions</h1>
+
+<h2><b>H1</b> Cartes de comptes <span>comme QBO</span></h2>
+<div class="scr">
+  <div class="cards">
+    <div class="card todo"><div class="nm">À comptabiliser <span class="dot">23</span></div><div class="kv">Tous les comptes</div></div>
+    <div class="card on"><div class="nm">BNC CAD <span class="dot">4</span></div><div class="kv">Banque <b class="n">42 318,55</b></div><div class="kv">QuickBooks <b class="n">42 106,20</b></div></div>
+    <div class="card"><div class="nm">BNC USD</div><div class="kv">Banque <b class="n">8 940,12</b></div><div class="kv">QuickBooks <b class="n ok">8 940,12 ✓</b></div></div>
+    <div class="card"><div class="nm">MasterCard BNC <span class="dot">2</span></div><div class="kv">Banque <b class="n">−6 212,40</b></div><div class="kv">QuickBooks <b class="n">−5 980,00</b></div></div>
+    <div class="card"><div class="nm">Desjardins USD</div><div class="kv">Banque <b class="n">1 204,00</b></div><div class="kv">QuickBooks <b class="n ok">1 204,00 ✓</b></div></div>
+    <div class="card"><div class="nm">Visa Desjardins</div><div class="kv">Banque <b class="n">−412,77</b></div><div class="kv">QuickBooks <b class="n ok">−412,77 ✓</b></div></div>
+  </div>
+  <div class="stages" style="align-items:center"><span class="on">Pour révision<i>31</i></span><span>Catégorisées<i>412</i></span><span>Exclues<i>9</i></span>
+    <span style="margin-left:auto;border:0;padding:6px 0" class="bad n">Écart 212,35 ›</span><button class="go">↻ Mettre à jour</button><span class="more">⋯</span></div>
+  <div class="chips" data-chips></div>
+  <div class="scroll"><table data-rows></table></div>
+</div>
+
+<h2><b>H2</b> Onglets en haut <span>les onglets du bas, remontés</span></h2>
+<div class="scr">
+  <div class="tabs under">
+    <span class="tab">À comptabiliser <span class="dot">23</span></span>
+    <span class="tab on">BNC CAD <span class="dot">4</span></span>
+    <span class="tab">BNC USD</span><span class="tab">MasterCard BNC <span class="dot">2</span></span><span class="tab">Desjardins USD</span><span class="tab">Visa Desjardins</span>
+  </div>
+  <div class="bar">
+    <div class="k"><small>Banque</small><b class="n">42 318,55</b></div>
+    <div class="k"><small>QuickBooks</small><b class="n">42 106,20</b></div>
+    <div class="k"><small>Écart</small><b class="n bad">212,35 ›</b></div>
+    <div style="margin-left:auto;display:flex;gap:8px"><button class="go">↻ Mettre à jour</button><span class="more">⋯</span></div>
+  </div>
+  <div class="stages"><span class="on">Pour révision<i>31</i></span><span>Catégorisées<i>412</i></span><span>Exclues<i>9</i></span></div>
+  <div class="chips" data-chips></div>
+  <div class="scroll"><table data-rows></table></div>
+</div>
+
+<h2><b>H3</b> Le titre est le sélecteur <span>clic sur le nom → liste des comptes</span></h2>
+<div class="scr">
+  <div class="bar" style="padding-top:16px;align-items:flex-end">
+    <div class="pick">BNC CAD <span class="dot">4</span><span class="car">▾</span>
+      <div class="menu">
+        <div>À comptabiliser <span class="dot">23</span></div><div class="sep"></div>
+        <div class="on"><span>BNC CAD</span><span class="n bad">212,35</span></div>
+        <div><span>BNC USD</span><span class="ok">✓</span></div>
+        <div><span>MasterCard BNC <span class="dot">2</span></span><span class="n bad">232,40</span></div>
+        <div><span>Desjardins USD</span><span class="ok">✓</span></div>
+        <div><span>Visa Desjardins</span><span class="ok">✓</span></div>
+      </div>
+    </div>
+    <div class="k"><small>Banque</small><b class="n">42 318,55</b></div>
+    <div class="k"><small>QuickBooks</small><b class="n">42 106,20</b></div>
+    <div class="k"><small>Écart</small><b class="n bad">212,35 ›</b></div>
+    <div style="margin-left:auto;display:flex;gap:8px"><button class="go">↻ Mettre à jour</button><span class="more">⋯</span></div>
+  </div>
+  <div class="stages"><span class="on">Pour révision<i>31</i></span><span>Catégorisées<i>412</i></span><span>Exclues<i>9</i></span></div>
+  <div class="chips" data-chips></div>
+  <div class="scroll" style="min-height:250px"><table data-rows></table></div>
+</div>
+
+<h2><b>H4</b> Rail de comptes <span>à gauche, toujours visible</span></h2>
+<div class="scr split">
+  <div class="rail">
+    <div class="it">À comptabiliser <span class="dot">23</span></div>
+    <div class="g">Banques</div>
+    <div class="it on"><span>BNC CAD<small class="n">42 318,55</small></span><span class="dot">4</span></div>
+    <div class="it"><span>BNC USD<small class="n">8 940,12</small></span><span class="ok">✓</span></div>
+    <div class="it"><span>Desjardins USD<small class="n">1 204,00</small></span><span class="ok">✓</span></div>
+    <div class="g">Cartes</div>
+    <div class="it"><span>MasterCard BNC<small class="n">−6 212,40</small></span><span class="dot">2</span></div>
+    <div class="it"><span>Visa Desjardins<small class="n">−412,77</small></span><span class="ok">✓</span></div>
+  </div>
+  <div style="min-width:0">
+    <div class="bar">
+      <div class="k"><small>QuickBooks</small><b class="n">42 106,20</b></div>
+      <div class="k"><small>Écart</small><b class="n bad">212,35 ›</b></div>
+      <div style="margin-left:auto;display:flex;gap:8px"><button class="go">↻ Mettre à jour</button><span class="more">⋯</span></div>
+    </div>
+    <div class="stages"><span class="on">Pour révision<i>31</i></span><span>Catégorisées<i>412</i></span><span>Exclues<i>9</i></span></div>
+    <div class="chips" data-chips></div>
+    <div class="scroll"><table data-rows></table></div>
+  </div>
+</div>
+
+<h2><b>H5</b> Une seule ligne <span>comptes, soldes, étapes : tout sur deux rangs</span></h2>
+<div class="scr">
+  <div class="bar" style="gap:14px">
+    <div class="seg"><span>À comptabiliser <span class="dot">23</span></span><span class="on">BNC CAD <span class="dot">4</span></span><span>BNC USD</span><span>MasterCard <span class="dot">2</span></span><span>Desj. USD</span><span>Visa</span></div>
+    <div class="mini" style="margin-left:auto"><span>Banque <b class="n">42 318,55</b></span><span>QB <b class="n">42 106,20</b></span><span>Écart <b class="n bad">212,35</b></span></div>
+    <button class="go">↻</button><span class="more">⋯</span>
+  </div>
+  <div class="stages" style="align-items:center"><span class="on">Pour révision<i>31</i></span><span>Catégorisées<i>412</i></span><span>Exclues<i>9</i></span>
+    <div class="chips" data-chips style="padding:4px 0 4px 10px;margin-left:auto"></div></div>
+  <div class="scroll"><table data-rows></table></div>
+</div>
+
+</div>
+<script>
+const CH=[['À réviser',3],['Factures manquantes',5],['Correspondances',8],['Virements',2],['À catégoriser',13]];
+document.querySelectorAll('[data-chips]').forEach(e=>e.innerHTML=CH.map(([l,n],i)=>`<span class="chip">${l}<i>${n}</i></span>`).join(''));
+const R=[['10-09','HYDRO-QUÉBEC','Électricité','−412,88','red','Publier'],['10-08','STRIPE PAYOUT','Paiement client · Ferme L\'Apogée','+3 450,00','blue','Apparier'],['10-08','M/CARD AFFAIRES','Paiement de carte → MasterCard BNC','−2 100,00','red','Publier'],['10-07','DIGIKEY','Pièces · facture 132580242','−1 284,19','yel','Voir'],['10-06','VIDEOTRON','Télécom','−96,54','grn','Voir']];
+const T={red:'--t-red',blue:'--t-blue',yel:'--t-yel',grn:'--t-grn'},C={red:'#dc2626',blue:'#2563eb',yel:'#d4a106',grn:'#2ca01c'};
+document.querySelectorAll('[data-rows]').forEach(t=>t.innerHTML='<tr><th>Date</th><th>Description</th><th>Catégorie ou correspondance</th><th class="r">Montant</th><th>Action</th></tr>'+R.map(([d,w,c,m,s,a])=>`<tr style="background:var(${T[s]})"><td style="box-shadow:inset 4px 0 0 ${C[s]}" class="n">${d}</td><td><b style="font-weight:600">${w}</b></td><td>${c}</td><td class="r n" ${m[0]=='+'?'style="color:var(--gd)"':''}>${m}</td><td class="act">${a}</td></tr>`).join(''));
+</script>
+</body></html>

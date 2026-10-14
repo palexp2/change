@@ -5,10 +5,13 @@
 //   <div data-orisha-accept
 //        data-price-new-usd="price_…" data-price-new-cad="price_…"
 //        data-price-existing-usd="price_…" data-price-existing-cad="price_…"
-//        data-billing-start="2027-11-01"></div>
+//        data-billing-start="2027-11-01"
+//        data-thanks="cab396ae4b510a5a9c332db0d838947d"></div>
 // data-billing-start (facultatif) : rien n'est facturé avant cette date (essai
 // Stripe jusqu'à minuit, heure de Montréal ; Charles, 2026-10-09).
 // et relus ici dans le fichier enregistré (jamais pris du navigateur).
+// data-thanks (facultatif) : page affichée après le paiement ou la confirmation
+// d'ajout — jeton d'un fichier public ou adresse https (Charles, 2026-10-13).
 // Le client est reconnu par ?contact=<id du contact> dans le lien envoyé
 // (variable [Contact ID] des modèles de courriel) : l'id, aléatoire, est la preuve.
 
@@ -41,7 +44,14 @@ export function pageConfig(html) {
   const prices = Object.fromEntries(PRICE_KEYS.map(k => [k, attr(`data-${k.replace(/_/g, '-')}`)]))
   const lang = attr('data-lang') || html.match(/<html[^>]*\blang\s*=\s*["']([a-z]{2})/i)?.[1] || 'fr'
   return { prices, language: lang.toLowerCase().startsWith('en') ? 'en' : 'fr', hasPayment: PRICE_KEYS.some(k => prices[k]),
-    billingStart: billingStartOf(attr('data-billing-start')) }
+    billingStart: billingStartOf(attr('data-billing-start')), thanks: thanksUrlOf(attr('data-thanks')) }
+}
+
+// Jeton de fichier public → son lien ; sinon seulement une adresse https.
+export function thanksUrlOf(v) {
+  if (!v) return null
+  if (/^[a-f0-9]{32}$/i.test(v)) return pagePublicUrl(v.toLowerCase())
+  return /^https:\/\/[^\s"'<>]+$/i.test(v) ? v : null
 }
 
 // Date de premier paiement (AAAA-MM-JJ) → secondes Unix à minuit à Montréal.
@@ -121,15 +131,29 @@ export function archiveAcceptedVersion(page) {
   if (!existsSync(path)) writeFileSync(path, page.html)
 }
 
+// Abonnement actif qui compte comme « client » : au moins une ligne autre que
+// « The 40hr Farmer » (Charles, 2026-10-13 : abonné au seul 40hr Farmer = prix
+// nouveau client). Sans lignes connues, l'abonnement compte.
+export const FORTY_HOUR_NAME_SQL = n => `(LOWER(COALESCE(${n}, '')) LIKE '%40hr%' OR LOWER(COALESCE(${n}, '')) LIKE '%40-hour%' OR LOWER(COALESCE(${n}, '')) LIKE '%40 hour%')`
+export const FORTY_HOUR_NAME_RE = /40\s*-?\s*h(ou)?r/i
+const CLIENT_SUB_SQL = co => `EXISTS (SELECT 1 FROM subscriptions s LEFT JOIN subscription_current_items i ON i.subscription_id = s.id
+      WHERE s.company_id = ${co} AND s.status IN ('active','trialing','past_due')
+        AND (i.items_json IS NULL OR EXISTS (SELECT 1 FROM json_each(i.items_json) j WHERE NOT ${FORTY_HOUR_NAME_SQL("json_extract(j.value, '$.name')")})))`
+// A reçu du matériel (acheté ou loué) : une commande expédiée (Charles,
+// 2026-10-13 : matériel = prix client, même sans abonnement Orisha actif).
+const HARDWARE_SQL = co => `EXISTS (SELECT 1 FROM orders o WHERE o.company_id = ${co} AND o.status LIKE 'Envoy%')`
+export const hasReceivedHardware = companyId => !!companyId && !!db.prepare(`SELECT ${HARDWARE_SQL('?')} AS x`).get(companyId).x
+
 /**
  * Client existant (même règle que le paiement) : entreprise du contact en phase
- * « Customer » ou avec un abonnement actif. Choisit la variante
+ * « Customer », avec du matériel reçu, ou un abonnement actif (hors 40hr Farmer
+ * seul). Choisit la variante
  * `data-orisha-if="existing|new"` affichée dans la page.
  */
 export function isExistingCustomer(contactId) {
   const co = contactCompanyId(contactId)
   return !!co && !!db.prepare(`SELECT 1 FROM companies co WHERE co.id = ? AND (co.lifecycle_phase = 'Customer'
-      OR EXISTS (SELECT 1 FROM subscriptions s WHERE s.company_id = co.id AND s.status IN ('active','trialing','past_due')))`).get(co)
+      OR ${CLIENT_SUB_SQL('co.id')} OR ${HARDWARE_SQL('co.id')})`).get(co)
 }
 
 /**
@@ -152,7 +176,7 @@ export function contactCompanyId(contactId) {
     )
     SELECT co.id FROM cos JOIN companies co ON co.id = cos.id AND co.deleted_at IS NULL
     ORDER BY (co.lifecycle_phase = 'Customer'
-      OR EXISTS (SELECT 1 FROM subscriptions s WHERE s.company_id = co.id AND s.status IN ('active','trialing','past_due'))) DESC,
+      OR ${CLIENT_SUB_SQL('co.id')} OR ${HARDWARE_SQL('co.id')}) DESC,
       cos.prim DESC
     LIMIT 1`).get(contactId)?.id || null
 }

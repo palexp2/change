@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Orisha — Pont de session",
-  "version": "1.9.1",
-  "description": "Envoie à l'ERP Orisha les sessions ouvertes des portails fournisseurs et d'Instagram, lance la collecte des factures, et envoie le document affiché à l'extracteur. Fonctionne dans Edge comme dans Chrome.",
+  "name": "Extension Boréal",
+  "version": "1.13.0",
+  "description": "Envoie à l'ERP Orisha les sessions ouvertes des portails fournisseurs et d'Instagram, lance la collecte des factures, envoie le document affiché à l'extracteur et des captures à Claude. Fonctionne dans Edge comme dans Chrome.",
   "permissions": [
     "cookies",
     "storage",
@@ -11,7 +11,8 @@
     "tabs",
     "activeTab",
     "debugger",
-    "contextMenus"
+    "contextMenus",
+    "clipboardRead"
   ],
   "host_permissions": [
     "https://customer.orisha.io/*",
@@ -29,8 +30,10 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Orisha — Tout récolter"
+    "default_title": "Extension Boréal",
+    "default_icon": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" }
   },
+  "icons": { "16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png" },
   "options_page": "options.html",
   "background": {
     "service_worker": "background.js",
@@ -40,6 +43,9 @@
     "https://*/*"
   ],
   "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+C", "mac": "Alt+Shift+C" }
+    },
     "send-document": {
       "suggested_key": {
         "default": "Alt+Shift+E"

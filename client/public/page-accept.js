@@ -68,6 +68,8 @@
             .catch(function (e) { pay.disabled = false; error(e.message) })
         }
         root.appendChild(pay)
+        // Juste après « Accepter » : paiement ouvert sans second clic (Charles, 2026-10-13).
+        if (state.just_accepted) { state.just_accepted = false; pay.onclick() }
       }
       return
     }
@@ -86,7 +88,11 @@
     btn.onclick = function () {
       btn.disabled = true
       call('/accept', { name: name.value.trim(), agree: true, contact: contact || undefined })
-        .then(function (r) { state = r; render() })
+        .then(function (r) {
+          // Paiement à suivre : on y va tout de suite, sans afficher « Accepté » (Charles, 2026-10-13).
+          if (r.pay_url) { location.href = r.pay_url; return }
+          state = r; state.just_accepted = true; render()
+        })
         .catch(function (e) { sync(); error(e.message) })
     }
     root.appendChild(nameRow)

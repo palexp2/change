@@ -11,6 +11,8 @@ import { readRelation } from '../services/customFieldsView.js'
 import { buildReturnPartyContext } from '../services/returnContext.js'
 import { selectReturnRate } from '../services/returnCarrier.js'
 import { buildReturnMemoPdf } from '../services/returnMemoPdf.js'
+import { returnCustomsInvoice, buildCustomsInvoicePdf } from '../services/customsInvoicePdf.js'
+import { loadAttachmentBuffer, loadFieldAttachmentBuffer, toPdfImage } from '../services/returnMemoImages.js'
 import { selectReturnInstructionsTemplate, buildReturnInstructionsHtml } from '../services/returnInstructionsTemplates.js'
 import {
   isNovoxpressConfigured,
@@ -28,7 +30,7 @@ import { createInAirtable, writeBackRecord } from '../services/airtableWriteback
 import { refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { matchReturnItem, receptionInstruction, receptionShelf } from '../services/returnReception.js'
 import { emitEntity, emitOrder, emitOrderItem } from '../services/realtimeEmitters.js'
-import { returnCompanyLinkColumn } from '../services/returnCompany.js'
+import { returnCompanyLinkColumn, returnCompanyId } from '../services/returnCompany.js'
 import { applyOrderItemDefaults } from '../services/orderItemDefaults.js'
 import { exportErpOrder, exportErpOrderItems } from '../services/discoveryOrderAirtable.js'
 import { localDay } from '../utils/datetime.js'
@@ -41,6 +43,7 @@ const router = Router()
 router.use(requireAuth)
 
 const MEMOS_DIR = uploadsPath('documents', 'retours')
+const CUSTOMS_DIR = uploadsPath('customs')
 
 // Filet du write-back ERP → Airtable lancé en fire-and-forget (même helper que
 // routes/projets.js) : l'échec laisse une trace exploitable, pas un console.error.
@@ -113,7 +116,14 @@ router.get('/:id/return-context', (req, res) => {
   // L'entreprise est publiée pour que l'état vide sache dire lequel des deux
   // manque : le client du retour, ou une adresse sur sa fiche.
   const company = built.ret?.company_id ? { id: built.ret.company_id, name: built.ret.company_name } : null
-  res.json({ return: ret, company, address, candidates, party_ctx: ctx })
+  // Client hors Canada → section « Douane » (facture commerciale), avec la
+  // vignette du dernier fichier généré s'il existe déjà.
+  let customs_invoice = false
+  try { customs_invoice = Boolean(returnCustomsInvoice(req.params.id)) } catch { /* sans adresse exploitable */ }
+  const customsFile = `customs-invoice-${path.basename(String(req.params.id))}.pdf`
+  const customs_invoice_url = customs_invoice && fs.existsSync(path.join(CUSTOMS_DIR, customsFile))
+    ? `/erp/api/retours/customs/${customsFile}` : null
+  res.json({ return: ret, company, address, candidates, party_ctx: ctx, customs_invoice, customs_invoice_url })
 })
 
 // POST /api/retours/:id/return-rates — tarifs + tarif recommandé
@@ -279,21 +289,6 @@ router.post('/:id/diagnostic', async (req, res) => {
 })
 
 // POST /api/retours/:id/memo — génère l'aide-mémoire PDF
-// Charge un buffer image depuis une URL locale `/erp/api/attachments/...` ou
-// `/api/attachments/...` (miroir Airtable, cf. reference_airtable_attachment_mirror) —
-// lecture disque directe, pas de fetch HTTP. Une image Airtable synced peut
-// être une liste séparée par des virgules (cf. RetourDetail.jsx) : on ne
-// prend que la première.
-function loadAttachmentBuffer(value) {
-  if (!value) return null
-  const url = String(value).split(',')[0].trim()
-  const marker = '/api/attachments/'
-  const idx = url.indexOf(marker)
-  if (idx === -1) return null
-  const relPath = url.slice(idx + marker.length)
-  const filePath = uploadsPath('attachments', relPath)
-  try { return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null } catch { return null }
-}
 
 // Image du catalogue (products.image_url, `/erp/api/product-images/<fichier>`)
 // du produit retourné : n° de série → produit, sinon le produit de l'article.
@@ -313,6 +308,23 @@ function loadProductImageBuffer(item) {
   try { return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null } catch { return null }
 }
 
+// Transfo de la fiche produit (champ miroir Airtable « Transfo à recevoir »),
+// même produit que productOfItem. Colonne dynamique : sans elle, pas de repli.
+const productTransfoOfItem = db.pragma('table_info(products)').some(c => c.name === 'transfo_a_recevoir')
+  ? db.prepare(`
+    SELECT p.id, p.transfo_a_recevoir FROM products p
+    WHERE p.id = COALESCE((SELECT product_id FROM serial_numbers WHERE id = ?), ?)`)
+  : null
+function loadProductTransfoBuffer(item) {
+  try {
+    const row = productTransfoOfItem?.get(item.serial_id || null, item.product_id || null)
+    if (!row?.transfo_a_recevoir) return null
+    const fieldId = db.prepare(`SELECT id FROM custom_fields
+      WHERE erp_table = 'products' AND column_name = 'transfo_a_recevoir' AND deleted_at IS NULL`).get()?.id
+    return loadFieldAttachmentBuffer(row.transfo_a_recevoir, fieldId, row.id)
+  } catch { return null }
+}
+
 router.post('/:id/memo', async (req, res) => {
   const ret = getReturnWithItems(req.params.id)
   if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
@@ -321,12 +333,12 @@ router.post('/:id/memo', async (req, res) => {
   // défaut celle du contact de l'adresse de retour.
   const { ctx } = buildReturnPartyContext(req.params.id, req.body?.address_id || null) || {}
   const langue = returnLinkedContact(req.params.id)?.langue || ctx?.address_contact_langue || null
-  const items = (ret.items || []).map(it => ({
+  const items = await Promise.all((ret.items || []).map(async it => ({
     produit: (langue === 'English' ? it.poduit_a_recevoir_en_for_email_display : it.poduit_a_recevoir_fr_for_email_display) || it.product_name,
     adresse: it.adresse_lora || serialAddress.get(it.serial_id || null)?.address || null,
-    image: loadAttachmentBuffer(it.image_from_numero_de_serie) || loadAttachmentBuffer(it.image_from_produit_a_recevoir) || loadProductImageBuffer(it),
-    transfo: loadAttachmentBuffer(it.transfo_a_recevoir_from_numero_de_serie) || loadAttachmentBuffer(it.transfo_a_recevoir_from_produit_a_recevoir),
-  }))
+    image: await toPdfImage(loadAttachmentBuffer(it.image_from_numero_de_serie) || loadAttachmentBuffer(it.image_from_produit_a_recevoir) || loadProductImageBuffer(it)),
+    transfo: await toPdfImage(loadAttachmentBuffer(it.transfo_a_recevoir_from_numero_de_serie) || loadAttachmentBuffer(it.transfo_a_recevoir_from_produit_a_recevoir) || loadProductTransfoBuffer(it)),
+  })))
   const pdfBuffer = await buildReturnMemoPdf({ langue, items })
   const filename = `memo-${req.params.id}.pdf`
   fs.mkdirSync(MEMOS_DIR, { recursive: true })
@@ -345,6 +357,38 @@ router.get('/memos/:filename', (req, res) => {
   const filePath = path.join(MEMOS_DIR, req.params.filename)
   if (!filePath.startsWith(MEMOS_DIR) || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Introuvable' })
   res.sendFile(filePath)
+})
+
+// GET /api/retours/customs/:filename — sert la facture commerciale d'un retour
+router.get('/customs/:filename', (req, res) => {
+  const filePath = path.join(CUSTOMS_DIR, req.params.filename)
+  if (!filePath.startsWith(CUSTOMS_DIR) || !fs.existsSync(filePath)) return res.status(404).json({ error: 'Introuvable' })
+  res.sendFile(filePath)
+})
+
+// Facture commerciale d'un retour hors Canada, régénérée à chaque aperçu et à
+// l'envoi (adresse ou numéro ont pu changer). null pour un client au Canada.
+async function writeReturnCustomsInvoice(returnId) {
+  const model = returnCustomsInvoice(returnId)
+  if (!model) return null
+  const filePath = path.join(CUSTOMS_DIR, `customs-invoice-${path.basename(String(returnId))}.pdf`)
+  fs.mkdirSync(CUSTOMS_DIR, { recursive: true })
+  fs.writeFileSync(filePath, await buildCustomsInvoicePdf(model))
+  return filePath
+}
+
+// POST /api/retours/:id/customs-invoice — génère la facture commerciale pour
+// l'inspecter sur la fiche (le même fichier part avec les instructions).
+router.post('/:id/customs-invoice', async (req, res) => {
+  if (!db.prepare('SELECT 1 FROM returns WHERE id = ? AND deleted_at IS NULL').get(req.params.id)) return res.status(404).json({ error: 'Retour introuvable' })
+  try {
+    const filePath = await writeReturnCustomsInvoice(req.params.id)
+    if (!filePath) return res.status(400).json({ error: 'Client au Canada : aucun document de douane' })
+    res.json({ url: `/erp/api/retours/customs/${path.basename(filePath)}` })
+  } catch (e) {
+    console.error('Retours customs-invoice error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
 })
 
 // Contexte de composition des instructions de retour. Partagé entre l'aperçu
@@ -398,8 +442,9 @@ function returnLinkedContact(returnId) {
 }
 
 // Pièces jointes du courriel d'instructions : étiquette de retour + aide-mémoire
-// quand ils existent. Même liste pour l'aperçu (noms seulement) et l'envoi.
-function instructionsAttachments(ret, returnId) {
+// quand ils existent, + facture commerciale si le client est hors Canada. Même
+// liste pour l'aperçu (noms seulement) et l'envoi.
+async function instructionsAttachments(ret, returnId) {
   const out = []
   if (ret.return_label_pdf_path) {
     const labelPath = uploadsPath('labels', path.basename(ret.return_label_pdf_path))
@@ -409,21 +454,29 @@ function instructionsAttachments(ret, returnId) {
     const memoPath = path.join(MEMOS_DIR, path.basename(ret.memo_pdf_path))
     if (fs.existsSync(memoPath)) out.push({ name: `aide-memoire-${returnId}.pdf`, path: memoPath, url: `/erp/api/retours/memos/${path.basename(memoPath)}` })
   }
+  const customsPath = await writeReturnCustomsInvoice(returnId)
+  if (customsPath) out.push({ name: `customs-invoice-${returnId}.pdf`, path: customsPath, url: `/erp/api/retours/customs/${path.basename(customsPath)}` })
   return out
 }
 
 // GET /api/retours/:id/instructions-email — brouillon du courriel (destinataire,
 // expéditeur, objet, corps HTML, pièces jointes) sans rien envoyer.
-router.get('/:id/instructions-email', (req, res) => {
+router.get('/:id/instructions-email', async (req, res) => {
   const ctx = loadInstructionsEmailContext(req.params.id)
   if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.message })
+  let attachments
+  try {
+    attachments = await instructionsAttachments(ctx.ret, req.params.id)
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
+  }
 
   res.json({
     to: ctx.to,
     subject: ctx.subject,
     bodyHtml: ctx.html,
     // `url` : la modale en montre une vignette et l'aperçu, sans quitter le brouillon.
-    attachments: instructionsAttachments(ctx.ret, req.params.id).map(a => ({ name: a.name, url: a.url })),
+    attachments: attachments.map(a => ({ name: a.name, url: a.url })),
     already_sent_at: ctx.ret.instructions_sent_at || null,
   })
 })
@@ -448,7 +501,7 @@ router.post('/:id/send-instructions', async (req, res) => {
   const emailId = newRecordId()
   const attachments = []
   try {
-    for (const a of instructionsAttachments(ret, req.params.id)) {
+    for (const a of await instructionsAttachments(ret, req.params.id)) {
       attachments.push({ filename: a.name, content: fs.readFileSync(a.path), contentType: 'application/pdf' })
     }
 
@@ -612,7 +665,10 @@ const linkKey = row => row?.airtable_id || row?.id || null
 // POST /api/retours/create — retour complet saisi dans le formulaire :
 //   { company_id, ticket_id?,
 //     items: [{ serial_id | order_item_id, qty?, reason, notes?, substitute_product_id? }],
-//     exchange?: { order_id? (sinon nouvelle commande), address_id? } }
+//     exchange?: { order_id? (sinon nouvelle commande), address_id?, is_subscription? } }
+//
+// `is_subscription` (article en abonnement ou acheté) marque la commande de
+// remplacement quand elle est créée ici ; une commande existante garde le sien.
 //
 // Un article de retour = une unité : un article sans n° de série retourné en
 // quantité N donne N articles. Avec échange immédiat, chaque article substitué
@@ -697,9 +753,9 @@ router.post('/create', (req, res) => {
         if (!order) {
           const orderId = newRecordId()
           const orderNumber = (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
-          db.prepare(`INSERT INTO orders (id, order_number, company_id, status, notes, date_commande)
-                      VALUES (?, ?, ?, 'Commande vide', ?, ?)`)
-            .run(orderId, orderNumber, company.id, 'Remplacement — échange immédiat', localDay())
+          db.prepare(`INSERT INTO orders (id, order_number, company_id, status, notes, date_commande, is_subscription)
+                      VALUES (?, ?, ?, 'Commande vide', ?, ?, ?)`)
+            .run(orderId, orderNumber, company.id, 'Remplacement — échange immédiat', localDay(), exchange.is_subscription ? 1 : 0)
           stampOrderDate(orderId)
           order = { id: orderId, airtable_id: null, order_number: orderNumber }
           createdOrder = true
@@ -875,6 +931,97 @@ router.post('/:id/receive', (req, res) => {
     shelf: receptionShelf(i.return_reason),
   }))
   res.json({ received: inReturn, received_at: receivedAt, received_by: receivedBy || null, instructions })
+})
+
+// Adresses (livraison, ferme) d'une commande de remplacement : celles de la
+// commande d'origine d'un n° de série remplacé (lien Airtable `de_serie`), à
+// défaut de la dernière commande du client, à défaut ses adresses par type.
+function replacementAddresses(companyId, serials) {
+  const fromOrder = db.prepare(`
+    SELECT o.address_id, o.farm_address_id FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id AND o.deleted_at IS NULL
+    WHERE o.company_id = ? AND o.address_id IS NOT NULL AND (oi.de_serie LIKE ? OR oi.de_serie = ?)
+    ORDER BY COALESCE(o.date_commande, o.created_at) DESC LIMIT 1`)
+  let found = null
+  for (const sn of serials) {
+    found = fromOrder.get(companyId, sn.airtable_id ? `%${sn.airtable_id}%` : '', sn.id)
+    if (found) break
+  }
+  found ||= db.prepare(`
+    SELECT address_id, farm_address_id FROM orders
+    WHERE company_id = ? AND deleted_at IS NULL AND address_id IS NOT NULL
+    ORDER BY COALESCE(date_commande, created_at) DESC LIMIT 1`).get(companyId) || {}
+  const byType = type => db.prepare('SELECT id FROM adresses WHERE company_id = ? AND address_type = ? ORDER BY created_at DESC LIMIT 1')
+    .get(companyId, type)?.id || null
+  return {
+    address_id: found.address_id || byType('Livraison'),
+    farm_address_id: found.farm_address_id || byType('Ferme'),
+  }
+}
+
+// POST /api/retours/:id/deferred-replacement — « Remplacement différé » des
+// articles cochés : une commande neuve pour le client du retour (adresses de
+// livraison et de ferme reprises), une ligne « Remplacement » par article, son
+// produit et son « # de série remplacé » = le n° retourné.
+router.post('/:id/deferred-replacement', (req, res) => {
+  const ret = db.prepare('SELECT id FROM returns WHERE id = ?').get(req.params.id)
+  if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
+  const ids = Array.isArray(req.body.item_ids) ? req.body.item_ids.map(String).filter(Boolean) : []
+  if (!ids.length) return res.status(400).json({ error: 'item_ids requis' })
+
+  const items = db.prepare(`
+    SELECT ri.id, ri.company_id, COALESCE(ri.product_id, sn.product_id) AS product_id,
+           sn.id AS serial_id, sn.airtable_id AS serial_airtable_id
+    FROM return_items ri LEFT JOIN serial_numbers sn ON sn.id = ri.serial_id
+    WHERE ri.return_id = ?`).all(ret.id).filter(i => ids.includes(String(i.id)))
+  if (!items.length) return res.status(400).json({ error: 'Aucun article de ce retour' })
+
+  const companyId = items.find(i => i.company_id)?.company_id || returnCompanyId(ret.id)
+  if (!companyId) return res.status(400).json({ error: 'Aucune entreprise pour ce retour' })
+
+  const serials = items.filter(i => i.serial_id).map(i => ({ id: i.serial_id, airtable_id: i.serial_airtable_id }))
+  const addr = replacementAddresses(companyId, serials)
+
+  try {
+    const orderId = newRecordId()
+    const orderNumber = (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
+    const orderItemIds = []
+    const now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+    db.transaction(() => {
+      db.prepare(`INSERT INTO orders (id, order_number, company_id, status, notes, date_commande)
+                  VALUES (?, ?, ?, 'Commande vide', ?, ?)`)
+        .run(orderId, orderNumber, companyId, 'Remplacement différé', localDay())
+      stampOrderDate(orderId)
+      const body = { ...addr }
+      alignAddressColumns(body)
+      db.prepare(`UPDATE orders SET address_id = ?, adresse_de_livraison = ?, farm_address_id = ?,
+                    adresse_de_la_ferme_pour_coordonnees_geographiques = ?, updated_at = ${now} WHERE id = ?`)
+        .run(body.address_id, body.adresse_de_livraison, body.farm_address_id,
+          body.adresse_de_la_ferme_pour_coordonnees_geographiques, orderId)
+      db.prepare('UPDATE returns SET order_id = ? WHERE id = ?').run(orderId, ret.id)
+
+      const insertOrderItem = db.prepare(`
+        INSERT INTO order_items (id, order_id, product_id, qty, item_type, document_type, return_id, replaced_serial, de_serie_remplace)
+        VALUES (?, ?, ?, 1, 'Remplacement', 'Remplacement', ?, ?, ?)`)
+      const linkItem = db.prepare('UPDATE return_items SET commande = ? WHERE id = ?')
+      for (const it of items) {
+        const oiId = newRecordId()
+        orderItemIds.push(oiId)
+        insertOrderItem.run(oiId, orderId, it.product_id || null, ret.id,
+          it.serial_id || null, it.serial_id ? (it.serial_airtable_id || it.serial_id) : null)
+        applyOrderItemDefaults(oiId)
+        linkItem.run(JSON.stringify([orderId]), it.id)
+      }
+    })()
+
+    emitOrder('created', orderId, req.user?.id)
+    exportErpOrder(orderId)
+    for (const oiId of orderItemIds) emitOrderItem('created', orderId, { id: oiId }, req.user?.id)
+    res.status(201).json({ order: { id: orderId, order_number: orderNumber }, item_ids: items.map(i => i.id) })
+  } catch (e) {
+    console.error('Retours deferred-replacement error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
 })
 
 export default router

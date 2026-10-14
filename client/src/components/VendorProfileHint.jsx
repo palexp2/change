@@ -124,7 +124,7 @@ export function VendorProfileHint({ name, accountName = (i) => i, taxName = (i) 
 // ── Survol du nom dans la liste des transactions (choix F2 de Charles,
 // 2026-10-06) : après ~1 s sur le nom, l'essentiel de la fiche — où trouver la
 // facture, les taxes, et ce qui est à surveiller en orange.
-const LABELS = /(Facture à payer|Facture|Taxes et QB|Taxes|Notes?|Remboursement|Livraison partielle|Abonnement mensuel|Dext|Crédit|Compte)\s*:/g
+const LABELS = /(Facture à payer|Factures?\s*\(web\)|Factures?|Taxes et QB|Taxes|Notes?|Remboursement|Livraison partielle|Abonnement mensuel|Abonnement annuel|Dext|Crédit|Compte|Web|Paiement|BNC|R&D)\s*:/g
 const WARN = /délai|surveiller|ne correspond|attention|cas par cas|difficile|inscrire en cad|après le paiement|ne fonctionne plus|à payer/i
 
 // « Facture: sur le web Taxes: TPS seulement » → [['Facture', 'sur le web'], ['Taxes', 'TPS seulement']]
@@ -140,9 +140,16 @@ export function splitParticularites(text) {
   }
   if (last) out.push([last, t.slice(idx).trim()])
   else if (t.trim()) out.push(['Note', t.trim()])
-  return out.map(([k, v]) => [k === 'Notes' ? 'Note' : k === 'Taxes et QB' ? 'Taxes' : k, v.replace(/\s*\.$/, '')]).filter(([, v]) => v)
+  return out.map(([k, v]) => [k === 'Notes' ? 'Note' : k === 'Taxes et QB' ? 'Taxes' : /^Factures?(\s*\(web\))?$/.test(k) ? 'Facture' : k, v.replace(/\s*\.$/, '')]).filter(([, v]) => v)
 }
 
+const clip = (t, n = 150) => (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t)
+const keyOf = (t) => String(t).toLowerCase().replace(/[^a-z0-9à-ÿ]/g, '')
+const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, '') } catch { return u } }
+
+// La fiche en quelques lignes étiquetées, chaque information une seule fois :
+// où trouver la facture, le portail, l'identifiant, les taxes, puis ce qui est
+// à surveiller (Charles, 2026-10-13 : « pas d'info en double, écrit clairement »).
 function Essentials({ name, profile }) {
   if (profile === undefined) return <div className="text-slate-400">…</div>
   if (!profile) {
@@ -154,40 +161,44 @@ function Essentials({ name, profile }) {
     )
   }
   const kv = splitParticularites(profile.particularites)
-  const get = (k) => kv.find(([a]) => a === k)?.[1]
-  const facture = get('Facture'), taxes = get('Taxes')
-  const warns = [
-    ...kv.filter(([k, v]) => k !== 'Facture' && k !== 'Taxes' && WARN.test(v)).map(([k, v]) => (v.length < 20 ? `${k} : ${v.toLowerCase()}` : v)),
-    ...(profile.description && WARN.test(profile.description) ? [profile.description] : []),
-    ...[facture, taxes].filter((v) => v && WARN.test(v)),
-  ].slice(0, 2)
-  const line = (ic, text, warn) => (
-    <div key={text} className={`flex items-start gap-2 ${warn ? '-mx-1.5 rounded-md bg-amber-50 px-1.5 py-1 text-amber-800' : 'text-slate-700'}`}>
-      <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] font-bold ${warn ? 'text-amber-600' : 'bg-slate-100 text-slate-500'}`}>{ic}</span>
-      <span>{text}</span>
+  const all = (k) => kv.filter(([a]) => a === k).map(([, v]) => v).join(' · ')
+  const facture = all('Facture') || all('Web')
+  const taxes = all('Taxes')
+  const abo = all('Abonnement mensuel') || all('Abonnement annuel')
+  const portal = profile.invoice_portal_url
+  const url = portal && (/^https?:\/\//i.test(portal) ? portal : `https://${portal}`)
+  const shown = [facture, taxes, abo].filter(Boolean).map(keyOf)
+  const seen = (v) => { const k = keyOf(v); return shown.some((x) => x.includes(k) || k.includes(x)) }
+  const warns = []
+  for (const v of [...kv.filter(([k]) => !['Facture', 'Web', 'Taxes'].includes(k)).map(([, v]) => v), profile.description].filter(Boolean)) {
+    if (WARN.test(v) && !seen(v) && !warns.some((w) => keyOf(w) === keyOf(v))) warns.push(v)
+  }
+  const row = (label, content, cls = 'text-slate-700') => (
+    <div key={label} className="grid grid-cols-[64px_1fr] gap-2">
+      <span className="pt-px text-[10.5px] text-slate-400">{label}</span>
+      <span className={cls}>{content}</span>
     </div>
   )
-  const tags = [profile.usual_currency, profile.qb_category?.split(' ')[0]].filter(Boolean)
+  const tags = [profile.usual_currency].filter(Boolean)
   return (
     <>
-      <div className="mb-2 border-b border-slate-100 pb-2">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[14px] font-bold text-slate-800">{profile.name}</span>
-          <Link to="/fournisseurs" className="text-[11px] text-brand-600 hover:underline">fiche</Link>
-        </div>
-        {!!tags.length && (
-          <div className="mt-1 flex flex-wrap gap-1">
-            {tags.map((t) => (
-              <span key={t} className={`rounded-full px-2 py-0.5 text-[11px] ${t === 'USD' ? 'bg-blue-50 font-semibold text-blue-700' : 'bg-slate-100 text-slate-600'}`}>{t}</span>
-            ))}
-          </div>
-        )}
+      <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-[14px] font-bold text-slate-800">{profile.name}</span>
+          {tags.map((t) => (
+            <span key={t} className={`shrink-0 rounded-full px-1.5 text-[10.5px] ${t === 'USD' ? 'bg-blue-50 font-semibold text-blue-700' : 'bg-slate-100 text-slate-600'}`}>{t}</span>
+          ))}
+        </span>
+        <Link to="/fournisseurs" className="shrink-0 text-[11px] text-brand-600 hover:underline">fiche</Link>
       </div>
       <div className="flex flex-col gap-1.5">
-        {facture && line('F', facture.split(/ mais |\. /)[0])}
-        {taxes && line('%', taxes.split(',')[0])}
-        {warns.map((w) => line('!', w, true))}
-        {!facture && !taxes && !warns.length && <span className="text-slate-400">Aucune particularité.</span>}
+        {facture && row('Facture', clip(facture))}
+        {url && row('Portail', <a href={url} target="_blank" rel="noreferrer" title={url} className="text-brand-600 hover:underline break-all">{hostOf(url)} ↗</a>)}
+        {profile.invoice_login && row('Identifiant', profile.invoice_login)}
+        {taxes && row('Taxes', clip(taxes, 110))}
+        {abo && row('Abonnement', clip(abo, 90))}
+        {warns.slice(0, 2).map((w, i) => row(i ? '' : 'Attention', clip(w, 130), 'text-amber-800'))}
+        {!facture && !url && !taxes && !warns.length && <span className="text-slate-400">Aucune particularité.</span>}
       </div>
     </>
   )
@@ -243,7 +254,7 @@ function PayHow({ name, hint }) {
 
 /** Enveloppe un nom : la fiche apparaît après un temps d'arrêt de la souris.
  *  variant="payment" : seulement comment et d'où on paie ce fournisseur. */
-export function VendorHover({ name, children, delay = 900, className = 'min-w-0 truncate', variant }) {
+export function VendorHover({ name, children, delay = 900, className = 'min-w-0 truncate', variant, clickable }) {
   const [state, load] = useProfile()
   const [hint, setHint] = useState(undefined)
   const [pos, setPos] = useState(null)
@@ -254,20 +265,20 @@ export function VendorHover({ name, children, delay = 900, className = 'min-w-0 
   if (!trimmed) return children
 
   const close = () => { clearTimeout(timer.current); setTimeout(() => { if (!inside.current) setPos(null) }, 150) }
-  const enter = () => {
-    clearTimeout(timer.current)
-    timer.current = setTimeout(() => {
-      const r = ref.current?.getBoundingClientRect()
-      if (!r) return
-      const below = window.innerHeight - r.bottom > 220
-      setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - 340)), top: below ? r.bottom + 6 : r.top - 6, below })
-      if (variant === 'payment') loadHints().then((m) => setHint(findHint(m, trimmed)))
-      else load(trimmed)
-    }, delay)
+  const show = () => {
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    const below = window.innerHeight - r.bottom > 220
+    setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - 340)), top: below ? r.bottom + 6 : r.top - 6, below })
+    if (variant === 'payment') loadHints().then((m) => setHint(findHint(m, trimmed)))
+    else load(trimmed)
   }
+  const enter = () => { clearTimeout(timer.current); timer.current = setTimeout(show, delay) }
+  // Un clic ouvre la fiche tout de suite, sans ouvrir la ligne (Charles, 2026-10-13).
+  const click = (e) => { e.stopPropagation(); e.preventDefault(); clearTimeout(timer.current); show() }
   return (
     <>
-      <span ref={ref} onMouseEnter={enter} onMouseLeave={close} className={className}>{children}</span>
+      <span ref={ref} onMouseEnter={enter} onMouseLeave={close} onClick={clickable ? click : undefined} className={className}>{children}</span>
       {pos && createPortal(
         <div className="fixed z-50 w-80 rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-xl"
           onMouseEnter={() => { inside.current = true }} onMouseLeave={() => { inside.current = false; setPos(null) }}

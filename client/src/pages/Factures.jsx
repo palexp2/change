@@ -433,6 +433,7 @@ export default function Factures() {
         onClose={() => setCustomFieldModal(null)}
         erpTable="factures"
         editing={customFieldModal?.editing || null}
+        siblingFields={COLUMNS_WITH_CUSTOM}
         mappingSlot={customFieldModal?.editing ? (
           <FieldAirtableMapping
             table="factures"

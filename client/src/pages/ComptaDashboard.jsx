@@ -638,7 +638,6 @@ export function TreasuryProjectionSection() {
   const [learning, setLearning] = useState(null)
   const [balanceInput, setBalanceInput] = useState('')
   const [noting, setNoting] = useState(false)
-  const [pulling, setPulling] = useState(false)
   const [editing, setEditing] = useState(null) // {} = nouveau, {id...} = édition
   const [billPeek, setBillPeek] = useState(null) // {id, date} = facture fournisseur cliquée
   const [showBeyond, setShowBeyond] = useState(false)
@@ -677,24 +676,6 @@ export function TreasuryProjectionSection() {
       addToast({ message: e.message, type: 'error' })
     } finally {
       setNoting(false)
-    }
-  }
-
-  // Le solde se met à jour tout seul (lecture à la banque aux 10 min) ; ce bouton sert
-  // quand on vient de faire un virement et qu'on ne veut pas attendre.
-  async function pullBalance() {
-    setPulling(true)
-    try {
-      const r = await api.treasury.refreshBalanceFromBank()
-      addToast({
-        message: `Solde à la banque : ${fmtCad(r.balance, 2)}${r.woke ? '' : ' (dernier solde livré)'}`,
-        type: 'success',
-      })
-      load()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setPulling(false)
     }
   }
 
@@ -787,7 +768,13 @@ export function TreasuryProjectionSection() {
         iconClass="bg-brand-50 text-brand-600"
         actions={
           <div className="flex items-center gap-2">
+            {/* Aucune lecture automatique : ce montant ne bouge que si on le saisit. */}
+            <label htmlFor="treasury-balance-input" className="text-xs font-medium text-amber-700 whitespace-nowrap"
+              title="Aucune mise à jour automatique : saisir le solde BNC en dollars canadiens">
+              Solde BNC CAD à saisir
+            </label>
             <input
+              id="treasury-balance-input"
               type="text" inputMode="decimal"
               value={balanceInput}
               onChange={e => setBalanceInput(e.target.value)}
@@ -795,11 +782,6 @@ export function TreasuryProjectionSection() {
               className="w-40 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30"
               data-testid="treasury-balance-input"
             />
-            <button onClick={pullBalance} disabled={pulling} data-testid="treasury-balance-pull"
-              className="p-1.5 text-slate-400 hover:text-slate-700 disabled:opacity-40"
-              title="Lire le solde à la banque maintenant (sinon automatique aux 10 min)">
-              <RefreshCw size={15} className={pulling ? 'animate-spin' : ''} />
-            </button>
             {/* Action transactionnelle : chaque saisie crée une entrée horodatée */}
             <button onClick={noteBalance} disabled={noting} data-testid="treasury-balance-save"
               className="px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50 whitespace-nowrap">

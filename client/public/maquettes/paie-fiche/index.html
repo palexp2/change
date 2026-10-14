@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Fiche paie</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#eef0f3;--s:#fff;--soft:#f6f7f9;--line:#e6e8eb;--line2:#d0d4d9;--ink:#24262a;--ink2:#4a4d53;--ink3:#6f7279;--ink4:#a0a3a9;--g:#2ca01c;--gd:#1f7a12;--gs:#e9f6e6;--b:#0077c5;--bs:#e5f1fa;--r:#d52b1e;--rs:#fcebea;--a:#c27400;--as:#fdf3e1;--side:#1f2937;--sh:0 1px 2px rgb(0 0 0/.06),0 14px 40px rgb(0 0 0/.14)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33291a;--side:#111418}}
+:root[data-theme="dark"]{--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33291a;--side:#111418}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1320px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+h2{font-size:18px;margin:40px 0 12px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.n{font-variant-numeric:tabular-nums}.mute{color:var(--ink3)}.faint{color:var(--ink4)}.ok{color:var(--gd)}.warn{color:var(--a)}.bad{color:var(--r)}
+a{color:var(--b);text-decoration:none;font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.pill.g{background:var(--gs);color:var(--gd)}.pill.a{background:var(--as);color:var(--a)}.pill.b{background:var(--bs);color:var(--b)}.pill.r{background:var(--rs);color:var(--r)}.pill.n{background:var(--soft);color:var(--ink3);border:1px solid var(--line)}
+.btn{font:inherit;font-weight:600;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;background:var(--g);color:#fff;white-space:nowrap}
+.btn:disabled{background:var(--line2);cursor:default}
+.btn.ghost{background:var(--s);color:var(--ink2);border:1px solid var(--line2)}
+.tabs{display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap}
+.tab{font:inherit;font-weight:600;border:1px solid var(--line2);background:var(--s);color:var(--ink2);border-radius:999px;padding:5px 14px;cursor:pointer}
+.tab.on{background:var(--ink);color:var(--s);border-color:var(--ink)}
+/* écran */
+.screen{position:relative;background:var(--bg);border-radius:12px;box-shadow:var(--sh);overflow:hidden;height:900px;display:flex}
+.nav{width:56px;background:var(--side);flex:none}
+.list{flex:1;padding:18px 22px;opacity:.45;overflow:hidden}
+.list h3{margin:0 0 12px;font-size:18px}
+.list table{width:100%;border-collapse:collapse;background:var(--s);border-radius:8px}
+.list td{padding:9px 12px;border-bottom:1px solid var(--line)}
+.panel{position:absolute;top:0;right:0;bottom:0;width:min(1120px,calc(100% - 120px));background:var(--s);box-shadow:-12px 0 40px rgb(0 0 0/.18);display:flex;flex-direction:column}
+.ph{display:flex;align-items:center;gap:10px;padding:14px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.ph b{font-size:16px}.sp{flex:1}
+.x{width:28px;height:28px;border-radius:6px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--ink3)}
+.steps{display:flex;gap:0;padding:10px 20px;border-bottom:1px solid var(--line);font-size:11.5px;overflow-x:auto}
+.st{display:flex;align-items:center;gap:6px;color:var(--ink4);white-space:nowrap;font-weight:600}
+.st:not(:last-child)::after{content:"";width:26px;height:1px;background:var(--line2);margin:0 8px}
+.st i{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line2);display:inline-flex;align-items:center;justify-content:center;font-style:normal;font-size:9px}
+.st.done{color:var(--gd)}.st.done i{background:var(--g);border-color:var(--g);color:#fff}
+.st.cur{color:var(--ink)}.st.cur i{border-color:var(--ink);background:var(--ink);color:var(--s)}
+.body>*{flex:none}.body{flex:1;overflow:auto;padding:16px 20px 60px;display:flex;flex-direction:column;gap:16px}
+.band{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:10px;flex-wrap:wrap}
+.band.a{background:var(--as);color:var(--a)}.band.g{background:var(--gs);color:var(--gd)}.band.r{background:var(--rs);color:var(--r)}
+.band b{font-size:13.5px}
+.sec{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.sh{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--soft)}
+.sh b{font-size:13px}
+.sec.closed .sh{border-bottom:0;cursor:pointer}
+.sec.closed .sb{display:none}
+.chev{color:var(--ink4)}
+.scroll{overflow-x:auto}
+table.g{width:100%;border-collapse:collapse}
+.g th{font-size:11px;font-weight:600;color:var(--ink3);text-align:right;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+.g th:first-child,.g td:first-child{text-align:left}
+.g td{padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right}
+.g td.c{cursor:pointer}
+.g td.c:hover{background:var(--bs)}
+.g td.c.on{background:var(--bs);box-shadow:inset 0 0 0 2px var(--b)}
+.g td.c.flag{background:var(--as)}
+.g td.c.flag.on{box-shadow:inset 0 0 0 2px var(--a)}
+.g td.c.bad{background:var(--rs)}
+.src{display:block;font-size:10px;color:var(--ink4);font-weight:500}
+.g td.c.flag .src{color:var(--a)}.g td.c.bad .src{color:var(--r)}
+.g tfoot td{font-weight:700;border-bottom:0;background:var(--soft)}
+.g tr.nethris td{background:var(--s);font-weight:500;color:var(--ink3);font-size:12px}
+.g tr.nethris td.diff{color:var(--r);font-weight:700}
+.lock .g td.c{cursor:default}
+.lock .g td.c::after{content:"";}
+/* preuve */
+.proof{display:grid;grid-template-columns:220px 1fr;gap:0;border-top:1px solid var(--line)}
+.proof .pk{padding:14px;background:var(--soft);border-right:1px solid var(--line)}
+.proof .pk b{display:block;font-size:14px}
+.proof .pv{padding:14px}
+.okx{display:flex;gap:8px;margin-top:12px}
+.okb{font:inherit;font-weight:600;border:1px solid var(--line2);border-radius:8px;background:var(--s);color:var(--ink2);padding:5px 12px;cursor:pointer}
+.okb.g{border-color:var(--g);color:var(--gd)}
+/* vignettes de sources */
+.srcbox{border:1px solid var(--line);border-radius:8px;overflow:hidden;max-width:560px}
+.srch{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--soft);border-bottom:1px solid var(--line);font-size:11.5px;font-weight:600;color:var(--ink2)}
+.logo{width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-size:8.5px;font-weight:800;color:#fff;flex:none}
+.l-bo{background:#2ca01c}.l-qb{background:#2ca01c;border-radius:50%}.l-at{background:#fcb400;color:#000}.l-sl{background:#4a154b}.l-ne{background:#d52b1e}
+.mt{width:100%;border-collapse:collapse;font-size:12px}
+.mt td{padding:4px 10px;border-bottom:1px solid var(--line)}
+.mt td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.mt tr.tot td{font-weight:700;border-bottom:0}
+.hl{background:#fff3a3;color:#000;padding:0 2px;border-radius:2px;font-weight:700}
+.pdf{font:11px/1.35 ui-monospace,Menlo,monospace;padding:10px;background:#fff;color:#222;white-space:pre}
+.slack{padding:10px;display:flex;gap:10px}
+.av{width:30px;height:30px;border-radius:6px;background:#8b5cf6;color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+/* calendrier */
+.cal{display:grid;grid-template-columns:170px repeat(14,minmax(44px,1fr)) 72px 72px 84px;font-size:11px;min-width:1040px}
+.cal>div{border-bottom:1px solid var(--line);border-left:1px solid var(--line);padding:5px 3px;min-height:40px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.2}
+.cal>div:nth-child(18n+1){align-items:flex-start;padding-left:12px;border-left:0;font-weight:600;font-size:12px}
+.cal .hd{color:var(--ink3);font-weight:600;min-height:32px}
+.cal small{font-size:9.5px;font-weight:500;opacity:.8}
+.cal .we{background:var(--soft)}
+.cal .fe{background:var(--bs);color:var(--b)}
+.cal .va{background:var(--gs);color:var(--gd);font-weight:700;cursor:pointer}
+.cal .va.x{background:var(--as);color:var(--a)}
+.cal .nul{color:var(--ink3);cursor:pointer}
+.cal .on{box-shadow:inset 0 0 0 2px var(--b)}
+.cal .num{align-items:flex-end;padding-right:10px;font-variant-numeric:tabular-nums;background:var(--soft)}
+.leg{display:flex;gap:16px;padding:8px 14px;border-bottom:1px solid var(--line);font-size:11.5px;color:var(--ink2);flex-wrap:wrap}
+.leg span{display:flex;align-items:center;gap:6px}
+.sw{width:13px;height:13px;border-radius:3px;display:inline-block;border:1px solid var(--line)}
+.sw.va{background:var(--gs)}.sw.x{background:var(--as)}.sw.fe{background:var(--bs)}.sw.we{background:var(--soft)}
+/* étapes de saisie */
+.chk{display:grid;grid-template-columns:repeat(4,1fr);gap:0}
+.chk>div{padding:10px 14px;border-right:1px solid var(--line);display:flex;gap:8px;align-items:flex-start}
+.chk>div:last-child{border-right:0}
+.dot{width:16px;height:16px;border-radius:50%;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:9px;color:#fff;margin-top:1px}
+.dot.g{background:var(--g)}.dot.a{background:var(--a)}.dot.n{background:var(--line2)}
+.foot{display:flex;gap:10px;align-items:center;padding:12px 20px;border-top:1px solid var(--line);background:var(--s)}
+@media (max-width:900px){.panel{width:100%}.proof{grid-template-columns:1fr}.chk{grid-template-columns:1fr 1fr}.screen{height:auto;min-height:900px}}
+</style></head><body><div class="wrap">
+<h1>Fiche paie · 2026-08-30 au 2026-09-12</h1>
+<div class="tabs" id="tabs">
+  <button class="tab on" data-s="todo">1 · À vérifier</button>
+  <button class="tab" data-s="ecart">2 · Écart Nethris</button>
+  <button class="tab" data-s="ok">3 · Approuvée</button>
+</div>
+
+<div class="screen">
+  <div class="nav"></div>
+  <div class="list"><h3>Paies</h3><table>
+    <tr><td>12 sept. 2026</td><td>#18</td><td>Saisie</td><td>21 211,49 $</td></tr>
+    <tr><td>29 août 2026</td><td>#17</td><td>Envoyés</td><td>20 932,32 $</td></tr>
+    <tr><td>15 août 2026</td><td>#16</td><td>Envoyés</td><td>18 430,36 $</td></tr>
+    <tr><td>1 août 2026</td><td>#15</td><td>Envoyés</td><td>21 034,54 $</td></tr>
+  </table></div>
+
+  <div class="panel" id="panel">
+    <div class="ph"><b>Paie — 12 sept. 2026 (#18)</b><span id="stpill"></span><span class="sp"></span><span class="mute n">21 211,49 $</span><span class="x">✕</span></div>
+    <div class="steps" id="steps"></div>
+    <div class="body" id="body">
+
+      <div class="band" id="band"></div>
+
+      <div class="sec" id="secV">
+        <div class="sh"><b>Montants</b><span class="mute">clic sur un chiffre = sa preuve</span><span class="sp"></span><span id="vpill"></span></div>
+        <div class="sb">
+          <div class="scroll"><table class="g" id="grid"></table></div>
+          <div class="proof" id="proof"></div>
+        </div>
+      </div>
+
+      <div class="sec" id="secC">
+        <div class="sh"><b>Congés</b><span class="mute">30 août → 12 sept.</span><span class="sp"></span><span class="pill a">2 soldes insuffisants</span></div>
+        <div class="sb">
+          <div class="leg"><span><i class="sw va"></i>Vacances payées</span><span><i class="sw x"></i>Solde insuffisant</span><span><i class="sw fe"></i>Férié</span><span><i class="sw we"></i>Fin de semaine</span></div>
+          <div class="scroll"><div class="cal" id="cal"></div></div>
+          <div class="proof" id="calproof"></div>
+        </div>
+      </div>
+
+      <div class="sec">
+        <div class="sh"><b>Saisie</b><span class="sp"></span><span class="mute">5 / 7</span></div>
+        <div class="sb chk" id="chk"></div>
+      </div>
+
+      <div class="sec closed"><div class="sh"><b>Lignes de paie</b><span class="mute">10 employés · tableau Airtable</span><span class="sp"></span><span class="chev">›</span></div><div class="sb"></div></div>
+      <div class="sec closed"><div class="sh"><b>Répartition comptable par département</b><span class="mute">R&amp;D 10 456,98 · Marketing 5 808,49</span><span class="sp"></span><span class="chev">›</span></div><div class="sb"></div></div>
+      <div class="sec closed"><div class="sh"><b>Historique</b><span class="mute">qui a saisi, vérifié, approuvé</span><span class="sp"></span><span class="chev">›</span></div><div class="sb"></div></div>
+    </div>
+    <div class="foot" id="foot"></div>
+  </div>
+</div>
+
+<h2><b>Les preuves</b> <span>ce que montre le bas de la grille, selon la source du chiffre</span></h2>
+<div id="gallery" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px"></div>
+</div>
+
+<script>
+const $=n=>n==null?'':n.toLocaleString('fr-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
+const E=[
+ {n:'Alicia Talbot Lanciault',h:49.60,r:45,f:148.12,v:124.22,vf:1,p:2504.34,w:[24.80,24.80]},
+ {n:'Pierre-Alexandre Papillon',h:66.75,r:40.60,f:234.51,v:324.80,p:3269.36,w:[40.00,26.75]},
+ {n:'Guillaume Lambert',h:65.00,r:44.73,f:357.84,v:313.11,p:3578.40,w:[39.00,26.00],hebdo:1},
+ {n:'Charles Joachim',h:64.00,r:45,f:216.27,v:346.23,vf:1,p:3442.50,w:[32.00,32.00]},
+ {n:'Martin Audesse',h:40.00,r:30,f:138.98,ff:1,m:25,p:1363.98,w:[22.50,17.50]},
+ {n:'Philippe Chabot',h:63.00,r:34.58,f:242.06,c:340.21,p:2760.81,w:[31.50,31.50]},
+ {n:'Daniel Fortin',h:5.17,hf:1,r:22,p:113.74,w:[0,5.1667]},
+ {n:'Marc-Antoine Plante',h:59.92,r:28.75,f:170.95,p:1893.65,w:[30.75,29.17]},
+ {n:'Louis-Bernard Frechette',h:64.28,r:24,f:159.32,p:1702.04,w:[32.00,32.28]},
+ {n:'Antoine Lambert',h:26.23,r:20,f:58.07,p:582.67,w:[11.40,14.83]},
+];
+const cols=[['h','Heures','Boréal'],['r','$/h',''],['f','Férié 1/20','calcul'],['v','Vacances','relevé'],['m','Remb.','QuickBooks'],['c','Commission','Vendeurs'],['p','Paie','']];
+let S='todo',sel=[0,'v'];
+
+function srcHtml(e,k){
+ const fn=e.n.split(' ')[0];
+ if(k==='h'){return `<div class="srcbox"><div class="srch"><span class="logo l-bo">B</span>Boréal · feuille de temps de ${fn}<span class="sp"></span><a href="#">Ouvrir ↗</a></div>
+  <table class="mt"><tr><td>Semaine 36 · 30 août → 5 sept.</td><td>${$(e.w[0])} h</td></tr><tr><td>Semaine 37 · 6 → 12 sept.</td><td>${e.hf?'<span class="hl">5,1667</span>':$(e.w[1])} h</td></tr><tr class="tot"><td>Total</td><td>${e.hf?'5,1667':$(e.w[0]+e.w[1])} h</td></tr></table></div>
+  ${e.hf?'<p class="warn">Saisi 5,17 — Airtable garde 5,1667 : 0,07 $ d’écart dans Nethris.</p>':''}${e.hebdo?'<p class="mute">Total envoyé une fois par semaine.</p>':''}`}
+ if(k==='f'){return `<div class="srcbox"><div class="srch"><span class="logo l-at">A</span>1/20 des 2 paies précédentes</div>
+  <table class="mt"><tr><td>Paie #16 · 15 août</td><td>1 389,50</td></tr><tr><td>Paie #17 · 29 août</td><td>1 390,10</td></tr><tr class="tot"><td>÷ 20</td><td>${$(e.f)}</td></tr></table></div>
+  ${e.ff?'<p class="warn">Nethris calculait 136,48 $ — à corriger à 138,98 $ dans Paie et ajustements.</p>':''}`}
+ if(k==='v'){return `<div class="srcbox"><div class="srch"><span class="logo l-ne">N</span>RELEVE_PAIE_2026-09-03.pdf<span class="sp"></span><a href="#">Ouvrir ↗</a></div>
+<div class="pdf">CRÉDIT          FÉDÉRAL   PROVINCIAL
+% VACANCES ACC. :          <span class="hl">${$(e.vf?e.v:e.v+164.12)}</span>
+% VACANCES DUE  :              0,00</div></div>
+  <p>${e.n==='Charles Joachim'?'Congé du ven. 11 sept. (Slack) · ':''}8 h × ${$(e.r)} $ = <b>${$(8*e.r)} $</b> → ${e.vf?`<span class="warn">payé ${$(e.v)} (maximum), ${$(8*e.r-e.v)} sans solde</span>`:'<span class="ok">couvert</span>'}</p>`}
+ if(k==='m'){return `<div class="srcbox"><div class="srch"><span class="logo l-qb">qb</span>QuickBooks · 23100 Carte de crédit Martin Audesse<span class="sp"></span><a href="#">Ouvrir ↗</a></div>
+  <table class="mt"><tr><td>2026-09-08 · Quincaillerie · vis</td><td>25,00</td></tr><tr class="tot"><td>Solde dû à l’employé</td><td>25,00</td></tr></table></div>`}
+ if(k==='c'){return `<div class="srcbox"><div class="srch"><span class="logo l-at">A</span>Inventaire › Vendeurs<span class="sp"></span><a href="#">Ouvrir ↗</a></div>
+  <table class="mt"><tr><td>Philippe Chabot</td><td><span class="hl">340,21</span></td></tr><tr><td class="mute">Philippe McAllister · reporté (&lt; 200 $)</td><td class="mute">120,21</td></tr><tr><td class="mute">P-A Papillon · reporté (&lt; 200 $)</td><td class="mute">105,51</td></tr></table></div>`}
+ return ''}
+
+function renderGrid(){
+ const g=document.getElementById('grid'),lock=S==='ok';
+ let h='<thead><tr><th>Employé</th>'+cols.map(c=>`<th>${c[1]}</th>`).join('')+'</tr></thead><tbody>';
+ E.forEach((e,i)=>{h+=`<tr><td><b>${e.n}</b></td>`+cols.map(([k,,s])=>{
+  if(e[k]==null)return '<td class="faint">—</td>';
+  if(k==='p')return `<td class="n"><b>${$(e[k])}</b></td>`;
+  if(k==='r')return `<td class="n mute">${$(e[k])}</td>`;
+  const flag=!lock&&e[k+'f'];const on=sel[0]===i&&sel[1]===k;
+  return `<td class="c n${flag?' flag':''}${on?' on':''}" data-i="${i}" data-k="${k}">${$(e[k])}<span class="src">${lock?'✓ '+s:flag?'à regarder':s}</span></td>`}).join('')+'</tr>'});
+ h+=`</tbody><tfoot><tr><td>Airtable</td><td class="n">503,95</td><td></td><td class="n">1 726,12</td><td class="n">1 108,36</td><td class="n">25,00</td><td class="n">340,21</td><td class="n">21 211,49</td></tr>`;
+ if(S!=='todo'||true){const d=S==='ecart';h+=`<tr class="nethris"><td>Nethris</td><td class="n">${d?'<span class="diff">505,95</span>':'503,95'}</td><td></td><td class="n">1 726,12</td><td class="n">1 108,36</td><td class="n">25,00</td><td class="n">340,21</td><td class="n${d?' diff':''}">${d?'21 271,49':'21 211,49'}</td></tr>`}
+ h+='</tfoot>';g.innerHTML=h;
+ const e=E[sel[0]],k=sel[1];
+ document.getElementById('proof').innerHTML=`<div class="pk"><span class="mute">${e.n}</span><b class="n">${$(e[k])} ${k==='h'?'h':'$'}</b><span class="mute">${{h:'Heures',f:'Férié 1/20',v:'Vacances',m:'Remboursement',c:'Commission'}[k]}</span></div><div class="pv">${srcHtml(e,k)}${lock?'':`<div class="okx"><button class="okb g">✓ OK</button><button class="okb">Corriger</button></div>`}</div>`;
+}
+document.getElementById('grid').addEventListener('click',ev=>{const t=ev.target.closest('td.c');if(t){sel=[+t.dataset.i,t.dataset.k];renderGrid()}});
+
+// congés
+const days=['D 30','L 31','M 1','M 2','J 3','V 4','S 5','D 6','L 7','M 8','M 9','J 10','V 11','S 12'];
+const R=[
+ {n:'Alicia Talbot Lanciault',d:{12:['vac','8 h','Airtable']},req:360,acc:124.22,src:['l-at','A','Airtable › Congés','Vendredi 11 septembre — journée']},
+ {n:'Pierre-Alexandre Papillon',d:{12:['vac','8 h','Boréal']},req:324.80,acc:488.92,src:['l-bo','B','Boréal · feuille de temps','Ven. 11 sept. · code Vacances · 8 h']},
+ {n:'Charles Joachim',d:{12:['vac','8 h','Slack']},req:360,acc:346.23,src:['l-sl','#','Slack · #absences','<div class="slack"><div class="av">C</div><div><b>Charles Joachim</b> <span class="mute">mer. 9 sept.</span><br>Off vendredi le 11 👋</div></div>']},
+ {n:'Philippe Chabot',d:{8:['nul','8 h','Boréal']},req:0,acc:612.40,src:['l-bo','B','Boréal · feuille de temps','Lun. 7 sept. · Vacances 8 h → <b>Fête du Travail</b>, déjà payée en férié']},
+ {n:'Guillaume Lambert',d:{12:['vac','7 h','80 h']},req:313.11,acc:9600,src:['l-bo','B','Total hebdo envoyé','65 h + 8 h férié = 73 h → <b>7 h</b> de vacances pour atteindre 80 h']},
+ {n:'Louis-Bernard Frechette',d:{},req:0,acc:410.00},
+ {n:'Marc-Antoine Plante',d:{},req:0,acc:388.20},
+ {n:'Martin Audesse',d:{},req:0,acc:210.10},
+];
+let csel=0;
+function renderCal(){
+ let ch='<div class="hd"></div>'+days.map((d,i)=>`<div class="hd${i==8?' fe':''}">${d}${i==8?'<small>Férié</small>':''}</div>`).join('')+'<div class="hd">Demandé</div><div class="hd">Solde</div><div class="hd">Payé</div>';
+ R.forEach((r,ri)=>{const short=r.req>r.acc;const on=ri===csel?' on':'';ch+=`<div>${r.n}</div>`+days.map((d,i)=>{const c=r.d[i];
+  if(c&&c[0]=='vac')return `<div class="va${short?' x':''}${on}" data-r="${ri}"><b>${c[1]}</b><small>${c[2]}</small></div>`;
+  if(c&&c[0]=='nul')return `<div class="fe nul${on}" data-r="${ri}"><b><s>${c[1]}</s></b><small>férié</small></div>`;
+  if(i==8)return '<div class="fe"></div>';if(i%7==0||i%7==6)return '<div class="we"></div>';return '<div></div>'}).join('')
+  +`<div class="num">${r.req?$(r.req):'—'}</div><div class="num">${r.acc>5000?'9 600':$(r.acc)}</div><div class="num ${r.req?(short?'warn':'ok'):''}"><b>${r.req?$(Math.min(r.req,r.acc)):'—'}</b>${short?`<small>−${$(r.req-r.acc)}</small>`:''}</div>`});
+ document.getElementById('cal').innerHTML=ch;
+ const r=R[csel],short=r.req>r.acc;
+ document.getElementById('calproof').innerHTML=`<div class="pk"><span class="mute">${r.n}</span><b class="n">${r.req?$(Math.min(r.req,r.acc))+' $':'0,00 $'}</b><span class="${short?'warn':'ok'}">${short?'solde insuffisant':r.req?'couvert':'aucune vacance'}</span></div><div class="pv"><div class="srcbox"><div class="srch"><span class="logo ${r.src[0]}">${r.src[1]}</span>${r.src[2]}<span class="sp"></span><a href="#">Ouvrir ↗</a></div><div style="padding:10px">${r.src[3]}</div></div></div>`;
+}
+document.getElementById('cal').addEventListener('click',ev=>{const t=ev.target.closest('[data-r]');if(t){csel=+t.dataset.r;renderCal()}});
+
+// saisie
+const CK=[['g','Heures','Boréal · 10 / 10'],['g','Kilométrage','aucun'],['g','Remboursements','QuickBooks · 1'],['g','Commissions','Vendeurs · 1'],['g','Congés','5 · Slack vérifié'],['g','Fériés','1 · Fête du Travail'],['a','Feuilles de temps','à envoyer lundi'],['n','Nethris','import mardi']];
+
+function render(){
+ const steps=[['Créée','done'],['Saisie',S==='todo'?'cur':'done'],['Vérifiée',S==='ok'?'done':S==='todo'?'':'cur'],['Feuilles envoyées',S==='ok'?'cur':''],['Nethris',''],['Soumise','']];
+ document.getElementById('steps').innerHTML=steps.map(s=>`<span class="st ${s[1]}"><i>${s[1]==='done'?'✓':''}</i>${s[0]}</span>`).join('');
+ document.getElementById('stpill').innerHTML={todo:'<span class="pill a">À vérifier</span>',ecart:'<span class="pill r">Écart</span>',ok:'<span class="pill g">Approuvée</span>'}[S];
+ document.getElementById('band').className='band '+{todo:'a',ecart:'r',ok:'g'}[S];
+ document.getElementById('band').innerHTML={
+  todo:'<b>4 à regarder</b><span>Daniel · heures — Martin · férié — Alicia, Charles · vacances</span><span class="sp"></span><a href="#" style="color:inherit">Suivant ›</a>',
+  ecart:'<b>Nethris ≠ Airtable · 60,00 $</b><span>Heures : 505,95 dans Nethris, 503,95 ici</span><span class="sp"></span><a href="#" style="color:inherit">Voir la ligne ›</a>',
+  ok:'<b>Approuvée par Charles</b><span>13 oct. · 14 h 05</span><span class="sp"></span><a href="#" style="color:inherit">Rouvrir</a>'}[S];
+ document.getElementById('vpill').innerHTML={todo:'<span class="pill g">Nethris = Airtable</span>',ecart:'<span class="pill r">Nethris ≠ Airtable</span>',ok:'<span class="pill g">✓ 44 chiffres</span>'}[S];
+ document.getElementById('secV').classList.toggle('lock',S==='ok');
+ document.getElementById('chk').innerHTML=CK.map(c=>`<div><span class="dot ${c[0]}">${c[0]==='g'?'✓':''}</span><div><b>${c[1]}</b><div class="mute">${c[2]}</div></div></div>`).join('');
+ document.getElementById('foot').innerHTML=S==='ok'
+  ?'<span class="mute">Prochaine étape</span><span class="sp"></span><button class="btn ghost">Modifier</button><button class="btn">Envoyer les feuilles de temps</button>'
+  :`<span class="mute">${S==='todo'?'4 points ouverts':'Écart à régler'}</span><span class="sp"></span><button class="btn ghost">Modifier</button><button class="btn"${S==='ecart'?' disabled':''}>Approuver</button>`;
+ renderGrid();renderCal();
+}
+document.getElementById('tabs').addEventListener('click',ev=>{const t=ev.target.closest('.tab');if(!t)return;S=t.dataset.s;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));if(S==='ecart')sel=[0,'h'];render()});
+render();
+
+// galerie
+const G=[[E[9],'h','Heures'],[E[6],'h','Heures · décimales'],[E[4],'f','Férié 1/20'],[E[0],'v','Vacances'],[E[4],'m','Remboursement'],[E[5],'c','Commission']];
+document.getElementById('gallery').innerHTML=G.map(([e,k,t])=>`<div style="background:var(--s);border-radius:10px;box-shadow:var(--sh);padding:12px"><div style="font-weight:700;margin-bottom:8px">${t} <span class="mute" style="font-weight:400">· ${e.n.split(' ')[0]}</span></div>${srcHtml(e,k)}</div>`).join('')
+ +R.slice(2,5).map(r=>`<div style="background:var(--s);border-radius:10px;box-shadow:var(--sh);padding:12px"><div style="font-weight:700;margin-bottom:8px">Congé <span class="mute" style="font-weight:400">· ${r.n.split(' ')[0]}</span></div><div class="srcbox"><div class="srch"><span class="logo ${r.src[0]}">${r.src[1]}</span>${r.src[2]}</div><div style="padding:10px">${r.src[3]}</div></div></div>`).join('');
+</script>
+</body></html>

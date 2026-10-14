@@ -1070,7 +1070,7 @@ const FIELD_KINDS = {
         }
       }
       let defaultValue = null
-      if (['text', 'long_text', 'number', 'currency', 'percent', 'url', 'phone', 'duration', 'date', 'checkbox', 'rating'].includes(type)) {
+      if (['text', 'long_text', 'number', 'currency', 'percent', 'url', 'email', 'phone', 'barcode', 'duration', 'date', 'checkbox', 'rating'].includes(type)) {
         defaultValue = normalizeDefaultValue(body?.default_value, type)
       }
       // Affinité SQLite du type : number/currency/percent/duration → REAL,
@@ -1589,7 +1589,8 @@ router.get('/link/:fieldId/options', (req, res) => {
 // 'percent' : REAL portant le nombre de pourcents (45 = 45 %), affiché en
 // « 45 % » ou en barre de progression selon `options.display`.
 // 'rating' : note en étoiles, INTEGER de 0 à 5 (échelle fixe, cf. services/rating.js).
-const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'percent', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'rating', 'attachment'])
+// 'barcode' : code-barres / QR, TEXT tel que lu par la douchette (Barcode d'Airtable).
+const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'percent', 'url', 'email', 'phone', 'barcode', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'rating', 'attachment'])
 
 // Types qui acceptent un nombre de décimales (une durée a son propre format,
 // une note est un entier).

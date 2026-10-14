@@ -5,6 +5,7 @@ import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { completeFromAutomation } from '../services/recurringWork.js'
 import {
   monthEndState, listProvisions, getProvision, updateProvision,
   updateProvisionMonth, provisionSeries, publishProvisionMonth, rdHours,
@@ -12,13 +13,13 @@ import {
 } from '../services/monthEnd.js'
 import { importRdHours, timesheetFileName } from '../services/rdTimesheetImport.js'
 import { rdMonthDays } from '../services/rdTimesheetSheetSync.js'
-import { monthEndChecks } from '../services/monthEndChecks.js'
+import { monthEndChecks, setAsfcQuietMonth } from '../services/monthEndChecks.js'
 import { monthEndAutomationConfig } from '../services/monthEndAutomation.js'
 import { buildFpaMonth } from '../services/prepaid.js'
 import { syncMonthEndTask } from '../services/monthEndTask.js'
 import {
   listReceipts, addReceipt, updateReceipt, deleteReceipt,
-  subsidyReconciliation, regularizeSubsidy, detectBankReceipts,
+  subsidyReconciliation, regularizeSubsidy, detectBankReceipts, receivableBalance, clearReceivable,
 } from '../services/wageSubsidyReceipts.js'
 import {
   piecesMonthState, recomputePiecesMonth, updatePiecesMonth,
@@ -49,6 +50,18 @@ router.get('/month/:month/checks', async (req, res) => {
   try {
     const { googleAccountEmail } = monthEndAutomationConfig()
     res.json(await monthEndChecks(req.params.month, { googleAccountEmail }))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Relevé ASFC : marquer un mois « aucune transaction » (rien à importer).
+router.put('/month/:month/asfc-quiet', (req, res) => {
+  if (!isMonth(req.params.month)) return res.status(400).json({ error: 'month invalide (YYYY-MM)' })
+  try {
+    const check = setAsfcQuietMonth(req.params.month, !!req.body?.quiet)
+    syncMonthEndTask()
+    res.json(check)
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -160,6 +173,25 @@ router.post('/provisions/:id/regularize', async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
+})
+
+// Fin de la subvention (tâche « vider le compte » des travaux) : solde QB de la
+// créance, puis l'écriture qui le ramène à zéro.
+router.get('/provisions/:id/receivable', async (req, res) => {
+  try { res.json(await receivableBalance(req.params.id)) } catch (e) { res.status(400).json({ error: e.message }) }
+})
+// Options du même clic : arrêter la provision mensuelle, cocher la tâche.
+router.post('/provisions/:id/clear-receivable', async (req, res) => {
+  try {
+    const { stop_provision = false, task_id = null } = req.body || {}
+    const out = await clearReceivable(req.params.id, { userId: req.user.id })
+    if (stop_provision) { updateProvision(req.params.id, { active: false }); out.provision_stopped = true }
+    if (task_id) {
+      const note = `écriture QB #${out.qb_je_id}${out.provision_stopped ? ' · provision LB arrêtée' : ''}`
+      out.task_done = !!completeFromAutomation(task_id, { note })
+    }
+    res.json(out)
+  } catch (e) { res.status(400).json({ error: e.message }) }
 })
 
 // ── Heures R&D ──────────────────────────────────────────────────────────────

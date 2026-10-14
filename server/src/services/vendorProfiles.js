@@ -304,7 +304,7 @@ const MERGE_FILL_COLUMNS = [
   'default_transaction_type', 'default_tax_code_id_cad', 'default_tax_code_id_usd',
   'payment_terms_days',
   'usual_currency', 'payment_method', 'qb_category', 'description', 'particularites',
-  'payment_note',
+  'payment_note', 'invoice_portal_url', 'invoice_login', 'due_weekday',
 ]
 
 export function mergeVendorProfiles(targetId, sourceIds) {
@@ -420,6 +420,17 @@ export function dismissDuplicateGroup(ids) {
 
 // Échéance calculée : date d'échéance imprimée si extraite, sinon date du document
 // + termes (extraits du document, sinon termes par défaut du profil). null si rien.
+// Prochain <weekday> (0 = dimanche … 6 = samedi) à partir de fromDate inclus :
+// un mardi donne ce mardi-là, un mercredi le mardi suivant.
+export function nextWeekdayDue(weekday, fromDate) {
+  const wd = Number(weekday)
+  if (!Number.isInteger(wd) || wd < 0 || wd > 6 || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate || '')) return null
+  const [y, m, d] = fromDate.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d))
+  dt.setUTCDate(dt.getUTCDate() + ((wd - dt.getUTCDay() + 7) % 7))
+  return dt.toISOString().slice(0, 10)
+}
+
 export function computeDueDate({ dueDate, receiptDate, termsDays }) {
   if (dueDate && /^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return dueDate
   if (!receiptDate || !/^\d{4}-\d{2}-\d{2}$/.test(receiptDate)) return null

@@ -6,8 +6,9 @@ import db from '../db/database.js'
 import { emitEntity, touchBankTxns } from './realtimeEmitters.js'
 import { logSync } from './syncLog.js'
 import { buildTransportInvoice } from './transportInvoice.js'
-import { buildVendorExtractionContext, findVendorProfile, computeDueDate } from './vendorProfiles.js'
+import { buildVendorExtractionContext, findVendorProfile, computeDueDate, nextWeekdayDue } from './vendorProfiles.js'
 import { TRANSACTION_TYPES, getTransactionType } from './fiscalStatus.js'
+import { guessMissingTransactionType } from './fiscalAiGuess.js'
 import { resolveServicePeriod, annotateItemsWithPeriod, annotateDescriptionWithPeriod } from './servicePeriod.js'
 import { autoLinkReceiptItems } from './purchaseLiaMatch.js'
 import { aiLiaPicks } from './purchaseLiaAi.js'
@@ -19,6 +20,8 @@ import { round2Safe as round2 } from '../utils/money.js'
 import { consolidateSingleItemCharges, extractChargeLines } from './saleReceiptSingleItem.js'
 import { canonicalVendorName, isAmazonStoreDocument, AMAZON_STORE_VENDOR } from './vendorIdentity.js'
 import { extractCardLast4 } from './paymentCards.js'
+import { TZ } from '../utils/datetime.js'
+import { preferInvoiceNumber, archiveSameMessageTwin } from './saleReceiptTwin.js'
 
 // Ré-exportés ici pour compatibilité : ces filets vivent désormais dans servicePeriod.js
 // (le moteur de période complet), qui est aussi utilisé au moment de la publication QB.
@@ -77,7 +80,7 @@ Extrait toutes les informations disponibles et retourne un JSON valide avec exac
   "receipt_number": "numéro de reçu/facture ou null",
   "general_description": "résumé d'UNE seule ligne décrivant l'objet PRINCIPAL du document — ce qui a été acheté, en termes généraux — ou null",
   "service_period": "période de service couverte par la facture, libellé concis, ou null",
-  "items": [{"description": "...", "quantity": 1, "unit_price": 0.00, "total": 0.00, "taxable": true}],
+  "items": [{"description": "...", "quantity": 1, "pack_size": null, "unit_price": 0.00, "total": 0.00, "taxable": true}],
   "shipments": [{"carrier": "...", "destination_province": "QC|ON|...|null", "destination_country": "CA|US|...", "total": 0.00, "taxes": [{"label": "TPS|TVQ|TVH|PST|...", "amount": 0.00}]}],
   "subtotal": 0.00,
   "tps": 0.00,
@@ -127,9 +130,14 @@ RÈGLE — "service_period" (période couverte par la facture) :
 - N'INVENTE PAS de période : si le document ne couvre pas une période de service (achat de matériel, pièces, repas, transport ponctuel…) ou si aucune période n'est identifiable, mets null. La date de facture seule n'est PAS une période.
 - Quand une période existe, elle doit se LIRE directement dans les descriptions, pas seulement dans "service_period" : ajoute-la en suffixe à la fin de la "general_description" ET à la fin de la "description" des articles concernés, sous la forme « … — juillet 2026 » (ex. general_description : « Abonnement téléphonie IP — juillet 2026 »). Si des lignes couvrent des périodes DIFFÉRENTES (ex. prorata du mois en cours + mois suivant d'avance), mets la période propre à chaque ligne dans SA description, et dans "service_period" la période globale couverte par la facture.
 
+RÈGLE — "description" DE CHAQUE LIGNE (LIBELLÉ IMPRIMÉ, TEL QUEL) :
+- Recopie le libellé de l'article TEL QU'IMPRIMÉ par le fournisseur, dans SA langue : ne le traduis pas, ne le reformule pas, ne l'enrichis pas. Garde la référence / le n° de catalogue en tête s'il est imprimé (« 92000A116 — Pan Head Phillips Screw, 18-8 Stainless Steel, M3 x 0.5 mm Thread, 6 mm Long, Packs of 100 »).
+- Garde la mention de paquet (« Packs of 100 ») dans le libellé. Seul ajout permis : le suffixe de période de service (règle "service_period").
+
 RÈGLE — QUANTITÉ ET PRIX UNITAIRE DE CHAQUE LIGNE (NE JAMAIS OMETTRE) :
 - "quantity" et "unit_price" sont OBLIGATOIRES dès que le document les imprime, même dans une colonne étroite, abrégée (« Qté », « Qty », « Ship Qty », « Units », « Ea », « x100 ») ou collée au libellé (« PCB Module x 100 », « 100 un. @ 89,91 »). Ne les laisse à null QUE si le document n'affiche vraiment ni quantité ni prix unitaire pour cette ligne (frais forfaitaire, service au montant global).
 - La quantité est le NOMBRE D'UNITÉS FACTURÉES sur cette ligne, jamais un numéro d'article, un code, une taille de lot imprimée dans le nom de la pièce, ni un poids. Reste un nombre nu (100, pas « 100 pcs »).
+- VENDU AU PAQUET / À LA BOÎTE (« Packs of 100 », « Pkg of 25 », « paquet de 100 », « Box of 50 », « 10/pk ») : "quantity" = le nombre de PAQUETS facturés (tel qu'imprimé dans la colonne quantité), "unit_price" = le prix d'UN paquet, et "pack_size" = le nombre d'unités par paquet (100). Ex. McMaster « 92000A116 … Packs of 100 », qté 2, 10,24 → quantity 2, pack_size 100, unit_price 10,24. "pack_size" = null quand l'article se vend à l'unité.
 - Cohérence : quantity × unit_price doit égaler items[].total (à un cent près). Si la facture n'imprime que deux des trois valeurs, DÉDUIS la troisième et écris-la (total ÷ quantité = prix unitaire).
 - Ces deux champs servent à rapprocher automatiquement la ligne du bon de commande interne correspondant (une commande de 100 unités se reconnaît à sa ligne de 100 unités). Une quantité omise alors qu'elle est imprimée fait échouer ce rapprochement : relis la ligne avant de mettre null.
 
@@ -186,7 +194,7 @@ RÈGLE — "transaction_type" (classification fiscale TPS/TVQ du document) :
 ${TX_TYPE_CATALOG}
 - Cohérence obligatoire avec les taxes du document : un type au statut Taxable suppose que des taxes (TPS et/ou TVQ) sont facturées ; un type Détaxé/Exonéré/Hors-champ suppose 0 $ de taxe. Si ta classification contredit les montants que tu as extraits, reconsidère-la.
 - Indices utiles : fournisseur canadien qui facture TPS + TVQ → "achat_local_taxable" (ou "repas_representation" si restaurant/traiteur/livraison de repas). Fournisseur étranger, aucune taxe → "achat_etranger_bien_etranger" pour un bien physique expédié de l'étranger, "achat_num_etranger_non_inscrit" pour un service numérique. Fournisseur numérique (SaaS/cloud) qui facture 0 $ en mentionnant nos numéros de TPS/TVQ, « reverse charge » ou « tax exempt » → "achat_num_inscrit_b2b_exempte". Douanes/courtier qui perçoit la TPS 5 % seule à l'importation → "achat_pieces_etranger_douane".
-- En cas de doute réel entre plusieurs types, mets null — ne devine pas.
+- Donne TOUJOURS ton meilleur choix, même pour un fournisseur inconnu (null seulement pour un encaissement) : c'est une présélection que l'utilisateur confirme.
 
 RÈGLE — ARGENT REÇU ("document_kind") :
 - Par défaut "achat" : nous payons un fournisseur.
@@ -639,6 +647,10 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     // pas une consigne — le document reste la source des montants.
     if (bankContext) vendorContext = [vendorContext, bankContext].filter(Boolean).join('\n\n')
     let extracted = await extractWithOpenAI(pageList, vendorContext)
+    // Reçu qui imprime numéro de facture ET numéro de reçu : on garde celui de la
+    // facture, pour que la facture et son reçu se reconnaissent (saleReceiptTwin.js).
+    const invoiceNumber = preferInvoiceNumber(extracted.receipt_number, extracted._sourceText)
+    if (invoiceNumber) extracted.receipt_number = invoiceNumber
 
     // Facture Amazon Web Services : chaque montant y est imprimé dans DEUX devises
     // (USD facturé / CAD payé). L'IA panache l'une avec l'autre — on réancre donc
@@ -718,6 +730,13 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     let profile = null
     try { profile = findVendorProfile(company) } catch {}
     if (profile) company = profile.name
+    // Facture sans libellé lisible (ex. Plaid : une ligne au montant seul) : la
+    // description du service tenue sur la fiche fournisseur prend la place vide.
+    const serviceLabel = (profile?.description || '').trim()
+    if (serviceLabel) {
+      if (!(extracted.general_description || '').trim()) extracted.general_description = serviceLabel
+      items = (items || []).map(it => ((it?.description || '').trim() ? it : { ...it, description: serviceLabel }))
+    }
 
     if (!shipments.length) {
       // Achats LIA : rattachement d'office des lignes dont l'appariement au moteur de
@@ -824,11 +843,15 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     const extractedTerms = Number.isInteger(extracted.payment_terms_days) && extracted.payment_terms_days > 0
       ? extracted.payment_terms_days : null
     const termsDays = extractedTerms ?? profile?.payment_terms_days ?? null
-    const dueDate = computeDueDate({
-      dueDate: extracted.due_date || null,
-      receiptDate: extracted.receipt_date || null,
-      termsDays,
-    })
+    // Fournisseur payé un jour fixe (BTTH : le mardi) : l'échéance est ce jour-là,
+    // aujourd'hui ou le suivant — même règle qu'à la publication QuickBooks.
+    const dueDate = (profile?.due_weekday != null
+      && nextWeekdayDue(profile.due_weekday, new Date().toLocaleDateString('en-CA', { timeZone: TZ })))
+      || computeDueDate({
+        dueDate: extracted.due_date || null,
+        receiptDate: extracted.receipt_date || null,
+        termsDays,
+      })
     // Classification fiscale proposée par l'IA — validée contre le référentiel (clé
     // inconnue ou type « vente » → ignorée). Signal « document » de fiscalDetection.js.
     const aiTxType = getTransactionType(extracted.transaction_type)
@@ -1019,6 +1042,18 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       console.warn(`alignReceiptDate ${saleReceiptId}: ${e.message}`)
     }
 
+    // Facture + reçu du même achat dans le même courriel : une seule pièce reste active.
+    try {
+      const twinId = archiveSameMessageTwin(saleReceiptId)
+      if (twinId) {
+        try { (await import('./bankReconciliation.js')).moveBankLinkOffArchived(saleReceiptId) } catch { /* best effort */ }
+        console.log(`Extraction ${saleReceiptId}: même achat que ${twinId} (même courriel) — archivé`)
+        const twin = fetchSaleReceiptRow(twinId)
+        if (twin) emitEntity('sale_receipt', 'updated', twinId, twin, userId)
+      }
+    } catch (e) {
+      console.warn(`Twin check ${saleReceiptId}: ${e.message}`)
+    }
     // Détection d'anomalies (doublons, montant hors norme, devise) dès l'extraction —
     // best effort : une erreur ici ne doit pas faire échouer l'extraction.
     try {
@@ -1047,6 +1082,11 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     }
     const updated = fetchSaleReceiptRow(saleReceiptId)
     if (updated) emitEntity('sale_receipt', 'updated', saleReceiptId, updated, userId)
+    // Type de taxe resté indéterminé : l'IA le choisit sur la nature de l'achat.
+    guessMissingTransactionType(saleReceiptId).then((key) => {
+      const row = key && fetchSaleReceiptRow(saleReceiptId)
+      if (row) emitEntity('sale_receipt', 'updated', saleReceiptId, row, userId)
+    }).catch(() => {})
     logSync('sale_receipt_extraction', trigger, { status: 'success', modified: 1, durationMs: Date.now() - startedAt })
   } catch (err) {
     console.error('Receipt extraction error:', err.message)
@@ -1056,4 +1096,21 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     if (errored && !errored.deleted_at) emitEntity('sale_receipt', 'updated', saleReceiptId, errored, userId)
     logSync('sale_receipt_extraction', trigger, { status: 'error', error: `${saleReceiptId}: ${err.message}`, durationMs: Date.now() - startedAt })
   }
+}
+
+// Reprise des extractions fauchées par un redémarrage du serveur : l'extraction
+// tourne en tâche de fond dans le process, un redémarrage la tue et le document
+// restait « en traitement » pour toujours (la relance refuse un document en cours).
+// Au démarrage, tout document encore « processing » est forcément orphelin.
+export function resumeStuckReceiptExtractions(uploadsDir) {
+  const rows = db.prepare(`SELECT id, filename, file_type, extra_pages FROM sale_receipts
+    WHERE status='processing' AND deleted_at IS NULL AND filename IS NOT NULL`).all()
+  for (const row of rows) {
+    let extra = []
+    try { extra = JSON.parse(row.extra_pages || '[]') } catch {}
+    const pages = [row, ...extra].map(p => ({ filePath: join(uploadsDir, p.filename), fileExt: p.file_type }))
+    console.log(`[receipts] reprise de l'extraction interrompue ${row.id}`)
+    runExtractionAndUpdate({ saleReceiptId: row.id, pages, trigger: 'scheduled' })
+  }
+  return rows.length
 }

@@ -7,6 +7,7 @@
 // réponse aux défis 2FA et consultation de l'historique des tournées.
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
+import * as fsSync from 'fs'
 import { readFileSync, existsSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -447,6 +448,44 @@ router.post('/session-bridge/document', async (req, res) => {
   const { ingestReceiptBuffer } = await import('../services/receiptIngest.js')
   const r = ingestReceiptBuffer({ buffer, originalName, ext, source: 'navigateur', userId: req.user?.id || null })
   res.json({ ok: true, status: r.status, id: r.id })
+})
+
+// « Capture pour Claude » : une capture d'écran glissée sur le module atterrit
+// dans uploads/claude-captures/ — l'agent la lit là (latest.<ext> = la dernière).
+// Le Mac n'envoie ses captures que pendant une session Claude ouverte sur l'ERP :
+// un processus « claude » interactif (relié à un terminal) dont le dossier est
+// le dépôt. Les exécutions de la file de travaux n'ont pas de terminal.
+const ERP_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+function claudeErpSessionOpen() {
+  const { readdirSync, readFileSync: read, readlinkSync } = fsSync
+  for (const pid of readdirSync('/proc').filter(d => /^\d+$/.test(d))) {
+    try {
+      if (read(`/proc/${pid}/comm`, 'utf8').trim() !== 'claude') continue
+      const cwd = readlinkSync(`/proc/${pid}/cwd`)
+      if (cwd !== ERP_ROOT && !cwd.startsWith(`${ERP_ROOT}/`)) continue
+      if (readlinkSync(`/proc/${pid}/fd/0`).startsWith('/dev/pts/')) return true
+    } catch { /* processus disparu ou illisible */ }
+  }
+  return false
+}
+router.get('/session-bridge/screenshot/active', (req, res) => {
+  res.json({ active: claudeErpSessionOpen() })
+})
+
+router.post('/session-bridge/screenshot', async (req, res) => {
+  const ext = DOC_EXT[String(req.body?.mime || '').toLowerCase()]
+  if (!ext || ext === '.pdf') return res.status(400).json({ error: 'Image attendue' })
+  const buffer = Buffer.from(String(req.body?.data || ''), 'base64')
+  if (buffer.length < 100) return res.status(400).json({ error: 'Image vide' })
+  const { mkdirSync, writeFileSync, appendFileSync } = await import('fs')
+  const dir = uploadsPath('claude-captures')
+  mkdirSync(dir, { recursive: true })
+  const name = `${new Date().toISOString().replace(/[:.]/g, '-')}${ext}`
+  writeFileSync(join(dir, name), buffer)
+  writeFileSync(join(dir, `latest${ext}`), buffer)
+  const note = String(req.body?.note || '').replace(/[\r\n]+/g, ' ').slice(0, 500)
+  appendFileSync(join(dir, 'index.log'), `${name}\t${req.user?.email || ''}\t${note}\n`)
+  res.json({ ok: true, name })
 })
 
 // Lecture des profils Instagram par le module, depuis un onglet instagram.com

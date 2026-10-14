@@ -19,12 +19,14 @@ import { syncReceiptAnomalies, receiptObsolescence } from '../services/transacti
 import { normalizeUploadName } from '../utils/uploadFileName.js'
 import { listTransactionTypes } from '../services/fiscalStatus.js'
 import { resolveFiscalDetection } from '../services/fiscalDetection.js'
+import { guessMissingTransactionType } from '../services/fiscalAiGuess.js'
 import { findVendorProfile, serializeProfile, profileDefaultsForCurrency } from '../services/vendorProfiles.js'
 import { matchCardForReceipt } from '../services/paymentCards.js'
 import { matchReceiptItems, completeLiaDescription } from '../services/purchaseLiaMatch.js'
 import { aiLiaPicks } from '../services/purchaseLiaAi.js'
 import { describeLinkedPurchases } from '../services/purchaseLinkAudit.js'
 import { detectPrepaidStatement, attachStatementToMonthQb, monthLabel } from '../services/prepaidStatementAttach.js'
+import { attachReceiptToExistingQb } from '../services/receiptAttachToExisting.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
@@ -202,7 +204,15 @@ router.get('/:id', (req, res) => {
   const row = db.prepare(`SELECT * FROM ${readRelation('sale_receipts')} WHERE id=? AND deleted_at IS NULL`)
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json({ ...serializeRow(row), bank_txn: bankLineFor(req.params.id) })
+  const out = serializeRow(row)
+  // Aucun type de taxe détecté : l'IA en choisit un, la fiche se met à jour seule.
+  if (!out.fiscal_detection?.transaction_type && !row.quickbooks_id) {
+    guessMissingTransactionType(row.id).then((key) => {
+      const fresh = key && fetchSaleReceiptRow(row.id)
+      if (fresh) emitEntity('sale_receipt', 'updated', row.id, fresh)
+    }).catch(() => {})
+  }
+  res.json({ ...out, bank_txn: bankLineFor(req.params.id) })
 })
 
 // LA LIGNE DU RELEVÉ de ce document, quand le rapprochement l'a appariée. Elle
@@ -304,6 +314,9 @@ router.patch('/:id', (req, res) => {
               // recopié sur la ligne du reçu.
               description: completeLiaDescription(it.description == null ? '' : String(it.description)),
               quantity:    num(it.quantity),
+              // Unités par paquet (« Packs of 100 ») : la quantité comparée à l'achat LIA
+              // est quantity × pack_size. null = vendu à l'unité.
+              pack_size:   num(it.pack_size),
               unit_price:  signed(it.unit_price),
               total:       signed(it.total),
               // Code de taxe QB par ligne (Id QuickBooks) — facultatif. Vide/null =
@@ -647,6 +660,25 @@ router.post('/:id/attach-to-month-qb', async (req, res) => {
     const updated = fetchSaleReceiptRow(req.params.id)
     if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
     res.json({ ok: true, ...summary })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Document en trop d'une dépense déjà publiée : son fichier est joint à la
+// transaction QuickBooks existante, puis il est archivé (rien n'est republié).
+router.post('/:id/attach-to-existing-qb', async (req, res) => {
+  try {
+    const r = await attachReceiptToExistingQb(req.params.id)
+    db.prepare("UPDATE sale_receipts SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
+      .run(req.params.id)
+    logReceiptEvent(req.params.id, req.user?.id, 'attached_to_existing',
+      `Joint à la transaction QuickBooks #${r.qb_id} déjà comptabilisée${r.uploaded ? '' : ' (fichier déjà présent)'} — archivé`)
+    try { moveBankLinkOffArchived(req.params.id) } catch (e) { console.warn(`Bank relink ${req.params.id}: ${e.message}`) }
+    try { syncReceiptAnomalies(req.params.id) } catch (e) { console.warn(`Anomaly re-scan ${req.params.id}: ${e.message}`) }
+    const updated = fetchSaleReceiptRow(req.params.id)
+    if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+    res.json({ ok: true, ...r })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

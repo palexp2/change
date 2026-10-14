@@ -1,14 +1,14 @@
-// Vérifie les trois façons de faire entrer un relevé dans la fenêtre de dépôt
-// de /rapprochement : cliquer, GLISSER un fichier, et COLLER une capture
-// (Ctrl+V). Demande de Charles : « je veux pouvoir aussi glisser un fichier…
+// Vérifie les façons de déposer un relevé sur /rapprochement, sans fenêtre
+// (maquette A2, 2026-10-13) : GLISSER un fichier n'importe où, et COLLER une
+// capture (Ctrl+V). Demande de Charles : « je veux pouvoir aussi glisser un fichier…
 // pas juste la sélection dans les fichiers ».
 //
 // Les deux derniers gestes n'existent que dans le navigateur — aucun test
 // unitaire ne peut les voir. On simule un vrai DataTransfer (drop) puis un vrai
 // ClipboardEvent (paste), et on vérifie que le fichier part bien à l'API.
 //
-// Aucune écriture dans bank_transactions : on s'arrête à l'aperçu, et on
-// supprime les dépôts créés en fin de test.
+// Aucune écriture dans bank_transactions : l'import automatique est coupé
+// (route commit interceptée), et on supprime les dépôts créés en fin de test.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -35,6 +35,8 @@ describe('Dépôt de relevés — glisser et coller', () => {
     ctx = await browser.newContext()
     if (TOKEN) await ctx.addInitScript((t) => localStorage.setItem('erp_token', t), TOKEN)
     page = await ctx.newPage()
+    // Ce qui est sûr s'importe tout seul : jamais pendant un test.
+    await page.route('**/bank/statements/*/commit', (r) => r.abort())
     // Toute création de dépôt est notée pour être supprimée à la fin.
     page.on('response', async (r) => {
       if (r.url().includes('/bank/statements/upload') && r.ok()) {
@@ -49,11 +51,7 @@ describe('Dépôt de relevés — glisser et coller', () => {
       await page.click('button[type="submit"]')
       await page.waitForURL('**/rapprochement**')
     }
-    // Le dépôt de relevé vit dans le menu « ⋯ » de la barre d'outils depuis
-    // que la page n'a plus d'en-tête.
-    await page.click('[data-testid="rapprochement-more"]')
-    await page.click('[data-testid="statement-drop"]')
-    await page.waitForSelector('text=Glissez vos fichiers')
+    await page.waitForSelector('[data-testid="rapprochement-more"]')
   })
 
   after(async () => {
@@ -68,31 +66,27 @@ describe('Dépôt de relevés — glisser et coller', () => {
     await browser?.close()
   })
 
-  test('glisser un fichier dans la fenêtre le dépose', async () => {
+  test('glisser un fichier sur la page le dépose', async () => {
+    const before = created.length
     await page.evaluate((csv) => {
       const dt = new DataTransfer()
       dt.items.add(new File([csv], 'Desjardins CAD - glisse.csv', { type: 'text/csv' }))
-      const zone = document.querySelector('[data-testid="statement-drop-zone"]')
-      zone.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }))
-      zone.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }))
+      window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }))
+      window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true }))
     }, CSV)
-    await page.waitForSelector('text=Desjardins CAD - glisse.csv', { timeout: 20000 })
-    assert.ok(created.length >= 1, 'le fichier glissé est parti à l’API')
+    for (let i = 0; i < 40 && created.length === before; i++) await page.waitForTimeout(250)
+    assert.ok(created.length > before, 'le fichier glissé est parti à l’API')
   })
 
-  test('glisser met la zone en évidence, sinon rien ne dit que le geste est permis', async () => {
+  test('glisser voile la page, sinon rien ne dit que le geste est permis', async () => {
     await page.evaluate(() => {
       const dt = new DataTransfer()
       dt.items.add(new File(['x'], 'survol.csv', { type: 'text/csv' }))
-      document.querySelector('[data-testid="statement-drop-zone"]')
-        .dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }))
+      window.dispatchEvent(new DragEvent('dragenter', { dataTransfer: dt, bubbles: true }))
     })
-    await page.waitForSelector('text=Lâchez ici', { timeout: 5000 })
-    // On relâche le survol pour ne pas laisser la zone allumée.
-    await page.evaluate(() => {
-      document.querySelector('[data-testid="statement-drop-zone"]')
-        .dispatchEvent(new DragEvent('dragleave', { bubbles: true }))
-    })
+    await page.waitForSelector('text=Lâcher', { timeout: 5000 })
+    // On relâche le survol pour ne pas laisser la page voilée.
+    await page.evaluate(() => window.dispatchEvent(new DragEvent('dragleave', { bubbles: true })))
   })
 
   test('coller une capture (Ctrl+V) la dépose sans passer par un fichier', async () => {
@@ -107,8 +101,7 @@ describe('Dépôt de relevés — glisser et coller', () => {
       dt.items.add(new File([bytes], 'image.png', { type: 'image/png' }))
       window.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }))
     })
-    await page.waitForFunction((n) => document.body.innerText.includes('capture-'), null, { timeout: 20000 })
-      .catch(() => {})
+    for (let i = 0; i < 40 && created.length === before; i++) await page.waitForTimeout(250)
     assert.ok(created.length > before, 'la capture collée est partie à l’API')
   })
 })

@@ -14,6 +14,7 @@ import { useElementPicker, buildPageContext, PickerBanner } from '../lib/pageCon
 // placement dans la file : une demande déposée ici part dès qu'un poste est libre,
 // à la fin de la file.
 import { useAutocorrect } from '../lib/useAutocorrect.js'
+import { FeedbackQuestions, trackQuestion } from './FeedbackQuestions.jsx'
 
 // FAB discret « Modifier le système », monté dans Layout donc visible sur
 // toutes les pages. Une seule destination : la demande est déposée comme prompt
@@ -244,6 +245,8 @@ export function FeedbackFab({ contextRecord = '' }) {
         // Opus épinglé pour toutes les demandes (plus de choix de modèle).
         model: 'opus',
       })
+      // Question : suivie par le petit bouton au-dessus du FAB jusqu'à « Terminé ».
+      if (draft.mode === 'question') trackQuestion(created?.id)
       // Pas d'écran de confirmation : la fenêtre est déjà refermée, le toast
       // accuse réception dès que le serveur a confirmé le dépôt.
       addToast({
@@ -289,6 +292,8 @@ export function FeedbackFab({ contextRecord = '' }) {
       >
         <MessageSquarePlus size={18} />
       </button>
+
+      <FeedbackQuestions hidden={open || picking} />
 
       {/* Bandeau flottant de l'étape « cliquer sur un élément » (partagé). */}
       {picking && <PickerBanner onSkip={skipPicking} onCancel={cancelPicking} />}

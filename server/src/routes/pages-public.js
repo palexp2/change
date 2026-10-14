@@ -19,6 +19,8 @@ function view(page, acceptance = null, contact = null) {
     existing: isExistingCustomer(contact?.id || acceptance?.contact_id),
     accepted: acceptance ? { id: acceptance.id, name: acceptance.name, at: acceptance.at } : null,
     has_payment: !!acceptance && page.config.hasPayment,
+    // URL de paiement directe : le bloc y part sans second appel après « Accepter ».
+    pay_url: acceptance && page.config.hasPayment ? `${APP_URL}/erp/pay/page/${encodeURIComponent(page.token)}/${acceptance.id}` : null,
   }
 }
 

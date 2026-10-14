@@ -15,7 +15,7 @@ const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'aoû
 const MONTHS_LONG = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
 const monthShort = (ym) => MONTHS[Number(ym.slice(5, 7)) - 1]
 const monthLong = (ym) => `${MONTHS_LONG[Number(ym.slice(5, 7)) - 1]} ${ym.slice(0, 4)}`
-const day = (d) => (d ? `${Number(d.slice(8, 10))} ${MONTHS[Number(d.slice(5, 7)) - 1]}` : '')
+const day = (d) => (d ? String(d).slice(0, 10) : '')
 const money = (v, cur) => (v == null ? '—' : `${v < 0 ? '−' : ''}${Math.abs(v).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $${cur && cur !== 'CAD' ? ` ${cur}` : ''}`)
 const initials = (name) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
 
@@ -82,7 +82,7 @@ function AccountRail({ accounts, accountId, sheet, ready, onMonth }) {
   )
 }
 
-const GRID = 'grid grid-cols-[64px_minmax(0,1fr)_112px_132px_64px_minmax(0,1fr)_112px] items-center'
+const GRID = 'grid grid-cols-[84px_minmax(0,1fr)_112px_132px_84px_minmax(0,1fr)_112px] items-center'
 
 // Pastilles des cas bizarres (S3) : une couleur par groupe.
 const GROUP_TONES = ['bg-violet-700', 'bg-cyan-700', 'bg-rose-700', 'bg-teal-700', 'bg-orange-700']

@@ -107,17 +107,18 @@ describe('Douanes — relevé CARM (ASFC)', () => {
   })
 
   test('import par l\'UI : coller une ligne et importer', async () => {
-    await page.click('[data-testid="douanes-import-open"]')
-    await page.waitForSelector('[data-testid="douanes-import-text"]', { timeout: 10000 })
-    await page.fill('[data-testid="douanes-import-text"]',
-      `2026-08-01\tInterest\t${MARKER}-3\t9 876 001,99\t9 876 001,99`)
+    // Pas de bouton : un relevé collé n'importe où ouvre la modale déjà remplie.
+    await page.evaluate((text) => {
+      const dt = new DataTransfer()
+      dt.setData('text/plain', text)
+      document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }))
+    }, `2026-08-01\tInterest\t${MARKER}-3\t9 876 001,99\t9 876 001,99`)
+    await page.waitForSelector('[data-testid="douanes-import-preview"]', { timeout: 10000 })
     await page.click('[data-testid="douanes-import-submit"]')
     await page.waitForSelector(`[data-testid="douanes-table"] >> text=${MARKER}-3`, { timeout: 15000 })
   })
 
   test('import par l\'UI : glisser-déposer un fichier CSV importe correctement', async () => {
-    await page.click('[data-testid="douanes-import-open"]')
-    await page.waitForSelector('[data-testid="douanes-import-dropzone"]', { timeout: 10000 })
     const csv = [
       'Transaction Date,Transaction Type,Transaction Number,Amount,Balance',
       `2026-08-05,Interest,${MARKER}-4,"9,876,002.50","9,876,002.50"`,
@@ -128,7 +129,8 @@ describe('Douanes — relevé CARM (ASFC)', () => {
       dt.items.add(file)
       return dt
     }, csv)
-    await page.dispatchEvent('[data-testid="douanes-import-dropzone"]', 'drop', { dataTransfer })
+    // Lâché n'importe où sur l'écran (ici sur la table du relevé).
+    await page.dispatchEvent('[data-testid="douanes-table"]', 'drop', { dataTransfer })
     await page.waitForSelector('[data-testid="douanes-import-preview"]', { timeout: 10000 })
     await page.click('[data-testid="douanes-import-submit"]')
     await page.waitForSelector(`[data-testid="douanes-table"] >> text=${MARKER}-4`, { timeout: 15000 })

@@ -187,7 +187,13 @@ export function periodLabel(cadence, date = new Date()) {
     case 'hebdo':
     case 'bihebdo':     return `semaine ${isoWeek(day).week}`
     case 'mensuel':     return `${monthName} ${y}`
-    case 'trimestriel': return `T${Math.floor((m - 1) / 3) + 1} ${y}`
+    case 'trimestriel': {
+      // Les mois couverts, en clair : « T3 2026 » seul obligeait à recompter.
+      const q = Math.floor((m - 1) / 3)
+      const mon = i => new Intl.DateTimeFormat('fr-CA', { month: 'short', timeZone: 'UTC' })
+        .format(new Date(Date.UTC(y, i, 1))).replace('.', '')
+      return `T${q + 1} ${y} (${mon(q * 3)}–${mon(q * 3 + 2)})`
+    }
     case 'annuel':      return String(y)
     default:            return 'à faire une fois'
   }
@@ -267,16 +273,26 @@ export function shiftPeriodKey(cadence, periodKey, n) {
 }
 
 /**
- * Date d'échéance d'une période mensuelle quand un jour du mois est fixé. Le
- * jour est ramené au dernier jour du mois (« le 31 » en février = le 28/29),
- * sinon l'échéance tomberait dans le mois suivant.
+ * Date d'échéance d'une période quand un jour du mois est fixé. Le jour est
+ * ramené au dernier jour du mois (« le 31 » en février = le 28/29).
+ *  • mensuel : ce jour-là, dans le mois même ;
+ *  • trimestriel / annuel : ce jour-là, dans le mois qui SUIT la fin de la
+ *    période — c'est la forme des échéances gouvernementales (rapport de taxes
+ *    du T3 dû le 31 octobre).
  */
 export function periodDueDate(cadence, periodKey, dueDay) {
-  if (cadence !== 'mensuel' || !dueDay) return null
-  const r = periodRange('mensuel', periodKey)
+  if (!dueDay) return null
+  const r = periodRange(cadence, periodKey)
   if (!r) return null
-  const day = Math.min(Math.max(1, Number(dueDay) || 0), Number(r.end.slice(8)))
-  return day ? `${periodKey}-${String(day).padStart(2, '0')}` : null
+  let y, m
+  if (cadence === 'mensuel') [y, m] = r.end.split('-').map(Number)
+  else if (cadence === 'trimestriel' || cadence === 'annuel') {
+    const [ey, em] = r.end.split('-').map(Number)
+    ;[y, m] = em === 12 ? [ey + 1, 1] : [ey, em + 1]
+  } else return null
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate()
+  const day = Math.min(Math.max(1, Number(dueDay) || 0), last)
+  return `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 /** Écart en jours civils entre deux dates `YYYY-MM-DD` (b - a). */
@@ -285,15 +301,18 @@ export function periodDueDate(cadence, periodKey, dueDay) {
  * (aujourd'hui ou dans les 5 jours), `upcoming`, ou `null` (déjà cochée, ou
  * aucune échéance connue).
  */
-export function dueInfo({ cadence, periodKey, dueDay, done, today = localDay() }) {
+export function dueInfo({ cadence, periodKey, dueDay, leadDays = 0, done, today = localDay() }) {
   const due_date = periodDueDate(cadence, periodKey, dueDay)
-  if (!due_date) return { due_date: null, days_until_due: null, due_status: null }
-  const days_until_due = daysBetween(today, due_date)
+  if (!due_date) return { due_date: null, send_by: null, days_until_due: null, due_status: null }
+  // `lead_days` : à envoyer N jours AVANT l'échéance (paiement au gouvernement).
+  // L'urgence se compte alors sur la date d'envoi, pas sur l'échéance.
+  const send_by = leadDays > 0 ? addDays(due_date, -leadDays) : null
+  const days_until_due = daysBetween(today, send_by || due_date)
   const due_status = done ? null
     : days_until_due < 0 ? 'overdue'
     : days_until_due <= DUE_SOON_DAYS ? 'due_soon'
     : 'upcoming'
-  return { due_date, days_until_due, due_status }
+  return { due_date, send_by, days_until_due, due_status }
 }
 
 /**
@@ -306,7 +325,7 @@ export function dueInfo({ cadence, periodKey, dueDay, done, today = localDay() }
  * aujourd'hui naîtrait avec trois mois de retard imaginaire.
  */
 export function catchUpPeriods({
-  cadence, periodKey, isDone, createdDay = null, dueDay = null,
+  cadence, periodKey, isDone, createdDay = null, dueDay = null, leadDays = 0,
   today = localDay(), depth = CATCHUP_DEPTH,
 }) {
   if (!CATCHUP_CADENCES.has(cadence)) return []
@@ -323,6 +342,7 @@ export function catchUpPeriods({
       period_key: key,
       period_label: periodLabel(cadence, r.start),
       due_date: periodDueDate(cadence, key, dueDay),
+      send_by: leadDays > 0 && periodDueDate(cadence, key, dueDay) ? addDays(periodDueDate(cadence, key, dueDay), -leadDays) : null,
       ends_on: r.end,
     })
   }
@@ -422,13 +442,14 @@ export function listRecurringTasks({ owner = null, includeInactive = false, date
       done_by_name: doneByName(t, c),
       done_note: c?.note || null,
       done_source: c?.source || null,
-      ...dueInfo({ cadence: t.cadence, periodKey: period_key, dueDay: t.due_day, done, today }),
+      ...dueInfo({ cadence: t.cadence, periodKey: period_key, dueDay: t.due_day, leadDays: t.lead_days || 0, done, today }),
       // Mois (trimestres, années) terminés et jamais cochés : c'est le travail
       // de juillet qu'on coche début août, nommément, plutôt que celui d'août.
       catch_up: catchUpPeriods({
         cadence: t.cadence,
         periodKey: period_key,
         dueDay: t.due_day,
+        leadDays: t.lead_days || 0,
         createdDay: (t.created_at || '').slice(0, 10) || null,
         today,
         isDone: key => !!completion.get(t.id, key),
@@ -553,7 +574,7 @@ export function createRecurringTask({
   return db.prepare('SELECT * FROM recurring_tasks WHERE id=?').get(id)
 }
 
-const EDITABLE = ['label', 'cadence', 'owner', 'day_hint', 'notes', 'due_date', 'due_day', 'active', 'position', 'priority', 'period_offset']
+const EDITABLE = ['label', 'cadence', 'owner', 'day_hint', 'notes', 'due_date', 'due_day', 'active', 'position', 'priority', 'period_offset', 'lead_days']
 
 /** Jour du mois validé (1-31), ou `null` — champ vidé, valeur farfelue. */
 function cleanDueDay(v) {
@@ -575,7 +596,7 @@ export function updateRecurringTask(id, patch) {
     vals.push(
       k === 'active' || k === 'priority' ? (v ? 1 : 0) :
       k === 'due_day' ? cleanDueDay(v) :
-      k === 'period_offset' ? Math.max(0, Math.trunc(Number(v)) || 0) :
+      k === 'period_offset' || k === 'lead_days' ? Math.max(0, Math.trunc(Number(v)) || 0) :
       v
     )
   }
@@ -667,6 +688,28 @@ export function seedRecurringWork() {
   if (added) console.log(`✅ Travaux récurrents seedés (${added} nouveau(x))`)
   migrateToBiweekly()
   migratePeriodOffset()
+  migrateTaxReportDeadline()
+}
+
+// Échéances importantes : date réelle + délai d'envoi, posés une seule fois
+// (lead_days encore vide) — un réglage refait à la main tient.
+//  • taxes (RQ) : après le trimestre, dû le dernier jour du mois suivant, 5 j avant ;
+//  • Visa : échéance réelle ~26, payée d'ici le 24.
+const DEADLINES = [
+  { id: 'rt-al-rapport-taxes-rq', period_offset: 1, due_day: 31, lead_days: 5,
+    notes: "Paiement à envoyer 5 jours avant l'échéance (dernier jour du mois suivant le trimestre)." },
+  { id: 'rt-ml-declaration-tps-tvq', period_offset: 1, due_day: 31, lead_days: 5, notes: null },
+  { id: 'rt-al-payer-visa', period_offset: 0, due_day: 26, lead_days: 2, notes: null },
+]
+function migrateTaxReportDeadline() {
+  const up = db.prepare(`
+    UPDATE recurring_tasks
+    SET period_offset=@period_offset, due_day=@due_day, lead_days=@lead_days, notes=COALESCE(@notes, notes)
+    WHERE id=@id AND lead_days IS NULL AND deleted_at IS NULL
+  `)
+  let n = 0
+  db.transaction(() => { for (const d of DEADLINES) n += up.run(d).changes })()
+  if (n) console.log(`✅ ${n} échéance(s) importante(s) : délai d'envoi posé`)
 }
 
 // period_offset est arrivé après le seed initial : ces lignes existent déjà,

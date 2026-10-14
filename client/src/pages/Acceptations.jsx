@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { FileSignature } from 'lucide-react'
 import api from '../lib/api.js'
@@ -33,7 +33,7 @@ const ACCEPT_COLUMNS = TABLE_COLUMN_META.page_acceptances.map(meta => ({ ...meta
 export default function Acceptations() {
   const acceptances = useListData({ fetch: () => api.publicFiles.allAcceptances(), cacheKey: 'page_acceptances', realtime: 'page_acceptances' })
   const navigate = useNavigate()
-  const { setRows } = acceptances
+  const { setRows, reload } = acceptances
   // Clic droit → « Supprimer l'acceptation ».
   const ops = useMemo(() => new RecordOps({
     labels: { delete: "Supprimer l'acceptation", deleted: 'Acceptation supprimée' },
@@ -43,11 +43,23 @@ export default function Acceptations() {
     },
     deleteConfirm: row => `Supprimer l'acceptation de ${row.contact_name || row.name || 'ce visiteur'} ?`,
   }), [setRows])
+  // Cases à cocher → suppression en lot (confirmation tenue par DataTable).
+  const bulkDelete = useCallback(async ids => {
+    try {
+      await Promise.all(ids.map(id => api.publicFiles.deleteAcceptance(id)))
+    } catch (e) {
+      reload()
+      throw e
+    }
+    const gone = new Set(ids)
+    setRows(prev => prev.filter(x => !gone.has(x.id)))
+  }, [reload, setRows])
   return (
     <ListPage title="Acceptations" icon={FileSignature}>
       {() => (
         <DataTable table="page_acceptances" columns={ACCEPT_COLUMNS} data={acceptances.rows} loading={acceptances.loading}
           onRowClick={row => navigate(`/acceptations/${row.id}`)} recordOps={ops}
+          onBulkDelete={bulkDelete} bulkDeleteAlways
           searchFields={['page_name', 'contact_name', 'name', 'ip', 'text']} emptyState={{ icon: FileSignature, title: 'Aucune acceptation' }} />
       )}
     </ListPage>

@@ -603,6 +603,8 @@ export const TABLE_COLUMN_META = {
     { id: 'contact_name', label: 'Contact',    field: 'contact_name' },
     { id: 'status',       label: 'Statut',     field: 'status', type: 'single_select', options: ['active', 'trialing', 'past_due', 'canceled', 'Actif', 'Inactif', 'Suspendu', 'Annulé', 'Expiré'] },
     { id: 'rachat',       label: 'Rachat',     field: 'rachat', defaultVisible: false },
+    // Test interne : exclu du MRR. Repéré automatiquement, modifiable à la main.
+    { id: 'is_test',      label: 'Test',       field: 'is_test', type: 'boolean' },
     { id: 'amount_cad',   label: 'Montant (CAD)', field: 'amount_cad', type: 'number' },
     // Devise de facturation Stripe (synchronisée, non modifiable : Stripe la fige).
     { id: 'currency',     label: 'Devise',     field: 'currency', type: 'single_select', options: ['CAD', 'USD'] },

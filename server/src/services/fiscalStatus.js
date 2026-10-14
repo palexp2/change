@@ -255,6 +255,9 @@ export function suggestTransactionType({ company, currency, tps, tvq, generalDes
   // Cas courant : fournisseur canadien qui facture TPS+TVQ → achat local taxable.
   const cur = (currency || 'CAD').toUpperCase()
   if (hasTax && cur === 'CAD') return 'achat_local_taxable'
+  // Facturé en devise mais avec TPS ET TVQ (McMaster-Carr en USD) : fournisseur
+  // inscrit au Québec, l'achat est taxable comme un achat local.
+  if ((Number(tps) || 0) > 0 && (Number(tvq) || 0) > 0) return 'achat_local_taxable'
 
   // Aucune taxe + devise étrangère : fournisseur étranger, hors champ. Abonnement /
   // service en ligne → service numérique non inscrit ; sinon des pièces. Signal de

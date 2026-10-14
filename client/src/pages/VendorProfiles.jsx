@@ -109,6 +109,18 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
             onBlur={e => save('payment_terms_days', e.target.value === '' ? null : Number(e.target.value))}
           />
         </div>
+        {/* BTTH : payée le mardi — échéance = prochain mardi à partir du jour
+            où la facture est comptabilisée (le jour même si c'est un mardi). */}
+        <div>
+          <label className={labelCls}>Payable le</label>
+          <select className={inputCls} value={form.due_weekday ?? ''}
+            onChange={e => { const v = e.target.value === '' ? null : Number(e.target.value); set('due_weekday', v); save('due_weekday', v) }}>
+            <option value="">Selon la facture</option>
+            {['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'].map((d, i) => (
+              <option key={d} value={i}>Prochain {d}</option>
+            ))}
+          </select>
+        </div>
         {pick('default_tax_code_id_cad', 'Code de taxe — CAD', taxOptions)}
         {pick('default_tax_code_id_usd', 'Code de taxe — USD', taxOptions)}
 
@@ -125,6 +137,8 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
         {text('payment_note', 'Commentaire de paiement habituel')}
         {text('qb_category', 'Catégorie comptable')}
         {text('description', 'Description')}
+        {text('invoice_portal_url', 'Portail des factures (adresse)')}
+        {text('invoice_login', 'Identifiant du portail (sans mot de passe)')}
         <div className="col-span-2">
           <label className={labelCls}>Particularités (facturation, taxes, accès…)</label>
           <textarea className={inputCls} rows={3} value={form.particularites ?? ''}

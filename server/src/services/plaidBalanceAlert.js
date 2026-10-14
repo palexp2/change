@@ -15,7 +15,7 @@ import db from '../db/database.js'
 import { listItems, itemHealth } from '../connectors/plaid.js'
 import { createNotification } from './notifications.js'
 import { logSystemRun } from './systemAutomations.js'
-import { postSlack } from './slack.js'
+import { sendSlackConfigured, hasSlackTarget } from './slack.js'
 
 export const PLAID_BALANCE_AUTOMATION_ID = 'sys_plaid_silence_alert'
 
@@ -30,6 +30,7 @@ export const PLAID_BALANCE_DEFAULT_CONFIG = {
   // Canal Slack (nom de la variable d'env). Vide = notification Boréal seule.
   // DM d'Antoine Lambert, plus le canal comptabilité (demande du 2026-10-06).
   slack_webhook_env: 'SLACK_WEBHOOK_PERSO',
+  slack_channel: 'U06ECMYHNR2', // Antoine Lambert (= SLACK_WEBHOOK_PERSO)
 }
 
 export function getBalanceAlertConfig() {
@@ -120,9 +121,8 @@ async function notify({ type, title, body, cfg, force, repeatHours, out }) {
   for (const userId of recipients(cfg)) {
     createNotification({ userId, type, title, body, link: '/connectors' })
   }
-  const env = cfg.slack_webhook_env
-  if (env && process.env[env]) {
-    try { await postSlack(process.env[env], `⚠️ ${title}\n${body}`) } catch (e) { out.slack_error = e.message }
+  if (hasSlackTarget(cfg)) {
+    try { await sendSlackConfigured(cfg, `⚠️ ${title}\n${body}`) } catch (e) { out.slack_error = e.message }
   }
   out.alerted.push({ title })
 }

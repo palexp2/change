@@ -14,6 +14,7 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { getUsdCadRate } from './fx.js'
 import { emit } from './realtime.js'
+import { refreshTestFlag } from './subscriptionTestFlag.js'
 
 // Builds the exact row shape that GET /api/projets/abonnement-events returns
 // (consumed by AbonnementMouvements + SubscriptionHistory). Single row variant.
@@ -91,6 +92,9 @@ export function classifyChange({ prevStatus, newStatus, prevAmount, newAmount })
   if (wasActive && isCanceled) return 'churn'
   if (!prevStatus && newStatus && newStatus !== 'canceled') return 'creation'
   if (prevStatus === 'canceled' && newStatus && newStatus !== 'canceled') return 'reactivation'
+  // Annulé → annulé : son MRR est déjà sorti au churn. Un montant recalculé
+  // par la sync n'est pas un mouvement (13 oct. 2026 : 73 fausses baisses).
+  if (prevStatus === 'canceled' && newStatus === 'canceled') return null
   if (prevAmount != null && newAmount != null) {
     if (newAmount > prevAmount + 0.01) return 'upgrade'
     if (newAmount < prevAmount - 0.01) return 'downgrade'
@@ -123,6 +127,9 @@ export async function recordEvent(args) {
   if (!subscriptionId || !eventDate || !eventType) {
     throw new Error('subscriptionId, eventDate, eventType requis')
   }
+
+  // Abonnement de test interne : aucun mouvement (cf. subscriptionTestFlag.js).
+  if (refreshTestFlag(subscriptionId)) return { inserted: false, id: null, test: true }
 
   // Idempotence webhook : si stripeEventId fourni et déjà vu, no-op.
   if (stripeEventId) {

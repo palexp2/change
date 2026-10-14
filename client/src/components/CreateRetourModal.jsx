@@ -36,6 +36,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
   const [products, setProducts] = useState([])
   const [ticketId, setTicketId] = useState('')
   const [contactId, setContactId] = useState('')
+  const [kind, setKind] = useState('') // 'achat' | 'abonnement' → commande de remplacement
   const [picked, setPicked] = useState({}) // key → { qty, reason, notes, sub }
   const [search, setSearch] = useState('')
   const [allReason, setAllReason] = useState('')
@@ -48,7 +49,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
 
   useEffect(() => {
     if (!isOpen) return
-    setCandidates(null); setPicked({}); setTicketId(''); setContactId(contacts.length === 1 ? contacts[0].id : ''); setSearch(''); setAllReason(''); setAllNotes('')
+    setCandidates(null); setPicked({}); setTicketId(''); setContactId(contacts.length === 1 ? contacts[0].id : ''); setSearch(''); setAllReason(''); setAllNotes(''); setKind('')
     setExchange(false); setOrderMode('new'); setOrderId('')
     const principal = adresses.find(a => a.address_type === 'Livraison' && a.address_rank === 'Principale')
       || adresses.find(a => a.address_type === 'Livraison') || adresses[0]
@@ -102,6 +103,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
   const valid = Boolean(contactId) && pickedKeys.length > 0
     && pickedKeys.every(k => picked[k].reason)
     && (!exchange || orderMode === 'new' || orderId)
+    && (!exchange || orderMode !== 'new' || kind)
 
   async function submit() {
     setSubmitting(true)
@@ -121,7 +123,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
         contact_id: contactId,
         ticket_id: ticketId || null,
         items,
-        exchange: exchange ? { order_id: orderMode === 'existing' ? orderId : null, address_id: addressId || null } : null,
+        exchange: exchange ? { order_id: orderMode === 'existing' ? orderId : null, address_id: addressId || null, is_subscription: kind === 'abonnement' } : null,
       })
       addToast({ message: r.order ? `Retour créé · commande #${r.order.order_number}` : 'Retour créé', type: 'success' })
       onCreated?.(r)
@@ -168,6 +170,15 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
             testId="retour-ticket"
           />
           <Hint className="mt-1">Facultatif — le billet de support à l'origine du retour.</Hint>
+        </div>
+
+        <div>
+          <label className="label">Article{exchange && orderMode === 'new' ? ' *' : ''}</label>
+          <select className="input text-sm" value={kind} onChange={e => setKind(e.target.value)} data-testid="retour-kind">
+            <option value="">—</option>
+            <option value="achat">Acheté</option>
+            <option value="abonnement">En abonnement</option>
+          </select>
         </div>
 
         <div>
@@ -297,6 +308,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
             <Hint className="mr-auto">
               {!pickedKeys.length ? 'Cochez au moins un article.'
                 : pickedKeys.some(k => !picked[k].reason) ? 'Raison manquante sur un article.'
+                : exchange && orderMode === 'new' && !kind ? 'Acheté ou en abonnement ?'
                 : 'Choisissez la commande existante.'}
             </Hint>
           )}

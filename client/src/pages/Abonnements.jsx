@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, RefreshCw, CreditCard, SlidersHorizontal } from 'lucide-react'
+import { ExternalLink, RefreshCw, CreditCard } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
-import { StripeSubscriptionFieldMapModal } from '../components/StripeFieldMapModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -86,6 +85,27 @@ function RachatCell({ row, onChange }) {
   )
 }
 
+// Test interne : coché = exclu du MRR. Le clic fige le choix (la détection
+// automatique ne le remplace plus).
+function TestCell({ row, onChange }) {
+  const { addToast } = useToast()
+  async function toggle(e) {
+    e.stopPropagation()
+    const val = !row.is_test
+    onChange(row.id, val)
+    try {
+      await api.abonnements.patch(row.id, { is_test: val })
+    } catch (err) {
+      onChange(row.id, !val)
+      addToast({ message: err.message, type: 'error' })
+    }
+  }
+  return (
+    <input type="checkbox" checked={!!row.is_test} onChange={toggle} onClick={e => e.stopPropagation()}
+      title={row.is_test_reason || undefined} className="cursor-pointer" />
+  )
+}
+
 const RENDERS = {
   contact_name: row => row.contact_id
     ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.contact_name}</Link>
@@ -113,56 +133,37 @@ const RENDERS = {
 
 
 export default function Abonnements() {
-  const { rows: abonnements, setRows: setAbonnements, loading, reload: load } = useListData({
+  const { rows: abonnements, setRows: setAbonnements, loading } = useListData({
     fetch: (page, limit) => api.abonnements.list({ limit, page }),
     realtime: 'subscription',
   })
   const [stripeConfigured, setStripeConfigured] = useState(false)
-  const [stripeMapOpen, setStripeMapOpen] = useState(false)
   const [selected, setSelected] = useState(null)
 
   function handleRachatChange(id, val) {
     setAbonnements(prev => prev.map(a => a.id === id ? { ...a, rachat: val } : a))
   }
 
+  function handleTestChange(id, val) {
+    setAbonnements(prev => prev.map(a => a.id === id ? { ...a, is_test: val ? 1 : 0, is_test_reason: val ? 'marqué à la main' : null } : a))
+  }
+
   const COLUMNS = TABLE_COLUMN_META.abonnements.map(meta => ({
     ...meta,
     render: meta.id === 'rachat'
       ? row => <RachatCell row={row} onChange={handleRachatChange} />
-      : RENDERS[meta.id],
+      : meta.id === 'is_test'
+        ? row => <TestCell row={row} onChange={handleTestChange} />
+        : RENDERS[meta.id],
   }))
 
   useEffect(() => {
     api.stripe.info().catch(() => ({ configured: false })).then(info => setStripeConfigured(!!info.configured))
   }, [])
 
-  // Sync manuelle (bouton « Synchroniser maintenant » de la modale Sync
-  // Stripe) : lance l'import puis attend la fin côté serveur (max 90 s) avant
-  // de recharger la liste. Les erreurs remontent à la modale qui les affiche.
-  const syncStripe = async () => {
-    await api.stripe.sync()
-    const start = Date.now()
-    while (Date.now() - start < 90000) {
-      await new Promise(r => setTimeout(r, 1500))
-      const status = await api.connectors.syncStatus().catch(() => null)
-      if (!status?.stripe?.running) break
-    }
-    await load()
-  }
-
   return (
     <ListPage
       title="Abonnements"
-      actions={stripeConfigured && (
-        <button
-          onClick={() => setStripeMapOpen(true)}
-          className="btn-secondary btn-sm flex items-center gap-1.5"
-          title="Choisir quels champs Stripe alimentent les abonnements et lancer une synchronisation"
-          data-testid="abonnements-stripe-map-open"
-        >
-          <SlidersHorizontal size={13} /> Sync Stripe
-        </button>
-      )}
       banner={!loading && !stripeConfigured && (
         <div className="mb-4 flex items-center gap-3 px-4 py-3 bg-purple-50 border border-purple-200 rounded-xl text-sm text-purple-800">
           <CreditCard size={16} className="text-purple-500 flex-shrink-0" />
@@ -182,13 +183,6 @@ export default function Abonnements() {
         searchFields={['company_name', 'contact_name', 'rachat', 'amount_cad', 'currency']}
         onRowClick={setSelected}
         emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Aucun abonnement Stripe actif ou passé. Les abonnements se synchronisent automatiquement depuis Stripe." }}
-      />
-
-      <StripeSubscriptionFieldMapModal
-        isOpen={stripeMapOpen}
-        onClose={() => setStripeMapOpen(false)}
-        onSaved={load}
-        onSyncNow={syncStripe}
       />
 
       <AbonnementDetailModal abonnement={selected} onClose={() => setSelected(null)} />

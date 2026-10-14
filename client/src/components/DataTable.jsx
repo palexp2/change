@@ -55,6 +55,12 @@ export function fmtPhone(val) {
 // (ex. nombre non-parsable) → le changement est alors ignoré silencieusement.
 function coerceCellValue(col, str) {
   const s = String(str ?? '').trim()
+  // Option de colonne : lecture propre à la page (ex. plage « 8:00 à 16:30 »),
+  // tentée avant la coercition du type ; `undefined` = pas reconnue.
+  if (col?.parseInput && s !== '') {
+    const custom = col.parseInput(s)
+    if (custom !== undefined) return custom
+  }
   const t = col?.type
   if (t === 'number' || t === 'currency') {
     if (s === '') return null
@@ -646,7 +652,6 @@ export function DataTable({
   rowClassName,           // (item) => string — classes CSS additionnelles par ligne (ex. font-semibold pour un reçu non lu).
   recordOps,              // RecordOps | undefined — active le « deuxième type » de table : manipulable au niveau des données (clic droit sur une ligne = dupliquer/supprimer, « + » sous la dernière ligne = créer un enregistrement en ligne, sans formulaire). Voir lib/recordOps.js.
   onFieldsChanged,        // () => void — les pages qui gèrent elles-mêmes leurs champs (Pipeline, Factures) passent leur reload : le menu d'en-tête (duplication, masquage global) doit pouvoir rafraîchir leur liste.
-  sortIndicator = false,  // bool — variante d'en-tête : quand la vue trie, une flèche ↑/↓ apparaît sur la ou les colonnes triées (ordre de la flèche = sens du tri). Opt-in par page.
   toolbarStart,           // JSX — contenu de page glissé à gauche de la barre de vues (avant la recherche). Voir ViewToolbar.
   toolsMenu = false,      // outils de la barre (Champs, Filtrer, Trier…) rangés dans un seul menu, compteur masqué. Voir ViewToolbar.
   toolbarEnd,             // JSX — contenu de page glissé à droite de la barre de vues (après le compteur de lignes). Voir ViewToolbar.
@@ -1030,16 +1035,15 @@ export function DataTable({
   useEffect(() => {
     if (typeof onFilteredDataChange === 'function') onFilteredDataChange(filteredData)
   }, [filteredData, onFilteredDataChange])
-  // Variante `sortIndicator` : sens du tri par champ trié (première occurrence
-  // gagne — un tri multi-niveaux fléchant chaque colonne concernée).
+  // Sens du tri par champ trié, fléché en en-tête sur toutes les tables
+  // (première occurrence gagne — un tri multi-niveaux flèche chaque colonne concernée).
   const sortDirByField = useMemo(() => {
     const m = new Map()
-    if (!sortIndicator) return m
     for (const s of (view.sorts || [])) {
       if (s?.field && !m.has(s.field)) m.set(s.field, s.dir === 'desc' ? 'desc' : 'asc')
     }
     return m
-  }, [sortIndicator, view.sorts])
+  }, [view.sorts])
   const hasBulkActions = Array.isArray(bulkActions) && bulkActions.length > 0
   const selectionActive = (bulkDeleteEnabled || bulkDeleteAlways) && (typeof onBulkDelete === 'function' || hasBulkActions)
   // Use allColumns (hardcoded + dynamic Airtable fields) everywhere.
@@ -1900,6 +1904,14 @@ export function DataTable({
     if (di != null) { try { virtualizer.scrollToIndex(di, { align: 'auto' }) } catch {} }
   }, [gridRows, visibleColumns, cellAt, displayIndexById, virtualizer])
 
+  // Tab / Maj+Tab : cellule voisine, avec retour à la ligne en bout de rangée.
+  const tabCursor = useCallback((r, c, back) => {
+    const n = visibleColumns.length
+    if (!back && c >= n - 1) { if (r < gridRows.length - 1) moveCursor(r + 1, 0, false) }
+    else if (back && c <= 0) { if (r > 0) moveCursor(r - 1, n - 1, false) }
+    else moveCursor(r, c + (back ? -1 : 1), false)
+  }, [visibleColumns, gridRows, moveCursor])
+
   // Applique une liste de { row, col, value } via onCellEdit (un appel par
   // cellule). Les valeurs `undefined` (collage invalide) sont écartées.
   const applyCellChanges = useCallback(async (changes) => {
@@ -1978,14 +1990,14 @@ export function DataTable({
         if (move) {
           const r = rowIndexById.get(ec.rowId), c = colIndexById.get(ec.colId)
           if (move === 'down') moveCursor(r + 1, c, false)
-          else if (move === 'right') moveCursor(r, c + 1, false)
-          else if (move === 'left') moveCursor(r, c - 1, false)
+          else if (move === 'right') tabCursor(r, c, false)
+          else if (move === 'left') tabCursor(r, c, true)
         }
       }
     }
     setEditingCell(null)
     focusGrid()
-  }, [editingCell, visibleColumns, gridRows, colIndexById, rowIndexById, editValue, applyCellChanges, moveCursor, focusGrid])
+  }, [editingCell, visibleColumns, gridRows, colIndexById, rowIndexById, editValue, applyCellChanges, moveCursor, tabCursor, focusGrid])
 
   const copyCells = useCallback((b) => {
     const lines = []
@@ -2158,13 +2170,14 @@ export function DataTable({
     else if (k === 'ArrowDown') { e.preventDefault(); moveCursor(fR + 1, fC, e.shiftKey) }
     else if (k === 'ArrowLeft') { e.preventDefault(); moveCursor(fR, fC - 1, e.shiftKey) }
     else if (k === 'ArrowRight') { e.preventDefault(); moveCursor(fR, fC + 1, e.shiftKey) }
+    else if (k === 'Tab' && !mod && !e.altKey) { e.preventDefault(); tabCursor(fR, fC, e.shiftKey) }
     else if (k === 'Escape') { e.preventDefault(); setSel(null) }
     else if (k === 'Enter' || k === 'F2') { e.preventDefault(); startEdit(sel.focus.rowId, sel.focus.colId) }
     else if (k === 'Backspace' || k === 'Delete') { e.preventDefault(); clearCells(b) }
     else if (k.length === 1 && !mod && !e.altKey) {
       if (isColEditable(visibleColumns[fC], gridRows[fR])) { e.preventDefault(); startEdit(sel.focus.rowId, sel.focus.colId, k) }
     }
-  }, [gridMode, editingCell, peekItem, sel, selBounds, copyCells, pasteCells, fillDown, moveCursor, startEdit, clearCells, rowIndexById, colIndexById, visibleColumns, isColEditable, gridRows])
+  }, [gridMode, editingCell, peekItem, sel, selBounds, copyCells, pasteCells, fillDown, moveCursor, tabCursor, startEdit, clearCells, rowIndexById, colIndexById, visibleColumns, isColEditable, gridRows])
 
   // Échap abandonne la multi-sélection d'en-têtes de colonnes.
   useEffect(() => {
@@ -2703,6 +2716,7 @@ export function DataTable({
               de toute façon. */}
           <CustomFieldModal
             formulaColumns={formulaUseColumnLabels ? mergedColumns : undefined}
+            siblingFields={mergedColumns}
             showFormulaSyntaxHelp={showFormulaSyntaxHelp}
             showFormulaAutocompleteHint={showFormulaAutocompleteHint}
             showFormulaKeyboardHint={showFormulaKeyboardHint}

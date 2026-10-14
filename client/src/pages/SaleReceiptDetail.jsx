@@ -862,6 +862,7 @@ function QBPublishForm({ receipt, onLeave, onUpdate, onOpenConversion, dateField
           <div className="text-[28px] leading-tight font-bold tracking-tight text-slate-900 tabular-nums" data-testid="receipt-header-total">
             {recCur === 'CAD' ? fmtCad(receipt.total) : fmtMoney(receipt.total, receipt.currency)}
           </div>
+          <BankDebitLink receipt={receipt} part="amount" value={receipt.total} />
         </Hl>
         <EntryTypeMenu type={type} accrual={!!receipt.service_accrual_date}
           onChange={k => touchAndDraft(setType, 'quickbooks_type')(k)} />
@@ -884,7 +885,7 @@ function QBPublishForm({ receipt, onLeave, onUpdate, onOpenConversion, dateField
       )}
 
       <div className="grid grid-cols-2 gap-2.5">
-        <Field table="sale_receipts" id="receipt_date" label="Date" className="min-w-0" labelClassName="text-[11px] font-medium text-slate-500 mb-1">{dateField}</Field>
+        <Field table="sale_receipts" id="receipt_date" label="Date" className="min-w-0" labelClassName="text-[11px] font-medium text-slate-500 mb-1">{dateField}<BankDebitLink receipt={receipt} part="date" value={receipt.receipt_date} /></Field>
         {type !== 'bill' ? (
           <QbField label={type === 'cc_credit' ? 'Carte' : isDeposit ? 'Banque' : 'Payé par'} frame={fieldFrame('payment_account')}>
             <Hl k="card" spec={receipt.card_match?.last4 ? { text: receipt.card_match.last4 } : null}>
@@ -898,7 +899,7 @@ function QBPublishForm({ receipt, onLeave, onUpdate, onOpenConversion, dateField
             {!isDeposit && receipt.card_match?.ownership === 'personal' && (
               <Hint testId="qb-card-match">À rembourser</Hint>
             )}
-            <BankDebitLink receipt={receipt} />
+            <BankDebitLink receipt={receipt} part="account" value={paymentAccountId} />
             {type === 'cc_credit' && <Hint>Montants en positif.</Hint>}
           </QbField>
         ) : (
@@ -914,7 +915,7 @@ function QBPublishForm({ receipt, onLeave, onUpdate, onOpenConversion, dateField
               className="input-field text-sm w-full"
             />
             <Hint>{receipt.payment_terms_days > 0 ? `Net ${receipt.payment_terms_days} · ` : ''}Comptes fournisseurs</Hint>
-            <BankDebitLink receipt={receipt} />
+            <BankDebitLink receipt={receipt} part="account" />
           </QbField>
         )}
       </div>
@@ -1365,6 +1366,25 @@ function numOrNull(v) {
   return v != null && v !== '' && Number.isFinite(n) ? n : null
 }
 
+// Vendu au paquet (« Packs of 100 ») : la facture compte des paquets, l'achat des
+// unités. Même lecture que packSize() côté serveur (purchaseLiaMatch.js).
+const PACK_RE = [
+  /\b(?:packs?|paquets?|pqts?|pkgs?|packages?|boxe?s?|bo[iî]tes?|bags?|sacs?|lots?|rolls?|rouleaux?|sets?|ensembles?)\s+(?:of|de)\s+(\d{1,6})\b/i,
+  /\b(\d{1,6})\s*(?:\/|par|per)\s*(?:pk|pkg|pack|paquet|bo[iî]te|box|bag|sac)\b/i,
+  /\b(\d{1,6})\s*-?\s*(?:pack|pk|pcs?\s*pack)\b/i,
+]
+function packSize(item) {
+  const explicit = numOrNull(item?.pack_size)
+  if (explicit && explicit > 1) return explicit
+  const text = String(item?.source_description || item?.description || '')
+  for (const re of PACK_RE) {
+    const m = text.match(re)
+    const n = m ? Number(m[1]) : null
+    if (n && n > 1) return n
+  }
+  return 1
+}
+
 // Quantités : elles doivent concorder EXACTEMENT (une unité d'écart est déjà un
 // signal). null si l'une des deux manque — rien à comparer, pas d'alerte.
 function liaMismatch(a, b) {
@@ -1418,7 +1438,10 @@ const IDENTITY_TEXT = {
 
 function LiaCompare({ item, purchase, identity }) {
   if (!purchase) return null
-  const invQty = numOrNull(item.quantity)
+  const pack = packSize(item)
+  const invQty = numOrNull(item.quantity) == null ? null : numOrNull(item.quantity) * pack
+  // « 2×100 » : ce qui est imprimé, quand la facture compte des paquets.
+  const invQtyLabel = invQty != null && pack > 1 ? `${numOrNull(item.quantity)}×${pack}` : invQty
   const atQty = numOrNull(purchase.qty_ordered)
   // Le libellé IMPRIMÉ par le fournisseur : après rattachement, `description` est
   // devenue « LIA-xxxx⇥Nom de la pièce », le libellé d'origine vit dans
@@ -1473,7 +1496,7 @@ function LiaCompare({ item, purchase, identity }) {
       </div>
       <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_minmax(0,1fr)] gap-x-2 px-1.5 py-0.5 items-center border-t border-slate-100">
         <span className="text-slate-400 shrink-0">Qté</span>
-        <span className={`tabular-nums ${qtyOff ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{invQty ?? '—'}</span>
+        <span className={`tabular-nums ${qtyOff ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{invQtyLabel ?? '—'}</span>
         <span className={`tabular-nums ${qtyOff ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{atQty ?? '—'}</span>
       </div>
     </div>
@@ -2602,6 +2625,7 @@ const HISTORY_ACTION_META = {
   unarchived: { label: 'Désarchivé',            Icon: ArchiveRestore, color: 'text-slate-700 bg-slate-200' },
   published:  { label: 'Publié sur QuickBooks', Icon: BookOpen,       color: 'text-green-700 bg-green-100' },
   month_attached: { label: 'Joint aux transactions du mois', Icon: Paperclip, color: 'text-indigo-700 bg-indigo-100' },
+  attached_to_existing: { label: 'Joint à la transaction existante', Icon: Paperclip, color: 'text-indigo-700 bg-indigo-100' },
   qb_auto_matched: { label: 'Appariée par QuickBooks (apparaît payée)', Icon: AlertCircle, color: 'text-amber-700 bg-amber-100' },
   anomaly_override: { label: 'Doublon ignoré (justifié)', Icon: AlertCircle, color: 'text-amber-700 bg-amber-100' },
   fiscal_override: { label: 'Écart fiscal forcé', Icon: AlertCircle, color: 'text-amber-700 bg-amber-100' },
@@ -2722,9 +2746,21 @@ function AlertChip({ tone, label, open, onToggle, testId, toggleTestId, children
 
 function ObsoleteBanner({ receipt, acting, onArchive, onDismissed, open, onToggle }) {
   const { addToast } = useToast()
+  const [attaching, setAttaching] = useState(false)
   const ob = receipt?.obsolete
   if (!ob) return null
   const isZero = ob.reason === 'zero_total'
+
+  async function attachToExisting() {
+    setAttaching(true)
+    try {
+      await api.saleReceipts.attachToExistingQb(receipt.id)
+      addToast({ message: `Joint à QuickBooks #${ob.qb_id} et archivé.`, type: 'success' })
+      onDismissed?.()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally { setAttaching(false) }
+  }
 
   async function dismiss() {
     try {
@@ -2778,6 +2814,17 @@ function ObsoleteBanner({ receipt, acting, onArchive, onDismissed, open, onToggl
         >
           <Archive size={12} /> Archiver ce document
         </button>
+        {!isZero && ob.qb_id && (
+          <button
+            onClick={attachToExisting}
+            disabled={attaching || acting}
+            data-testid="receipt-obsolete-attach"
+            title="Joindre ce fichier à la transaction déjà comptabilisée, puis archiver"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-indigo-600 rounded-lg px-2.5 py-1.5 hover:bg-indigo-700 disabled:opacity-50"
+          >
+            <Paperclip size={12} /> {attaching ? 'Envoi…' : `Joindre à #${ob.qb_id}`}
+          </button>
+        )}
       </div>
     </AlertChip>
   )
@@ -2840,17 +2887,34 @@ function DuplicateBanner({ receiptId, excludeId, openKey, onToggle }) {
 }
 
 // Sortie d'argent au relevé qui porte cette facture (receipt.bank_txn, posé par
-// le rapprochement bancaire). Un clic ouvre le relevé du compte.
-function BankDebitLink({ receipt }) {
+// le rapprochement bancaire). Sous chaque champ qu'elle valide (date, compte
+// payeur, montant) : « ✓ relevé » si le champ concorde, sinon la valeur du relevé
+// en ambre. `value` = valeur actuelle du champ (absente → on affiche le relevé).
+// Un clic ouvre le relevé du compte.
+function BankDebitLink({ receipt, part, value }) {
   const t = receipt?.bank_txn
   if (!t) return null
   const recCur = (receipt.currency || 'CAD').toUpperCase()
+  const bankCur = (t.currency || 'CAD').toUpperCase()
+  const bankAmt = Math.abs(Number(t.amount) || 0)
+  let text, ok
+  if (part === 'account') {
+    text = t.account_name
+    ok = value != null && t.qb_account_id != null && String(value) === String(t.qb_account_id)
+  } else if (part === 'amount') {
+    text = fmtMoney(bankAmt, bankCur)
+    ok = bankCur === recCur && Math.abs(bankAmt - Math.abs(Number(value) || 0)) < 0.005
+  } else {
+    text = fmtDate(t.txn_date)
+    ok = !!value && String(value).slice(0, 10) === String(t.txn_date || '').slice(0, 10)
+  }
+  if (!text) return null
   return (
-    <Link to={`/rapprochement?compte=${t.account_id}`} data-testid="qb-bank-note"
-      title={t.account_name || undefined}
-      className="block text-[11px] text-green-700 hover:underline mt-1 truncate">
-      Débité le {fmtDate(t.txn_date)}
-      {(t.currency || 'CAD').toUpperCase() !== recCur ? ` · ${fmtMoney(Math.abs(t.amount), t.currency)}` : ''}
+    <Link to={`/rapprochement?compte=${t.account_id}`} data-testid={`qb-bank-note-${part}`}
+      title={`Relevé : ${text}`}
+      className={`block text-[11px] hover:underline mt-1 truncate ${ok ? 'text-green-700'
+        : part === 'amount' && bankCur !== recCur ? 'text-slate-500' : 'text-amber-700'}`}>
+      {ok ? '✓ relevé' : `Relevé : ${text}`}
     </Link>
   )
 }
@@ -3322,9 +3386,10 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
                     <div className="text-[28px] leading-tight font-bold tracking-tight text-slate-900 tabular-nums" data-testid="receipt-header-total">
                       {recCur === 'CAD' ? fmtCad(receipt.total) : fmtMoney(receipt.total, receipt.currency)}
                     </div>
+                    <BankDebitLink receipt={receipt} part="amount" value={receipt.total} />
                   </Hl>
                   {currencyField}
-                  <Field table="sale_receipts" id="receipt_date" label="Date" className="min-w-0" labelClassName="text-[11px] font-medium text-slate-500 mb-1">{dateField}<BankDebitLink receipt={receipt} /></Field>
+                  <Field table="sale_receipts" id="receipt_date" label="Date" className="min-w-0" labelClassName="text-[11px] font-medium text-slate-500 mb-1">{dateField}<BankDebitLink receipt={receipt} part="date" value={receipt.receipt_date} /></Field>
                   <QbField label="N° de reçu">{numberField}</QbField>
                   <div>
                     <Drawer id="articles" title="Articles" summary={`${(receipt.items || []).length}`} testId="drawer-articles">{articles}</Drawer>

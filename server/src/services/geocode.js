@@ -8,6 +8,7 @@
 
 const FIND_PLACE = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json'
 const PLACE_DETAILS = 'https://maps.googleapis.com/maps/api/place/details/json'
+const AUTOCOMPLETE = 'https://maps.googleapis.com/maps/api/place/autocomplete/json'
 const TIMEOUT_MS = 12000
 
 // Cache mémoire des échecs : évite de rappeler Google à chaque consultation
@@ -161,12 +162,13 @@ export async function findPlace(query) {
  * Adresse structurée d'un place_id.
  * @returns {Promise<{formatted_address,components}|null>}
  */
-export async function placeDetails(placeId) {
+export async function placeDetails(placeId, { sessionToken = '' } = {}) {
   const key = placesKey()
   const id = String(placeId || '').trim()
   if (!id) return null
 
   const params = new URLSearchParams({ place_id: id, key, fields: 'formatted_address,address_component' })
+  if (sessionToken) params.set('sessiontoken', sessionToken)
   const r = await fetch(`${PLACE_DETAILS}?${params.toString()}`, { signal: AbortSignal.timeout(TIMEOUT_MS) })
   if (!r.ok) throw new Error(`Places details HTTP ${r.status}`)
   const json = await r.json()
@@ -178,4 +180,25 @@ export async function placeDetails(placeId) {
   }
 }
 
-export default { geocodeAddress, buildAddressQuery, findPlace, placeDetails, parseAddressComponents }
+/**
+ * Suggestions d'adresses pendant la frappe (page de paiement publique).
+ * @returns {Promise<Array<{place_id,description}>>}
+ */
+export async function placeAutocomplete(input, { sessionToken = '', country = '' } = {}) {
+  const key = placesKey()
+  const q = String(input || '').trim()
+  if (!q) return []
+  const params = new URLSearchParams({ input: q, key, types: 'address' })
+  if (sessionToken) params.set('sessiontoken', sessionToken)
+  // Un ou plusieurs pays (« CA|US »), 5 au plus selon Google.
+  const cc = String(country || '').split('|').filter(c => /^[A-Z]{2}$/i.test(c)).slice(0, 5)
+  if (cc.length) params.set('components', cc.map(c => `country:${c.toLowerCase()}`).join('|'))
+  const r = await fetch(`${AUTOCOMPLETE}?${params.toString()}`, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+  if (!r.ok) throw new Error(`Places autocomplete HTTP ${r.status}`)
+  const json = await r.json()
+  if (json.status === 'ZERO_RESULTS') return []
+  if (json.status !== 'OK') throw new Error(json.error_message || json.status || 'Places API error')
+  return (json.predictions || []).map(p => ({ place_id: p.place_id, description: p.description || '' }))
+}
+
+export default { placeAutocomplete, geocodeAddress, buildAddressQuery, findPlace, placeDetails, parseAddressComponents }

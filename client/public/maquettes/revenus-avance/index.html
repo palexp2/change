@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Revenus perçus d'avance</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f4f5f8;--line:#e3e5e8;--line2:#c9ced4;--ink:#393a3d;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--bs:#e6f1fa;--r:#d52b1e;--rs:#fcebea;--a:#b86e00;--as:#fff4e0;--sh:0 1px 2px rgb(0 0 0/.05),0 10px 30px rgb(0 0 0/.08)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33280f}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33280f}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:hidden}
+.n{font-variant-numeric:tabular-nums}
+.top{display:flex;align-items:center;gap:22px;padding:16px 18px;flex-wrap:wrap}
+.top .t{font-size:20px;font-weight:600;margin-right:auto}
+.k{display:flex;flex-direction:column}.k small{font-size:11px;color:var(--ink3)}.k b{font-size:15px;font-weight:600}
+.ok{color:var(--gd)}.bad{color:var(--r)}.warn{color:var(--a)}
+.go{background:var(--g);color:#fff;border:0;border-radius:999px;height:30px;padding:0 14px;font:inherit;font-weight:600;white-space:nowrap;cursor:pointer}
+.ghost{background:none;border:1px solid var(--line2);color:var(--ink2);border-radius:999px;height:30px;padding:0 12px;font:inherit;white-space:nowrap;cursor:pointer}
+.lnk{color:var(--b);font-weight:600;cursor:pointer}
+.stages{display:flex;gap:22px;padding:0 18px;border-bottom:1px solid var(--line);overflow-x:auto}
+.stages span{padding:10px 0;color:var(--ink3);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer}
+.stages span.on{color:var(--ink);font-weight:600;border-color:var(--ink)}
+.stages i{font-style:normal;color:var(--ink4);margin-left:5px}
+.stages span.red i{color:var(--r);font-weight:700}
+table{width:100%;border-collapse:collapse;min-width:720px}
+th{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line2);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--line);height:46px;white-space:nowrap}
+td:first-child,th:first-child{padding-left:18px}td:last-child,th:last-child{padding-right:18px}
+.r{text-align:right}
+.l2{font-size:11.5px;color:var(--ink3)}
+.scroll{overflow-x:auto}
+.cb{width:15px;height:15px;accent-color:var(--g)}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:500}
+.pill:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.p-g{background:var(--gs);color:var(--gd)}.p-n{background:var(--soft);color:var(--ink3)}.p-a{background:var(--as);color:var(--a)}.p-r{background:var(--rs);color:var(--r)}
+.bulk{display:flex;align-items:center;gap:14px;padding:10px 18px;background:var(--gs);border-bottom:1px solid var(--line)}
+.bulk b{font-weight:600}
+tr.open td{border-bottom:0;background:var(--soft)}
+.exp td{background:var(--soft);padding:0 18px 14px}
+.je{background:var(--s);border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:1fr auto;gap:14px;align-items:end}
+.je table{min-width:0}.je td{height:30px;padding:4px 8px;border-bottom:1px solid var(--line)}.je td:first-child{padding-left:0}
+.src{font-size:11px;color:var(--ink4);margin-left:6px}
+.fields{display:flex;gap:22px;margin-bottom:6px;flex-wrap:wrap}.fields div{display:flex;flex-direction:column}.fields small{font-size:11px;color:var(--ink3)}
+.foot{display:flex;justify-content:flex-end;gap:24px;padding:12px 18px;font-size:12.5px;color:var(--ink3)}.foot b{color:var(--ink)}
+/* R2 étapes */
+.steps{display:inline-flex;align-items:center;gap:0}
+.st{width:10px;height:10px;border-radius:50%;border:2px solid var(--line2);background:var(--s)}
+.st.d{background:var(--g);border-color:var(--g)}.st.w{border-color:var(--a)}
+.bar{width:26px;height:2px;background:var(--line2)}.bar.d{background:var(--g)}
+.age{font-size:11.5px}
+/* R3 face à face */
+.ff{display:grid;grid-template-columns:1fr 46px 1fr;align-items:stretch}
+.ff .h{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;padding:8px 18px;border-bottom:1px solid var(--line2)}
+.cl{padding:10px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:10px;min-height:52px}
+.mid{border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--ink4)}
+.mid.ok{color:var(--g)}.mid.bad{color:var(--r)}
+.cl.empty{color:var(--ink4);font-style:italic;background:repeating-linear-gradient(135deg,transparent 0 6px,var(--soft) 6px 12px)}
+.grp{grid-column:1/-1;padding:12px 18px 6px;font-weight:600;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line)}
+.grp.badg{background:var(--rs)}
+.sm{font-size:12px}
+@media (max-width:760px){.ff{grid-template-columns:1fr 28px 1fr}.cl{padding:8px 10px}.top{gap:14px}}
+</style></head><body><div class="wrap">
+<h1>Revenus perçus d'avance</h1>
+
+<!-- ===================== R1 ===================== -->
+<h2><b>R1</b> Trois files <span>prêt · en attente · à corriger</span></h2>
+<div class="scr">
+  <div class="top">
+    <div class="t">Revenus perçus d'avance</div>
+    <div class="k"><small>Boréal</small><b class="n">15 547,92 $</b></div>
+    <div class="k"><small>QuickBooks</small><b class="n ok">15 547,92 $ ✓</b></div>
+  </div>
+  <div class="stages">
+    <span class="on">Expédié, à constater<i>2</i></span>
+    <span>En attente de livraison<i>3</i></span>
+    <span class="red">À corriger<i>2</i></span>
+    <span>Constaté</span>
+  </div>
+  <div class="bulk"><input type="checkbox" class="cb" checked/> <span>2 sélectionnés · <b class="n">21 536,35 $</b></span><button class="go" style="margin-left:auto">Constater 2</button></div>
+  <div class="scroll"><table>
+    <thead><tr><th style="width:30px"></th><th>Client</th><th>Commande</th><th>Expédiée</th><th class="r">Dépôt</th><th class="r">À constater</th><th></th></tr></thead>
+    <tbody>
+      <tr class="open"><td><input type="checkbox" class="cb" checked/></td><td><span class="lnk">Consortium pomme de terre</span></td><td><span class="lnk">#1012</span></td><td>2 oct.</td><td class="r n">13 300,00</td><td class="r n"><b>13 300,00</b></td><td class="r"><button class="go">Constater</button></td></tr>
+      <tr class="exp"><td colspan="7"><div class="je">
+        <div>
+          <div class="fields">
+            <div><small>Date</small><span>2026-10-02<span class="src">expédition</span></span></div>
+            <div><small>Mémo</small><span>Consortium pomme de terre : constatation #B2FCDAB7-0023</span></div>
+          </div>
+          <table><tr><td>Dr 23900 Revenus perçus d'avance</td><td class="r n">13 300,00</td></tr><tr><td>Cr 40000 Ventes de produits</td><td class="r n">13 300,00</td></tr></table>
+        </div>
+        <button class="go">Envoyer à QuickBooks</button>
+      </div></td></tr>
+      <tr><td><input type="checkbox" class="cb" checked/></td><td><span class="lnk">Canticle Farm</span> <span class="l2">· 2 versements</span></td><td><span class="lnk">#1041</span></td><td>28 sept.</td><td class="r n">28 304,86</td><td class="r n"><b>8 236,35</b></td><td class="r"><button class="go">Constater</button></td></tr>
+    </tbody>
+  </table></div>
+  <div class="foot"><span>À constater <b class="n">21 536,35 $</b></span></div>
+</div>
+
+<div class="scr" style="margin-top:14px">
+  <div class="stages">
+    <span>Expédié, à constater<i>2</i></span>
+    <span class="on">En attente de livraison<i>3</i></span>
+    <span class="red">À corriger<i>2</i></span>
+    <span>Constaté</span>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Client</th><th>Commande</th><th>État</th><th>Encaissé</th><th class="r">Dépôt</th></tr></thead>
+    <tbody>
+      <tr><td><span class="lnk">Wisconsin Greenhouse</span></td><td><span class="lnk">#1030</span></td><td><span class="pill p-n">En attente</span></td><td>6 juil. <span class="l2 warn">· 96 j</span></td><td class="r n">347,92</td></tr>
+      <tr><td><span class="lnk">Ferme Décembre</span> <span class="l2">· 3 versements</span></td><td><span class="lnk">#1076</span></td><td><span class="pill p-a">Prêt à expédier</span></td><td>15 sept.</td><td class="r n">560,00</td></tr>
+      <tr><td><span class="lnk">Ferme Décembre</span></td><td><span class="lnk">#1076</span></td><td><span class="pill p-a">Prêt à expédier</span></td><td>5 oct.</td><td class="r n">1 340,00</td></tr>
+    </tbody>
+  </table></div>
+</div>
+
+<div class="scr" style="margin-top:14px">
+  <div class="stages">
+    <span>Expédié, à constater<i>2</i></span>
+    <span>En attente de livraison<i>3</i></span>
+    <span class="red on">À corriger<i>2</i></span>
+    <span>Constaté</span>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Client</th><th>Problème</th><th>Date</th><th class="r">Montant</th><th></th></tr></thead>
+    <tbody>
+      <tr><td>Ferme d'Orée</td><td><span class="pill p-r">Constaté sans dépôt</span></td><td>15 avr. 2019</td><td class="r n bad">−7 650,00</td><td class="r"><button class="ghost">Corriger</button></td></tr>
+      <tr><td class="l2">Sans nom</td><td><span class="pill p-r">Constaté sans dépôt</span></td><td>27 mai 2026</td><td class="r n bad">−586,35</td><td class="r"><button class="ghost">Corriger</button></td></tr>
+    </tbody>
+  </table></div>
+</div>
+
+<!-- ===================== R2 ===================== -->
+<h2><b>R2</b> Une liste, un parcours <span>encaissé → expédié → constaté</span></h2>
+<div class="scr">
+  <div class="top">
+    <div class="t">Revenus perçus d'avance</div>
+    <div class="k"><small>À constater</small><b class="n ok">21 536,35 $</b></div>
+    <div class="k"><small>En attente</small><b class="n">2 247,92 $</b></div>
+    <div class="k"><small>À corriger</small><b class="n bad">−8 236,35 $</b></div>
+    <div class="k"><small>QuickBooks</small><b class="n ok">✓</b></div>
+    <button class="go">Constater 2</button>
+  </div>
+  <div class="scroll"><table>
+    <thead><tr><th>Client</th><th>Parcours</th><th>Commande</th><th class="r">Dépôt</th><th></th></tr></thead>
+    <tbody>
+      <tr><td><span class="lnk">Consortium pomme de terre</span></td><td><span class="steps"><i class="st d"></i><i class="bar d"></i><i class="st d"></i><i class="bar"></i><i class="st w"></i></span> <span class="age ok">expédiée 2 oct.</span></td><td><span class="lnk">#1012</span></td><td class="r n">13 300,00</td><td class="r"><button class="go">Constater</button></td></tr>
+      <tr><td><span class="lnk">Canticle Farm</span></td><td><span class="steps"><i class="st d"></i><i class="bar d"></i><i class="st d"></i><i class="bar"></i><i class="st w"></i></span> <span class="age ok">expédiée 28 sept.</span></td><td><span class="lnk">#1041</span></td><td class="r n">8 236,35</td><td class="r"><button class="go">Constater</button></td></tr>
+      <tr><td><span class="lnk">Ferme Décembre</span></td><td><span class="steps"><i class="st d"></i><i class="bar"></i><i class="st"></i><i class="bar"></i><i class="st"></i></span> <span class="age l2">prête à expédier</span></td><td><span class="lnk">#1076</span></td><td class="r n">1 900,00</td><td></td></tr>
+      <tr><td><span class="lnk">Wisconsin Greenhouse</span></td><td><span class="steps"><i class="st d"></i><i class="bar"></i><i class="st"></i><i class="bar"></i><i class="st"></i></span> <span class="age warn">96 j</span></td><td><span class="lnk">#1030</span></td><td class="r n">347,92</td><td></td></tr>
+      <tr style="background:var(--rs)"><td>Ferme d'Orée</td><td><span class="steps"><i class="st"></i><i class="bar"></i><i class="st"></i><i class="bar d"></i><i class="st d"></i></span> <span class="age bad">constaté sans dépôt</span></td><td class="l2">—</td><td class="r n bad">−7 650,00</td><td class="r"><button class="ghost">Corriger</button></td></tr>
+      <tr style="background:var(--rs)"><td class="l2">Sans nom</td><td><span class="steps"><i class="st"></i><i class="bar"></i><i class="st"></i><i class="bar d"></i><i class="st d"></i></span> <span class="age bad">constaté sans dépôt</span></td><td class="l2">—</td><td class="r n bad">−586,35</td><td class="r"><button class="ghost">Corriger</button></td></tr>
+    </tbody>
+  </table></div>
+</div>
+
+<!-- ===================== R3 ===================== -->
+<h2><b>R3</b> Face à face <span>dépôts ↔ constatations, dépairer d'un clic</span></h2>
+<div class="scr">
+  <div class="top">
+    <div class="t">Revenus perçus d'avance</div>
+    <div class="k"><small>Boréal</small><b class="n">15 547,92 $</b></div>
+    <div class="k"><small>QuickBooks</small><b class="n ok">15 547,92 $ ✓</b></div>
+    <button class="go">Constater 2</button>
+  </div>
+  <div class="ff">
+    <div class="h">Dépôt encaissé</div><div class="h"></div><div class="h">Constatation</div>
+
+    <div class="grp"><span class="lnk">Canticle Farm</span><span class="n sm">solde 8 236,35</span></div>
+    <div class="cl"><span>20 janv. <span class="l2">· versement 1/2</span></span><b class="n">20 068,51</b></div>
+    <div class="mid ok" title="Dépairer">⛓</div>
+    <div class="cl"><span>25 mai <span class="l2">· #1041 partielle</span></span><span class="n">20 068,51</span></div>
+    <div class="cl"><span>25 mai <span class="l2">· versement 2/2</span></span><b class="n">8 236,35</b></div>
+    <div class="mid">→</div>
+    <div class="cl"><span class="ok">Expédiée 28 sept.</span><button class="go">Constater</button></div>
+
+    <div class="grp"><span class="lnk">Consortium pomme de terre</span><span class="n sm">solde 13 300,00</span></div>
+    <div class="cl"><span>15 janv.</span><b class="n">13 300,00</b></div>
+    <div class="mid">→</div>
+    <div class="cl"><span class="ok">Expédiée 2 oct.</span><button class="go">Constater</button></div>
+
+    <div class="grp"><span class="lnk">Ferme Décembre</span><span class="n sm">solde 1 900,00</span></div>
+    <div class="cl"><span>6 mars <span class="l2">· 1/3</span></span><b class="n">1 200,00</b></div>
+    <div class="mid ok">⛓</div>
+    <div class="cl"><span>15 sept.</span><span class="n">1 200,00</span></div>
+    <div class="cl"><span>15 sept. <span class="l2">· 2/3 + 3/3</span></span><b class="n">1 900,00</b></div>
+    <div class="mid">·</div>
+    <div class="cl empty">#1076 pas expédiée</div>
+
+    <div class="grp badg"><span>Ferme d'Orée</span><span class="n sm bad">−7 650,00</span></div>
+    <div class="cl empty">aucun dépôt</div>
+    <div class="mid bad">✕</div>
+    <div class="cl"><span>15 avr. 2019</span><span class="n bad">7 650,00 <span class="lnk" style="margin-left:8px">Annuler</span></span></div>
+
+    <div class="grp badg"><span class="l2">Sans nom</span><span class="n sm bad">−586,35</span></div>
+    <div class="cl"><span>31 mars 2019</span><b class="n">7 650,00</b></div>
+    <div class="mid bad" title="Dépairer">⛓</div>
+    <div class="cl"><span>27 mai 2026 <span class="l2">· ×2</span></span><span class="n bad">8 236,35 <span class="lnk" style="margin-left:8px">Dépairer</span></span></div>
+  </div>
+</div>
+
+</div></body></html>

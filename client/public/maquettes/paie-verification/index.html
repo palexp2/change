@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Vérifier la paie</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#eef0f3;--s:#fff;--soft:#f6f7f9;--line:#e6e8eb;--line2:#d0d4d9;--ink:#24262a;--ink2:#4a4d53;--ink3:#6f7279;--ink4:#a0a3a9;--g:#2ca01c;--gd:#1f7a12;--gs:#e9f6e6;--b:#0077c5;--bs:#e5f1fa;--r:#d52b1e;--rs:#fcebea;--a:#c27400;--as:#fdf3e1;--sh:0 1px 2px rgb(0 0 0/.06),0 14px 40px rgb(0 0 0/.12)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33291a}}
+:root[data-theme="dark"]{--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33291a}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1100px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:18px;margin:44px 0 12px;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.n{font-variant-numeric:tabular-nums}.mute{color:var(--ink3)}.faint{color:var(--ink4)}
+.app{background:var(--s);border-radius:12px;box-shadow:var(--sh);overflow:hidden}
+.top{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.top b{font-size:16px}.sp{flex:1}
+.btn{font:inherit;font-weight:600;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;background:var(--g);color:#fff}
+.btn.ghost{background:var(--soft);color:var(--ink2);border:1px solid var(--line2)}
+.pill{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;font-size:11.5px;font-weight:600;white-space:nowrap}
+.pill.g{background:var(--gs);color:var(--gd)}.pill.a{background:var(--as);color:var(--a)}.pill.b{background:var(--bs);color:var(--b)}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;font-weight:600;color:var(--ink3);text-align:right;padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+td{padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap;text-align:right}
+td.c{cursor:pointer;position:relative}
+td.c:hover{background:var(--bs)}
+td.c.on{background:var(--bs);box-shadow:inset 0 0 0 2px var(--b)}
+td.c.flag{background:var(--as)}
+td.c.flag.on{box-shadow:inset 0 0 0 2px var(--a)}
+.src{display:block;font-size:10.5px;color:var(--ink4);font-weight:500}
+td.c.flag .src{color:var(--a)}
+tfoot td{font-weight:700;border-bottom:0;background:var(--soft)}
+.peek{border-top:1px solid var(--line);padding:14px 18px;display:grid;grid-template-columns:200px 1fr;gap:6px 18px;background:var(--soft)}
+.peek .k{color:var(--ink3)}
+.peek a{color:var(--b);font-weight:600;text-decoration:none}
+.mini{border-collapse:collapse;width:auto}.mini td{border:0;padding:2px 14px 2px 0;text-align:left}
+.ok{color:var(--gd)}.warn{color:var(--a)}
+/* V2 */
+.cards{display:grid;gap:12px;padding:16px}
+.card{border:1px solid var(--line);border-radius:10px;display:grid;grid-template-columns:200px 1fr 1fr 110px;align-items:stretch}
+.card.flag{border-color:var(--a);box-shadow:0 0 0 3px var(--as)}
+.card>div{padding:12px 14px}
+.card .who b{display:block;font-size:14px}
+.card .col{border-left:1px solid var(--line)}
+.card .col h4{margin:0 0 6px;font-size:11px;color:var(--ink3);font-weight:600}
+.card .row{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+.card .row.diff{color:var(--a);font-weight:600}
+.card .act{border-left:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.okbtn{font:inherit;font-weight:600;border:1px solid var(--line2);border-radius:8px;background:var(--s);color:var(--ink2);padding:6px 12px;cursor:pointer}
+.okbtn.done{background:var(--gs);border-color:var(--g);color:var(--gd)}
+/* V3 */
+.trio{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr 70px}
+.trio>div{padding:9px 14px;border-bottom:1px solid var(--line);text-align:right}
+.trio>div:nth-child(5n+1){text-align:left}
+.trio .h{font-size:11px;color:var(--ink3);font-weight:600}
+.trio .x{background:var(--as)}
+.exc{padding:14px 18px;display:flex;flex-direction:column;gap:8px}
+.ex{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+.ex .t{flex:1}.ex .t b{display:block}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--a);flex:none}
+@media (max-width:760px){.card{grid-template-columns:1fr}.card .col,.card .act{border-left:0;border-top:1px solid var(--line)}.peek{grid-template-columns:1fr}.trio{font-size:11.5px}}
+/* congés */
+.lv{display:grid;grid-template-columns:190px 1fr 260px 90px;align-items:center;border-bottom:1px solid var(--line)}
+.lv>div{padding:12px 14px}
+.lv .who b{display:block}
+.eq{font-variant-numeric:tabular-nums;color:var(--ink2)}.eq b{color:var(--ink)}
+.bar{position:relative;height:22px;border-radius:6px;background:var(--soft);border:1px solid var(--line);overflow:hidden}
+.bar .acc{position:absolute;inset:0 auto 0 0;background:var(--gs)}
+.bar .req{position:absolute;top:0;bottom:0;left:0;border-right:2.5px solid var(--ink)}
+.bar.short .acc{background:var(--as)}
+.bar span{position:absolute;right:6px;top:2px;font-size:11px;font-weight:600}
+.lbl{display:flex;justify-content:space-between;font-size:10.5px;color:var(--ink3);margin-top:3px}
+.res{font-weight:700;text-align:right}
+.cal{display:grid;grid-template-columns:180px repeat(14,minmax(46px,1fr)) 72px 72px 80px;font-size:11px;min-width:1050px}
+.cal>div{border-bottom:1px solid var(--line);border-left:1px solid var(--line);padding:6px 4px;text-align:center;min-height:34px}
+.cal>div:nth-child(18n+1){text-align:left;padding-left:14px;border-left:0;font-weight:600;font-size:12px}
+.cal .hd{color:var(--ink3);font-weight:600}
+.cal .we{background:var(--soft)}
+.cal .fe{background:var(--bs);color:var(--b);font-weight:700}
+.cal .va{background:var(--gs);color:var(--gd);font-weight:700}
+.cal .va.x{background:var(--as);color:var(--a)}
+.cal .sl{background:repeating-linear-gradient(45deg,var(--as),var(--as) 4px,transparent 4px,transparent 8px);color:var(--a);font-weight:700}
+.cal>div{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1.2}
+.cal>div:nth-child(18n+1){align-items:flex-start}
+.cal small{font-size:9.5px;font-weight:500;opacity:.8}
+.cal .va b,.cal .fe b{font-size:10.5px}
+.cal .va,.cal .nul{cursor:pointer}
+.cal .on{box-shadow:inset 0 0 0 2px var(--b)}
+.cal .nul{color:var(--ink3);font-weight:500}
+.cal .num{align-items:flex-end;padding-right:10px;font-variant-numeric:tabular-nums;background:var(--soft)}
+.leg{display:flex;gap:16px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:11.5px;color:var(--ink2);flex-wrap:wrap}
+.leg span{display:flex;align-items:center;gap:6px}
+.sw{width:14px;height:14px;border-radius:3px;display:inline-block;border:1px solid var(--line)}
+.sw.va{background:var(--gs)}.sw.va.x{background:var(--as)}.sw.fe{background:var(--bs)}.sw.we{background:var(--soft)}
+@media (max-width:760px){.lv{grid-template-columns:1fr}.cal{overflow-x:auto}}
+</style></head><body><div class="wrap">
+<h1>Vérifier la paie · 2026-08-30 au 2026-09-12</h1>
+
+<h2><b>V1</b> La grille <span>chaque chiffre porte sa source — clic = la preuve</span></h2>
+<div class="app">
+  <div class="top"><b>Paie du 12 sept.</b><span class="pill a">4 à regarder</span><span class="pill g">Nethris = Airtable</span><span class="sp"></span><button class="btn ghost">Tout ouvrir dans Airtable</button><button class="btn">Approuver</button></div>
+  <div class="scroll"><table id="g"></table></div>
+  <div class="peek" id="peek"></div>
+</div>
+
+<h2><b>V2</b> Face à face <span>par employé : saisi | source — un ✓ chacun</span></h2>
+<div class="app">
+  <div class="top"><b>Paie du 12 sept.</b><span class="pill b" id="cnt">0 / 10 validés</span><span class="sp"></span><button class="btn">Approuver</button></div>
+  <div class="cards" id="cards"></div>
+</div>
+
+<h2><b>V3</b> Les écarts seulement <span>trois totaux qui doivent tomber pareil, puis les exceptions</span></h2>
+<div class="app">
+  <div class="top"><b>Paie du 12 sept.</b><span class="sp"></span><button class="btn">Approuver</button></div>
+  <div class="trio n" id="trio"></div>
+  <div class="exc" id="exc"></div>
+</div>
+
+<h2><b>C1</b> Congés · la jauge <span>demandé = jours × h × $/h, comparé au solde accumulé</span></h2>
+<div class="app">
+  <div class="top"><b>Vacances payées</b><span class="pill a">2 soldes insuffisants</span><span class="sp"></span><button class="btn">Approuver</button></div>
+  <div id="lv"></div>
+</div>
+
+<h2><b>C2</b> Congés · le calendrier <span>la période jour par jour, d'où vient chaque congé</span></h2>
+<div class="app"><div class="scroll"><div class="cal" id="cal"></div></div><div class="peek" id="calpeek"></div></div>
+</div>
+<script>
+const E=[
+ {n:'Alicia Talbot Lanciault',h:49.60,r:45,f:148.12,v:124.22,vf:1,p:2504.34,hs:['S36 24,80','S37 24,80'],vs:'Solde vac. relevé 2026-09-03 : 124,22 $ — plafond atteint (8 h × 45 $ = 360 $)'},
+ {n:'Pierre-Alexandre Papillon',h:66.75,r:40.60,f:234.51,v:324.80,p:3269.36,hs:['S36 40,00','S37 26,75'],vs:'8 h × 40,60 $ · solde relevé 488,92 $'},
+ {n:'Guillaume Lambert',h:65.00,r:44.73,f:357.84,v:313.11,p:3578.40,hs:['Total hebdo envoyé : 39 h + 26 h'],vs:'7 h × 44,73 $ · banque d’heures + $'},
+ {n:'Charles Joachim',h:64.00,r:45,f:216.27,v:346.23,vf:1,p:3442.50,hs:['S36 32,00','S37 32,00'],vs:'Congé du ven. 11 sept. — pas dans sa feuille, vu dans Slack #absence · solde 346,23 $'},
+ {n:'Martin Audesse',h:40.00,r:30,f:138.98,ff:1,m:25,p:1363.98,hs:['S36 22,50','S37 16,50 (+1 h Airtable)'],fs:'Nethris calculait 136,48 $ — corrigé à 138,98 $ (1/20 des 2 paies précédentes)',ms:'QuickBooks 23100 Carte de crédit Martin Audesse : solde 25,00 $'},
+ {n:'Philippe Chabot',h:63.00,r:34.58,f:242.06,c:340.21,p:2760.81,hs:['S36 31,50','S37 31,50'],cs:'Inventaire › Vendeurs : commission à payer 340,21 $ (≥ 200 $)'},
+ {n:'Daniel Fortin',h:5.17,hf:1,r:22,p:113.74,hs:['S37 5 h 10 = 5,1667'],hx:'Arrondi à 5,17 — Airtable gardait 5,1667 (écart 0,07 $)'},
+ {n:'Marc-Antoine Plante',h:59.92,r:28.75,f:170.95,p:1893.65,hs:['S36 30,75','S37 29,17'],hx:'Au-delà de 70 h → banque d’heures (note de la paie)'},
+ {n:'Louis-Bernard Frechette',h:64.28,r:24,f:159.32,p:1702.04,hs:['S36 32,00','S37 32,28']},
+ {n:'Antoine Lambert',h:26.23,r:20,f:58.07,p:582.67,hs:['S36 11 h 24 = 11,40','S37 14 h 50 = 14,83']},
+];
+const $=n=>n==null?'':n.toLocaleString('fr-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
+const cols=[['h','h rég.','Boréal'],['f','Férié 1/20','auto'],['v','Vacances','relevé'],['m','Remb.','QB'],['c','Commission','Vendeurs'],['p','Paie','']];
+const g=document.getElementById('g');
+let html='<thead><tr><th>Employé</th>'+cols.map(c=>`<th>${c[1]}</th>`).join('')+'</tr></thead><tbody>';
+E.forEach((e,i)=>{html+=`<tr><td><b>${e.n}</b></td>`+cols.map(([k,,s])=>{
+  if(e[k]==null)return '<td class="faint">—</td>';
+  const flag=e[k+'f'];
+  return k==='p'?`<td class="n"><b>${$(e[k])}</b></td>`:`<td class="c n${flag?' flag':''}" data-i="${i}" data-k="${k}">${$(e[k])}<span class="src">${flag?'à regarder':s}</span></td>`}).join('')+'</tr>'});
+html+=`</tbody><tfoot><tr><td>Total</td><td class="n">${$(E.reduce((a,e)=>a+e.h,0))}</td><td class="n">1 726,12</td><td class="n">1 108,36</td><td class="n">25,00</td><td class="n">340,21</td><td class="n">21 211,49</td></tr></tfoot>`;
+g.innerHTML=html;
+const peek=document.getElementById('peek');
+function show(i,k){const e=E[i];document.querySelectorAll('td.c').forEach(t=>t.classList.toggle('on',t.dataset.i==i&&t.dataset.k==k));
+ const L={h:['Feuille de temps Boréal',(e.hs||[]).join(' · ')+(e.hx?'<br><span class="warn">'+e.hx+'</span>':''),'Ouvrir la feuille de '+e.n.split(' ')[0]],
+  f:['Férié 1/20',e.fs?'<span class="warn">'+e.fs+'</span>':'Calcul automatique — 1/20 des 2 paies précédentes','Ouvrir la paie Airtable'],
+  v:['Relevé de paie Nethris',e.vf?'<span class="warn">'+e.vs+'</span>':e.vs,'Ouvrir RELEVE_PAIE_2026-09-03.pdf'],
+  m:['QuickBooks',e.ms,'Ouvrir le compte 23100'],
+  c:['Airtable › Vendeurs',e.cs,'Ouvrir Vendeurs']}[k];
+ peek.innerHTML=`<div class="k">${e.n}</div><div><b>${$(e[k])} ${k==='h'?'h':'$'}</b></div><div class="k">Source</div><div>${L[0]}</div><div class="k">Preuve</div><div>${L[1]}</div><div></div><div><a href="#">${L[2]} ↗</a></div>`}
+g.addEventListener('click',ev=>{const t=ev.target.closest('td.c');if(t)show(+t.dataset.i,t.dataset.k)});
+show(0,'v');
+
+// V2
+const cards=document.getElementById('cards');let done=0;
+E.forEach((e,i)=>{const flag=e.vf||e.ff||e.hf;const d=document.createElement('div');d.className='card'+(flag?' flag':'');
+ const rows=[['Heures',e.h,(e.hs||[]).join(' + ')]];if(e.v)rows.push(['Vacances',e.v,e.vs]);if(e.m)rows.push(['Remb.',e.m,'QB 23100']);if(e.c)rows.push(['Commission',e.c,'Vendeurs']);if(e.f)rows.push(['Férié',e.f,e.fs?'Nethris 136,48':'auto']);
+ d.innerHTML=`<div class="who"><b>${e.n}</b><span class="mute n">${$(e.p)} $</span></div>
+ <div class="col"><h4>Saisi dans Airtable</h4>${rows.map(r=>`<div class="row n"><span>${r[0]}</span><span>${$(r[1])}</span></div>`).join('')}</div>
+ <div class="col"><h4>Source</h4>${rows.map(r=>{const diff=(r[0]==='Férié'&&e.ff)||(r[0]==='Vacances'&&e.vf)||(r[0]==='Heures'&&e.hf);return `<div class="row${diff?' diff':''}"><span>${r[2].length>46?r[2].slice(0,44)+'…':r[2]}</span></div>`}).join('')}</div>
+ <div class="act"><button class="okbtn">✓ OK</button></div>`;
+ d.querySelector('.okbtn').onclick=b=>{const x=b.target;x.classList.toggle('done');done+=x.classList.contains('done')?1:-1;document.getElementById('cnt').textContent=done+' / 10 validés'};
+ cards.appendChild(d)});
+
+// V3
+const T=[['Heures régulières','18 011,73','18 011,80','18 011,73'],['Férié 1/20','1 726,12','1 726,12','1 726,12'],['Vacances $','1 108,36','1 108,36','1 108,36'],['Remb. dépenses','25,00','25,00','25,00'],['Commission','340,21','340,21','340,21'],['Total','21 211,49','21 211,49','21 211,49']];
+document.getElementById('trio').innerHTML='<div class="h">Catégorie</div><div class="h">Airtable</div><div class="h">Nethris import</div><div class="h">Registre</div><div class="h"></div>'+T.map(r=>{const x=r[1]!==r[2]||r[2]!==r[3];return `<div${x?' class="x"':''}>${r[0]}</div><div${x?' class="x"':''}>${r[1]}</div><div${x?' class="x"':''}>${r[2]}</div><div${x?' class="x"':''}>${r[3]}</div><div${x?' class="x warn"':' class="ok"'}>${x?'0,07':'✓'}</div>`}).join('');
+const X=[['Daniel Fortin · heures','5,1667 h dans Airtable, 5,17 dans Nethris','Feuille Boréal'],['Martin Audesse · férié','Nethris 136,48 → corrigé 138,98 $','Paie et ajustements'],['Alicia · vacances','Plafond du relevé : 124,22 $ au lieu de 360 $','Relevé 2026-09-03'],['Charles · congé du 11 sept.','Pris de Slack #absence, absent de sa feuille','Message Slack'],['Philippe McAllister, P-A Papillon · commissions','120,21 $ et 105,51 $ reportées (< 200 $)','Vendeurs']];
+document.getElementById('exc').innerHTML=X.map(x=>`<div class="ex"><span class="dot"></span><div class="t"><b>${x[0]}</b><span class="mute">${x[1]}</span></div><a href="#" style="color:var(--b);font-weight:600;text-decoration:none">${x[2]} ↗</a><button class="okbtn">✓</button></div>`).join('');
+document.querySelectorAll('#exc .okbtn').forEach(b=>b.onclick=()=>b.classList.toggle('done'));
+
+// C1
+const LV=[
+ {n:'Alicia Talbot Lanciault',src:'Airtable › Congés',j:1,h:8,r:45,acc:124.22,rel:'RELEVE_PAIE_2026-09-03'},
+ {n:'Pierre-Alexandre Papillon',src:'Boréal · ven. 11 sept.',j:1,h:8,r:40.60,acc:488.92,rel:'RELEVE_PAIE_2026-09-03'},
+ {n:'Guillaume Lambert',src:'Total hebdo',j:1,h:7,r:44.73,acc:9600,rel:'banque d\u2019heures + $'},
+ {n:'Charles Joachim',src:'Slack #absence · ven. 11 sept.',j:1,h:8,r:45,acc:346.23,rel:'RELEVE_PAIE_2026-09-03'},
+ {n:'Philippe Chabot',src:'Boréal · lun. 7 sept.',j:1,h:8,r:34.58,acc:612.40,fer:1,rel:'RELEVE_PAIE_2026-09-03'},
+];
+document.getElementById('lv').innerHTML=LV.map(l=>{
+ const req=l.fer?0:l.j*l.h*l.r,pay=Math.min(req,l.acc),short=req>l.acc,max=Math.max(req,l.acc)*1.08||1;
+ const eq=l.fer?'<span class="mute">lun. 7 sept. = <b>férié</b> → aucune vacance</span>':`${l.j} j × ${l.h} h × ${$(l.r)} $ = <b>${$(req)} $</b>`;
+ const res=l.fer?'<span class="mute">0,00</span>':short?`<span class="warn">${$(pay)}</span><div class="mute" style="font-size:10.5px;font-weight:500">${$(req-pay)} sans solde</div>`:`<span class="ok">${$(pay)}</span>`;
+ const big=l.acc>5000;
+ return `<div class="lv"><div class="who"><b>${l.n}</b><span class="mute">${l.src}</span></div>
+ <div class="eq">${eq}</div>
+ <div>${l.fer?'':`<div class="bar${short?' short':''}"><div class="acc" style="width:${big?100:l.acc/max*100}%"></div><div class="req" style="width:${big?4:req/max*100}%"></div></div>
+ <div class="lbl"><span>demandé ${$(req)}</span><a href="#" style="color:var(--b);text-decoration:none">solde ${big?'9 600 h+$':$(l.acc)} ↗</a></div>`}</div>
+ <div class="res n">${res}</div></div>`}).join('');
+
+// C2
+const days=['D 30','L 31','M 1','M 2','J 3','V 4','S 5','D 6','L 7','M 8','M 9','J 10','V 11','S 12'];
+const R=[
+ {n:'Alicia Talbot Lanciault',d:{12:['vac','8 h','Airtable']},req:360,acc:124.22},
+ {n:'Pierre-Alexandre Papillon',d:{12:['vac','8 h','Boréal']},req:324.80,acc:488.92},
+ {n:'Charles Joachim',d:{12:['vac','8 h','Slack']},req:360,acc:346.23},
+ {n:'Philippe Chabot',d:{8:['nul','8 h','Boréal']},req:0,acc:612.40},
+ {n:'Guillaume Lambert',d:{12:['vac','7 h','Total hebdo']},req:313.11,acc:9600},
+ {n:'Martin Audesse',d:{},req:0,acc:210.10},
+];
+let ch='<div class="hd"></div>'+days.map((d,i)=>`<div class="hd${i==8?' fe':''}">${d}${i==8?'<small>Férié</small>':''}</div>`).join('')+'<div class="hd">Vacances</div><div class="hd">Solde</div><div class="hd">Payé</div>';
+R.forEach(r=>{const short=r.req>r.acc;ch+=`<div>${r.n}</div>`+days.map((d,i)=>{
+ const c=r.d[i];
+ if(c&&c[0]=='vac')return `<div class="va${short?' x':''}" data-n="${r.n}"><b>${c[1]}</b><small>${c[2]}</small></div>`;
+ if(c&&c[0]=='nul')return `<div class="fe nul" data-n="${r.n}"><b><s>8 h</s></b>férié<small>${c[2]}</small></div>`;
+ if(i==8)return '<div class="fe"></div>';
+ if(i%7==0||i%7==6)return '<div class="we"></div>';
+ return '<div></div>'}).join('')
+ +`<div class="num">${r.req?$(r.req):'—'}</div><div class="num">${r.acc>5000?'9 600':$(r.acc)}</div><div class="num ${r.req?(short?'warn':'ok'):''}"><b>${r.req?$(Math.min(r.req,r.acc)):'—'}</b>${short?`<small>−${$(r.req-r.acc)}</small>`:''}</div>`});
+const cal=document.getElementById('cal');cal.innerHTML=ch;
+const leg=document.createElement('div');leg.className='leg';
+leg.innerHTML='<span><i class="sw va"></i>Vacances payées</span><span><i class="sw va x"></i>Solde insuffisant</span><span><i class="sw fe"></i>Férié</span><span><i class="sw we"></i>Fin de semaine</span>';
+cal.parentNode.parentNode.insertBefore(leg,cal.parentNode);
+const CP={'Alicia Talbot Lanciault':['Airtable › Congés','8 h × 45 $ = 360 $ · solde 124,22 $ → <span class="warn">124,22 payé, 235,78 sans solde</span>'],
+ 'Pierre-Alexandre Papillon':['Boréal · feuille de temps','8 h × 40,60 $ = 324,80 $ · solde 488,92 $ → <span class="ok">OK, reste 164,12</span>'],
+ 'Charles Joachim':['Slack #absences (absent d\u2019Airtable)','8 h × 45 $ = 360 $ · solde 346,23 $ → <span class="warn">346,23 payé, 13,77 sans solde</span>'],
+ 'Philippe Chabot':['Boréal · lun. 7 sept.','Fête du Travail : déjà payé en férié → <span class="ok">aucune vacance prise</span>'],
+ 'Guillaume Lambert':['Total hebdo envoyé','73 h → 7 h pour atteindre 80 h · 7 h × 44,73 $ = 313,11 $ → <span class="ok">OK</span>']};
+const cp=document.getElementById('calpeek');
+function cshow(n){const c=CP[n];cal.querySelectorAll('[data-n]').forEach(t=>t.classList.toggle('on',t.dataset.n==n));cp.innerHTML=`<div class="k">${n}</div><div><b>Congé</b></div><div class="k">Source</div><div>${c[0]}</div><div class="k">Calcul</div><div>${c[1]}</div><div></div><div><a href="#">Ouvrir le relevé de paie ↗</a></div>`}
+cal.addEventListener('click',e=>{const t=e.target.closest('[data-n]');if(t)cshow(t.dataset.n)});cshow('Alicia Talbot Lanciault');
+</script>
+</body></html>

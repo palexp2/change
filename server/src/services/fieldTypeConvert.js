@@ -9,7 +9,7 @@
 // décide (avertissement outrepassable, cf. routes/custom-fields.js PUT /:id).
 //
 // Formes de stockage (rappel, cf. FIELD_KINDS.data) :
-//   text / long_text / url / phone : TEXT
+//   text / long_text / url / phone / email / barcode : TEXT
 //   number / currency / duration   : REAL   (durée en SECONDES)
 //   percent                        : REAL   (nombre de POURCENTS : 45 = 45 %)
 //   checkbox                       : INTEGER 0/1
@@ -189,7 +189,9 @@ function textToValue(text, type, options, { choices, bareSeconds } = {}) {
     case 'text':
     case 'long_text':
     case 'url':
+    case 'email':
     case 'phone':
+    case 'barcode':
       return { ok: true, value: text }
     case 'number':
     case 'currency':

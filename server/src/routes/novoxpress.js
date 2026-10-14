@@ -11,7 +11,8 @@ import {
   fetchAndSaveLabelPdf,
   schedulePickup,
   cancelPickup,
-  buildPayload
+  buildPayload,
+  getShipmentWithAddress,
 } from '../services/novoxpress.js'
 import {
   isDiagnosticAvailable,
@@ -51,32 +52,6 @@ function fmtPickupDate(d) {
 function fmtPickupTime(t) {
   if (t?.hour == null) return null
   return `${pad2(t.hour)}:${pad2(t.minute || 0)}`
-}
-
-// Load shipment with full address + company info + contact attaché à l'adresse
-// (le contact de l'adresse prime sur l'email/tel de la company — c'est lui le
-// destinataire physique du colis).
-function getShipmentWithAddress(shipmentId) {
-  return db.prepare(`
-    SELECT
-      s.id, s.order_id, s.tracking_number, s.carrier,
-      s.address_id,
-      a.line1 as address_line1, a.city as address_city,
-      a.province as address_province, a.postal_code as address_postal_code,
-      a.country as address_country,
-      co.name as company_name, co.email as company_email,
-      ct.first_name as address_contact_first_name,
-      ct.last_name as address_contact_last_name,
-      ct.email as address_contact_email,
-      ct.phone as address_contact_phone,
-      ct.mobile as address_contact_mobile
-    FROM shipments s
-    LEFT JOIN orders o ON s.order_id = o.id
-    LEFT JOIN companies co ON o.company_id = co.id
-    LEFT JOIN adresses a ON s.address_id = a.id
-    LEFT JOIN contacts ct ON a.contact_id = ct.id
-    WHERE s.id = ? AND s.deleted_at IS NULL
-  `).get(shipmentId)
 }
 
 // GET /api/novoxpress/status

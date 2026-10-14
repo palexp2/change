@@ -161,7 +161,7 @@ const HEADERS = {
   number: ['transaction number', 'numero de transaction', 'no de transaction', 'transaction no', 'reference number', 'numero de reference', 'reference', 'numero', 'no'],
   description: ['description', 'details', 'libelle', 'sub type', 'sous-type'],
   detail: ['description detaillee', 'detailed description', 'transaction description', 'nature', 'nature de la transaction'],
-  party: ['fournisseur', 'nom du fournisseur', 'supplier', 'vendor', 'payeur', 'payer', 'trade chain partner', 'partenaire de la chaine commerciale', 'client'],
+  party: ['fournisseur', 'nom du fournisseur', 'fournisseur de services', 'service provider', 'service provider name', 'broker', 'courtier', 'customs broker', 'courtier en douane', 'supplier', 'vendor', 'payeur', 'payer', 'trade chain partner', 'partenaire de la chaine commerciale', 'client'],
   amount: ['amount', 'montant', 'amount (cad)', 'montant ($ ca)', 'transaction amount', 'montant de la transaction', 'total'],
   balance: ['balance', 'solde', 'account balance', 'solde du compte', 'running balance'],
   debit: ['debit', 'debits', 'charge', 'charges', 'withdrawal', 'retrait'],
@@ -188,7 +188,7 @@ const HEADER_KEYWORDS = [
   ['balance', /balance|solde/],
   ['amount', /amount|montant|\btotal\b|owing|somme|valeur|\bvalue\b/],
   ['type', /\btype\b|activit|categor|nature/],
-  ['party', /fournisseur|supplier|vendor|payeur|\bpayer\b|trade chain|partenaire/],
+  ['party', /fournisseur|service provider|broker|courtier|supplier|vendor|payeur|\bpayer\b|trade chain|partenaire/],
   ['number', /number|numero|\bno\b|\bnum\b|reference|\bref\b|\bid\b|declaration/],
   ['detail', /descript\w* detaill|detailed descript|\bnature\b/],
   ['description', /descript|detail|libelle|remark|note|commentaire|sub type|sous type/],
@@ -544,6 +544,9 @@ export function previewCarmStatement(text) {
     columns,
     notes,
     sample,
+    // Sans « Fournisseur », FedEx (qui paie et refacture) et Axxess (qui ne paie
+    // pas) sont indiscernables : l'UI le signale avant l'import.
+    no_party: rows.length > 0 && !rows.some(r => r.party),
   }
 }
 
@@ -554,6 +557,10 @@ export function importCarmStatement(text, userId = null) {
   const brokerNames = String(getCarmConfig().broker_names || '').split(',').map(x => x.trim()).filter(Boolean)
   let created = 0, skipped = 0
   const exists = db.prepare('SELECT id FROM carm_transactions WHERE import_key = ?')
+  // Ré-import d'un export complet : complète le courtier des lignes déjà connues
+  // qui n'en avaient pas (anciens exports sans colonne « Fournisseur »).
+  const fillParty = db.prepare(`UPDATE carm_transactions SET party = ? WHERE import_key = ? AND COALESCE(party,'') = ''`)
+  let completed = 0
   const insert = db.prepare(`
     INSERT INTO carm_transactions (id, transaction_date, due_date, transaction_type,
       transaction_number, description, detail, party, amount, balance, import_key, source, created_by,
@@ -562,7 +569,11 @@ export function importCarmStatement(text, userId = null) {
   `)
   const tx = db.transaction(() => {
     for (const r of rows) {
-      if (exists.get(r.import_key)) { skipped++; continue }
+      if (exists.get(r.import_key)) {
+        skipped++
+        if (r.party) completed += fillParty.run(r.party, r.import_key).changes
+        continue
+      }
       // La nature et la ventilation droits/TPS sont posées dès l'insertion : le
       // relevé dit lui-même ce qu'est chaque ligne, rien à saisir à la main.
       const c = classifyCarmLine(r, { brokerNames })
@@ -575,7 +586,8 @@ export function importCarmStatement(text, userId = null) {
   })
   tx()
   const matched = created ? autoMatchCarm() : 0
+  if (completed) db.prepare(`UPDATE carm_transactions SET broker = NULL WHERE COALESCE(split_source,'auto') = 'auto' AND posting_state != 'comptabilise'`).run()
   // Imputation : paires courtier, lettrage FIFO, états de comptabilisation.
   const imputation = recomputeCarm()
-  return { created, skipped, matched, imputation, parsed: rows.length, errors, header_found, columns, notes }
+  return { created, skipped, completed, matched, imputation, parsed: rows.length, errors, header_found, columns, notes }
 }

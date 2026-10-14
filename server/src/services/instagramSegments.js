@@ -13,12 +13,14 @@
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { readProfiles, profileOf, ACTIVITIES } from './instagramProfiles.js'
+import { detectKeyword } from './instagramProspects.js'
 
 export const SEGMENT_AUTOMATION_ID = 'sys_instagram_segments'
 
 /** L'ordre est celui des sections dans la page. */
 export const SEGMENTS = [
   { key: 'coach', label: 'Ont demandé le coaching' },
+  { key: 'partner', label: 'Ont écrit « partner »' },
   { key: 'fleurs', label: 'Font pousser des fleurs' },
   { key: 'question', label: 'Posent une question' },
   { key: 'commentaire', label: 'Ont simplement commenté' },
@@ -39,6 +41,9 @@ export const SEGMENT_DEFAULT_CONFIG = {
   msg_coach:
     "Elle a demandé le coaching. Confirme-lui qu'elle est au bon endroit, dis en une phrase ce " +
     "qu'elle y trouve, et demande-lui où elle en est dans sa saison.",
+  msg_partner:
+    "Elle a écrit « partner » sous notre publication : elle veut devenir partenaire. Remercie-la, " +
+    "confirme qu'on a bien noté son intérêt et demande-lui ce qu'elle cultive. Philippe relira.",
   msg_fleurs:
     "Elle fait pousser des fleurs. Parle fleurs, pas légumes : parle-lui de ce que le contrôle du " +
     "climat change pour une culture de fleurs, et demande-lui ce qu'elle cultive.",
@@ -307,15 +312,20 @@ function saidByPerson(p, incoming) {
 }
 
 // Une ferme de fleurs le dit souvent dans son nom (« Jenny Creek Flowers ») :
-// c'est une preuve suffisante tant que le profil n'a pas pu être lu.
+// c'est une preuve suffisante tant que le profil n'a pas pu être lu. Une fois
+// lu, c'est lui qui tranche : « vegetables and flowers » dans la bio d'un
+// maraîcher ne fait pas une ferme de fleurs (le message fleurs tomberait à côté).
 const FLOWER_NAME = /flower|floral|florist|bloom|blossom|fleur|dahlia|peon(y|ies)|petal|tulip|zinnia|ranunculus/i
 function flowerByName(p, profile) {
+  if (profile?.ai) return false
   return FLOWER_NAME.test(`${p.ig_username || ''} ${p.full_name || ''} ${profile?.bio || ''}`)
 }
 
 /** Ce qui se décide sans modèle : le mot-clé, et la fiche muette. */
 function ruleSegment(p, said) {
   if (/\bcoach(ing)?\b/i.test(`${p.keyword || ''} ${p.capture_label || ''} ${said}`)) return 'coach'
+  // « partner », fautes comprises (« parner », « partners »).
+  if (p.keyword === 'partner' || detectKeyword(said, 'partner')) return 'partner'
   if (!said.trim()) return 'abonne'
   if (/\?/.test(said)) return 'question'
   return null
@@ -468,7 +478,7 @@ export async function runSegmentation({ force = false, trigger = 'schedule', ids
         continue
       }
       const rule = ruleSegment(b.p, b.said)
-      if (rule === 'coach') { setSegment(b.p.id, 'coach', 'rule'); classed++; continue }
+      if (rule === 'coach' || rule === 'partner') { setSegment(b.p.id, rule, 'rule'); classed++; continue }
       toAsk.push(b)
     }
 
@@ -505,7 +515,7 @@ export async function runSegmentation({ force = false, trigger = 'schedule', ids
         setSegment(b.p.id, seg, 'ai')
         classed++
         // Rien à lui écrire : rangée dans les traités, d'où on la repêche d'un clic.
-        if (r?.hors_sujet === true && seg !== 'coach') offTopic += closeOffTopic.run(b.p.id).changes
+        if (r?.hors_sujet === true && seg !== 'coach' && seg !== 'partner') offTopic += closeOffTopic.run(b.p.id).changes
       })
     }
 

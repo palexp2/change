@@ -32,10 +32,10 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
-import { paymentEvents, achatIdsWithPayment, coveredBillIds, recurringCoverage, autoClearFromBank } from './treasuryPayments.js'
+import { paymentEvents, achatIdsWithPayment, coveredBillIds, paymentsFreeToCover, recurringCoverage, autoClearFromBank } from './treasuryPayments.js'
 import { learnedRecurringMap, bankConfirmedOutflows } from './treasuryLearning.js'
 import { statementAmount } from './cardStatement.js'
-import { sendSlackWebhook } from './slack.js'
+import { sendSlackConfigured, hasSlackTarget, SLACK_DEFAULT_TARGETS } from './slack.js'
 
 export const TREASURY_AUTOMATION_ID = 'sys_treasury_alert'
 
@@ -113,6 +113,7 @@ export const TREASURY_DEFAULT_CONFIG = {
   escalate_delta: '2000',
   // Webhook Slack (DM Antoine Lambert) — nom de la variable d'env dans server/.env.
   slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+  slack_channel: SLACK_DEFAULT_TARGETS.SLACK_WEBHOOK_TREASURY,
   // ── Carte de crédit d'opération (cédule de paiements) ──────────────────────
   // La Mastercard sert à payer une partie des fournisseurs : au-delà d'un
   // certain solde, on ne peut plus s'en servir avant que le paiement
@@ -424,6 +425,7 @@ function buildMrrEvents({ fromIso, toIso, settleDays, today }) {
            (SELECT name FROM companies WHERE id = subscriptions.company_id) AS company_name
     FROM subscriptions
     WHERE status IN ('active', 'past_due') AND COALESCE(currency, 'CAD') = 'CAD' AND amount_monthly > 0
+      AND COALESCE(is_test, 0) = 0
   `).all()
   const skipUntil = new Date(today); skipUntil.setDate(skipUntil.getDate() + 7)
   const events = []
@@ -577,14 +579,14 @@ export function computeProjection({ days = null, today = new Date(), scenario = 
   const openBills = bills.filter(b => b.due_date && !paidAchats.has(b.id))
   const allOpenBillIds = new Set(bills.map(b => b.id))
   const pendingOut = db.prepare(`
-    SELECT id, label, amount, payment_date, achat_id FROM treasury_payments
+    SELECT id, label, amount, payment_date, achat_id, source, qb_billpayment_id FROM treasury_payments
     WHERE deleted_at IS NULL AND cleared_at IS NULL AND direction = 'out'
       AND COALESCE(account, 'BNC CAD') = ? AND COALESCE(currency, 'CAD') = 'CAD'
   `).all(TREASURY_BANK_ACCOUNT)
   const billCover = coveredBillIds(openBills,
     // Un paiement lié à une facture ouverte la couvre déjà (paidAchats) — il ne
     // doit pas en absorber une deuxième.
-    pendingOut.filter(p => !p.achat_id || !allOpenBillIds.has(p.achat_id)))
+    paymentsFreeToCover(pendingOut, allOpenBillIds))
   const covered_bills = []
   for (const b of openBills) {
     const cover = billCover.get(b.id)
@@ -1420,9 +1422,8 @@ export async function checkTreasuryAlert({ force = false, trigger = 'schedule' }
         // Log-only par défaut : la tuile ambre de la page Trésorerie suffit,
         // un rappel de saisie n'est pas une urgence et spammait le canal.
         let sent = 'journal seulement (stale_reminder_slack=0)'
-        if (cfg.stale_reminder_slack === '1' && cfg.slack_webhook_env) {
-          await sendSlackWebhook(cfg.slack_webhook_env, reminder)
-          sent = `Slack (${cfg.slack_webhook_env})`
+        if (cfg.stale_reminder_slack === '1' && hasSlackTarget(cfg)) {
+          sent = await sendSlackConfigured(cfg, reminder)
         }
         logSystemRun(TREASURY_AUTOMATION_ID, {
           status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger },
@@ -1506,9 +1507,8 @@ export async function checkTreasuryAlert({ force = false, trigger = 'schedule' }
         : '')
 
     let sent = 'aucun canal configuré'
-    if (cfg.slack_webhook_env) {
-      await sendSlackWebhook(cfg.slack_webhook_env, message)
-      sent = `Slack (${cfg.slack_webhook_env})`
+    if (hasSlackTarget(cfg)) {
+      sent = await sendSlackConfigured(cfg, message)
     }
 
     logSystemRun(TREASURY_AUTOMATION_ID, {
@@ -1564,9 +1564,8 @@ export async function checkBalanceVariance(entryId, { trigger = 'saisie solde' }
     // de données, pas un découvert — il n'a plus sa place dans le canal
     // comptabilité (variance_slack=1 pour réactiver l'envoi).
     let sent = `journal seulement (variance_slack=${cfg.variance_slack ?? '0'})`
-    if (cfg.variance_slack === '1' && cfg.slack_webhook_env) {
-      await sendSlackWebhook(cfg.slack_webhook_env, message)
-      sent = `Slack (${cfg.slack_webhook_env})`
+    if (cfg.variance_slack === '1' && hasSlackTarget(cfg)) {
+      sent = await sendSlackConfigured(cfg, message)
     }
     logSystemRun(TREASURY_AUTOMATION_ID, {
       status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger },
@@ -1598,6 +1597,6 @@ export async function diagnoseTreasury() {
       `${proj.counts.bills} facture(s), ${proj.counts.recurring} récurrente(s), ${proj.counts.payouts} payout(s) certain(s)` +
       (proj.inflows?.excluded?.length ? ` · ⚠️ ${fmtCad(proj.inflows.total_excluded)} de rentrée(s) écartée(s) faute de certitude` : '') +
       (aw.suggested_transfer > 0 ? ` · virement suggéré ${fmtCad(aw.suggested_transfer)}` : '') +
-      (cfg.slack_webhook_env ? '' : ' · ℹ️ aucun webhook Slack configuré (alerte loggée seulement)'),
+      (hasSlackTarget(cfg) ? '' : ' · ℹ️ aucun destinataire Slack configuré (alerte loggée seulement)'),
   }
 }

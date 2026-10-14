@@ -207,6 +207,12 @@ export async function apiBlobNamed(path) {
 }
 
 export const api = {
+  // Cloche de la barre de gauche.
+  notifications: {
+    list: (since) => getFresh(`/notifications?since=${since}`),
+    read: (id) => patch(`/notifications/${id}/read`, { read: true }),
+    readAll: () => post('/notifications/read-all'),
+  },
   // Jauges IA de la barre de gauche (tous les utilisateurs) : caches serveur seulement.
   aiUsage: () => getFresh('/ai-usage'),
   // Coûts des API d'IA payées à l'usage, par jour (Paramètres → Coûts IA, admin).
@@ -412,7 +418,11 @@ export const api = {
     overviewBalances: (params = {}) => getFresh('/dashboard/overview-balances?' + new URLSearchParams(params)),
     bankAccountsHistory: (params = {}) => get('/dashboard/bank-accounts/history?' + new URLSearchParams(params)),
     revenueByMonth: (params = {}) => get('/dashboard/revenue-by-month?' + new URLSearchParams(params)),
+    inventoryHistory: (params = {}) => get('/dashboard/inventory/history?' + new URLSearchParams(params)),
     incomeStatement: (params = {}) => get('/dashboard/income-statement?' + new URLSearchParams(params)),
+    balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
+    cashFlow: (params = {}) => get('/dashboard/cash-flow?' + new URLSearchParams(params)),
+    dormantStock: (params = {}) => get('/dashboard/dormant-stock?' + new URLSearchParams(params)),
     productivity: (params = {}) => get('/dashboard/productivity?' + new URLSearchParams(params)),
     agingReceivables: () => get('/dashboard/aging-receivables'),
   },
@@ -775,7 +785,7 @@ export const api = {
   serials: {
     list: (params = {}) => get('/serials?' + new URLSearchParams(params)),
     get: (id) => get(`/serials/${id}`),
-    // N'accepte que `product_id` côté serveur (lier / délier le produit).
+    // N'accepte que `product_id` et `status` côté serveur.
     update: (id, data) => patch(`/serials/${id}`, data),
     history: (id) => get(`/serials/${id}/history`),
     stateChanges: (params = {}) => get('/serials/state-changes?' + new URLSearchParams(params)),
@@ -884,12 +894,15 @@ export const api = {
     receiveScan: (id, data) => post(`/retours/${id}/receive-scan`, data),
     // Réception des articles cochés : { item_ids, received_by, received_at }.
     receiveItems: (id, data) => post(`/retours/${id}/receive`, data),
+    // Remplacement différé des articles cochés : { item_ids } → commande neuve.
+    deferredReplacement: (id, data) => post(`/retours/${id}/deferred-replacement`, data),
     context: (id, addressId) => get(`/retours/${id}/return-context${addressId ? `?address_id=${addressId}` : ''}`),
     getRates: (id, data) => post(`/retours/${id}/return-rates`, data),
     createLabel: (id, data) => post(`/retours/${id}/return-label`, data),
     retryLabelPdf: (id) => post(`/retours/${id}/return-label/retry-pdf`),
     diagnostic: (id, data) => post(`/retours/${id}/diagnostic`, data),
     generateMemo: (id) => post(`/retours/${id}/memo`),
+    generateCustomsInvoice: (id) => post(`/retours/${id}/customs-invoice`),
     instructionsEmail: (id) => get(`/retours/${id}/instructions-email`),
     sendInstructions: (id, data) => post(`/retours/${id}/send-instructions`, data),
     bulkFromSerials: (data) => post('/retours/bulk-from-serials', data),
@@ -1014,6 +1027,10 @@ export const api = {
   timesheets: {
     list: (params = {}) => get('/timesheets?' + new URLSearchParams(params)),
     users: () => get('/timesheets/users'),
+    conges: (params = {}) => get('/timesheets/conges?' + new URLSearchParams(params)),
+    congeWorkdays: (start, end) => get('/timesheets/conges/workdays?' + new URLSearchParams({ start, end })),
+    addConge: (data) => post('/timesheets/conges', data),
+    deleteConge: (id, userId) => del(`/timesheets/conges/${id}?` + new URLSearchParams({ user_id: userId })),
     periodTotals: (params = {}) => get('/timesheets/period-totals?' + new URLSearchParams(params)),
     getDay: (params = {}) => get('/timesheets/day?' + new URLSearchParams(params)),
     createDay: (data) => post('/timesheets/day', data),
@@ -1068,6 +1085,8 @@ export const api = {
     sync: () => post('/connectors/sync/paies'),
     syncItems: () => post('/connectors/sync/paie_items'),
     importTimesheets: (id) => post(`/paies/${id}/import-timesheets`, {}),
+    verification: (id) => get(`/paies/${id}/verification`),
+    verify: (id, data = {}) => post(`/paies/${id}/verify`, data),
   },
 
   // Stock movements (mouvements d'inventaire)
@@ -1261,6 +1280,10 @@ export const api = {
   // Rapprochement bancaire (remplace TRX_Orisha.xlsx)
   bank: {
     accounts: () => get('/bank/accounts'),
+    claude: (accountId) => get(`/bank/accounts/${accountId}/claude`),
+    claudeSay: (accountId, text, txnId = null) => post(`/bank/accounts/${accountId}/claude`, { text, txn_id: txnId }),
+    claudeDismiss: (msgId) => post(`/bank/claude/${msgId}/dismiss`, {}),
+    claudeFixes: (accountId) => get(`/bank/accounts/${accountId}/claude/fixes`),
     createAccount: (data) => post('/bank/accounts', data),
     updateAccount: (id, data) => patch(`/bank/accounts/${id}`, data),
     deleteAccount: (id) => del(`/bank/accounts/${id}`),
@@ -1275,6 +1298,7 @@ export const api = {
       checklist: (month) => getFresh(`/bank/statements/checklist?month=${encodeURIComponent(month)}`),
       // getFresh : l'aperçu est interrogé en boucle pendant la lecture.
       get: (id) => getFresh(`/bank/statements/${id}`),
+      fileUrl: (id) => `/erp/api/bank/statements/${id}/file?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`,
       setAccount: (id, accountId) => patch(`/bank/statements/${id}`, { account_id: accountId }),
       reanalyze: (id) => post(`/bank/statements/${id}/reanalyze`, {}),
       // Le fichier déposé est une facture, pas un relevé : il part à
@@ -1311,11 +1335,11 @@ export const api = {
     setReview: (txnId, on) => post(`/bank/transactions/${txnId}/review`, { on }),
     // « Facture manquante » : la liste que Charles réclame à la main, et son
     // message Slack. `inSend` sort une facture de l'envoi sans la retirer.
-    invoiceRequests: () => getFresh('/bank/invoice-requests'),
+    invoiceRequests: (person) => getFresh(`/bank/invoice-requests${person ? `?person=${encodeURIComponent(person)}` : ''}`),
     addInvoiceRequests: (txnIds) => post('/bank/invoice-requests', { txn_ids: txnIds }),
     removeInvoiceRequest: (txnId) => del(`/bank/invoice-requests/${txnId}`),
     setInvoiceRequestInSend: (txnId, inSend) => patch(`/bank/invoice-requests/${txnId}`, { in_send: inSend }),
-    sendInvoiceRequests: () => post('/bank/invoice-requests/send', {}),
+    sendInvoiceRequests: (person) => post('/bank/invoice-requests/send', { person: person || null }),
     // Encaissement client : chercher soi-même la facture quand la détection
     // n'a pas tranché.
     invoiceSearch: (txnId, q) => get(`/bank/transactions/${txnId}/invoice-search?q=${encodeURIComponent(q)}`),
@@ -1338,6 +1362,11 @@ export const api = {
     ungroupTxn: (id) => post(`/bank/transactions/${id}/ungroup`),
     regroupTxn: (id) => post(`/bank/transactions/${id}/regroup`),
     qbFeedUndo: (id) => post(`/bank/transactions/${id}/qb-feed-undo`),
+    // Flux bancaire QuickBooks : apparier les lignes « En attente » à
+    // l'écriture déjà liée (POST lance, GET relit) ; exclure une ligne.
+    qbFeedMatch: (accountId, txnIds = null) => post(`/bank/accounts/${accountId}/qb-feed/match`, txnIds ? { txn_ids: txnIds } : {}),
+    qbFeedLast: (accountId) => getFresh(`/bank/accounts/${accountId}/qb-feed`),
+    qbFeedExclude: (id) => post(`/bank/transactions/${id}/qb-feed-exclude`),
     // L'écriture QuickBooks de la ligne, mise en forme comme QuickBooks
     // l'affiche — pour confirmer l'appariement sans ouvrir QBO.
     qbEntry: (txnId) => getFresh(`/bank/transactions/${txnId}/qb-entry`),
@@ -1434,6 +1463,7 @@ export const api = {
   monthEnd: {
     month: (month) => get(`/month-end/month/${month}`),
     checks: (month) => get(`/month-end/month/${month}/checks`),
+    asfcQuiet: (month, quiet) => put(`/month-end/month/${month}/asfc-quiet`, { quiet }),
     provisions: () => get('/month-end/provisions'),
     series: (id, month) => get(`/month-end/provisions/${id}/series/${month}`),
     updateProvision: (id, data) => put(`/month-end/provisions/${id}`, data),
@@ -1445,6 +1475,8 @@ export const api = {
     updateReceipt: (id, data) => put(`/month-end/receipts/${id}`, data),
     deleteReceipt: (id) => del(`/month-end/receipts/${id}`),
     regularizeSubsidy: (id) => post(`/month-end/provisions/${id}/regularize`, {}),
+    subsidyReceivable: (id) => get(`/month-end/provisions/${id}/receivable`),
+    clearSubsidyReceivable: (id, opts = {}) => post(`/month-end/provisions/${id}/clear-receivable`, opts),
     scanBankReceipts: (id) => post(`/month-end/provisions/${id}/receipts/scan-bank`, {}),
     hours: (month) => get(`/month-end/hours/${month}`),
     importHours: (month) => post(`/month-end/hours/${month}/import`, {}),
@@ -1482,6 +1514,8 @@ export const api = {
     slackSend: () => post('/marketing-budget/slack/send', {}),
     summary: (fy) => get(`/marketing-budget/summary?fy=${fy}`),
     setBudget: (data) => put('/marketing-budget/budget', data),
+    sheet: () => get('/marketing-budget/sheet'),
+    sheetSync: () => post('/marketing-budget/sheet/sync', {}),
   },
   instagram: {
     weeks: (params = {}) => get('/instagram/weeks?' + new URLSearchParams(params)),
@@ -1507,6 +1541,7 @@ export const api = {
   },
   ltDebts: {
     list: () => get('/lt-debts'),
+    history: ({ back = 12, ahead = 0 } = {}) => get(`/lt-debts/history?back=${back}&ahead=${ahead}`),
     create: (data) => post('/lt-debts', data),
     update: (id, data) => put(`/lt-debts/${id}`, data),
     delete: (id) => del(`/lt-debts/${id}`),
@@ -1715,6 +1750,7 @@ export const api = {
     get: (id) => get(`/automations/${id}`),
     create: (data) => post('/automations', data),
     update: (id, data) => patch(`/automations/${id}`, data),
+    setGroup: (id, group_name) => patch(`/automations/${id}/group`, { group_name }),
     delete: (id) => del(`/automations/${id}`),
     logs: (id) => get(`/automations/${id}/logs`),
     run: (id, body = {}) => post(`/automations/${id}/run`, body),
@@ -1925,6 +1961,7 @@ export const api = {
     // Relevé mensuel d'un fournisseur prépayé : joint le document aux transactions
     // QB du mois couvert (aucune comptabilisation).
     attachToMonthQb: (id, month) => post(`/sale-receipts/${id}/attach-to-month-qb`, { month }),
+    attachToExistingQb: (id) => post(`/sale-receipts/${id}/attach-to-existing-qb`, {}),
     reExtract: (id) => post(`/sale-receipts/${id}/re-extract`),
     // Vérifie qu'un montant est bien celui imprimé sur le document (relecture du PDF).
     amountCheck: (id, amount) => get(`/sale-receipts/${id}/amount-check?` + new URLSearchParams({ amount })),

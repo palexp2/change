@@ -1077,14 +1077,13 @@ async function notifyNewAnomalies(anomalies, previous) {
   if (!fresh.length) return
   try {
     const { getTreasuryConfig } = await import('./treasury.js')
-    const envName = getTreasuryConfig().slack_webhook_env
-    const url = envName ? process.env[envName] : null
-    if (!url) return
+    const cfg = getTreasuryConfig()
+    const { hasSlackTarget, sendSlackConfigured } = await import('./slack.js')
+    if (!hasSlackTarget(cfg)) return
     const text = ':warning: *Fichier « Maintien du solde disponible BNC » — lecture incomplète*\n' +
       fresh.map(a => `• ${a.text}`).join('\n') +
       '\nCorriger le fichier : tant que la ligne est illisible, la sortie n\'entre pas dans la projection du solde.'
-    const { postSlack } = await import('./slack.js')
-    await postSlack(url, text)
+    await sendSlackConfigured(cfg, text)
   } catch (e) {
     console.error('treasurySoldeSheet.notifyNewAnomalies:', e.message)
   }

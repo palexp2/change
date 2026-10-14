@@ -100,7 +100,7 @@ let _receiptColumns = null
 function receiptColumns() {
   if (!_receiptColumns) {
     const cols = new Set(db.prepare(`PRAGMA table_info(sale_receipts)`).all().map(c => c.name))
-    _receiptColumns = ['archived_at', 'tps', 'tvq', 'service_period', 'items'].filter(c => cols.has(c))
+    _receiptColumns = ['archived_at', 'tps', 'tvq', 'service_period', 'items', 'original_name'].filter(c => cols.has(c))
   }
   return _receiptColumns
 }
@@ -276,6 +276,56 @@ function amountPairEvidence(rec, peer, gap) {
   return signals
 }
 
+// ── Facture + reçu de paiement ───────────────────────────────────────────────
+// Beaucoup de fournisseurs (Plaid, Twilio, tout ce qui facture par Stripe…)
+// envoient DEUX documents pour une seule dépense : la facture (« Invoice-… »,
+// datée en fin de période) puis le reçu de paiement (« Payment_… », « Receipt-… »)
+// quelques jours ou semaines plus tard, sous un autre numéro. Les règles de
+// doublon ci-dessus les laissent passer (numéros distincts, écart > 5 j) et la
+// dépense finit comptabilisée deux fois. Le document en trop se joint à la
+// transaction déjà publiée (POST /sale-receipts/:id/attach-to-existing-qb).
+const INVOICE_PAYMENT_MAX_LAG_DAYS = 45
+const INVOICE_PAYMENT_EARLY_DAYS = 3
+
+export function isPaymentDocument(r) {
+  const name = String(r?.original_name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  if (!name || /invoice|facture/.test(name)) return false
+  return /(^|[^a-z])(payment|receipt|recu|paiement)([^a-z]|$)/.test(name)
+}
+
+// Retard du paiement sur la facture, en jours (négatif = reçu daté avant).
+function paymentLag(inv, pay) {
+  const a = Date.parse(inv.receipt_date), b = Date.parse(pay.receipt_date)
+  if (Number.isNaN(a) || Number.isNaN(b)) return null
+  return (b - a) / 86_400_000
+}
+
+const lagInWindow = lag => lag != null && lag >= -INVOICE_PAYMENT_EARLY_DAYS && lag <= INVOICE_PAYMENT_MAX_LAG_DAYS
+
+// Paire facture ↔ reçu de paiement : un seul des deux est un reçu de paiement,
+// le paiement suit la facture dans la fenêtre, et chacun est le plus proche de
+// l'autre parmi les documents du fournisseur au même montant — sans quoi le reçu
+// d'octobre se marierait aussi à la facture de septembre.
+function invoicePaymentPair(rec, peer, docs) {
+  const payRec = isPaymentDocument(rec), payPeer = isPaymentDocument(peer)
+  if (payRec === payPeer) return false
+  const [inv, pay] = payRec ? [peer, rec] : [rec, peer]
+  const lag = paymentLag(inv, pay)
+  if (!lagInWindow(lag)) return false
+  const dist = Math.abs(lag)
+  for (const d of docs) {
+    if (d.id === inv.id || d.id === pay.id) continue
+    if (isPaymentDocument(d)) {
+      const l = paymentLag(inv, d)
+      if (lagInWindow(l) && Math.abs(l) < dist) return false
+    } else {
+      const l = paymentLag(d, pay)
+      if (lagInWindow(l) && Math.abs(l) < dist) return false
+    }
+  }
+  return true
+}
+
 export function detectReceiptAnomalies(rec) {
   if (!rec || rec.deleted_at || rec.status !== 'done') return []
   // Copie inerte (archivée, jamais publiée) : déjà classée par l'opérateur, rien à signaler.
@@ -356,7 +406,29 @@ export function detectReceiptAnomalies(rec) {
     // Ignoré si les DEUX documents portent des numéros distincts (récurrences
     // légitimes type ménage aux deux semaines), puis soumis à la vérification
     // approfondie (périodes de service, taxes, lignes, montant récurrent).
-    if (sameVendor && sameTotal && !(num && pNum && pNum !== num)) {
+    // Exception : le MÊME jour, deux numéros distincts restent suspects — c'est la
+    // facture et son reçu de paiement (numéros de facture et de reçu différents).
+    // Facture + son reçu de paiement : même dépense, numéros et dates différents.
+    if (sameVendor && sameTotal) {
+      // Copies archivées comprises : la facture de juillet, même classée, reste
+      // la jumelle du reçu de juillet — pas la facture de juin.
+      const sameAmountDocs = allPeers.filter(d => vendorKeysMatch(vendorKey, normalizeVendorKey(d.company))
+        && Math.abs(round2(d.total) - total) < 0.01)
+      if (invoicePaymentPair(rec, p, sameAmountDocs)
+        && !distinctServicePeriods(rec, p) && !taxBreakdownsDiffer(rec, p) && !lineItemsDiffer(rec, p)) {
+        const [inv, pay] = isPaymentDocument(rec) ? [p, rec] : [rec, p]
+        anomalies.push({
+          kind: 'duplicate_amount',
+          severity: 'medium',
+          fingerprint: pairFingerprint('duplicate_amount', rec.id, p.id),
+          message: `${rec.company || '?'} · facture du ${inv.receipt_date || '?'} et reçu de paiement du ${pay.receipt_date || '?'} (${total.toFixed(2)} ${rec.currency || 'CAD'}) : une seule dépense${p.quickbooks_id ? ` · déjà publiée QB #${p.quickbooks_id}` : ''}.`,
+          details: { other_receipt_id: p.id, other_qb_id: p.quickbooks_id, gap_days: gap, invoice_payment: true },
+        })
+        continue
+      }
+    }
+
+    if (sameVendor && sameTotal && (!(num && pNum && pNum !== num) || gap === 0)) {
       if (gap != null && gap <= DUP_AMOUNT_WINDOW_DAYS) {
         const exoneration = amountPairExoneration(rec, p, gap, historyDocs, vendorKey)
         if (!exoneration) {
@@ -541,7 +613,7 @@ export function receiptObsolescence(receiptId) {
     SELECT * FROM transaction_anomalies
     WHERE status='open' AND entity_type='sale_receipt'
       AND (entity_id = ? OR fingerprint LIKE '%' || ? || '%')
-      AND kind IN ('zero_total','duplicate_number','already_in_qb')
+      AND kind IN ('zero_total','duplicate_number','duplicate_amount','already_in_qb')
   `).all(receiptId, receiptId)
   if (!rows.length) return null
   // Un reçu lui-même publié n'est jamais obsolète : en cas de double écriture, c'est
@@ -572,7 +644,7 @@ export function receiptObsolescence(receiptId) {
 
     // Paire reçu↔reçu : l'anomalie peut être portée par l'un ou l'autre (entity_id =
     // dernier scanné) — l'autre reçu est celui de la paire qui n'est pas receiptId.
-    if (row.kind === 'duplicate_number') {
+    if (row.kind === 'duplicate_number' || (row.kind === 'duplicate_amount' && details.invoice_payment)) {
       const otherId = row.entity_id === receiptId ? details.other_receipt_id : row.entity_id
       if (!otherId || otherId === receiptId) continue
       const other = db.prepare('SELECT quickbooks_id, quickbooks_type FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(otherId)
@@ -581,7 +653,7 @@ export function receiptObsolescence(receiptId) {
         reason: 'duplicate_published', anomaly_id: row.id, message: row.message,
         qb_id: other.quickbooks_id,
         qb_entity: other.quickbooks_type === 'bill' ? 'bill' : other.quickbooks_type === 'cc_credit' ? 'creditcardcredit' : 'expense',
-        other_receipt_id: otherId, achat_id: null,
+        other_receipt_id: otherId, achat_id: null, invoice_payment: !!details.invoice_payment,
       }
     }
   }

@@ -51,6 +51,7 @@ export const SYSTEM_FLOWS = {
       { type: 'find', title: 'Recherche par courriel', sub: 'Contacts, puis entreprises', config: [] },
       { type: 'create', title: 'Contact et entreprise', sub: "Créés si rien n'est trouvé", config: [] },
       { type: 'update', title: 'Client Stripe rattaché', sub: "Entreprises · client Stripe", config: [] },
+      { type: 'update', title: 'Nom du contact', sub: '« Inconnu » → nom Stripe', config: [] },
     ],
   },
   sys_stripe_charge_refunded: {
@@ -123,7 +124,7 @@ export const SYSTEM_FLOWS = {
     actions: [
       { type: 'stripe', title: 'Nouveaux versements Stripe', sub: 'Versements et transactions', config: [] },
       { type: 'qb', title: 'Dépôt QuickBooks', sub: 'CAD → BNC, USD → Venn USD', config: ['push_since', 'max_batch'] },
-      { type: 'slack', title: 'Résumé Slack', sub: 'Seulement si un versement coince', config: ['stale_alert_days', 'slack_on_success', 'slack_webhook_env'] },
+      { type: 'slack', title: 'Résumé Slack', sub: 'Seulement si un versement coince', config: ['slack_channel', 'stale_alert_days', 'slack_on_success', 'slack_webhook_env'] },
     ],
   },
   sys_ctb_programmation_paiement: {
@@ -137,7 +138,7 @@ export const SYSTEM_FLOWS = {
     trigger: { type: 'schedule', title: 'Tous les jours à 7 h 30', sub: 'Et à chaque saisie du solde', config: [] },
     actions: [
       { type: 'find', title: 'Projection du solde BNC', sub: 'Solde, versements, factures, sorties', config: ['threshold', 'horizon_days', 'alert_horizon_days', 'balance_stale_days'] },
-      { type: 'slack', title: 'Alerte de découvert', sub: 'Seulement si découvert imminent', config: ['slack_negative_only', 'slack_negative_days', 'slack_urgent_days', 'stale_reminder_slack', 'variance_slack', 'slack_webhook_env'] },
+      { type: 'slack', title: 'Alerte de découvert', sub: 'Seulement si découvert imminent', config: ['slack_channel', 'slack_negative_only', 'slack_negative_days', 'slack_urgent_days', 'stale_reminder_slack', 'variance_slack', 'slack_webhook_env'] },
     ],
   },
   sys_pmt_suivi_sheet: {
@@ -172,7 +173,7 @@ export const SYSTEM_FLOWS = {
     trigger: { type: 'schedule', title: 'Tous les jours à 8 h', sub: 'Et à chaque import de relevé', config: [] },
     actions: [
       { type: 'find', title: 'Solde du compte CARM', sub: 'Ouverture + paiements − évaluations', config: ['opening_balance', 'opening_date', 'threshold'] },
-      { type: 'slack', title: 'Alerte de solde bas', sub: 'Sous le seuil, au plus 1 fois par 20 h', config: ['slack_webhook_env'] },
+      { type: 'slack', title: 'Alerte de solde bas', sub: 'Sous le seuil, au plus 1 fois par 20 h', config: ['slack_channel', 'slack_webhook_env'] },
       { type: 'qb', title: 'Écritures ASFC', sub: 'Au clic, depuis la page Douanes', config: ['ap_acctnum', 'duty_acctnum', 'interest_acctnum', 'penalty_acctnum', 'card_acctnum', 'bank_acctnum', 'clearing_acctnum', 'vendor_name', 'gst_tax_code_name', 'notax_tax_code_name', 'post_since', 'max_batch', 'delta_tolerance', 'broker_names'] },
     ],
   },
@@ -282,7 +283,7 @@ export const SYSTEM_FLOWS = {
     trigger: { type: 'schedule', title: 'Trois fois par jour', sub: '', config: [] },
     actions: [
       { type: 'find', title: 'Âge du dernier solde lu', sub: 'Compte BNC CAD', config: ['stale_hours'] },
-      { type: 'slack', title: 'Alerte solde figé', sub: 'Cloche Boréal et message privé', config: ['repeat_hours', 'notify_roles', 'slack_webhook_env'] },
+      { type: 'slack', title: 'Alerte solde figé', sub: 'Cloche Boréal et message privé', config: ['slack_channel', 'repeat_hours', 'notify_roles', 'slack_webhook_env'] },
     ],
   },
   sys_plaid_sync: {
@@ -310,7 +311,7 @@ export const SYSTEM_FLOWS = {
     trigger: { type: 'schedule', title: 'Tous les jours à 8 h', sub: "Dernier jour travaillé avant l'échéance", config: [] },
     actions: [
       { type: 'find', title: 'Date du rappel', sub: 'Jour cible et jours travaillés', config: ['due_day', 'work_days'] },
-      { type: 'slack', title: 'Rappel de paiement des cartes', sub: 'Message privé', config: ['cards', 'slack_webhook_env'] },
+      { type: 'slack', title: 'Rappel de paiement des cartes', sub: 'Message privé', config: ['slack_channel', 'cards', 'slack_webhook_env'] },
     ],
   },
   sys_card_ceiling_alert: {
@@ -325,7 +326,7 @@ export const SYSTEM_FLOWS = {
     actions: [
       { type: 'qb', title: 'Calcul des déboursés', sub: 'Grand livre du stock de pièces', config: ['acctnum'] },
       { type: 'drive', title: 'Fichier Pièces_Déboursés', sub: 'Google Sheet dans le Drive', config: ['drive_folder_id', 'google_account_email'] },
-      { type: 'slack', title: 'Message à Guillaume', sub: 'Envoyé au clic, après vérification', config: ['slack_webhook_env', 'recipient'] },
+      { type: 'slack', title: 'Message à Guillaume', sub: 'Envoyé au clic, après vérification', config: ['slack_channel', 'slack_webhook_env', 'recipient'] },
     ],
   },
   sys_work_suggestions: {
@@ -372,11 +373,18 @@ export const SYSTEM_FLOWS = {
       { type: 'create', title: 'Dépenses à valider', sub: 'Page Budget marketing', config: [] },
     ],
   },
+  sys_marketing_budget_sheet: {
+    trigger: { type: 'event', title: 'Quand le budget change', sub: 'Décision, règle ou budget ; et chaque nuit', config: [] },
+    actions: [
+      { type: 'find', title: 'Budget vs Réel', sub: 'Par compte, fournisseur et mois', config: [] },
+      { type: 'other', title: 'Google Sheet', sub: 'Onglet de l\'année réécrit', config: ['spreadsheet_id', 'google_account_email', 'title'] },
+    ],
+  },
   sys_marketing_weekly_slack: {
     trigger: { type: 'schedule', title: 'Chaque mardi à 16 h', sub: 'Jour réglable', config: [] },
     actions: [
       { type: 'find', title: 'Dépenses pertinentes validées', sub: 'Depuis le dernier envoi', config: [] },
-      { type: 'slack', title: 'Message à Émilie', sub: 'Liste et total de la semaine', config: ['send_weekday', 'slack_webhook_env', 'recipient'] },
+      { type: 'slack', title: 'Message à Émilie', sub: 'Liste et total de la semaine', config: ['slack_channel', 'send_weekday', 'slack_webhook_env', 'recipient'] },
     ],
   },
   sys_instagram_prospect_intake: {
@@ -404,7 +412,7 @@ export const SYSTEM_FLOWS = {
     trigger: { type: 'schedule', title: 'Tous les matins', sub: "Avant l'écriture des messages", config: [] },
     actions: [
       { type: 'find', title: 'Lecture des profils', sub: 'Profils Instagram des personnes', config: ['profiles_per_run', 'profile_refresh_days', 'profile_model'] },
-      { type: 'update', title: 'Tri par type de demande', sub: 'Coaching, fleurs, abonné, autre', config: ['model', 'max_per_run', 'msg_coach', 'msg_fleurs', 'msg_question', 'msg_commentaire', 'msg_abonne'] },
+      { type: 'update', title: 'Tri par type de demande', sub: 'Coaching, fleurs, abonné, autre', config: ['model', 'max_per_run', 'msg_coach', 'msg_partner', 'msg_fleurs', 'msg_question', 'msg_commentaire', 'msg_abonne'] },
       { type: 'other', title: 'Robots écartés', sub: 'Fiche supprimée au-delà du seuil', config: ['bot_threshold'] },
     ],
   },
@@ -432,13 +440,13 @@ export const SYSTEM_FLOWS = {
     trigger: { type: 'event', title: 'Après la reconnexion Instagram', sub: 'Une fois par semaine', config: [] },
     actions: [
       { type: 'find', title: 'Prospects de la semaine', sub: 'Depuis le dernier envoi', config: [] },
-      { type: 'slack', title: 'Liste à Philippe', sub: 'Résumé court et deux liens', config: ['send_weekday', 'send_hour', 'slack_webhook_url', 'slack_webhook_env', 'recipient'] },
+      { type: 'slack', title: 'Liste à Philippe', sub: 'Résumé court et deux liens', config: ['slack_channel', 'send_weekday', 'slack_webhook_url', 'slack_webhook_env', 'recipient', 'notify_email'] },
     ],
   },
   sys_missing_invoice_request: {
     trigger: { type: 'manual', title: 'Clic « Envoyer sur Slack »', sub: 'Panneau Factures manquantes', config: [] },
     actions: [
-      { type: 'slack', title: 'Demande de factures', sub: '#questions-importantes', config: ['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'intro', 'outro'] },
+      { type: 'slack', title: 'Demande de factures', sub: '#questions-importantes ou une personne', config: ['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'intro', 'outro', 'people', 'person_intro'] },
     ],
   },
   sys_ticket_survey_slack: {
@@ -543,8 +551,9 @@ export const SYSTEM_FLOWS = {
   sys_return_item_received: {
     trigger: { type: 'record', title: 'Quand un article de retour est reçu', sub: 'Articles de retour · reçu le, reçu par', config: [] },
     actions: [
-      { type: 'update', title: 'Instructions et numéro de série', sub: 'À analyser ou à reconditionner', config: [] },
-      { type: 'slack', title: 'Alerte rembourser / désabonner', sub: 'Une par retour', config: ['slack_channel', 'slack_webhook_url', 'slack_webhook_env'] },
+      { type: 'update', title: 'Instructions au réceptionniste', sub: 'Selon la raison du retour', config: [] },
+      { type: 'slack', title: 'Alerte rembourser / désabonner', sub: 'Une par retour', config: ['slack_channel', 'msg_refund', 'msg_unknown', 'slack_webhook_url', 'slack_webhook_env'] },
+      { type: 'slack', title: "Fin d'abonnement à Philippe", sub: 'Lien vers le retour', config: ['sub_end_slack_channel', 'msg_sub_end'] },
     ],
   },
   sys_facture_paid_slack: {

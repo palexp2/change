@@ -143,7 +143,7 @@ const TEXT_FIELDS = new Set([
   // Particularités du fournisseur (ex-Google Doc « Fournisseurs_Particularités »).
   'usual_currency', 'payment_method', 'qb_category', 'description', 'particularites',
   // Commentaire type du paiement émis (re-proposé dans /paiements-emis).
-  'payment_note',
+  'payment_note', 'invoice_portal_url', 'invoice_login',
 ])
 
 router.patch('/:id', (req, res) => {
@@ -167,6 +167,10 @@ router.patch('/:id', (req, res) => {
         if (!Number.isInteger(v) || v < 0 || v > 365) return res.status(400).json({ error: 'payment_terms_days: entier 0-365 attendu' })
       }
       sets.push('payment_terms_days=?'); values.push(v)
+    } else if (key === 'due_weekday') {
+      const v = req.body[key] === '' || req.body[key] == null ? null : Number(req.body[key])
+      if (v != null && (!Number.isInteger(v) || v < 0 || v > 6)) return res.status(400).json({ error: 'due_weekday: entier 0-6 attendu' })
+      sets.push('due_weekday=?'); values.push(v)
     } else if (key === 'aliases' || key === 'bank_label_patterns') {
       const v = req.body[key]
       if (!Array.isArray(v) || v.some(a => typeof a !== 'string')) return res.status(400).json({ error: `${key}: tableau de chaînes attendu` })

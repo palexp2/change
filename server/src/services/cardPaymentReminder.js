@@ -16,7 +16,7 @@
 // autres jours — ni envoi ni log, pour ne pas noyer le journal de l'automation.
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
-import { sendSlackWebhook } from './slack.js'
+import { sendSlackWebhook, sendSlackConfigured, slackBotToken } from './slack.js'
 import { APP_URL } from '../config/appUrl.js'
 import { localDay } from '../utils/datetime.js'
 export { localDay }
@@ -31,6 +31,7 @@ export const CARD_REMINDER_DEFAULT_CONFIG = {
   work_days: '2,6',              // jours travaillés (0 = dimanche … 6 = samedi)
   // DM Slack perso d'Antoine Lambert (webhook dédié, distinct du canal compta).
   slack_webhook_env: 'SLACK_WEBHOOK_PERSO',
+  slack_channel: 'U06ECMYHNR2', // Antoine Lambert (= SLACK_WEBHOOK_PERSO)
 }
 
 // Repli si le webhook perso n'est pas encore configuré : le rappel part quand
@@ -181,7 +182,9 @@ export async function checkCardPaymentReminder({ force = false, trigger = 'sched
 
     const message = buildReminderMessage({ dayIso, cards: cfg.cards, dueDay, workDays })
     let sent = 'aucun canal configuré'
-    if (cfg.slack_webhook_env) {
+    if (cfg.slack_channel && slackBotToken()) {
+      sent = await sendSlackConfigured(cfg, message)
+    } else if (cfg.slack_webhook_env) {
       const target = process.env[cfg.slack_webhook_env]
         ? cfg.slack_webhook_env
         : (process.env[FALLBACK_WEBHOOK_ENV] ? FALLBACK_WEBHOOK_ENV : cfg.slack_webhook_env)
@@ -226,7 +229,9 @@ export function diagnoseCardPaymentReminder() {
     summary:
       `Prochain rappel : ${fmtDateFr(next)}${next === dayIso ? " (aujourd'hui)" : ''} · ` +
       `${cfg.cards} · date cible le ${dueDay} · jours travaillés ${[...workDays].sort().join(',')} · ` +
-      (process.env[cfg.slack_webhook_env]
+      (cfg.slack_channel && slackBotToken()
+        ? `destinataire : ${cfg.slack_channel}`
+        : process.env[cfg.slack_webhook_env]
         ? `canal : ${cfg.slack_webhook_env}`
         : `⚠️ ${cfg.slack_webhook_env} absent de server/.env — repli sur ${FALLBACK_WEBHOOK_ENV}`),
     prochains: upcoming,

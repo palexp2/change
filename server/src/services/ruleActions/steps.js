@@ -7,7 +7,8 @@
  *
  * Jetons dans les textes : {{colonne}} = champ de l'enregistrement déclencheur,
  * {{etape2.champ}} = sortie d'une étape précédente (ex. {{etape1.nombre}},
- * {{etape1.email}} = champ du premier enregistrement trouvé).
+ * {{etape1.email}} = champ du premier enregistrement trouvé), {{lien_fiche}} =
+ * URL de la fiche de l'enregistrement déclencheur.
  * Une étape qui échoue arrête la suite (erreur « Étape N (type) : … »).
  */
 import db from '../../db/database.js'
@@ -15,6 +16,8 @@ import { createTask } from './task.js'
 import { sendEmail } from './email.js'
 import { runScriptSandboxed, READABLE_TABLES, WRITABLE_TABLES } from '../scriptSandbox.js'
 import { buildConditionsPredicate } from '../fieldRuleEngine.js'
+import { recordPathOf } from '../recordLinks.js'
+import { APP_URL } from '../../config/appUrl.js'
 
 export const STEP_TYPES = ['task', 'slack', 'email', 'update', 'find', 'hubspot', 'qb', 'script']
 
@@ -72,11 +75,13 @@ const ADAPTERS = {
     return { a: r.to }
   },
 
-  // Modifie l'enregistrement déclencheur (ou un autre par son id).
-  async update({ rule, row, r }) {
+  // Modifie l'enregistrement déclencheur, ou un autre par son id
+  // (« Enregistrement » = {{serial_id}}… : vide après rendu = échec, jamais
+  // un repli sur l'id du déclencheur, qui viserait une autre table).
+  async update({ rule, row, c, r }) {
     const table = r.table || rule.trigger_config?.erp_table
     if (!WRITABLE_TABLES.has(table)) throw new Error(`Table non modifiable : ${table}`)
-    const id = r.record_id || row?.id
+    const id = String(c.record_id ?? '').trim() ? String(r.record_id ?? '').trim() : row?.id
     if (!id) throw new Error('Enregistrement à modifier introuvable')
     const patch = {}
     for (const f of r.fields || []) {
@@ -160,9 +165,31 @@ const DESCRIBE = {
 /** Journal détaillé d'une exécution réussie (une ligne par étape). */
 export const stepsLog = outputs => (outputs?.log || []).join('\n')
 
-export async function runSteps({ rule, row }) {
+/** URL de la fiche de l'enregistrement déclencheur ({{lien_fiche}}), '' sans fiche. */
+export function triggerRecordUrl(table, id) {
+  const path = id ? recordPathOf(table) : null
+  return path ? `${APP_URL}/erp${path}/${encodeURIComponent(id)}` : ''
+}
+
+/**
+ * « Exécuter seulement si » d'une action : conditions sur l'enregistrement
+ * déclencheur, évaluées par le même prédicat SQL que le déclencheur.
+ */
+function stepApplies(step, rule, row) {
+  const rules = (step.when?.rules || []).filter(x => x.column)
+  if (!rules.length) return true
+  const table = rule.trigger_config?.erp_table
+  if (!READABLE_TABLES.has(table) || !row?.id) throw new Error('Condition impossible à évaluer sans enregistrement déclencheur')
+  const { predicate, params } = buildConditionsPredicate({ conjunction: step.when.conjunction, rules })
+  return !!db.prepare(`SELECT 1 FROM ${table} t WHERE t.id = ? AND ${predicate}`).get(row.id, ...params)
+}
+
+export async function runSteps({ rule, row: base }) {
   const steps = Array.isArray(rule.action_config?.steps) ? rule.action_config.steps : []
   if (!steps.length) throw new Error('Aucune action')
+  const row = base && base.lien_fiche === undefined && rule.trigger_config?.erp_table
+    ? { ...base, lien_fiche: triggerRecordUrl(rule.trigger_config.erp_table, base.id) }
+    : base
   const outputs = []
   const log = []
   for (const [i, s] of steps.entries()) {
@@ -170,6 +197,11 @@ export async function runSteps({ rule, row }) {
     let r = {}
     try {
       if (!adapter) throw new Error('type inconnu')
+      if (!stepApplies(s, rule, row)) {
+        outputs.push({})
+        log.push(`– Étape ${i + 1} (${s.type}) ignorée : condition non remplie`)
+        continue
+      }
       // Le code d'un script n'est pas un gabarit : il lit row / trigger.etapes.
       r = s.type === 'script' ? {} : renderAll(s.config, row, outputs)
       const out = (await adapter({ rule, row, c: s.config || {}, r, outputs })) || {}

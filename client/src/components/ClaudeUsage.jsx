@@ -24,7 +24,7 @@
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import { Sparkles, Gauge, CalendarDays, AlertTriangle, Bot, ChevronDown, Check, UserRound, PauseCircle } from 'lucide-react'
 import api from '../lib/api.js'
-import { fmtDateTime } from '../lib/formatDate.js'
+import { fmtDateTime, fmtTime } from '../lib/formatDate.js'
 import { useToast } from './ui/ToastProvider.jsx'
 import ThinkingOrb from './ThinkingOrb'
 
@@ -55,17 +55,15 @@ export function formatResetIn(iso) {
   return `réinit. dans ${mins} min`
 }
 
-// Heure de réinitialisation en clair, fuseau du navigateur : « jeu. 21:59 ». Le
-// relatif seul (« dans 2 j 8 h ») ne permet pas de planifier sa semaine — et le jour
-// compte : la remise à zéro hebdomadaire tombe un soir de semaine précis.
-// Format 24 h HH:MM comme partout ailleurs dans l'app (cf. lib/formatDate.js).
+// Heure de réinitialisation en clair, fuseau du navigateur : « 21:59 » le jour même,
+// sinon « 2026-10-15 21:59 ». Le relatif seul (« dans 2 j 8 h ») ne permet pas de
+// planifier sa semaine — et le jour compte : la remise à zéro hebdomadaire tombe un
+// soir de semaine précis. Dates en YYYY-MM-DD HH:MM comme partout (lib/formatDate.js).
 export function formatResetAt(iso) {
   if (!iso) return null
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return null
-  const weekday = d.toLocaleDateString('fr-CA', { weekday: 'short' })
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-  return `${weekday} ${hm}`
+  return d.toDateString() === new Date().toDateString() ? fmtTime(d) : fmtDateTime(d)
 }
 
 // « il y a 4 min » — âge d'une lecture de quotas récupérée du cache.

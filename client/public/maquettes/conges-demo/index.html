@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Congés dans Boréal</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#eef0f3;--s:#fff;--soft:#f6f7f9;--line:#e6e8eb;--line2:#d0d4d9;--ink:#24262a;--ink2:#4a4d53;--ink3:#6f7279;--ink4:#a0a3a9;--g:#22b04a;--gd:#1a7d36;--gs:#e8f7ec;--b:#0077c5;--sl:#4a154b;--sh:0 1px 2px rgb(0 0 0/.06),0 14px 40px rgb(0 0 0/.12)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#3fc463;--gd:#6fdc8b;--gs:#16291c;--b:#5cb0ef;--sl:#9b4f9c}}
+:root[data-theme="dark"]{--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#3fc463;--gd:#6fdc8b;--gs:#16291c;--b:#5cb0ef;--sl:#9b4f9c}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 60px}
+.wrap{max-width:980px;margin:0 auto}
+.head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:20px;margin:0}.sp{flex:1}
+.steps{display:flex;gap:6px;flex-wrap:wrap}
+.steps button{font:inherit;font-size:12px;font-weight:600;border:1px solid var(--line2);background:var(--s);color:var(--ink3);border-radius:999px;padding:4px 11px;cursor:pointer}
+.steps button.on{background:var(--ink);color:var(--s);border-color:var(--ink)}
+.play{font:inherit;font-weight:600;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;background:var(--g);color:#fff}
+.stage{position:relative;display:grid;grid-template-columns:52px 1fr 300px;gap:16px;align-items:start}
+.app{background:var(--s);border-radius:12px;box-shadow:var(--sh);overflow:hidden}
+.top{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.top b{font-size:15px}.mute{color:var(--ink3)}
+.bar{display:flex;align-items:center;gap:10px;padding:0 16px;height:0;overflow:hidden;background:var(--gs);border-bottom:1px solid transparent;transition:height .25s}
+.bar.show{height:46px;border-bottom-color:var(--line)}
+.bar b{color:var(--gd)}
+.btn{font:inherit;font-size:12px;font-weight:600;border:0;border-radius:7px;padding:6px 12px;background:var(--g);color:#fff;transition:transform .1s}
+.btn.ghost{background:var(--s);color:var(--ink2);border:1px solid var(--line2)}
+.btn.press{transform:scale(.94)}
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;font-weight:600;color:var(--ink3);text-align:left;padding:7px 12px;border-bottom:1px solid var(--line)}
+td{padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap;transition:background .2s}
+tr.we td{color:var(--ink4)}
+tr.sel td{background:var(--gs)}
+.cb{width:14px;height:14px;border:1.5px solid var(--line2);border-radius:4px;display:inline-block;vertical-align:middle;transition:all .15s}
+tr.sel .cb{background:var(--g);border-color:var(--g);box-shadow:inset 0 0 0 2px var(--s)}
+.d{color:var(--ink4);display:inline-block;width:30px}
+.tag{display:inline-block;margin-left:6px;height:18px;line-height:18px;padding:0 7px;border-radius:999px;font-size:10.5px;font-weight:600;background:var(--gs);color:var(--gd);opacity:0;transform:scale(.6);transition:all .3s}
+.tag.show{opacity:1;transform:none}
+.side{display:grid;gap:12px}
+.slack{background:var(--s);border-radius:12px;box-shadow:var(--sh);overflow:hidden}
+.slack .ch{padding:10px 14px;font-weight:700;border-bottom:1px solid var(--line)}
+.msg{display:flex;gap:10px;padding:10px 14px;opacity:.35;transition:opacity .3s}
+.msg.new{opacity:0;max-height:0;padding:0 14px;overflow:hidden;transition:all .4s}
+.msg.new.show{opacity:1;max-height:120px;padding:10px 14px;background:color-mix(in srgb,var(--gs) 60%,transparent)}
+.av{width:30px;height:30px;border-radius:6px;background:var(--sl);color:#fff;display:grid;place-items:center;font-weight:700;flex:none;font-size:12px}
+.msg small{color:var(--ink4)}
+.paie{background:var(--s);border-radius:12px;box-shadow:var(--sh);padding:12px 14px;opacity:.35;transition:opacity .3s}
+.paie.show{opacity:1}
+.paie .r{display:flex;justify-content:space-between;padding:3px 0}
+.paie .v{font-weight:700;color:var(--gd);font-variant-numeric:tabular-nums}
+.cur{position:absolute;width:20px;height:20px;pointer-events:none;transition:left .6s ease,top .6s ease;z-index:5;left:40px;top:40px}
+.cur svg{filter:drop-shadow(0 1px 2px rgb(0 0 0/.4))}
+tr.done td{animation:fl .8s}
+@keyframes fl{0%{background:var(--gs)}100%{background:transparent}}
+.tag.half{background:linear-gradient(90deg,var(--gs) 50%,var(--soft) 50%)}
+.tag.note{background:var(--soft);color:var(--ink3)}
+.btn.hl{box-shadow:0 0 0 3px color-mix(in srgb,var(--g) 35%,transparent)}
+.btn.red{background:#d52b1e}
+.msgs{max-height:330px;overflow:auto}
+.msg.x b.who{color:#d52b1e}
+.pr{display:flex;justify-content:space-between;padding:3px 0;opacity:0;max-height:0;overflow:hidden;transition:all .35s}
+.pr.show{opacity:1;max-height:30px}
+.pr.gone{text-decoration:line-through;color:var(--ink4)}
+.paie .tot{border-top:1px solid var(--line);margin-top:6px;padding-top:6px;display:flex;justify-content:space-between;font-weight:700}
+.nav{background:var(--s);border-radius:12px;box-shadow:var(--sh);padding:8px 0;display:grid;gap:4px;justify-items:center;position:relative;align-self:stretch;align-content:start}
+.nav i{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-style:normal;font-size:16px;color:var(--ink3)}
+.nav i.on{background:#9b3b6a;color:#fff}
+.fly{position:absolute;left:46px;top:0;width:190px;background:var(--s);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--sh);padding:6px;display:none;z-index:4}
+.fly.show{display:block}
+.fly b{display:block;font-size:11px;color:var(--ink3);padding:4px 8px}
+.fly div{padding:6px 8px;border-radius:6px}
+.fly div.hl{background:var(--soft);font-weight:600}
+.app{transition:opacity .3s}.app.off{opacity:.15}
+.key{display:inline-block;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-weight:700;font-size:12px}
+.real{color:var(--b);font-weight:600;text-decoration:none;font-size:12px}
+@media (max-width:760px){.nav{display:none}}
+.cap{margin-top:14px;font-size:15px;font-weight:600;min-height:24px}
+@media (max-width:760px){.stage{grid-template-columns:1fr}.cur{display:none}}
+</style></head><body><div class="wrap">
+<div class="head"><h1>Congés dans Boréal</h1><span class="sp"></span>
+  <div class="steps" id="steps"></div><a class="real" href="/erp/feuille-de-temps" target="_blank">Ouvrir la vraie page ↗</a><button class="play" id="play">▶ Rejouer</button></div>
+<div class="stage" id="stage">
+  <div class="nav" id="nav"><i>🔖</i><i>🔍</i><i>📇</i><i>📣</i><i>🚚</i><i>🏛</i><i>🔨</i><i id="rh">👥</i><i>🔧</i>
+    <div class="fly" id="fly"><b>RH</b><div>Employés</div><div id="ft">🕒 Feuille de temps</div><div>Paies</div></div></div>
+  <div class="app" id="app">
+    <div class="top"><b>Feuille de temps</b><span class="mute">— Martin Audesse</span><span class="sp"></span><span class="mute">11 → 24 oct.</span></div>
+    <div class="bar" id="bar"><b id="cnt"></b><span class="sp"></span><button class="btn ghost" id="half">½ journée</button><button class="btn" id="go"></button><button class="btn red" id="cancel">✕ Annuler le congé</button></div>
+    <table id="t"><tr><th style="width:30px"></th><th>Date</th><th>Début</th><th>Fin</th><th>Total</th></tr></table>
+  </div>
+  <div class="side">
+    <div class="slack"><div class="ch"># absences</div><div class="msgs" id="msgs"></div></div>
+    <div class="paie show" id="paie"><b>Paie du 11 au 24 oct. · Martin</b><div id="plines"></div><div class="tot"><span>Total à payer en congé</span><span class="v" id="ptot">0 j</span></div></div>
+  </div>
+  <div class="cur" id="cur"><svg width="20" height="20" viewBox="0 0 20 20"><path d="M3 2l13 7-6 1.5L7.5 17z" fill="#fff" stroke="#111" stroke-width="1.3"/></svg></div>
+</div>
+<div class="cap" id="cap"></div>
+</div>
+<script>
+const days=[['dim','11'],['lun','12',,,,'Férié'],['mar','13'],['mer','14','8:30','12:30','4:00'],['jeu','15','8:30','16:30','7:30'],['ven','16'],['sam','17'],['dim','18'],['lun','19'],['mar','20'],['mer','21'],['jeu','22'],['ven','23','8:30','16:30','7:30'],['sam','24']]
+const WD={lun:'lundi',mar:'mardi',mer:'mercredi',jeu:'jeudi',ven:'vendredi'}
+const t=document.getElementById('t')
+days.forEach(([w,d,a,b,c,f],i)=>{const r=t.insertRow();r.id='r'+i;if(w==='sam'||w==='dim'||f)r.className='we'
+  r.innerHTML=`<td><span class="cb"></span></td><td><span class="d">${w}</span>2026-10-${d}<span class="tag"></span>${f?'<span class="tag note show">Férié</span>':''}</td><td>${a||''}</td><td>${b||''}</td><td>${c||''}</td>`})
+const $=id=>document.getElementById(id), stage=$('stage'), cur=$('cur')
+function moveTo(el,dx=0.5){const s=stage.getBoundingClientRect(),r=el.getBoundingClientRect();cur.style.left=(r.left-s.left+(dx<1?r.width*dx:dx))+'px';cur.style.top=(r.top-s.top+r.height/2)+'px'}
+let SPEED=1, token=0
+// Une relance (Rejouer, clic sur une étape) arrête net l'animation en cours.
+const wait=ms=>{const id=token;return new Promise((r,j)=>setTimeout(()=>id===token?r():j('stop'),ms*SPEED))}
+const lbl=i=>`${WD[days[i][0]]} ${days[i][1]}`
+const isWork=i=>!['sam','dim'].includes(days[i][0])&&!days[i][5]
+// Scénarios : sélection → bouton → ce qui en sort.
+const SC=[
+ {k:'Y aller',cap:'Menu de gauche → RH → Feuille de temps. Raccourci : touche T.',go:true},
+ {k:'Plusieurs jours',cap:'Cocher les jours, puis « Congé ».',sel:[9,10,11],btn:'go',n:3,
+  when:'du mardi 20 au jeudi 22 octobre (3 jours)',short:'20 → 22 oct.'},
+ {k:'½ journée',cap:'Un seul jour coché : « ½ journée » apparaît.',sel:[3],btn:'half',n:0.5,
+  when:'mercredi 14 octobre (demi-journée)',short:'14 oct. · ½'},
+ {k:'Fin de semaine',cap:'Vendredi + lundi : un seul congé, la fin de semaine ne compte pas.',sel:[5,8],btn:'go',n:2,span:[5,8],
+  when:'du vendredi 16 au lundi 19 octobre (2 jours)',short:'16 → 19 oct.'},
+ {k:'Férié',cap:'Le férié n\'est pas compté.',sel:[1,2],btn:'go',n:1,
+  when:'du lundi 12 au mardi 13 octobre (1 jour)',short:'12 → 13 oct. · férié exclu'},
+ {k:'Annuler',cap:'Cocher un jour en congé → « Annuler le congé ». L\'équipe est avisée.',sel:[10],btn:'cancel',undo:0},
+]
+const active=[]
+function setBar(sel){
+  const bar=$('bar');if(!sel.length){bar.classList.remove('show');return}
+  bar.classList.add('show');const inC=sel.every(i=>$('r'+i).querySelector('.tag').classList.contains('show'))
+  const n=sel.filter(isWork).length||sel.length
+  $('cnt').textContent=`${sel.length} sélectionné${sel.length>1?'s':''}`
+  $('go').textContent=`🌴 Congé · ${n} jour${n>1?'s':''}`;$('go').style.display=inC?'none':''
+  $('half').style.display=sel.length===1&&!inC?'':'none';$('cancel').style.display=inC?'':'none'
+}
+function post(text,x){const m=document.createElement('div');m.className='msg new'+(x?' x':'');m.innerHTML=`<div class="av">B</div><div><b>Boréal</b> <small>maintenant</small><br>${text}</div>`;$('msgs').appendChild(m);requestAnimationFrame(()=>requestAnimationFrame(()=>m.classList.add('show')));setTimeout(()=>$('msgs').scrollTo({top:1e4,behavior:'smooth'}),450)}
+function paie(){$('plines').innerHTML='';let tot=0;[...active].sort((a,b)=>a.rows[0]-b.rows[0]).forEach(a=>{const d=document.createElement('div');d.className='pr show'+(a.gone?' gone':'');d.innerHTML=`<span>${a.short}</span><span class="v">${String(a.n).replace('.',',')} j</span>`;$('plines').appendChild(d);if(!a.gone)tot+=a.n});$('ptot').textContent=String(tot).replace('.',',')+' j'}
+function rows(sc){const [a,b]=sc.span||[Math.min(...sc.sel),Math.max(...sc.sel)];const out=[];for(let i=a;i<=b;i++)if(!['sam','dim'].includes(days[i][0]))out.push(i);return out}
+async function play(sc){
+  if(sc.go){const rh=$('rh'),fly=$('fly'),ft=$('ft');rh.style.top=0;fly.style.top=(rh.offsetTop-6)+'px'
+    moveTo(rh);await wait(800);rh.classList.add('on');fly.classList.add('show');await wait(500);moveTo(ft,30);await wait(700);ft.classList.add('hl');await wait(250)
+    fly.classList.remove('show');ft.classList.remove('hl');$('app').classList.remove('off');return}
+  const sel=[]
+  for(const i of sc.sel){moveTo($('r'+i).cells[0],18);await wait(600);$('r'+i).classList.add('sel');sel.push(i);setBar(sel);await wait(250)}
+  const b=$(sc.btn);if(sc.btn==='half')b.classList.add('hl');moveTo(b);await wait(750);b.classList.add('press');await wait(150);b.classList.remove('press','hl')
+  sel.forEach(i=>$('r'+i).classList.remove('sel'));setBar([])
+  if(sc.btn==='cancel'){const a=active[sc.undo];a.rows.forEach(i=>{const tg=$('r'+i).querySelector('.tag');tg.classList.remove('show')});a.gone=true
+    await wait(300);post(`❌ Congé annulé : <b>Martin Audesse</b> ne sera finalement pas en congé ${a.when}.`,true);paie();return}
+  const rs=rows(sc);rs.forEach(i=>{const tg=$('r'+i).querySelector('.tag');if(days[i][5])return;tg.textContent=sc.n===0.5?'½ congé':'🌴 Congé';tg.classList.toggle('half',sc.n===0.5);tg.classList.add('show');$('r'+i).classList.add('done')})
+  await wait(350);post(`🌴 <b>Martin Audesse</b> sera en congé ${sc.when}.`)
+  active.push({n:sc.n,when:sc.when,rows:rs,short:sc.short});paie()
+}
+const sb=$('steps');SC.forEach((s,i)=>{const b=document.createElement('button');b.textContent=`${i+1}. ${s.k}`;b.onclick=()=>run(i,false);sb.appendChild(b)})
+function reset(){$('app').classList.add('off');$('rh').classList.remove('on');active.length=0;$('msgs').innerHTML='';paie();setBar([]);days.forEach((d,i)=>{const r=$('r'+i);r.classList.remove('sel','done');r.querySelector('.tag').className='tag'})
+  post('🌴 Pierre-Alexandre Papillon sera en congé vendredi 2 octobre.');$('msgs').lastChild.querySelector('small').textContent='29 sept.'}
+async function run(upto,auto=true){++token;reset();try{for(let i=0;i<=upto;i++){[...sb.children].forEach((b,j)=>b.classList.toggle('on',j===i));$('cap').textContent=SC[i].cap
+  SPEED=!auto&&i<upto?0.02:1;await play(SC[i]);SPEED=1;if(auto)await wait(1500)}}catch(e){}SPEED=1}
+$('play').onclick=()=>run(SC.length-1)
+setTimeout(()=>run(SC.length-1),600)
+</script>
+</body></html>

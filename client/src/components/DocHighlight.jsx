@@ -365,6 +365,15 @@ export function DocHighlightViewer({ url, isPdf, title = 'Document', fileName })
           >
             <canvas ref={el => { canvases.current[i] = el }} style={{ width: p.w, height: p.h }} className="block" aria-label={title} role="img" />
             <div ref={el => { textLayers.current[i] = el }} className="textLayer" />
+            {/* Tout ce qui a été retrouvé reste surligné en jaune pâle ; le
+                champ survolé passe en bleu. */}
+            {on && [...matches].filter(([k]) => k !== ctx.active).flatMap(([k, rects]) => rects.filter(r => r.page === i).map((r, j) => (
+              <div
+                key={`${k}-${j}`}
+                className="absolute pointer-events-none rounded-sm bg-amber-300/30"
+                style={{ left: r.x - 1, top: r.y - 1, width: r.w + 2, height: r.h + 2 }}
+              />
+            )))}
             {activeRects.filter(r => r.page === i).map((r, j) => (
               <div
                 key={j}

@@ -499,6 +499,19 @@ export default function EnvoisDetail({ recordId, onClose }) {
               </div>
             </DetailField>
           ) : null}
+          {/* Facture commerciale (3 copies) à coller sur la boîte : client hors Canada. */}
+          {envoi.customs_invoice && (
+            <DetailField id="customs_invoice" label="Douane">
+              <AttachmentPreview
+                url={`/erp/api/shipments/${envoi.id}/customs-invoice.pdf`}
+                fileName={`customs-invoice-${envoi.id}.pdf`}
+                downloadName={`customs-invoice-${envoi.d_envoi || envoi.id}.pdf`}
+                title="Commercial invoice"
+                kind="pdf"
+                testId="envoi-customs-attachment"
+              />
+            </DetailField>
+          )}
           {/* Bon de livraison — pièce jointe de la fiche, au même titre que
               l'étiquette : la vignette remplace l'ancien bouton d'en-tête.
               Tant que le PDF n'existe pas, l'emplacement vide sert lui-même

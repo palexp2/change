@@ -4,7 +4,7 @@
 // lit tous les jours.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { rowForTab, planTab, placeMissing, growthDescending, readsBack, monthFirstOf, blankRowFill, rowHeightFill, resolveComment, dataRowHeight, paintRuns, cellsToWrite, resolveReview, dataWidth, balanceCells, detectTabDirection, rowsForBalancePass, STATUS_FILL, dateShape, formatDateLike, anchorYears, datedRows, textAmount, financeFixes, financeFormatRuns, statementStateCells, paintsToApply, FINANCE_PATTERN } from './trxSheetMirror.js'
+import { rowForTab, planTab, placeMissing, growthDescending, readsBack, monthFirstOf, blankRowFill, rowHeightFill, resolveComment, dataRowHeight, paintRuns, cellsToWrite, resolveReview, dataWidth, balanceCells, detectTabDirection, rowsForBalancePass, STATUS_FILL, dateShape, formatDateLike, anchorYears, datedRows, textAmount, financeFixes, financeFormatRuns, statementStateCells, paintsToApply, FINANCE_PATTERN, amountOfRow } from './trxSheetMirror.js'
 
 // Onglet BNC : Date | Description | Référence | Autres détails | … | Débit | Crédit | Solde
 const BNC = { date: 0, description: 1, reference: 2, details: 3, debit: 5, credit: 6, balance: 7 }
@@ -579,4 +579,22 @@ test('une date sans année qui sort de l’ordre de l’onglet recule d’un an'
   const list = [{ rowIndex: 0, txn_date: '2026-08-31' }, { rowIndex: 1, txn_date: '2025-10-31' }, { rowIndex: 2, txn_date: '2026-09-30' }]
   anchorYears(list, (x) => grid[x.rowIndex][0])
   assert.deepEqual(list.map((x) => x.txn_date), ['2026-08-31', '2025-10-31', '2025-09-30'])
+})
+
+test('un crédit entre parenthèses est une sortie (BNC CAD, janvier 2026)', () => {
+  const row = ['2026-01-06', 'VIREMENT INTERAC', '', '', '', '', '(1,178.49)', '59,837.29']
+  assert.equal(amountOfRow(row, BNC, {}), -1178.49)
+  assert.equal(amountOfRow(['2026-01-06', '', '', '', '', '', '3,621.71', ''], BNC, {}), 3621.71)
+})
+
+test('des lignes datées égarées ne donnent pas leur année au bloc qui suit', () => {
+  // Desj CAD : octobre 2026 posé au milieu de 2025 relisait tout le bas en 2026.
+  const raw = ['2026-10-09', '27 OCT', '6 OCT', '2026-10-02', '2026-10-02', '1 OCT', '30 SEP', '2026-10-01']
+  const list = raw.map((d, i) => ({ rowIndex: i, txn_date: d.length === 10 ? d : (d.startsWith('27') ? '2026-10-27' : d.startsWith('6') ? '2026-10-06' : d.startsWith('1') ? '2026-10-01' : '2026-09-30') }))
+  anchorYears(list, (x) => raw[x.rowIndex])
+  assert.deepEqual(list.map((x) => x.txn_date), ['2026-10-09', '2025-10-27', '2025-10-06', '2026-10-02', '2026-10-02', '2025-10-01', '2025-09-30', '2026-10-01'])
+  assert.deepEqual(list.filter((x) => x.stray).map((x) => x.rowIndex), [3, 4, 7])
+  // Et la ligne neuve se range sous le 9 octobre, pas sous les égarées.
+  const places = placeMissing(list, [{ txn_date: '2026-09-30', amount: -42 }], true, 0, 8)
+  assert.equal(places[0].at, 1)
 })

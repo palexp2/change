@@ -1,6 +1,6 @@
 import { hasRole, rolesOf } from '../../../shared/roles.mjs'
-import { useState, useEffect, useRef, useLayoutEffect, useMemo, createContext, useContext } from 'react'
-import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { useState, useEffect, useRef, useLayoutEffect, useMemo, createContext, useContext, forwardRef } from 'react'
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Settings,
   ChevronRight, ChevronDown, LogOut, Menu, X,
@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useNavPrefs } from '../lib/navPrefs.jsx'
-import { defaultNavItems, applyNavOrder, navKey, findNavEntry } from '../lib/navItems.js'
+import { defaultNavItems, applyNavOrder, navKey, findNavEntry, NOTIFICATIONS_NAV_KEY } from '../lib/navItems.js'
 import { currentPageTitle } from '../lib/currentPageTitle.js'
 import { getSubsections, resolveSubsections } from '../lib/navSubsections.js'
 import { SETTINGS_ROUTE } from '../lib/settingsSections.js'
@@ -25,6 +25,7 @@ import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 import { FeedbackFab } from './FeedbackFab.jsx'
 import ReconcileNotifier from './ReconcileNotifier.jsx'
 import ThemeToggle from './ThemeToggle.jsx'
+import { NotificationBell } from './NotificationBell.jsx'
 import { Logo } from './Logo.jsx'
 import { AiUsageRail } from './AiUsageRail.jsx'
 
@@ -810,13 +811,20 @@ function NavSortable({ container, itemKey, rail = false, children }) {
 
 // Section `inlineFlyout` : sa page d'accueil est celle de son entrée à
 // sections (Comptabilité → dashboard de l'Espace finance).
+const isNewTabClick = e => e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1
+
+// Section qui mène à une page (cf. `inlineFlyoutHome`) : un lien, pour que le
+// navigateur offre « Ouvrir dans un nouvel onglet ». Sinon, un simple bouton.
+const HomeOrButton = forwardRef(function HomeOrButton({ home, ...props }, ref) {
+  return home ? <Link ref={ref} to={home} {...props} /> : <button ref={ref} type="button" {...props} />
+})
+
 function inlineFlyoutHome(items, inlineFlyout) {
   return inlineFlyout ? items.find(i => i.flyoutGroups)?.to : null
 }
 
 function NavGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
   const location = useLocation()
-  const navigate = useNavigate()
   const home = inlineFlyoutHome(items, inlineFlyout)
   const isActive = items.some(item => navItemMatches(location.pathname, item))
 
@@ -877,9 +885,11 @@ function NavGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
 
   return (
     <div style={accentVar} onMouseEnter={onHoverEnter} onMouseLeave={onHoverLeave}>
-      <button
-        type="button"
-        onClick={() => { if (home) { navigate(home); if (!open) toggle() } else toggle() }}
+      {/* Avec une page d'accueil, l'en-tête est un vrai lien : clic droit /
+          Cmd-clic l'ouvrent dans un nouvel onglet. */}
+      <HomeOrButton
+        home={home}
+        onClick={e => { if (home) { if (isNewTabClick(e)) return; if (!open) toggle() } else toggle() }}
         aria-expanded={open}
         className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium w-full transition-all
           ${isActive ? 'nav-active' : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'}`}
@@ -896,7 +906,7 @@ function NavGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
           size={12}
           className={`flex-shrink-0 transition-transform duration-150 ${open ? '' : '-rotate-90'} ${isActive ? '' : 'text-slate-400'}`}
         />
-      </button>
+      </HomeOrButton>
 
       {open && (
         <div
@@ -950,7 +960,6 @@ function RailExternalLink({ href, icon: Icon, label }) {
 }
 
 function RailGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
-  const navigate = useNavigate()
   const home = inlineFlyoutHome(items, inlineFlyout)
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
@@ -982,14 +991,14 @@ function RailGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
     // `my-0.5` : un peu d'air autour des sections à menu survolable, pour les
     // détacher des entrées à plat du rail (qui n'ont que le `gap` de la nav).
     <div style={accentVar} className="my-0.5">
-      <button
+      <HomeOrButton
         ref={triggerRef}
-        type="button"
+        home={home}
         onMouseEnter={() => { if (!rootDrag) openMenu() }}
         onMouseMove={() => { if (!open && !rootDrag) openMenu() }}
         onFocus={openMenu}
         onClick={() => {
-          if (home) { navigate(home); return }
+          if (home) return
           // Au doigt il n'y a pas de survol : le tap ouvre puis referme.
           if (open && pinned) { close(); return }
           if (!open) openMenu()
@@ -1007,7 +1016,7 @@ function RailGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
         {/* Section éteinte : l'icône garde la teinte de section, c'est le seul
             repère quand il n'y a pas de libellé. */}
         <Icon size={18} style={isActive ? undefined : { color: 'rgb(var(--nav-accent))' }} />
-      </button>
+      </HomeOrButton>
 
       {open && (
         <div
@@ -1475,6 +1484,7 @@ export function Layout({ children }) {
       {/* Bas de barre : Paramètres, compte */}
       <div className="border-t border-slate-100 py-2 px-2 space-y-0.5 flex-shrink-0">
         <AiUsageRail wide />
+        {!isHidden(NOTIFICATIONS_NAV_KEY) && <NotificationBell />}
         <NavItem {...settingsItem} />
         <div className="pt-1">
           <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} />
@@ -1526,6 +1536,7 @@ export function Layout({ children }) {
       {/* Bas de rail : Paramètres, compte */}
       <div className="flex flex-col items-center gap-1 pt-1.5 w-full border-t border-slate-100 flex-shrink-0">
         <AiUsageRail to="/travaux" runningBadge />
+        {!isHidden(NOTIFICATIONS_NAV_KEY) && <NotificationBell compact />}
         <RailNavLink item={settingsItem} />
         <ThemeToggle compact />
         <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} compact />

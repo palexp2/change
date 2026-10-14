@@ -15,6 +15,7 @@ import db from '../db/database.js'
 import { hsFetch, lookupContactsByEmail, isHubSpotConfigured } from '../connectors/hubspot.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
 import { siblingStripeProducts } from './stripeCatalog.js'
+import { localDateTime } from '../utils/datetime.js'
 
 export const PARTNERSHIP_HUBSPOT_ID = 'sys_partnership_hubspot'
 
@@ -111,10 +112,10 @@ async function pushPair(pair, cfg) {
       method: 'PATCH',
       body: { properties: { [cfg.hubspot_property]: String(now.getTime()) } },
     })
-    mark(pair, 'sent', `HubSpot ${hsId} · ${now.toISOString()}`)
+    mark(pair, 'sent', `HubSpot ${hsId} · ${localDateTime(now)}`)
     logSystemRun(PARTNERSHIP_HUBSPOT_ID, {
       status: 'success',
-      result: `${label} → HubSpot ${hsId} : ${cfg.hubspot_property} = ${now.toISOString()} (abonnement ${pair.stripe_id || pair.subscription_id})`,
+      result: `${label} → HubSpot ${hsId} : ${cfg.hubspot_property} = ${localDateTime(now)} (abonnement ${pair.stripe_id || pair.subscription_id})`,
       duration_ms: Date.now() - started,
       triggerData,
     })

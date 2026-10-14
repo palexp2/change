@@ -1,7 +1,12 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from './auth.jsx'
 import api from './api.js'
-import { canonicalNavHidden, canonicalNavOrder } from './navItems.js'
+import { canonicalNavHidden, canonicalNavOrder, NOTIFICATIONS_NAV_KEY } from './navItems.js'
+
+// Éléments masqués par défaut pour tout le monde : visibles seulement si
+// l'utilisateur les a réactivés (marqueur `show:<clé>` rangé dans nav_hidden).
+const DEFAULT_HIDDEN = [NOTIFICATIONS_NAV_KEY]
+const showKey = (key) => `show:${key}`
 
 // État partagé des préférences d'affichage du menu de gauche.
 // `hidden` = liste de clés cachées (blacklist). Chargée au login, mutée par la
@@ -82,12 +87,18 @@ export function NavPrefsProvider({ children }) {
       : [...bookmarks, { to, label: label || to }])
   }, [bookmarks, persistBookmarks])
 
-  const isHidden = useCallback((key) => hidden.includes(key), [hidden])
+  const isHidden = useCallback((key) => hidden.includes(key)
+    || (DEFAULT_HIDDEN.includes(key) && !hidden.includes(showKey(key))), [hidden])
 
   const toggle = useCallback((key) => {
+    if (DEFAULT_HIDDEN.includes(key)) {
+      const rest = hidden.filter((k) => k !== key && k !== showKey(key))
+      persist(isHidden(key) ? [...rest, showKey(key)] : rest)
+      return
+    }
     const next = hidden.includes(key) ? hidden.filter((k) => k !== key) : [...hidden, key]
     persist(next)
-  }, [hidden, persist])
+  }, [hidden, isHidden, persist])
 
   return (
     <NavPrefsContext.Provider value={{

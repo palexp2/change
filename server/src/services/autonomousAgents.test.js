@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseHours, lastSlot, isDue } from './autonomousAgents.js'
+import { parseHours, lastSlot, isDue, pickHours } from './autonomousAgents.js'
 
 // 1er oct. 2026, 14 h 20 à Montréal (EDT, UTC-4).
 const NOW = new Date('2026-10-01T18:20:00Z')
@@ -29,4 +29,14 @@ test('isDue : actif, mission non vide, créneau récent jamais servi', () => {
   assert.equal(isDue({ ...base, created_at: '2026-10-01T18:10:00Z' }, NOW), false)
   // Créneau trop ancien (> 3 h) : pas de rattrapage.
   assert.equal(isDue({ ...base, run_hours: [9] }, NOW), false)
+})
+
+test('pickHours : N heures espacées, vers les heures calmes, sans chevaucher les autres agents', () => {
+  assert.equal(pickHours(4).length, 4)
+  assert.deepEqual(pickHours(24), Array.from({ length: 24 }, (_, h) => h))
+  // Journée chargée de 8 h à 17 h → un seul passage, hors de cette plage.
+  const load = Array.from({ length: 24 }, (_, h) => (h >= 8 && h <= 17 ? 10 : 0))
+  assert.ok(pickHours(1, { load })[0] < 8)
+  // Heure 0 déjà prise par un autre agent → décalée.
+  assert.notDeepEqual(pickHours(2, { taken: [0] }), [0, 12])
 })

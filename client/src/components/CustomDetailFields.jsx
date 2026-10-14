@@ -92,7 +92,9 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId, sele
         />
       )
     case 'text':
+    case 'email':
     case 'phone':
+    case 'barcode':
       return <InlineText value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     case 'long_text':
       return <InlineTextarea value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />

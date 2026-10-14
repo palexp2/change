@@ -96,3 +96,47 @@ test('une évaluation devient comptabilisable dès qu’elle est ventilée à la
   assert.deepEqual(g[0].blockers, [])
   assert.equal(g[0].gst, 345.10)
 })
+
+test('lot : charges et corrections nettées en une facture, versement = paiement de facture + trop-versé', async () => {
+  const { mergeGroupsForPosting, buildBillPayload, buildPaymentPlan } = await import('./carmQb.js')
+  const L = (id, d, amt, kind, extra = {}) => ({ id, transaction_date: d, transaction_number: id, amount: amt, kind,
+    posting_state: 'a_comptabiliser', duty_amount: null, gst_amount: kind === 'tps' ? Math.abs(amt) : null, ...extra })
+  const groups = mergeGroupsForPosting(buildPostingGroups([
+    L('b', '2026-07-09', 345.10, 'tps'), L('c', '2026-07-09', -79.46, 'tps', { kind: 'tps' }),
+    L('i', '2026-07-31', 1.44, 'interet'),
+    L('p', '2026-08-03', -500, 'paiement', { payer: 'nous' }),
+  ], { tolerance: 0.02 }))
+  const bill = groups[0]
+  assert.equal(bill.type, 'charge')
+  assert.equal(bill.gst, 265.64)
+  assert.equal(bill.total, 267.08)
+  const ids = { vendor: '1013', duty: '65', interest: '79', penalty: '70', tps: '5', noTax: '2', tpsRate: '7' }
+  const p = buildBillPayload(bill, ids)
+  assert.equal(p.entity, 'bill')
+  assert.equal(p.body.TxnTaxDetail.TotalTax, 265.64)
+  assert.match(p.body.PrivateNote, /du 09\/07\/2026 au 31\/07\/2026/)
+  const plan = buildPaymentPlan(groups[1], [{ id: '18031', date: '2026-08-01', balance: 267.08 }],
+    { id: '22', isCard: true, vendor: '1013', ap: '21', noTax: '2' })
+  assert.deepEqual(plan.map(d => d.entity), ['billpayment', 'purchase'])
+  assert.equal(plan[0].body.TotalAmt, 267.08)
+  assert.equal(plan[1].body.Line[0].Amount, 232.92)
+})
+
+test('déjà saisi à la main : facture couvrant la période et versement 267,12 + 232,88 reconnus', async () => {
+  const { matchExistingQb } = await import('./carmQb.js')
+  const lines = [
+    { id: 'b3', transaction_date: '2026-07-09', amount: 267.12, kind: 'tps', posting_state: 'a_comptabiliser' },
+    { id: 'in', transaction_date: '2026-08-31', amount: 0.18, kind: 'interet', posting_state: 'a_comptabiliser' },
+    { id: 'p1', transaction_date: '2026-08-03', transaction_number: '401810235', amount: -297.32, kind: 'paiement', payer: 'nous', posting_state: 'a_comptabiliser' },
+    { id: 'p2', transaction_date: '2026-08-03', transaction_number: '401810235', amount: -202.68, kind: 'paiement', payer: 'nous', posting_state: 'a_comptabiliser' },
+  ]
+  const docs = [
+    { entity: 'bill', id: '18031', date: '2026-08-01', total: 267.12, note: "Pour ctb les transactions non réglées à l'ASFC (du 01/05/2026 au 31/07/2026)" },
+    { entity: 'billpayment', id: '18033', date: '2026-08-03', total: 267.12 },
+    { entity: 'purchase', id: '18032', date: '2026-08-03', total: 232.88 },
+  ]
+  const links = matchExistingQb(lines, docs)
+  assert.equal(links.get('b3')[0].id, '18031')
+  assert.equal(links.has('in'), false)
+  assert.deepEqual(links.get('p1').map(d => d.id).sort(), ['18032', '18033'])
+})

@@ -534,37 +534,29 @@ export function UtilisateursContent({ currentUser }) {
         return (
           // stopPropagation : sans ça, le clic dans la cellule ouvre aussi la
           // modale d'édition de la ligne (cf. onRowClick).
+          // Rendu « texte » comme les autres colonnes : nom seul, sans cadre ni
+          // étiquette. Choix manuel en noir, owner déduit du courriel en gris
+          // (infobulle) ; le courriel ne reste que dans la liste ouverte.
           <div
-            className="flex items-center gap-1.5 w-full min-w-0"
+            className="w-full min-w-0"
             data-testid={`hubspot-owner-cell-${u.id}`}
+            title={override ? 'Choisi manuellement' : auto ? 'Déduit du courriel' : undefined}
             onMouseDown={e => e.stopPropagation()}
             onClick={e => e.stopPropagation()}
           >
-            <div className="flex-1 min-w-0">
-              <SearchableSelect
-                value={override || ''}
-                options={hsOwners}
-                getOptionValue={o => o.id}
-                getOptionLabel={o => `${o.name}${o.email && o.email !== o.name ? ` (${o.email})` : ''}`}
-                getOptionKey={o => o.id}
-                // Sans override, le déclencheur affiche en gris l'owner déduit
-                // par courriel — la valeur réellement utilisée par le sync.
-                emptyOption={`— ${autoName ? `auto : ${autoName}` : 'aucun'} —`}
-                onChange={v => setHubspotOwner(u.id, v || null)}
-                placeholder={autoName || '—'}
-                className="input py-1 text-xs w-full"
-                searchPlaceholder="Rechercher un owner…"
-                testId={`hubspot-owner-select-${u.id}`}
-              />
-            </div>
-            <span
-              className="text-[10px] uppercase tracking-wide flex-shrink-0"
-              title={override ? 'Owner choisi manuellement' : auto ? 'Owner déduit du courriel' : 'Aucun owner HubSpot'}
-            >
-              {override ? <span className="text-blue-600 font-medium">manuel</span>
-                : auto ? <span className="text-green-600">auto</span>
-                : <span className="text-amber-500">—</span>}
-            </span>
+            <SearchableSelect
+              value={override || ''}
+              options={hsOwners}
+              getOptionValue={o => o.id}
+              getOptionLabel={o => `${o.name}${o.email && o.email !== o.name ? ` (${o.email})` : ''}`}
+              getOptionKey={o => o.id}
+              renderValue={o => <span className="truncate">{o.name}</span>}
+              emptyOption={autoName ? `Auto : ${autoName}` : '—'}
+              onChange={v => setHubspotOwner(u.id, v || null)}
+              placeholder={autoName || '—'}
+              className="w-full -mx-1.5 px-1.5 py-0.5 rounded text-sm hover:bg-slate-100"
+              testId={`hubspot-owner-select-${u.id}`}
+            />
           </div>
         )
       },

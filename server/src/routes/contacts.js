@@ -12,6 +12,7 @@ import { parsePage } from '../utils/pagination.js'
 import { mergeContacts } from '../services/contactMerge.js'
 import { requireAdmin } from '../middleware/auth.js'
 import { listContactEmailAttachments, downloadEmailAttachment } from '../services/gmail.js'
+import { contactSubscriptions, subscriptionsError } from '../services/hubspotContactsSync.js'
 import { listContactHubSpotFiles, contactHubSpotFile } from '../services/hubspotHistoryImport.js'
 
 const router = Router();
@@ -132,6 +133,8 @@ router.get('/:id', (req, res) => {
   // Supprimé : fiche inaccessible, on ne le revoit que dans la corbeille (Charles, 2026-10-09).
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
   contact.companies = loadCompanies(req.params.id);
+  contact.email_subscriptions = contactSubscriptions(req.params.id);
+  contact.email_subscriptions_error = contact.hubspot_record_id ? subscriptionsError() : null;
   res.json(contact);
 });
 

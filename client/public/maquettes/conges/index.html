@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Inscrire un congé</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#eef0f3;--s:#fff;--soft:#f6f7f9;--line:#e6e8eb;--line2:#d0d4d9;--ink:#24262a;--ink2:#4a4d53;--ink3:#6f7279;--ink4:#a0a3a9;--g:#2ca01c;--gd:#1f7a12;--gs:#e9f6e6;--b:#0077c5;--bs:#e5f1fa;--sl:#4a154b;--sh:0 1px 2px rgb(0 0 0/.06),0 14px 40px rgb(0 0 0/.12)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--sl:#d9a6da}}
+:root[data-theme="dark"]{--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#7ad46a;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--sl:#d9a6da}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1000px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:18px;margin:44px 0 12px}h2 b{color:var(--g);margin-right:8px}
+.n{font-variant-numeric:tabular-nums}.mute{color:var(--ink3)}
+.app{background:var(--s);border-radius:12px;box-shadow:var(--sh);overflow:hidden;position:relative}
+.top{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.top b{font-size:15px}.sp{flex:1}
+.btn{font:inherit;font-weight:600;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;background:var(--g);color:#fff}
+.btn.ghost{background:var(--soft);color:var(--ink2);border:1px solid var(--line2)}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;font-weight:600;color:var(--ink3);text-align:left;padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+tr.we td{color:var(--ink4);background:var(--soft)}
+tr.sel td{background:var(--bs)}
+.d{color:var(--ink4);margin-right:6px;display:inline-block;width:26px}
+.tag{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:999px;font-size:11px;font-weight:600;background:var(--gs);color:var(--gd)}
+.seg{display:inline-flex;background:var(--soft);border:1px solid var(--line);border-radius:8px;padding:2px}
+.seg span{padding:3px 10px;border-radius:6px;font-size:12px;color:var(--ink3);cursor:pointer}
+.seg span.on{background:var(--s);color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgb(0 0 0/.1)}
+.modal{position:absolute;right:16px;top:56px;width:320px;background:var(--s);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--sh);padding:14px;display:grid;gap:10px;z-index:2}
+.modal h3{margin:0;font-size:14px}
+.f{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.f label{font-size:11px;color:var(--ink3);display:grid;gap:3px}
+.in{width:100%;min-width:0;border:1px solid var(--line2);border-radius:7px;padding:6px 8px;background:var(--s);color:var(--ink)}
+.bar{position:sticky;bottom:0;display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--ink);color:var(--s);border-radius:0 0 12px 12px}
+.bar .btn.ghost{background:transparent;color:var(--s);border-color:var(--ink3)}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;padding:16px}
+.cal .h{font-size:11px;color:var(--ink3);text-align:center;font-weight:600}
+.cal .c{height:54px;border:1px solid var(--line);border-radius:8px;padding:5px 7px;font-weight:600;cursor:pointer;position:relative;overflow:hidden}
+.cal .c.we{background:var(--soft);color:var(--ink4)}
+.cal .c.fe{background:var(--soft);color:var(--ink4)}
+.cal .c.full{background:var(--gs);border-color:var(--g);color:var(--gd)}
+.cal .c.half{border-color:var(--g);background:linear-gradient(135deg,var(--gs) 50%,var(--s) 50%);color:var(--gd)}
+.cal .c small{position:absolute;bottom:4px;left:7px;font-size:10px;font-weight:600}
+.slack{margin:12px 0 0;background:var(--s);border-radius:10px;box-shadow:var(--sh);padding:10px 14px;display:flex;gap:10px;align-items:flex-start;max-width:520px}
+.slack .av{width:32px;height:32px;border-radius:6px;background:var(--sl);color:#fff;display:grid;place-items:center;font-weight:700;flex:none}
+.slack .ch{font-size:11px;color:var(--ink3)}
+.slack b{font-size:13px}
+.side{display:grid;grid-template-columns:1fr 260px}
+.side>div:last-child{border-left:1px solid var(--line);padding:14px;display:grid;gap:10px;align-content:start}
+.chip{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:8px}
+.chip .x{margin-left:auto;color:var(--ink4);cursor:pointer}
+@media (max-width:700px){.side{grid-template-columns:1fr}.side>div:last-child{border-left:0;border-top:1px solid var(--line)}.modal{position:static;width:auto;margin:12px}}
+</style></head><body><div class="wrap">
+<h1>Congé</h1>
+
+<!-- A -->
+<h2><b>A</b>Bouton + fenêtre</h2>
+<div class="app">
+  <div class="top"><b>Feuille de temps</b><span class="sp"></span><button class="btn ghost">🌴 Congé</button><span class="mute n">‹ 11 → 24 oct. ›</span></div>
+  <div class="modal">
+    <h3>Congé</h3>
+    <div class="f"><label>Du<input class="in" value="2026-10-19"></label><label>Au<input class="in" value="2026-10-23"></label></div>
+    <div style="display:flex;align-items:center"><span class="mute">5 jours</span></div>
+    <button class="btn">Inscrire</button>
+  </div>
+  <div class="scroll"><table>
+    <tr><th>Date</th><th>Début</th><th>Fin</th><th>Total</th></tr>
+    <tr><td><span class="d">lun</span>2026-10-19 <span class="tag">🌴 Congé</span></td><td></td><td></td><td></td></tr>
+    <tr><td><span class="d">mar</span>2026-10-20 <span class="tag">🌴 Congé</span></td><td></td><td></td><td></td></tr>
+    <tr><td><span class="d">mer</span>2026-10-21 <span class="tag">🌴 Congé</span></td><td></td><td></td><td></td></tr>
+    <tr><td><span class="d">jeu</span>2026-10-22 <span class="tag">🌴 Congé</span></td><td></td><td></td><td></td></tr>
+    <tr><td><span class="d">ven</span>2026-10-23 <span class="tag">🌴 Congé</span></td><td></td><td></td><td></td></tr>
+  </table></div>
+</div>
+<div class="slack"><div class="av">B</div><div><div class="ch">#absences · Boréal</div>🌴 <b>Martin Audesse</b> sera en congé du lundi 19 au vendredi 23 octobre (5 jours).</div></div>
+
+<!-- B -->
+<h2><b>B</b>Colonne « Congé » dans le tableau</h2>
+<div class="app">
+  <div class="top"><b>Feuille de temps</b><span class="sp"></span><span class="mute n">‹ 11 → 24 oct. ›</span></div>
+  <div class="scroll"><table>
+    <tr><th>Date</th><th>Congé</th><th>Début</th><th>Fin</th><th>Total</th></tr>
+    <tr><td><span class="d">lun</span>2026-10-12</td><td class="mute">Férié</td><td></td><td></td><td></td></tr>
+    <tr><td><span class="d">mar</span>2026-10-13</td><td><span class="seg"><span class="on">—</span><span>½</span><span>Jour</span></span></td><td>8:30</td><td>16:30</td><td class="n">7:30</td></tr>
+    <tr><td><span class="d">mer</span>2026-10-14</td><td><span class="seg"><span>—</span><span class="on">½</span><span>Jour</span></span></td><td>8:30</td><td>12:30</td><td class="n">4:00</td></tr>
+    <tr><td><span class="d">jeu</span>2026-10-15</td><td><span class="seg"><span>—</span><span>½</span><span class="on">Jour</span></span></td><td></td><td></td><td></td></tr>
+    <tr><td><span class="d">ven</span>2026-10-16</td><td><span class="seg"><span>—</span><span>½</span><span class="on">Jour</span></span></td><td></td><td></td><td></td></tr>
+  </table></div>
+</div>
+<div class="slack"><div class="av">B</div><div><div class="ch">#absences · Boréal</div>🌴 <b>Martin Audesse</b> sera en congé du mercredi 14 (après-midi) au vendredi 16 octobre (2,5 jours).</div></div>
+
+<!-- C -->
+<h2><b>C</b>Sélectionner des lignes → barre</h2>
+<div class="app">
+  <div class="top"><b>Feuille de temps</b><span class="sp"></span><span class="mute n">‹ 11 → 24 oct. ›</span></div>
+  <div class="scroll"><table>
+    <tr><th>Date</th><th>Début</th><th>Fin</th><th>Total</th></tr>
+    <tr><td><span class="d">ven</span>2026-10-16</td><td>8:30</td><td>16:30</td><td class="n">7:30</td></tr>
+    <tr class="we"><td><span class="d">sam</span>2026-10-17</td><td></td><td></td><td></td></tr>
+    <tr class="we"><td><span class="d">dim</span>2026-10-18</td><td></td><td></td><td></td></tr>
+    <tr class="sel"><td><span class="d">lun</span>2026-10-19</td><td></td><td></td><td></td></tr>
+    <tr class="sel"><td><span class="d">mar</span>2026-10-20</td><td></td><td></td><td></td></tr>
+    <tr class="sel"><td><span class="d">mer</span>2026-10-21</td><td></td><td></td><td></td></tr>
+  </table></div>
+  <div class="bar"><b>3 jours</b><span class="sp"></span><button class="btn ghost">½ journée</button><button class="btn">🌴 Congé</button></div>
+</div>
+
+<!-- D -->
+<h2><b>D</b>Calendrier : 1 clic = jour, 2 clics = ½</h2>
+<div class="app side">
+  <div>
+    <div class="top"><b>Octobre 2026</b><span class="sp"></span><span class="mute">‹ ›</span></div>
+    <div class="cal">
+      <div class="h">dim</div><div class="h">lun</div><div class="h">mar</div><div class="h">mer</div><div class="h">jeu</div><div class="h">ven</div><div class="h">sam</div>
+      <div></div><div></div><div></div><div></div>
+      <div class="c">1</div><div class="c">2</div><div class="c we">3</div>
+      <div class="c we">4</div><div class="c">5</div><div class="c">6</div><div class="c">7</div><div class="c">8</div><div class="c">9</div><div class="c we">10</div>
+      <div class="c we">11</div><div class="c fe">12<small>Férié</small></div><div class="c">13</div><div class="c half">14<small>½</small></div><div class="c">15</div><div class="c">16</div><div class="c we">17</div>
+      <div class="c we">18</div><div class="c full">19</div><div class="c full">20</div><div class="c full">21</div><div class="c full">22</div><div class="c full">23</div><div class="c we">24</div>
+      <div class="c we">25</div><div class="c">26</div><div class="c">27</div><div class="c">28</div><div class="c">29</div><div class="c">30</div><div class="c we">31</div>
+    </div>
+  </div>
+  <div>
+    <b>À venir</b>
+    <div class="chip">🌴 <span class="n">14 oct.</span><span class="mute">½</span><span class="x">✕</span></div>
+    <div class="chip">🌴 <span class="n">19 → 23 oct.</span><span class="mute">5 j</span><span class="x">✕</span></div>
+    <button class="btn">Inscrire 5,5 jours</button>
+  </div>
+</div>
+
+</div></body></html>

@@ -7,10 +7,9 @@ import assert from 'node:assert/strict'
 import { pollOnce, WATCHED_TABLES, _setLastSeenId, _getLastSeenId } from './fieldRuleWatcher.js'
 import { WRITABLE_TABLES } from './scriptSandbox.js'
 
-test('the watched tables match the sandbox writable allowlist exactly', () => {
-  // Drift between these two lists would let a rule write a table the watcher
-  // never re-evaluates (or vice-versa). Keep them identical.
-  assert.deepEqual(new Set(WATCHED_TABLES), WRITABLE_TABLES)
+test('every sandbox-writable table is watched (plus return_items)', () => {
+  // A rule writing a table the watcher never re-evaluates would break chains.
+  assert.deepEqual(new Set(WATCHED_TABLES), new Set([...WRITABLE_TABLES, 'return_items']))
 })
 
 test('pollOnce never moves the cursor backwards and does not throw', async () => {

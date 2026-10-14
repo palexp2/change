@@ -138,9 +138,10 @@ function monthFromWord(word) {
 
 // Une date de relevé porte-t-elle son année ? Les relevés Desjardins n'en ont
 // pas (« 18 AOÛ18 Août ») — et un onglet descend sur PLUSIEURS années.
+const SHORT_YEAR = /^\d{1,2}-[a-z]{3,10}-(\d{2})$/
 export function hasExplicitYear(raw) {
   const s = strip(raw)
-  return /^\d{4}-/.test(s) || /(?:^|\D)(?:19|20)\d{2}(?:\D|$)/.test(s)
+  return /^\d{4}-/.test(s) || /(?:^|\D)(?:19|20)\d{2}(?:\D|$)/.test(s) || SHORT_YEAR.test(s)
 }
 
 // Un relevé décrit le passé : sans année explicite (« 3 AOÛ3 Août » de
@@ -185,6 +186,8 @@ export function parseTrxDate(raw, { todayIso, monthFirst = false } = {}) {
   if (!month || !day || day < 1 || day > 31) return null
   const y = /(?:^|\D)((?:19|20)\d{2})(?:\D|$)/.exec(s.slice(String(day).length))
   if (y) return `${y[1]}-${pad2(month)}-${pad2(day)}`
+  const yy = SHORT_YEAR.exec(s) // « 19-Mar-25 » (VISA CAD, 2025)
+  if (yy) return `20${yy[1]}-${pad2(month)}-${pad2(day)}`
   return inferYear(month, day, todayIso || new Date().toISOString().slice(0, 10))
 }
 
@@ -260,7 +263,7 @@ function rowAmount(row, cols, spec) {
     const debit = cols.debit != null ? parseTrxAmount(row[cols.debit]) : null
     const credit = cols.credit != null ? parseTrxAmount(row[cols.credit]) : null
     if (debit == null && credit == null) return null
-    amount = (credit != null ? Math.abs(credit) : 0) - (debit != null ? Math.abs(debit) : 0)
+    amount = (credit != null ? credit : 0) - (debit != null ? Math.abs(debit) : 0) // crédit (x) = sortie
   }
   if (amount == null || amount === 0) return null
   if (spec?.invert) amount = -amount

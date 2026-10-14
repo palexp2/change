@@ -121,6 +121,20 @@ export function StatusPill({ p }) {
   )
 }
 
+/** Un message du fil (page Travaux, bouton « Mes questions » du FAB). */
+export function ThreadMessage({ m }) {
+  return (
+    <div className={`text-sm whitespace-pre-wrap rounded-lg px-3 py-2 ${
+      m.role === 'agent' ? 'bg-slate-50 text-slate-700' : 'bg-brand-50 text-brand-900'
+    }`}>
+      <div className="text-[11px] uppercase tracking-wide opacity-60 mb-0.5">
+        {m.role === 'agent' ? 'Claude' : (m.author_name || 'Toi')}
+      </div>
+      {m.text}
+    </div>
+  )
+}
+
 /** Initiales d'un nom complet (« Guillaume Tremblay » → « GT »), pour la puce discrète. */
 function initialsOf(name) {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean)

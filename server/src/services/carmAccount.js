@@ -7,17 +7,16 @@
 // portail.
 //   • Notre versement (ex. 500 $ par carte) → Dépense sur la carte, imputée à
 //     21000 avec ASFC en fournisseur. Aucune taxe : c'est une avance.
-//   • Évaluation B3 → ÉCRITURE DE JOURNAL (pas une facture fournisseur — voir
-//     carmQb.js) : droits de douane en coût (duty_acctnum) et TPS à
-//     l'importation en CTI 100 % RÉCUPÉRABLE portée directement au compte
-//     d'attente TPS/TVH (gst_suspense_acctnum), en contrepartie de 21000. Une
-//     JE ne crée jamais de facture « à payer » dans QuickBooks — décidé le
-//     2026-09-01 (Guillaume) après avoir constaté que la facture fournisseur
-//     restait ouverte indéfiniment (rien ne l'applique au crédit accumulé).
+//   • Charges d'un lot (B3, C1, intérêts) → UNE FACTURE fournisseur ASFC,
+//     droits en coût, TPS à l'importation par la taxe de la facture (CTI) ;
+//     notre versement la règle (paiement de facture), le surplus part en
+//     « Trop versé » sur 21000. Modèle de la comptable, adopté le 2026-10-10
+//     (voir carmQb.js) — remplace l'écriture de journal du 2026-09-01.
 //   • Intérêts (IN) → charge financière, hors champ, aucun CTI.
 //   • Corrections (C1) → même ventilation que le B3 corrigé, en sens inverse.
-//   • Ligne réglée par un courtier (FedEx, UPS, Axxess paient l'ASFC puis nous
-//     refacturent) → RIEN ici : la dépense et la TPS arrivent par sa facture.
+//   • Ligne d'un courtier PAYEUR (broker_names : FedEx seul — décision Charles 2026-10-10 — paie l'ASFC puis
+//     nous refacturent) → RIEN ici : la dépense et la TPS arrivent par sa
+//     facture. Axxess ne paie pas l'ASFC : ses lignes sont à nous.
 //   • Dépôt de garantie (597 $) → caution permanente, déjà comptabilisée, hors
 //     solde consommable.
 // Le crédit laissé au portail par un versement supérieur aux charges (202,68 $
@@ -29,7 +28,7 @@
 // Le solde disponible = solde d'ouverture − somme des montants.
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
-import { sendSlackWebhook } from './slack.js'
+import { sendSlackConfigured, hasSlackTarget } from './slack.js'
 import { round2Safe as round2 } from '../utils/money.js'
 
 export const CARM_AUTOMATION_ID = 'sys_carm_balance_alert'
@@ -54,8 +53,12 @@ export const CARM_DEFAULT_CONFIG = {
   post_since: '',                // ne rien comptabiliser avant cette date
   max_batch: '50',               // groupes poussés par lot
   delta_tolerance: '0.02',       // écart toléré entre le relevé et l'écriture
-  broker_names: 'Federal Express Canada, United Parcells, AXXESS INTERNAtional',
+  broker_names: 'Federal Express Canada',
   slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+  slack_channel: 'C0BC7KSM1D5', // #comptabilité (= SLACK_WEBHOOK_TREASURY)
+  // Mois clos sans relevé à importer (aucune transaction au portail) —
+  // marqués à la main depuis la fin de mois. « 2026-09,2026-10 »
+  quiet_months: '',
 }
 
 export function getCarmConfig() {
@@ -149,7 +152,12 @@ export function carmAccountState() {
   `).all(...(cfg.opening_date ? [cfg.opening_date] : []))
   // Le dépôt de garantie (caution permanente MAP) ne finance aucune importation :
   // il sort du solde consommable et de la consommation mensuelle.
-  const rows = all.filter(r => r.kind !== 'garantie')
+  const kept = all.filter(r => r.kind !== 'garantie')
+  // Les lignes réglées par un courtier (FedEx, UPS, Axxess) sortent de tous les
+  // calculs : le courtier nous refacture droits et TPS par SA facture, et la
+  // paire charge ↔ paiement du courtier ne touche pas notre solde.
+  const isBroker = r => String(r.skip_reason || '').startsWith('via_courtier') || r.payer === 'courtier'
+  const rows = kept.filter(r => !isBroker(r))
   const guarantee = round2(all.filter(r => r.kind === 'garantie' && Number(r.amount) > 0)
     .reduce((s, r) => s + Number(r.amount), 0))
 
@@ -190,7 +198,7 @@ export function carmAccountState() {
     settledByCharge.set(a.charge_txn_id, round2((settledByCharge.get(a.charge_txn_id) || 0) + a.amt))
     usedByPayment.set(a.payment_txn_id, round2((usedByPayment.get(a.payment_txn_id) || 0) + a.amt))
   }
-  const ours = rows.filter(r => !String(r.skip_reason || '').startsWith('via_courtier') && r.payer !== 'courtier')
+  const ours = rows
   const creditAvailable = round2(ours.filter(r => Number(r.amount) < 0)
     .reduce((s, r) => s + (-r.amount - (usedByPayment.get(r.id) || 0)), 0))
   const unpaid = round2(ours.filter(r => Number(r.amount) > 0)
@@ -205,7 +213,7 @@ export function carmAccountState() {
     to_post: countBy('a_comptabiliser'),
     posted: countBy('comptabilise'),
     awaiting: countBy('attente_imputation'),
-    via_broker: rows.filter(r => String(r.skip_reason || '').startsWith('via_courtier')).length,
+    via_broker: kept.filter(isBroker).length,
     to_verify: countBy('a_verifier') + countBy('erreur'),
     opening_balance: opening,
     opening_date: cfg.opening_date || null,
@@ -219,7 +227,7 @@ export function carmAccountState() {
     gst_claimable: gstClaimable,
     lines_to_split: toSplit,
     last_activity: last?.d || null,
-    count: rows.length,
+    count: kept.length,
   }
 }
 
@@ -272,9 +280,8 @@ export async function checkCarmBalanceAlert({ force = false, trigger = 'schedule
     }
     const text = carmAlertText(state)
     let sent = 'aucun canal configuré'
-    if (cfg.slack_webhook_env) {
-      await sendSlackWebhook(cfg.slack_webhook_env, text)
-      sent = `Slack (${cfg.slack_webhook_env})`
+    if (hasSlackTarget(cfg)) {
+      sent = await sendSlackConfigured(cfg, text)
     }
     logSystemRun(CARM_AUTOMATION_ID, {
       status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger },

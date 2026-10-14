@@ -58,6 +58,7 @@ const PUBLIC_ROUTES = new Map([
   ['POST /erp/pay/soumission/:id/abonnement/approuver', 'Client déjà abonné : approuve l’ajout des lignes de la soumission à son abonnement — l’id de soumission du PDF est le secret, comme le lien « S’abonner »'],
   ['GET /erp/pay/page/:token/merci',                 'Retour de Stripe après l’abonnement d’une page hébergée — page de remerciement, aucune donnée'],
   ['GET /erp/pay/page/:token/:acceptanceId',         'Paiement d’une page acceptée — le jeton du fichier est le secret ; page d’approbation ou Checkout'],
+  ['GET /erp/pay/page/:token/:acceptanceId/carte',   'Nouvelle carte sur notre page de paiement (abonnement séparé refusé) — le jeton du fichier est le secret'],
   ['POST /erp/pay/page/:token/:acceptanceId/approuver', 'Client déjà abonné : approuve l’ajout du produit de la page — le jeton du fichier est le secret'],
   ['GET /api/public/pages/legacy-contract/:token', 'Ancien lien de contrat → adresse de la page hébergée qui le remplace ; aucune donnée sensible'],
   ['GET /api/public/pages/:token',                 'Bloc d’acceptation d’une page hébergée — le jeton du fichier (32 hex) est le secret'],

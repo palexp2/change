@@ -140,6 +140,17 @@ function ReadinessCard({ month, refreshKey }) {
   const { loading, checks, error } = state
   const allOk = checks?.ready
 
+  // Relevé ASFC : « rien ce mois-ci » (aucune transaction au portail).
+  async function setQuiet(quiet) {
+    try {
+      const c = await api.monthEnd.asfcQuiet(month, quiet)
+      setState(s => {
+        const list = s.checks.checks.map(x => (x.key === 'asfc' ? c : x))
+        return { ...s, checks: { ...s.checks, checks: list, ready: list.every(x => x.status === 'ok') } }
+      })
+    } catch (e) { setState(s => ({ ...s, error: e.message })) }
+  }
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 mb-5" data-testid="readiness-card">
       <div className="flex items-center justify-between mb-2">
@@ -172,6 +183,12 @@ function ReadinessCard({ month, refreshKey }) {
                 <div className="min-w-0">
                   <span className="text-sm text-slate-700">{c.label}</span>
                   {c.detail && <span className="text-xs text-slate-400"> — {c.detail}</span>}
+                  {c.key === 'asfc' && (c.quiet || c.status !== 'ok') && (
+                    <button onClick={() => setQuiet(!c.quiet)} data-testid="asfc-quiet"
+                      className="ml-2 text-xs text-brand-600 hover:underline">
+                      {c.quiet ? 'annuler' : 'Rien ce mois-ci'}
+                    </button>
+                  )}
                 </div>
               </li>
             )
@@ -855,7 +872,10 @@ export default function FinDeMois() {
               <ProvisionCard key={p.id} month={month} provision={p} onChanged={reload} />
             ))}
             <FpaCard month={month} fpa={data.fpa} onChanged={reload} />
-            <PiecesCard month={month} />
+            {/* Ancre : bouton « Déboursés en pièces » de la page Travaux. */}
+            <div id="debourses-pieces" ref={el => { if (el && window.location.hash === '#debourses-pieces') el.scrollIntoView({ block: 'start' }) }}>
+              <PiecesCard month={month} />
+            </div>
             <div className="flex items-start gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
               <Info size={14} className="mt-0.5 shrink-0" />
               Chaque écriture est datée du dernier jour du mois et publiée seulement après approbation ici.

@@ -5,14 +5,24 @@
 //   • qb_rapproche — l'écriture QuickBooks liée est DÉJÀ rapprochée là-bas (« R ») ;
 //   • ecart_zero   — le solde du relevé et celui de QuickBooks à la même date
 //     sont identiques au cent : toutes les lignes jaunes jusqu'à cette date
-//     passent au vert.
+//     passent au vert ;
+//   • liste_banque — AVANT le relevé : la liste des transactions reçue dans
+//     Boréal vient de la banque et fait foi (Charles, 2026-10-10 pour les
+//     cartes ; 2026-10-13 étendu à tous les comptes : « dès que j'ai
+//     comptabilisé, que ça se mette en vert »). Une ligne jaune postérieure au
+//     dernier relevé, liée à son écriture QuickBooks AU MONTANT EXACT, passe au
+//     vert. Un écart de montant reste jaune : c'est une anomalie à signaler.
+//     Puis (même jour, « oui ») : plus de condition de date — chaque ligne
+//     comptabilisée au bon montant est verte même si le compte ne balance pas ;
+//     l'écart du compte est dit par la bulle Claude (bankClaude.js).
 // Une ligne dont un humain a annulé le rapprochement (reconcile_method =
 // 'annule') n'est plus jamais touchée. Réglage : `auto_reconcile` de
 // l'automation sys_bank_qb_verify (vider = couper).
 import db from '../db/database.js'
 import { touchBankTxns } from './realtimeEmitters.js'
+import { noteGreen } from './bankClaude.js'
 
-export const AUTO_RECONCILE_METHODS = ['qb_rapproche', 'ecart_zero']
+export const AUTO_RECONCILE_METHODS = ['qb_rapproche', 'ecart_zero', 'liste_banque']
 
 export function parseAutoReconcile(v) {
   return new Set(String(v || '').split(',').map((x) => x.trim()).filter((x) => AUTO_RECONCILE_METHODS.includes(x)))
@@ -29,7 +39,10 @@ function markReconciled(ids, method) {
   `)
   const done = []
   db.transaction(() => { for (const id of ids) if (stmt.run(method, id).changes) done.push(id) })()
-  if (done.length) touchBankTxns(done)
+  if (done.length) {
+    touchBankTxns(done)
+    try { noteGreen(done) } catch (e) { console.error('bankClaude.noteGreen:', e.message) }
+  }
   return done.length
 }
 
@@ -62,4 +75,15 @@ export async function reconcileIfBalanced(accountId) {
       AND COALESCE(pending, 0) = 0 AND txn_date <= ?
   `).all(accountId, b.statement_date).map((r) => r.id)
   return markReconciled(ids, 'ecart_zero')
+}
+
+/** Cas 3 : toute ligne liée à QuickBooks sans écart de montant, même si le compte ne balance pas encore (Charles, 2026-10-13). Local. */
+export async function reconcileFromBankList(accountId) {
+  const ids = db.prepare(`
+    SELECT id FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND status='comptabilise'
+      AND COALESCE(pending, 0) = 0 AND qb_txn_id IS NOT NULL AND qb_txn_id != ''
+      AND ABS(COALESCE(qb_match_delta, 0)) < 0.005
+  `).all(accountId).map((r) => r.id)
+  return markReconciled(ids, 'liste_banque')
 }

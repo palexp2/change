@@ -119,7 +119,6 @@ export default function Contacts() {
       <DataTable
         table="contacts"
         manageViews
-        sortIndicator
         columns={COLUMNS}
         data={contacts}
         loading={loading}

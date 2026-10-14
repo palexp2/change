@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react'
-import { Trash2, GripVertical, Plus, X, Clock, Table2, CreditCard } from 'lucide-react'
+import { Trash2, GripVertical, Plus, X, Clock, Table2, CreditCard, Check, Minus } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import {
-  BLOCKS, DEFAULT_CONFIG, OPS, FREQS, WEEKDAYS, READABLE_TABLES, WATCHED_TABLES,
-  tableLabel, stepSummary, triggerSummary, triggerKindOf, TRIGGER_TITLES,
+  BLOCKS, DEFAULT_CONFIG, OPS, FREQS, WEEKDAYS, READABLE_TABLES, WATCHED_TABLES, WRITABLE_TABLES,
+  tableLabel, stepSummary, triggerSummary, rulesSummary, triggerKindOf, TRIGGER_TITLES,
 } from '../lib/automationBlocks.js'
 
 // Briques de la page Automatisations (façon Airtable) : canevas déclencheur →
@@ -72,6 +72,7 @@ export function FlowCanvas({ automation, tc, steps, step, onSelect, onAdd, onMov
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [menu])
+  const slack = useSlackChannels(steps.some(s => s.type === 'slack'))
   const tk = triggerKindOf(automation, tc)
   const TIcon = { field_rule: Table2, schedule: Clock, subscription_product: CreditCard }[tk]
   return (
@@ -86,7 +87,10 @@ export function FlowCanvas({ automation, tc, steps, step, onSelect, onAdd, onMov
         return (
           <div key={s.id || i}>
             {i > 0 && <Wire />}
-            <Block icon={<b.Icon size={17} />} bg={b.bg} title={b.label} sub={stepSummary(s, users)} selected={step === i + 1}
+            {s.when?.rules?.some(r => r.column) && (
+              <div className="text-xs text-slate-600 mb-1 ml-1"><b>Si</b> {rulesSummary(s.when, colLabel)}</div>
+            )}
+            <Block icon={<b.Icon size={17} />} bg={b.bg} title={b.label} sub={s.type === 'slack' ? slackLabel(slack, s.config?.channel) : stepSummary(s, users)} selected={step === i + 1}
               onClick={() => onSelect(i + 1)}
               drag={{
                 draggable: true,
@@ -142,7 +146,11 @@ function ConditionsEditor({ table, rules, onChange, withConj, conj, onConj }) {
           <select className="input input-sm text-xs" value={r.op || 'eq'} onChange={e => set(i, { op: e.target.value })}>
             {OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          {r.op === 'not_null' ? <span /> : (
+          {r.op === 'not_null' ? <span /> : r.op === 'in' ? (
+            <input className="input input-sm text-xs" title="Valeurs séparées par des virgules"
+              value={Array.isArray(r.value) ? r.value.join(', ') : r.value ?? ''}
+              onChange={e => set(i, { value: e.target.value.split(/\s*,\s*/) })} />
+          ) : (
             <input className="input input-sm text-xs" value={r.value ?? ''} onChange={e => set(i, { value: e.target.value })} />
           )}
           <button onClick={() => onChange(rules.filter((_, j) => j !== i))} className="text-slate-400 hover:text-red-600"><X size={14} /></button>
@@ -262,7 +270,8 @@ export function StepPanel({ step, index, onChange, onType, onDelete, users, trig
   const textProps = key => ({ 'data-key': key, value: c[key] ?? '', onFocus: e => { lastField.current = e.target }, onChange: e => set({ [key]: e.target.value }) })
 
   const tokens = [
-    ...(triggerTokens || triggerCols).map(col => ({ token: `{{${col.value}}}`, label: col.label })),
+    ...(triggerTokens || (triggerCols.length ? [{ value: 'lien_fiche', label: 'Lien de la fiche' }, ...triggerCols] : []))
+      .map(col => ({ token: `{{${col.value}}}`, label: col.label })),
     ...prevSteps.flatMap((s, i) => (s.type === 'find'
       ? [{ token: `{{etape${i + 1}.nombre}}`, label: `Action ${i + 1} · nombre` }, { token: `{{etape${i + 1}.liste}}`, label: `Action ${i + 1} · liste` }]
       : [])),
@@ -297,12 +306,16 @@ export function StepPanel({ step, index, onChange, onType, onDelete, users, trig
                 <option value="contacts">Contact</option><option value="companies">Entreprise</option>
               </select>
             )}
+            {type === 'writable' && (
+              <SearchableSelect value={c[key] || triggerTable} className="input"
+                options={WRITABLE_TABLES.map(t => ({ value: t, label: tableLabel(t) }))} onChange={v => set({ [key]: v, fields: [] })} />
+            )}
             {type === 'readable' && (
               <SearchableSelect value={c[key]} className="input"
                 options={READABLE_TABLES.map(t => ({ value: t, label: tableLabel(t) }))} onChange={v => set({ [key]: v, conditions: [] })} />
             )}
             {type === 'conditions' && <ConditionsEditor table={c.table} rules={c.conditions || []} onChange={r => set({ conditions: r })} />}
-            {type === 'fields' && <FieldsEditor table={triggerTable} fields={c.fields || []} onChange={f => set({ fields: f })} />}
+            {type === 'fields' && <FieldsEditor table={c.table || triggerTable} fields={c.fields || []} onChange={f => set({ fields: f })} />}
           </Row>
         ))}
         {step.type !== 'script' && tokens.length > 0 && (
@@ -317,6 +330,12 @@ export function StepPanel({ step, index, onChange, onType, onDelete, users, trig
           </div>
         )}
       </Section>
+      {triggerTable && (
+        <Section title="Exécuter seulement si">
+          <ConditionsEditor table={triggerTable} rules={step.when?.rules || []}
+            onChange={r => onChange({ ...step, when: { conjunction: 'AND', rules: r } })} />
+        </Section>
+      )}
       <div className="p-4 flex gap-2 justify-end">
         <button onClick={onDelete} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50">
           <Trash2 size={13} /> Supprimer
@@ -330,22 +349,34 @@ export function StepPanel({ step, index, onChange, onType, onDelete, users, trig
 // « #nom » ou « U… » (résolue côté serveur) ; une ancienne valeur hors liste
 // reste affichée — un message privé « D… » connu prend le nom de la personne.
 let slackChannelsP = null
-function SlackChannelSelect({ value, onChange }) {
+function useSlackChannels(enabled = true) {
   const [list, setList] = useState([])
   useEffect(() => {
+    if (!enabled) return
     slackChannelsP ||= api.automations.slackChannels().catch(e => { slackChannelsP = null; throw e })
     let off = false
     slackChannelsP.then(r => { if (!off) setList(r) }).catch(() => {})
     return () => { off = true }
-  }, [])
+  }, [enabled])
+  return list
+}
+/** « U… », « D… » ou « C… » → nom lisible ; sinon la valeur telle quelle. */
+function slackLabel(list, value) {
+  if (!value) return value
+  const hit = list.find(ch => ch.id === value || (ch.user && ch.dm === value))
+  return hit ? (hit.user ? `@ ${hit.name}` : `#${hit.name}`) : value
+}
+export function SlackChannelSelect({ value, onChange, emptyOption }) {
+  const list = useSlackChannels()
   const options = list.map(ch => (ch.user
     ? { value: ch.id, label: `@ ${ch.name}` }
     : { value: `#${ch.name}`, label: `${ch.private ? '🔒' : '#'} ${ch.name}` }))
   if (value && !options.some(o => o.value === value)) {
-    const dm = list.find(u => u.user && u.dm === value)
+    const v = String(value).toLowerCase().replace(/^@/, '')
+    const dm = list.find(u => u.user && (u.dm === value || u.email?.toLowerCase() === v))
     options.unshift({ value, label: dm ? `@ ${dm.name}` : value })
   }
-  return <SearchableSelect value={value} options={options} className="input" onChange={v => onChange(v || '')} />
+  return <SearchableSelect value={value} options={options} className="input" emptyOption={emptyOption} onChange={v => onChange(v || '')} />
 }
 
 function FieldsEditor({ table, fields, onChange }) {
@@ -369,21 +400,75 @@ export const newStep = type => ({ id: Math.random().toString(36).slice(2, 10), t
 
 // ── Historique et test ───────────────────────────────────────────────────────
 
+const RUN_STATUS = {
+  success: ['Réussi', 'bg-green-100 text-green-700'],
+  error: ['Échec', 'bg-red-100 text-red-700'],
+  skipped: ['Ignoré', 'bg-slate-100 text-slate-500'],
+}
+const STEP_MARK = { '✓': [Check, 'text-green-600'], '✗': [X, 'text-red-600'], '–': [Minus, 'text-slate-400'] }
+
+/** Résumé d'une exécution : « summary » d'un résultat JSON, sinon 1re ligne. */
+function runSummary(l) {
+  for (const s of [l.result, l.error]) {
+    if (!s) continue
+    try { const j = JSON.parse(s); if (j && typeof j === 'object') { if (j.summary) return String(j.summary); continue } } catch { /* texte */ }
+    const first = s.split('\n').find(x => x.trim() && !/^\s*[✓✗–]\s/.test(x))
+    if (first) return first.trim()
+  }
+  return ''
+}
+
+/** Une ligne du journal ; « ✓ Étape 2 (slack) … » devient « Action 2 · Message Slack … ». */
+function RunLine({ text }) {
+  const m = text.match(/^(\s*)([✓✗–])\s*Étape (\d+) \((\w+)\)\s*:?\s*(.*)$/)
+  if (!m) return <div className="whitespace-pre-wrap">{text || ' '}</div>
+  const [, ind, mark, n, type, rest] = m
+  const [Icon, cls] = STEP_MARK[mark]
+  return (
+    <div className="flex gap-1.5" style={{ paddingLeft: ind.length ? 12 : 0 }}>
+      <Icon size={12} strokeWidth={3} className={`shrink-0 mt-0.5 ${cls}`} />
+      <span className="min-w-0 break-words"><b className="font-medium text-slate-700">Action {n} · {BLOCKS[type]?.label || type}</b>{rest && ` — ${rest}`}</span>
+    </div>
+  )
+}
+
+function RunDetail({ l }) {
+  const blocks = [...new Set([l.error, l.result].filter(Boolean))]
+  if (!blocks.length) return <div className="mt-1 text-[11px] text-slate-400">—</div>
+  return blocks.map((s, i) => {
+    let pretty = null
+    try { const j = JSON.parse(s); if (j && typeof j === 'object') pretty = JSON.stringify(j, null, 2) } catch { /* texte */ }
+    return (
+      <div key={i} className={`mt-1 text-[11px] rounded p-2 space-y-0.5 ${i === 0 && l.error ? 'bg-red-50 text-red-800' : 'bg-slate-50 text-slate-600'}`}>
+        {pretty ? <pre className="whitespace-pre-wrap">{pretty}</pre> : s.split('\n').map((t, k) => <RunLine key={k} text={t} />)}
+      </div>
+    )
+  })
+}
+
 export function HistoryPanel({ automationId }) {
   const [logs, setLogs] = useState(null)
-  useEffect(() => { api.automations.logs(automationId).then(setLogs).catch(() => setLogs([])) }, [automationId])
+  useEffect(() => { setLogs(null); api.automations.logs(automationId).then(setLogs).catch(() => setLogs([])) }, [automationId])
   const [open, setOpen] = useState(null)
   return (
     <Section title="Historique">
-      {!logs ? <div className="text-xs text-slate-400">…</div> : !logs.length ? <div className="text-xs text-slate-400">Aucune exécution</div> : logs.map(l => (
-        <div key={l.id} className="border-b border-slate-100 py-1.5 text-xs">
-          <button className="w-full flex justify-between" onClick={() => setOpen(open === l.id ? null : l.id)}>
-            <span className="text-slate-600">{fmtDateTime(l.created_at)}</span>
-            <span className={l.status === 'error' ? 'text-red-600' : 'text-green-700'}>{l.status === 'error' ? 'Échec' : 'Réussi'}</span>
-          </button>
-          {open === l.id && <pre className="mt-1 whitespace-pre-wrap text-[11px] text-slate-600 bg-slate-50 rounded p-2">{l.error || l.result || '—'}</pre>}
-        </div>
-      ))}
+      {!logs ? <div className="text-xs text-slate-400">…</div> : !logs.length ? <div className="text-xs text-slate-400">Aucune exécution</div> : logs.map(l => {
+        const [label, cls] = RUN_STATUS[l.status] || RUN_STATUS.success
+        const sum = runSummary(l)
+        return (
+          <div key={l.id} className="border-b border-slate-100 py-1.5 text-xs">
+            <button className="w-full text-left" onClick={() => setOpen(open === l.id ? null : l.id)}>
+              <span className="flex items-center gap-2">
+                <span className="text-slate-600 flex-1">{fmtDateTime(l.created_at)}</span>
+                {l.duration_ms != null && <span className="text-slate-400">{l.duration_ms < 1000 ? `${l.duration_ms} ms` : `${(l.duration_ms / 1000).toFixed(1)} s`}</span>}
+                <span className={`rounded px-1.5 font-medium ${cls}`}>{label}</span>
+              </span>
+              {sum && open !== l.id && <span className="block mt-0.5 text-slate-500 truncate">{sum}</span>}
+            </button>
+            {open === l.id && <RunDetail l={l} />}
+          </div>
+        )
+      })}
     </Section>
   )
 }

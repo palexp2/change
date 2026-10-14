@@ -7,6 +7,7 @@ import { emitEntity } from '../services/realtimeEmitters.js'
 import { dayPayableMinutes } from '../services/timesheetHours.js'
 import { userForEmployee } from '../services/paieTimesheetImport.js'
 import { scheduleTimesheetPaieSync } from '../services/timesheetPaieSync.js'
+import { employeeForUser, listConges, addConge, removeConge, workdays } from '../services/conges.js'
 import { isRdSheetMember, rdMonthGrid, applySheetValueToBoreal, canonicalProject, rdSuggestions, codeForProject } from '../services/rdTimesheetSheetSync.js'
 
 const router = Router()
@@ -650,6 +651,49 @@ router.delete('/entries/:id', (req, res) => {
   const updated = loadDayWithEntries(entry.day_id)
   emitEntity('timesheet', 'updated', entry.day_id, updated, req.user?.id)
   res.json(updated)
+})
+
+// ── Congés (bouton « Congé » de la feuille de temps) ─────────────────────────
+// L'employé inscrit ses propres congés ; les RH, ceux de n'importe qui.
+function congeEmployee(req, res) {
+  const userId = req.body?.user_id || req.query.user_id || req.user.id
+  if (userId !== req.user.id && !isHR(req.user)) { res.status(403).json({ error: 'Accès refusé' }); return null }
+  const emp = employeeForUser(userId)
+  if (!emp) { res.status(404).json({ error: 'Aucune fiche employé liée à ce compte' }); return null }
+  return emp
+}
+
+// GET /api/timesheets/conges?user_id=&from=YYYY-MM-DD
+router.get('/conges', (req, res) => {
+  const emp = congeEmployee(req, res)
+  if (!emp) return
+  const from = DATE_RE.test(req.query.from || '') ? req.query.from : null
+  res.json(listConges(emp.id, from))
+})
+
+// GET /api/timesheets/conges/workdays?start=&end= — jours ouvrables (sans fins de semaine ni fériés).
+router.get('/conges/workdays', (req, res) => {
+  const { start, end } = req.query
+  if (!DATE_RE.test(start || '') || !DATE_RE.test(end || '')) return res.status(400).json({ error: 'Dates invalides' })
+  res.json({ days: end < start ? 0 : workdays(start, end) })
+})
+
+// POST /api/timesheets/conges { user_id?, start_date, end_date?, half? }
+router.post('/conges', (req, res) => {
+  const emp = congeEmployee(req, res)
+  if (!emp) return
+  const { start_date, end_date, half } = req.body || {}
+  if (!DATE_RE.test(start_date || '') || (end_date && !DATE_RE.test(end_date))) return res.status(400).json({ error: 'Dates invalides' })
+  try { res.status(201).json(addConge({ employee: emp, start_date, end_date, half: !!half, userId: req.user.id })) }
+  catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+// DELETE /api/timesheets/conges/:id?user_id=
+router.delete('/conges/:id', (req, res) => {
+  const emp = congeEmployee(req, res)
+  if (!emp) return
+  if (!removeConge({ employee: emp, id: req.params.id, userId: req.user.id })) return res.status(404).json({ error: 'Congé introuvable' })
+  res.json({ ok: true })
 })
 
 export default router

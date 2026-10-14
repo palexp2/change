@@ -82,14 +82,8 @@ const UnknownAnswerCount = createContext(null)
 
 const DONT_KNOW = 'Je ne sais pas'
 
-// Adresse sur une ligne, sans répéter ville, province, code postal ou pays déjà
-// tapés par le client dans la rue (« W8180 County Rd C Fort Atkinson WI 53538 US »).
-const words = s => ` ${String(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `
-const addressText = a => {
-  if (!a?.line1) return fmtAddress(a)
-  const street = words(a.line1)
-  return [a.line1, ...[a.city, a.province, a.postal_code, a.country].filter(p => p && !street.includes(words(p)))].join(', ')
-}
+// Adresse sur une ligne, sans répéter ce que le client a déjà tapé dans la rue.
+const addressText = fmtAddress
 // Wi-Fi que le client ne fournira pas, accepté par Orisha.
 const WIFI_NONE = 'Non fourni'
 const wifiShown = v => (v === WIFI_NONE ? 'Pas nécessaire' : v)

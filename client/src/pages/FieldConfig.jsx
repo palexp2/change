@@ -9,7 +9,7 @@ import {
   typeLabel, kindLabel, useFieldOverrides, applyFieldOverrides, applyFieldOrder,
   isComputedKind, isPushOnlyKind, noMappingReason, pushOnlyMappingReason,
 } from '../lib/fieldOverrides.jsx'
-import { FieldTypeIcon } from '../lib/fieldTypeIcons.jsx'
+import { FieldTypeIcon, isCountField } from '../lib/fieldTypeIcons.jsx'
 import {
   CoreMapPane, DirectionControl, useCoreMap, DIRECTIONS, directionLockTitle,
 } from '../components/AirtableCoreMapModal.jsx'
@@ -245,7 +245,7 @@ function FieldRow({
             // Champ perso : sa famille (Formule, Lookup…) ou, pour un champ
             // « donnée », son PROPRE type — celui du champ, pas celui auquel la
             // colonne se ramène (une devise se ramène à un nombre).
-            const own = !col.renderTypeLabel && cf ? (kindLabel(cf.kind) || typeLabel(cf.type)) : null
+            const own = !col.renderTypeLabel && cf ? (kindLabel(isCountField(cf) ? 'count' : cf.kind) || typeLabel(cf.type)) : null
             // Champ lien Airtable : stocké en texte (l'id du record lié), mais
             // c'est un lien — le nommer « Texte » n'apprenait rien à l'utilisateur.
             const atLink = isAirtableLinkField(cf) || !!at?.target_table
@@ -1062,6 +1062,7 @@ export default function FieldConfig() {
         // Formules : champs proposés et cherchés sous le nom affiché ici.
         formulaColumns={columns}
         formulaLabelSearch
+        siblingFields={columns}
         onSaved={() => {
           if (nativeModal) { reloadOverrides(); return }
           reloadCustomFields()

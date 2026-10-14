@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Rapprochement avec Claude</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f4f5f8;--line:#e3e5e8;--line2:#c9ced4;--ink:#393a3d;--ink2:#4f5257;--ink3:#6b6c72;--ink4:#9a9ca1;--g:#2ca01c;--gd:#108000;--gs:#e8f5e5;--b:#0077c5;--bs:#e6f1fa;--r:#d52b1e;--rs:#fcebea;--a:#b86e00;--as:#fff4e0;--sh:0 1px 2px rgb(0 0 0/.05),0 10px 30px rgb(0 0 0/.08);
+--t-red:#fde0de;--t-yel:#fff0b3;--t-grn:#cdeec3;--cl:#c96442}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33280f;--t-red:#3a2220;--t-yel:#3a3218;--t-grn:#1d3420;--cl:#e08a68}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1f2226;--line:#2a2e33;--line2:#3a4047;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--b:#5cb0ef;--bs:#16263a;--r:#ff7a6e;--rs:#33201e;--a:#f0b04a;--as:#33280f;--t-red:#3a2220;--t-yel:#3a3218;--t-grn:#1d3420;--cl:#e08a68}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:1240px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:18px;margin:44px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.scr{background:var(--s);border-radius:10px;box-shadow:var(--sh);overflow:hidden;position:relative}
+.n{font-variant-numeric:tabular-nums}
+.bar{display:flex;align-items:center;gap:26px;padding:12px 18px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.pick{font-size:22px;font-weight:600}.pick i{font-style:normal;font-size:13px;color:var(--ink3)}
+.k{display:flex;flex-direction:column}.k small{font-size:11px;color:var(--ink3)}.k b{font-size:15px;font-weight:600}
+.bad{color:var(--r)}.ok{color:var(--gd)}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:560px}
+th{font-size:10.5px;font-weight:600;color:var(--ink3);text-transform:uppercase;letter-spacing:.03em;text-align:left;padding:8px 10px;border-bottom:1px solid var(--line2);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--line);height:44px;white-space:nowrap}
+td:first-child,th:first-child{padding-left:14px}
+tr td:first-child{border-left:4px solid transparent}
+tr.grn td{background:var(--t-grn)}tr.grn td:first-child{border-left-color:var(--g)}
+tr.yel td{background:var(--t-yel)}tr.yel td:first-child{border-left-color:#e0b000}
+tr.red td{background:var(--t-red)}tr.red td:first-child{border-left-color:var(--r)}
+tr.flash td{animation:fl 1.2s ease}
+@keyframes fl{0%{filter:brightness(1.15)}100%{filter:none}}
+.r{text-align:right}.l2{font-size:11.5px;color:var(--ink3)}
+.btn{border:1px solid var(--line2);background:var(--s);color:var(--ink);border-radius:999px;height:28px;padding:0 12px;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.btn.go{background:var(--g);border-color:var(--g);color:#fff}
+.btn.sm{height:24px;padding:0 10px;font-size:12px}
+.mark{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600}
+/* chat */
+.av{width:22px;height:22px;border-radius:50%;background:var(--cl);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.chat{display:flex;flex-direction:column;background:var(--soft)}
+.chat .hd{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);font-weight:600;background:var(--s)}
+.chat .hd .live{margin-left:auto;font-size:11px;font-weight:500;color:var(--gd);display:flex;align-items:center;gap:5px}
+.chat .hd .live:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--g)}
+.feed{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.sys{font-size:11.5px;color:var(--ink3);display:flex;gap:6px;align-items:center}.sys b{color:var(--gd)}
+.msg{display:flex;gap:8px;align-items:flex-start}
+.bub{background:var(--s);border:1px solid var(--line);border-radius:12px;border-top-left-radius:4px;padding:8px 11px;max-width:100%}
+.bub.warn{border-color:var(--r);box-shadow:inset 3px 0 0 var(--r)}
+.bub .acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.me{align-self:flex-end;background:var(--b);color:#fff;border-radius:12px;border-top-right-radius:4px;padding:8px 11px;max-width:85%}
+.inp{display:flex;gap:8px;padding:10px;border-top:1px solid var(--line);background:var(--s)}
+.inp input{flex:1;border:1px solid var(--line2);border-radius:999px;padding:0 14px;height:34px;font:inherit;background:var(--s);color:var(--ink);min-width:0}
+.ln{color:var(--b);font-weight:600;cursor:pointer}
+/* C1 */
+.c1{display:grid;grid-template-columns:1fr 340px;min-height:470px}
+.c1 .chat{border-left:1px solid var(--line)}
+/* C2 */
+tr.thread td{background:var(--s);height:auto;padding:0 10px 12px 14px;border-left:4px solid var(--r) !important;white-space:normal}
+.th{display:flex;flex-direction:column;gap:8px;padding-top:10px;max-width:620px}
+.th .inp{border:0;padding:0;background:none}
+.pill{display:inline-flex;align-items:center;gap:4px;background:var(--cl);color:#fff;border-radius:999px;font-size:11px;font-weight:700;padding:1px 7px}
+/* C3 */
+.c3{min-height:520px}
+.fab{position:absolute;right:18px;bottom:18px;width:52px;height:52px;border-radius:50%;background:var(--cl);color:#fff;font-weight:700;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:var(--sh);cursor:pointer}
+.fab .dot{position:absolute;top:-2px;right:-2px;background:var(--r);border:2px solid var(--s);color:#fff;font-size:10.5px;min-width:20px;height:20px;border-radius:10px;display:flex;align-items:center;justify-content:center}
+.pop{position:absolute;right:18px;bottom:80px;width:340px;max-width:calc(100% - 36px);height:380px;border-radius:12px;box-shadow:0 12px 40px rgb(0 0 0/.22);overflow:hidden;border:1px solid var(--line2)}
+.toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:var(--ink);color:var(--s);border-radius:999px;padding:7px 16px;font-weight:600;display:flex;gap:8px;align-items:center;box-shadow:var(--sh)}
+.toast b{color:var(--g)}
+@media (max-width:820px){.c1{grid-template-columns:1fr}.c1 .chat{border-left:0;border-top:1px solid var(--line);min-height:380px}}
+</style></head><body><div class="wrap">
+<h1>Rapprochement avec Claude</h1>
+
+<h2><b>C1</b> Fil à droite <span>toujours ouvert à côté du relevé</span></h2>
+<div class="scr"><div class="c1">
+ <div><div class="bar"><span class="pick">Visa CAD <i>▾</i></span><div class="k"><small>Banque</small><b class="n">12 480,22</b></div><div class="k"><small>QuickBooks</small><b class="n" data-qb>12 441,22</b></div><div class="k"><small>Écart</small><b class="n bad" data-gap>39,00</b></div></div>
+ <div class="scroll"><table data-tbl="c1"></table></div></div>
+ <div class="chat" data-chat="c1"></div>
+</div></div>
+
+<h2><b>C2</b> Sous la ligne <span>la question s'ouvre là où est le problème</span></h2>
+<div class="scr"><div class="bar"><span class="pick">Visa CAD <i>▾</i></span><div class="k"><small>Banque</small><b class="n">12 480,22</b></div><div class="k"><small>QuickBooks</small><b class="n" data-qb>12 441,22</b></div><div class="k"><small>Écart</small><b class="n bad" data-gap>39,00</b></div></div>
+ <div class="scroll"><table data-tbl="c2"></table></div></div>
+
+<h2><b>C3</b> Bulle <span>discrète, s'allume quand Claude a besoin de toi</span></h2>
+<div class="scr c3"><div class="bar"><span class="pick">Visa CAD <i>▾</i></span><div class="k"><small>Banque</small><b class="n">12 480,22</b></div><div class="k"><small>QuickBooks</small><b class="n" data-qb>12 441,22</b></div><div class="k"><small>Écart</small><b class="n bad" data-gap>39,00</b></div></div>
+ <div class="scroll"><table data-tbl="c3"></table></div>
+ <div class="pop chat" data-chat="c3"></div>
+ <div class="fab" data-fab>C<span class="dot">1</span></div>
+</div>
+</div>
+<script>
+const ROWS=[
+ {id:1,d:'10 oct',v:'Amazon.ca',c:'Fournitures de bureau',m:-84.27,s:'grn'},
+ {id:2,d:'10 oct',v:'Hydro-Québec',c:'Électricité',m:-212.40,s:'yel'},
+ {id:3,d:'11 oct',v:'DigiKey',c:'Pièces électroniques',m:-1045.18,s:'grn'},
+ {id:4,d:'11 oct',v:'Stripe',c:'Encaissement clients',m:3420.00,s:'grn'},
+ {id:5,d:'12 oct',v:'Shopify',c:'Logiciels',m:-39.00,s:'red',bad:'QuickBooks : 36,00 $'},
+ {id:6,d:'12 oct',v:'Bell',c:'Téléphone',m:-98.88,s:'yel'},
+];
+const st={};['c1','c2','c3'].forEach(k=>st[k]={rows:ROWS.map(r=>({...r})),feed:[
+ {t:'sys',x:'<b>✓</b> Amazon.ca, DigiKey, Stripe rapprochées'},
+ {t:'warn',id:5,x:'<b>Shopify 12 oct</b> — banque 39,00 $, QuickBooks 36,00 $. La TVQ manque ?',a:[['Corriger à 39,00','fix'],['Voir','see']]}
+],open:k!=='c3',solved:false});
+const fmt=n=>(n<0?'−':'+')+Math.abs(n).toLocaleString('fr-CA',{minimumFractionDigits:2});
+const mark={grn:'<span class="mark ok">✓ Rapprochée</span>',yel:'',red:'<span class="mark bad">! Écart</span>'};
+function act(k,r){if(r.s==='yel')return `<button class="btn sm" onclick="book('${k}',${r.id})">Comptabiliser</button>`;return mark[r.s]}
+function feedHtml(k){return st[k].feed.map(f=>f.t==='sys'?`<div class="sys">${f.x}</div>`:f.t==='me'?`<div class="me">${f.x}</div>`:`<div class="msg"><span class="av">C</span><div class="bub ${f.t==='warn'&&!st[k].solved?'warn':''}">${f.x}${f.a&&!st[k].solved?`<div class="acts">${f.a.map(([l,c],i)=>`<button class="btn sm ${i?'':'go'}" onclick="${c}('${k}')">${l}</button>`).join('')}</div>`:''}</div></div>`).join('')}
+const inp=k=>`<form class="inp" onsubmit="say('${k}',this.q.value);this.q.value='';return false"><input name="q" placeholder="Répondre à Claude"/><button class="btn go">↑</button></form>`;
+function render(k){
+ const s=st[k],t=document.querySelector(`[data-tbl=${k}]`);
+ let h='<tr><th>Date</th><th>Fournisseur</th><th>Catégorie</th><th class="r">Montant</th><th></th></tr>';
+ s.rows.forEach(r=>{h+=`<tr class="${r.s} ${r.fl?'flash':''}"><td>${r.d}</td><td><b>${r.v}</b>${k==='c2'&&r.bad&&!s.solved?' <span class="pill">C 1</span>':''}</td><td>${r.c}${r.bad&&!s.solved?`<div class="l2 bad">${r.bad}</div>`:''}</td><td class="r n ${r.m>0?'ok':''}">${fmt(r.m)}</td><td class="r">${act(k,r)}</td></tr>`;
+  if(k==='c2'&&r.bad&&s.open)h+=`<tr class="thread"><td colspan="5"><div class="th">${feedHtml(k).replace(/<div class="sys">.*?<\/div>/,'')}${inp(k)}</div></td></tr>`;r.fl=0});
+ t.innerHTML=h;
+ const c=document.querySelector(`[data-chat=${k}]`);
+ if(c){c.style.display=s.open?'flex':'none';c.innerHTML=`<div class="hd"><span class="av">C</span>Claude<span class="live">surveille Visa CAD</span>${k==='c3'?`<span style="cursor:pointer;color:var(--ink3);margin-left:10px" onclick="tog('c3')">✕</span>`:''}</div><div class="feed">${feedHtml(k)}</div>${inp(k)}`;const f=c.querySelector('.feed');f.scrollTop=f.scrollHeight}
+ const fab=document.querySelector('[data-fab]');if(k==='c3'){fab.querySelector('.dot').style.display=s.solved?'none':'flex';fab.onclick=()=>tog('c3')}
+ const scr=t.closest('.scr');scr.querySelector('[data-gap]').textContent=s.solved?'0,00':'39,00';scr.querySelector('[data-gap]').className='n '+(s.solved?'ok':'bad');scr.querySelector('[data-qb]').textContent=s.solved?'12 480,22':'12 441,22';
+}
+function toast(k,txt){if(k!=='c3')return;const s=document.querySelector('.c3');let e=s.querySelector('.toast');if(!e){e=document.createElement('div');e.className='toast';s.appendChild(e)}e.innerHTML=txt;clearTimeout(e._t);e._t=setTimeout(()=>e.remove(),2200)}
+function book(k,id){const r=st[k].rows.find(x=>x.id===id);r.s='grn';r.fl=1;st[k].feed.push({t:'sys',x:`<b>✓</b> ${r.v} rapprochée`});render(k);toast(k,`<b>✓</b> ${r.v} rapprochée`)}
+function fix(k){const s=st[k];s.solved=true;const r=s.rows.find(x=>x.id===5);r.s='grn';r.fl=1;r.bad='';s.feed.push({t:'msg',x:'Corrigé dans QuickBooks. Écart <b class="ok">0,00</b> ✓'});render(k);toast(k,'<b>✓</b> Shopify rapprochée')}
+function see(k){say(k,'Montre-moi la facture')}
+function say(k,q){if(!q.trim())return;const s=st[k];s.feed.push({t:'me',x:q});render(k);setTimeout(()=>{if(!s.solved&&/tvq|corrige|oui/i.test(q)){fix(k)}else{s.feed.push({t:'msg',x:'Facture Shopify n° 4471 : 33,92 $ + TPS 1,70 + TVQ 3,38 = <b>39,00 $</b>. QuickBooks n\'a pas la TVQ. <span class="ln">Ouvrir</span>'});render(k)}},500)}
+function tog(k){st[k].open=!st[k].open;render(k)}
+['c1','c2','c3'].forEach(render);
+</script></body></html>

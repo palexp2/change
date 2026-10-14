@@ -196,6 +196,8 @@
   .row-st-rapproche.row-st-rapproche:hover { background-color: rgb(var(--c-green-200) / .8); }
   .row-st-comptabilise { background-color: rgb(var(--c-yellow-200) / .75); }
   .row-st-comptabilise.row-st-comptabilise:hover { background-color: rgb(var(--c-yellow-300) / .85); }
+  .row-today { background-color: rgb(var(--c-yellow-100) / .8); }
+  .row-today.row-today:hover { background-color: rgb(var(--c-yellow-200) / .8); }
   .row-st-facture_recue { background-color: rgb(var(--c-sky-100) / .65); }
   .row-st-facture_recue.row-st-facture_recue:hover { background-color: rgb(var(--c-sky-200) / .8); }
   .row-st-a_traiter { background-color: rgb(var(--c-red-100) / .6); }
@@ -208,6 +210,23 @@
      couleur de statut (l'ancien fond ambre entrait en collision avec le jaune
      « comptabilisé »). Même vocabulaire que les règles de couleur de vue. */
   .row-flagged { box-shadow: inset 3px 0 0 0 rgb(var(--c-amber-500) / .85); }
+  /* Bulle Claude du rapprochement (maquette B2 « projecteur ») : la ligne
+     concernée s'encadre, les autres s'estompent tant que la bulle est ouverte. */
+  .claude-fab { background: #c96442; }
+  .claude-av { width: 22px; height: 22px; flex: none; border-radius: 9999px; background: #c96442; color: #fff; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+  .claude-warn { border-color: rgb(var(--c-red-500) / .7); box-shadow: inset 3px 0 0 rgb(var(--c-red-500)); }
+  .claude-card:hover { border-color: #c96442; }
+  .claude-dim [class*="row-st-"]:not(.row-claude-focus) { opacity: .35; transition: opacity .2s; }
+  .row-claude-focus { outline: 2px solid #c96442; outline-offset: -2px; position: relative; z-index: 1; }
+  /* Dépôt sans fenêtre (maquette A2) : les lignes importées glissent dans la
+     liste et s'allument en vert ; pastilles et bandes arrivent en douceur. */
+  .row-arrived { animation: row-arrive .45s cubic-bezier(.2,.8,.2,1) both; }
+  .row-arrived > td { animation: row-arrive-flash 2.4s ease-out both; }
+  @keyframes row-arrive { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: none; } }
+  @keyframes row-arrive-flash { 0%, 30% { background-color: rgb(var(--c-green-500) / .18); } 100% { background-color: transparent; } }
+  .drop-chip-in { animation: drop-pop .35s cubic-bezier(.2,1.4,.4,1) both; }
+  @keyframes drop-pop { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: none; } }
+  .drop-band { animation: row-arrive .4s cubic-bezier(.2,.8,.2,1) both; }
 
   /* DataTable `skin="ledger"` — le relevé bancaire (/rapprochement). Refait
      le 2026-09-27 (maquette T1) : il suit le look choisi (fond, encre, filets,
@@ -280,7 +299,7 @@
   /* Clone « Opérations bancaires » de QuickBooks (/rapprochement, maquette Q2,
      2026-10-03) : une feuille blanche, le vert de QuickBooks pour le seul
      geste attendu, des en-têtes sobres, des lignes neutres. */
-  .qbo-sheet { background: rgb(var(--c-white)); border: 1px solid rgb(var(--c-slate-200)); border-bottom: 0; border-radius: 14px 14px 0 0; overflow: hidden; }
+  .qbo-sheet { background: rgb(var(--c-white)); border: 1px solid rgb(var(--c-slate-200)); border-radius: 14px; overflow: hidden; }
   .qbo-sheet .dt-skin-ledger, .qbo-sheet > div > .dt-skin-ledger { border-radius: 0; }
   .qbo-go { background: #2ca01c; color: #fff; border: 1px solid #2ca01c; }
   .qbo-go:hover { background: #248a17; border-color: #248a17; }

@@ -149,6 +149,8 @@ export default function MarketingBudget() {
   const [syncing, setSyncing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState(null)    // modal aperçu Slack
+  const [sheet, setSheet] = useState(null)        // { url } du Google Sheet miroir
+  const [sheetBusy, setSheetBusy] = useState(false)
 
   const load = useCallback(async () => {
     const [exp, r, sum] = await Promise.all([
@@ -160,6 +162,20 @@ export default function MarketingBudget() {
   }, [filter, fy])
 
   useEffect(() => { load().catch(e => addToast({ message: e.message, type: 'error' })) }, [load, addToast])
+  useEffect(() => { api.marketingBudget.sheet().then(setSheet).catch(() => {}) }, [])
+
+  // Le fichier se réécrit seul après chaque changement ; le bouton force un
+  // passage (et crée le fichier la première fois).
+  async function syncSheet() {
+    setSheetBusy(true)
+    try {
+      const out = await api.marketingBudget.sheetSync()
+      setSheet({ url: out.url })
+      addToast({ message: 'Google Sheet à jour', type: 'success' })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally { setSheetBusy(false) }
+  }
 
   // Resynchronisation d'arrière-plan après une décision : le réel du Budget vs
   // Réel et la liste des règles changent, mais la liste des dépenses a déjà
@@ -374,8 +390,14 @@ export default function MarketingBudget() {
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
             <div>
               <div className="font-medium text-slate-800">Budget vs Réel</div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                Remplace le fichier « Annual Marketing budget » — budget éditable (clic sur une cellule), réel calculé des dépenses pertinentes.
+              <div className="text-xs mt-0.5 flex items-center gap-2">
+                {sheet?.url && (
+                  <a href={sheet.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Google Sheet ↗</a>
+                )}
+                <button onClick={syncSheet} disabled={sheetBusy} data-testid="marketing-sheet-sync"
+                  className="text-slate-500 hover:text-slate-800 disabled:opacity-50">
+                  {sheetBusy ? '…' : sheet?.url ? '↻' : 'Créer le Google Sheet'}
+                </button>
               </div>
             </div>
             <select value={fy} onChange={e => setFy(e.target.value)}

@@ -186,6 +186,60 @@ function sanitizeXmlText(s) {
     .trim()
 }
 
+// Pays d'une adresse → code à 2 lettres. Les fiches portent « Canada »,
+// « United States », « États-Unis », « USA », « US »… Vide → CA.
+const COUNTRY_CODES = {
+  'canada': 'CA',
+  'united states': 'US', 'united states of america': 'US', 'usa': 'US', 'u.s.': 'US', 'u.s.a.': 'US',
+  'états-unis': 'US', 'etats-unis': 'US', 'états unis': 'US', 'etats unis': 'US',
+  'mexico': 'MX', 'méxico': 'MX', 'mexique': 'MX',
+}
+export function normalizeCountry(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return 'CA'
+  const code = COUNTRY_CODES[raw.toLowerCase()]
+  if (code) return code
+  return /^[A-Za-z]{2}$/.test(raw) ? raw.toUpperCase() : raw
+}
+
+// Envoi + adresse + contact de l'adresse, au format consommé par buildRecipient
+// (et par la facture commerciale, customsInvoicePdf.js).
+export function getShipmentWithAddress(shipmentId) {
+  return db.prepare(`
+    SELECT
+      s.id, s.order_id, s.tracking_number, s.carrier,
+      s.address_id,
+      a.line1 as address_line1, a.city as address_city,
+      a.province as address_province, a.postal_code as address_postal_code,
+      a.country as address_country,
+      co.name as company_name, co.email as company_email,
+      ct.first_name as address_contact_first_name,
+      ct.last_name as address_contact_last_name,
+      ct.email as address_contact_email,
+      ct.phone as address_contact_phone,
+      ct.mobile as address_contact_mobile
+    FROM shipments s
+    LEFT JOIN orders o ON s.order_id = o.id
+    LEFT JOIN companies co ON o.company_id = co.id
+    LEFT JOIN adresses a ON s.address_id = a.id
+    LEFT JOIN contacts ct ON a.contact_id = ct.id
+    WHERE s.id = ? AND s.deleted_at IS NULL
+  `).get(shipmentId)
+}
+
+// Valeur déclarée en douane d'un envoi (CAD, arrondie à l'unité supérieure) :
+// Σ qty × coût unitaire des articles de la commande. Source unique de la
+// déclaration Novoxpress (createLabel) ET de la facture commerciale — les deux
+// montants ne doivent jamais diverger.
+export function shipmentCustomsValueCad(shipmentId) {
+  const items = db.prepare(`
+    SELECT oi.qty, ${pieceUnitCostSql('oi')} AS unit_cost
+    FROM order_items oi
+    WHERE oi.order_id = (SELECT order_id FROM shipments WHERE id = ?)
+  `).all(shipmentId)
+  return Math.ceil(items.reduce((sum, i) => sum + (i.unit_cost || 0) * (i.qty || 0), 0))
+}
+
 export function buildRecipient(shipment, role = 'destinataire') {
   // Préférence : contact rattaché à l'adresse > company (le contact est le
   // destinataire physique du colis, ses coordonnées sont les bonnes).
@@ -219,9 +273,7 @@ export function buildRecipient(shipment, role = 'destinataire') {
     )
   }
 
-  // Normalize country to 2-letter code
-  const countryMap = { 'Canada': 'CA', 'United States': 'US', 'États-Unis': 'US' }
-  const country = countryMap[shipment.address_country] || shipment.address_country || 'CA'
+  const country = normalizeCountry(shipment.address_country)
 
   // Si line1 est multi-lignes, on en extrait street + city ; sinon on retombe
   // sur les colonnes structurées. La ville parsée bat la colonne dans ce cas,
@@ -488,13 +540,7 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
   // International shipment — add customs declaration
   const destCountry = details.recipient.address.country
   if (destCountry !== 'CA') {
-    const items = db.prepare(`
-      SELECT oi.qty, ${pieceUnitCostSql('oi')} AS unit_cost
-      FROM order_items oi
-      WHERE oi.order_id = (SELECT order_id FROM shipments WHERE id = ?)
-    `).all(erpShipmentId)
-
-    const totalValue = items.reduce((sum, i) => sum + (i.unit_cost || 0) * (i.qty || 0), 0)
+    const totalValue = shipmentCustomsValueCad(erpShipmentId)
     const totalWeight = packages.reduce((sum, p) => sum + Math.ceil(parseFloat(p.weight)) * parseInt(p.quantity || 1), 0)
 
     Object.assign(details, {
@@ -508,7 +554,7 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
           hscode: '9032.10.0030',
           qty: '1',
           unit_weight: String(totalWeight),
-          value: String(Math.ceil(totalValue)),
+          value: String(totalValue),
           country: 'CA'
         }]
       }
@@ -551,14 +597,35 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
   return { shipment_id: novoxShipmentId, tracking_id: trackingNumber, status: data.status, filename, labelError }
 }
 
+// Champs douaniers d'un retour hors Canada. Pure (testée sans réseau).
+export function returnCustomsFields(packages) {
+  const totalWeight = packages.reduce((sum, p) => sum + Math.ceil(parseFloat(p.weight)) * parseInt(p.quantity || 1), 0)
+  return {
+    reason_for_export: 'Return',
+    business_relationship: 'NotRelated',
+    non_delivery: 'RTS',
+    internationalForms: {
+      product: [{
+        product_name: 'Greenhouse thermostat (return)',
+        desc: 'Greenhouse thermostat (return)',
+        hscode: '9032.10.0030',
+        qty: '1',
+        unit_weight: String(totalWeight),
+        value: '1',
+        country: 'CA'
+      }]
+    }
+  }
+}
+
 // Miroir de createLabel pour une étiquette DE RETOUR. Différences clés :
 // - le gate douanier teste le pays de l'EXPÉDITEUR (le client), pas du
 //   destinataire — après inversion le destinataire est toujours Orisha (CA),
 //   donc tester `recipient.address.country` manquerait TOUJOURS un retour
 //   US→CA et ferait passer le colis sans déclaration douanière (bloqué à la
 //   frontière).
-// - la valeur déclarée vient des `return_items` (ce qui revient réellement
-//   dans la boîte), pas de la commande entière.
+// - valeur déclarée fixée à 1 $ : marchandise retournée sans valeur
+//   commerciale, cohérent avec la facture commerciale à 0 $.
 // - sémantique retour : reason_for_export='Return' (pas 'Permanent'),
 //   non_delivery='RTS' signifie ici « retour au client » si Postes Canada ne
 //   peut livrer à Orisha.
@@ -568,36 +635,7 @@ export async function createReturnLabel(ctx, erpReturnId, { request_id, service_
   const details = buildReturnPayload(ctx, packaging_type, packages, declared_value || '1')
 
   const senderCountry = details.sender.address.country
-  if (senderCountry !== 'CA') {
-    const items = db.prepare(`
-      SELECT p.price_cad AS unit_cost
-      FROM return_items ri
-      LEFT JOIN products p ON p.id = ri.product_id
-      WHERE ri.return_id = ?
-    `).all(erpReturnId)
-
-    // Un article = une unité : la colonne `qty` a été droppée (migration 046),
-    // elle valait 1 partout.
-    const totalValue = items.reduce((sum, i) => sum + (i.unit_cost || 0), 0)
-    const totalWeight = packages.reduce((sum, p) => sum + Math.ceil(parseFloat(p.weight)) * parseInt(p.quantity || 1), 0)
-
-    Object.assign(details, {
-      reason_for_export: 'Return',
-      business_relationship: 'NotRelated',
-      non_delivery: 'RTS',
-      internationalForms: {
-        product: [{
-          product_name: 'Intelligent greenhouse thermostat (retour)',
-          desc: 'Intelligent greenhouse thermostat (retour)',
-          hscode: '9032.10.0030',
-          qty: '1',
-          unit_weight: String(totalWeight),
-          value: String(Math.max(1, Math.ceil(totalValue))),
-          country: 'CA'
-        }]
-      }
-    })
-  }
+  if (senderCountry !== 'CA') Object.assign(details, returnCustomsFields(packages))
 
   const createPayload = { request_id, service_id, details }
   const data = await apiPost('/shipment/create-shipment', createPayload)

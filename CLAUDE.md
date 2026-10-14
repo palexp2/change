@@ -190,6 +190,7 @@ Pour ajouter un champ : ajouter l'`ALTER TABLE ... try/catch` dans `schema.js`, 
 ## Processus PM2 associés
 
 - `erp-server` — API principale (port interne → nginx)
+- `erp-pay` — pages de paiement et d'acceptation des pages hébergées (port 3008 ; `src/payServer.js`, upstream nginx `erp_pay` avec Boréal en backup). Redémarré par `restart.sh`. Tout nouveau routeur public de paiement doit aussi y être monté.
 - `ftp-arc` — ingestion FTP (Novoxpress, factures fournisseurs, etc.)
 - `stripeBillingPortal` — portail Stripe dédié
 - `troubleshoot-server` — outil diagnostic interne

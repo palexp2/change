@@ -1,6 +1,6 @@
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
-import { emitCompany, emitCompanyContactsChanged } from './realtimeEmitters.js'
+import { emitCompany, emitCompanyContactsChanged, emitMirrorWrite } from './realtimeEmitters.js'
 
 // Client Stripe ↔ entreprise. Un client Stripe n'a qu'une devise : une
 // soumission ou facture dans une autre devise que la sienne est refusée
@@ -12,7 +12,15 @@ export function companyIdForStripeCustomer(customerId) {
   if (!customerId) return null
   const main = db.prepare('SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1').get(customerId)
   if (main) return main.id
-  return db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key=?").get(`alt_customer_${customerId}`)?.value || null
+  const alt = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key=?").get(`alt_customer_${customerId}`)?.value
+  if (alt) return alt
+  // Ancien client Stripe d'une entreprise qui en a changé : ses factures déjà
+  // rattachées disent à qui il appartient (une seule entreprise, sinon rien).
+  const owners = db.prepare(`
+    SELECT DISTINCT company_id FROM factures
+    WHERE customer_id=? AND company_id IS NOT NULL AND company_id<>'' LIMIT 2
+  `).all(customerId)
+  return owners.length === 1 ? owners[0].company_id : null
 }
 
 function isoCountry(c) {
@@ -86,6 +94,29 @@ function attachStripeCustomer(companyId, customerId) {
     db.prepare("INSERT OR REPLACE INTO connector_config (connector, key, value) VALUES ('stripe', ?, ?)")
       .run(`alt_customer_${customerId}`, companyId)
   }
+}
+
+// Contacts sans nom (« Inconnu », venus d'Airtable sans Prénom ni Nom) au
+// courriel du client Stripe : on leur donne le nom que Stripe connaît. Un nom
+// d'entreprise (business_name) ne devient jamais un nom de personne. Renvoie
+// le nombre de contacts nommés.
+export function fillUnknownContactNames(customer) {
+  const email = String(customer?.email || '').trim().toLowerCase()
+  const fullName = String(customer?.individual_name || (customer?.business_name ? '' : customer?.name) || '').trim()
+  if (!email || !fullName || customer.deleted) return 0
+  const [first, ...rest] = fullName.split(/\s+/)
+  const last = rest.join(' ') || first
+  const ids = db.prepare(`
+    SELECT id FROM contacts
+    WHERE lower(trim(email)) = ? AND deleted_at IS NULL
+      AND last_name = 'Inconnu' AND COALESCE(first_name, '') = ''
+  `).all(email).map(r => r.id)
+  for (const id of ids) {
+    db.prepare("UPDATE contacts SET first_name=?, last_name=? WHERE id=?")
+      .run(rest.length ? first : '', last, id)
+    emitMirrorWrite('contacts', 'updated', id, ['first_name', 'last_name'], 'stripe')
+  }
+  return ids.length
 }
 
 // Client Stripe inconnu (paiement fait sur le site web, hors Boréal) : on le

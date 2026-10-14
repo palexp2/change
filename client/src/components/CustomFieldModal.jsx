@@ -78,6 +78,43 @@ function fieldModalTitle(prefix, fieldName) {
   return `${prefix} — ${n.length > 48 ? `${n.slice(0, 47)}…` : n}`
 }
 
+// Nom déjà porté par un autre champ de la table (casse et espaces ignorés) :
+// signalé dès la saisie et jamais enregistré, comme dans Airtable. Le serveur
+// ne connaît pas les champs natifs non renommés — seul l'appelant, qui les
+// affiche, peut fournir la liste complète (`siblings`). `selfKeys` = id /
+// colonne(s) du champ édité, pour qu'il ne se bloque pas lui-même.
+function takenFieldLabel(siblings, name, selfKeys = []) {
+  const n = (name || '').trim().toLowerCase()
+  if (!n || !siblings?.length) return null
+  const self = new Set(selfKeys.filter(Boolean))
+  const hit = siblings.find(c => typeof c.label === 'string'
+    && !self.has(c.id) && !self.has(c.field)
+    && c.label.trim().toLowerCase() === n)
+  return hit ? hit.label : null
+}
+
+// Nom automatique déjà pris : suffixe « 2 », « 3 »… comme Airtable
+// (« Calcul », puis « Calcul 2 »).
+function freeFieldLabel(siblings, base) {
+  if (!base || !takenFieldLabel(siblings, base)) return base
+  let n = 2
+  while (takenFieldLabel(siblings, `${base} ${n}`)) n++
+  return `${base} ${n}`
+}
+
+// Échap démonte la modale sans blur (React ignore les événements pendant le
+// démontage) : la saisie en cours — nom, description, formule… — était perdue,
+// alors que « Fermer » l'enregistre. On la valide avant de fermer.
+function closeKeepingInput(form, onClose) {
+  const el = document.activeElement
+  if (form && el && form.contains(el)) el.blur()
+  onClose?.()
+}
+
+function NameTakenHint({ label }) {
+  return <p className="text-[11px] text-red-600 mt-1" data-testid="field-name-taken">« {label.trim()} » existe déjà</p>
+}
+
 // Agrégations de rollup (alignées sur ROLLUP_AGGS serveur). ARRAY / ARRAYUNIQUE
 // concatènent les valeurs liées (toutes / distinctes) en une liste texte.
 // Nom proposé quand on crée un champ sans en saisir (option `defaultFieldNames`).
@@ -319,7 +356,9 @@ const FIELD_TYPE_OPTIONS = [
   { id: 'rating',             label: 'Évaluation',      kind: 'data', type: 'rating', hint: 'Note de 0 à 5 étoiles' },
   { id: 'date',               label: 'Date',            kind: 'data', type: 'date', hint: 'Date, heure en option' },
   { id: 'url',                label: 'URL',             kind: 'data', type: 'url', hint: 'Lien cliquable' },
+  { id: 'email',              label: 'Courriel',        kind: 'data', type: 'email', hint: 'Adresse cliquable' },
   { id: 'phone',              label: 'Téléphone',       kind: 'data', type: 'phone', hint: 'Formaté et cliquable' },
+  { id: 'barcode',            label: 'Code-barres',     kind: 'data', type: 'barcode', hint: 'Code lu à la douchette ou saisi' },
   { id: 'checkbox',           label: 'Case à cocher',   kind: 'data', type: 'checkbox', hint: 'Oui / non' },
   { id: 'single_select',      label: 'Sélection',       kind: 'data', type: 'single_select', hint: 'Un choix, en pastille colorée' },
   { id: 'multi_select',       label: 'Multi-sélection', kind: 'data', type: 'multi_select', hint: 'Plusieurs choix, en pastilles' },
@@ -327,6 +366,8 @@ const FIELD_TYPE_OPTIONS = [
   { id: 'formula',            label: 'Formule',         kind: 'formula', hint: 'Calcul à partir d\'autres colonnes' },
   { id: 'lookup',             label: 'Lookup',          kind: 'lookup', hint: 'Valeur d\'une table liée' },
   { id: 'rollup',             label: 'Rollup',          kind: 'rollup', hint: 'Agrégat d\'une table liée' },
+  // Count d'Airtable : un rollup COUNT, sans colonne ni format à choisir.
+  { id: 'count',              label: 'Comptage',        kind: 'rollup', agg: 'COUNT', hint: 'Nombre d\'enregistrements liés' },
   { id: 'button',             label: 'Bouton',          kind: 'button', hint: 'Déclenche une automation' },
   { id: 'created_time',       label: 'Créé le',         kind: 'auto', autoType: 'created_time', hint: 'Quand l\'enregistrement a été créé' },
   { id: 'last_modified_time', label: 'Modifié le',      kind: 'auto', autoType: 'last_modified_time', hint: 'Dernière modification' },
@@ -356,7 +397,9 @@ const FIELD_TYPE_SYNONYMS = {
   rating: 'rating evaluation note etoiles star satisfaction score appreciation',
   date: 'date jour calendrier',
   url: 'url lien link web',
+  email: 'email courriel mail adresse',
   phone: 'phone numero tel',
+  barcode: 'barcode code barre qr scan douchette upc ean sku',
   checkbox: 'checkbox booleen bool oui non toggle',
   single_select: 'single select selection simple liste choix pastille dropdown',
   multi_select: 'multi select multiple etiquettes tags liste choix',
@@ -364,6 +407,7 @@ const FIELD_TYPE_SYNONYMS = {
   formula: 'formula calcul expression',
   lookup: 'lookup valeur liee table liee',
   rollup: 'rollup agregat somme total moyenne',
+  count: 'count comptage compter nombre enregistrements lies',
   button: 'button action automation declencher',
   created_time: 'created time date de creation',
   last_modified_time: 'last modified time date de modification',
@@ -737,7 +781,7 @@ export function CustomFieldModal(props) {
 // est `link:<table>` (cf. linkTargetOfType).
 const LINK_FAMILY = 'link'
 
-function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingSlot }) {
+function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingSlot, siblingFields }) {
   const { addToast } = useToast()
   const table = erpTable
   const column = native?.column || null
@@ -776,6 +820,8 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
   // Dernière config de choix persistée (JSON) — évite un PATCH au blur d'un
   // libellé qui n'a pas changé.
   const lastSavedChoicesJson = useRef('')
+  const formRef = useRef(null)
+  const close = () => closeKeepingInput(formRef.current, onClose)
 
   // Type/label d'origine de la colonne, tels que définis dans tableDefs.js.
   // Vocabulaire unifié : tableDefs.js dit encore 'boolean' là où les champs
@@ -787,6 +833,8 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
   // Décimales d'origine de la colonne (tableDefs.js), 2 à défaut — la valeur
   // qu'affiche un champ Devise tant que personne n'a choisi autre chose.
   const originalDecimals = Number.isInteger(column?.decimals) ? column.decimals : 2
+  const selfKeys = [column?.id, column?.field, column?.mappingColumn]
+  const nameTaken = takenFieldLabel(siblingFields, label, selfKeys)
 
   useEffect(() => {
     if (!isOpen || !column) return
@@ -875,8 +923,11 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     setSaving(true)
     try {
       const ls = lastSaved.current
+      // Mêmes aspects que le retour à l'original de persist() : les décimales
+      // d'une Devise en font partie, sinon effacer la description les perdait.
       const nothingElse = ls.label === originalLabel && ls.type === originalType
         && !(ls.type === 'phone' && ls.countryCode === 'show') && !hasOptionsConfig()
+        && !(ls.type === 'currency' && ls.decimals !== originalDecimals)
       if (!v && nothingElse) {
         if (hasOverride) await api.fieldOverrides.reset(table, column.id)
         setHasOverride(false)
@@ -968,6 +1019,8 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     }
     if (!cur.label) { setError('Nom requis'); return }
     const ls = lastSaved.current
+    // Nom pris : les autres réglages s'enregistrent, le nom garde l'ancien.
+    if (takenFieldLabel(siblingFields, cur.label, selfKeys)) cur.label = ls.label
     // Tuile « Lien vers… » sélectionnée sans cible : ce n'est pas encore un
     // type. Un autre autosave (le nom, la description) ne doit pas l'enregistrer
     // ni effacer le type en place.
@@ -1047,8 +1100,8 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={fieldModalTitle('Modifier le champ', label || originalLabel)} size="md">
-      <form onSubmit={e => { e.preventDefault(); persist() }} className="space-y-4">
+    <Modal isOpen={isOpen} onClose={close} title={fieldModalTitle('Modifier le champ', label || originalLabel)} size="md">
+      <form ref={formRef} onSubmit={e => { e.preventDefault(); persist() }} className="space-y-4">
         {mappingSlot}
 
         <div>
@@ -1057,13 +1110,17 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
             autoFocus
             type="text"
             value={label}
-            onChange={e => setLabel(e.target.value)}
+            onChange={e => {
+              setLabel(e.target.value)
+              if (e.target.value.trim()) setError(er => (er === 'Nom requis' ? null : er))
+            }}
             onBlur={() => persist()}
             maxLength={120}
-            className="input text-sm w-full"
+            aria-invalid={nameTaken ? true : undefined}
+            className={`input text-sm w-full ${nameTaken ? 'border-red-400 focus:border-red-400' : ''}`}
             data-testid="field-override-name"
           />
-          {label.trim() !== originalLabel && (
+          {nameTaken ? <NameTakenHint label={nameTaken} /> : label.trim() !== originalLabel && (
             <p className="text-[11px] text-slate-400 mt-1">Nom d'origine : {originalLabel}</p>
           )}
         </div>
@@ -1198,7 +1255,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
 //   - lookup  : valeur tirée d'une table liée via FK
 //   - auto    : champ système lecture seule (created_time, last_modified_time, created_by, last_modified_by)
 // En mode édition, changer de kind passe par une conversion (handleConvert).
-function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted, mappingSlot, formulaColumns, formulaLabelSearch = false, showFormulaSyntaxHelp = true, showFormulaAutocompleteHint = true, showFormulaKeyboardHint = true, defaultFieldNames = false }) {
+function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted, mappingSlot, formulaColumns, formulaLabelSearch = false, showFormulaSyntaxHelp = true, showFormulaAutocompleteHint = true, showFormulaKeyboardHint = true, defaultFieldNames = false, siblingFields }) {
   const { addToast } = useToast()
   const [kind, setKind] = useState('data')
   const [name, setName] = useState('')
@@ -1272,6 +1329,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   // Dernière config select sérialisée et persistée — évite de re-PATCH les options
   // inchangées au blur d'un champ libellé.
   const lastSavedOptionsJson = useRef('')
+  const formRef = useRef(null)
+  const close = () => closeKeepingInput(formRef.current, onClose)
+  const nameTaken = takenFieldLabel(siblingFields, name, [editing?.column_name])
 
   useEffect(() => {
     if (!isOpen) return
@@ -1588,9 +1648,10 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   // Entrée du menu de type actuellement sélectionnée. `linkPick` = « Lien »
   // retenu dans le menu — le type reste 'text' en base, c'est la table visée qui
   // fait le lien, et elle se choisit juste sous le menu.
+  const isCount = kind === 'rollup' && rollupAgg === 'COUNT'
   const typeOptionId = (atLink || linkPick)
     ? LINK_TYPE_ID
-    : (kind === 'data' ? type : (kind === 'auto' ? autoType : kind))
+    : (kind === 'data' ? type : (kind === 'auto' ? autoType : (isCount ? 'count' : kind)))
   // Le menu ne propose que ce qui est réellement posable sur CE champ : pas de
   // sous-type auto que la table n'expose pas, et « Liaison » seulement sur un
   // champ de liaison. Le type de DONNÉE, lui, n'est plus figé après création :
@@ -1662,7 +1723,13 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       }
     }
     setKind(o.kind)
-    if (o.kind === 'rollup') setResultType('number')
+    if (o.kind === 'rollup') {
+      setResultType('number')
+      // Comptage ↔ Rollup : même kind, seule l'agrégation change.
+      const agg = o.agg || (rollupAgg === 'COUNT' ? 'SUM' : rollupAgg)
+      setRollupAgg(agg)
+      if (editingKind === 'rollup') maybeAutosaveRollup({ agg, rt: 'number' })
+    }
     if (o.kind === 'auto') setAutoType(o.autoType)
     if (o.kind === 'data') {
       setType(o.type)
@@ -1815,11 +1882,25 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       onSaved?.(result)
       setSavedFlash(true)
       setTimeout(() => setSavedFlash(false), 1500)
+      return result
     } catch (e) {
       setError(e.message || 'Erreur')
     } finally {
       setSaving(false)
     }
+  }
+
+  // Valeur par défaut : on réaffiche ce que le serveur a retenu, comme Airtable
+  // qui reformate la saisie (« 12.50 » → 12.5, note « 9 » → 5, durée « 90 » →
+  // 1:30). Sans ça la modale montrait la frappe brute jusqu'à la réouverture.
+  async function autosaveDefault(v) {
+    const r = await autosave({ default_value: v })
+    if (!r || !('default_value' in r)) return
+    const raw = r.default_value
+    const shown = raw == null || raw === '' ? ''
+      : type === 'duration' ? formatDurationSeconds(Number(raw), durationFormat) : String(raw)
+    lastSaved.current.default_value = shown
+    setDefaultValue(shown)
   }
 
   // Démarre la suppression : récupère d'abord le rapport d'usage (quels autres
@@ -1860,7 +1941,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
     if (!editing) return
     setError(null)
     // Les sous-types auto sont stockés directement comme kind côté serveur.
-    const payload = { kind: kind === 'auto' ? autoType : kind, name: name.trim() || editing.name }
+    const payload = { kind: kind === 'auto' ? autoType : kind, name: (!nameTaken && name.trim()) || lastSaved.current.name || editing.name }
     // La description saisie pendant la conversion part dans le même PUT
     // (l'autosave champ par champ est suspendu en mode conversion).
     if (description.trim() !== (lastSaved.current.description || '')) payload.description = description.trim() || null
@@ -2034,7 +2115,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
     autosave(payload)
   }
 
-  function maybeAutosaveRollup({ agg = rollupAgg, table = rollupTable, fk = rollupFk, column = rollupColumn }) {
+  function maybeAutosaveRollup({ agg = rollupAgg, table = rollupTable, fk = rollupFk, column = rollupColumn, rt = resultType }) {
     if (!editing) return
     if (!table || !fk) return
     if (agg !== 'COUNT' && !column) return
@@ -2049,7 +2130,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       rollup_agg: agg,
       // ARRAY / ARRAYUNIQUE → liste texte ; on bascule le type de résultat en
       // conséquence pour rester cohérent avec l'affichage.
-      result_type: isArrayAgg(agg) ? 'text' : resultType,
+      result_type: isArrayAgg(agg) ? 'text' : rt,
     })
   }
 
@@ -2125,8 +2206,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       if (e?.currentTarget?.contains(document.activeElement)) document.activeElement.blur()
       return
     }
-    const fieldName = (name.trim() || (defaultFieldNames ? defaultName() : '')).trim()
+    const fieldName = (name.trim() || (defaultFieldNames ? freeFieldLabel(siblingFields, defaultName()) : '')).trim()
     if (!fieldName) { setError('Nom requis'); return }
+    if (nameTaken) return
     if (linkPick && !linkTarget) { setError('Choisir une table cible'); return }
     setSaving(true)
     // Description facultative, commune à tous les kinds.
@@ -2231,8 +2313,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   const dateWithTime = type === 'date' && dateFormatHasTime(dateFormat)
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={editing ? fieldModalTitle('Modifier le champ', name || editing.name) : 'Nouveau champ'} size="md">
-      <form onSubmit={handleSubmit} className="space-y-4">
+    <Modal isOpen={isOpen} onClose={close} title={editing ? fieldModalTitle('Modifier le champ', name || editing.name) : 'Nouveau champ'} size="md">
+      <form ref={formRef} onSubmit={handleSubmit} className="space-y-4">
         {/* Champ Airtable qui alimente la colonne — même cellule que dans le
             tableau de la page de configuration (mapping posé/retiré tout de suite).
             Un champ calculé n'a rien à importer : pas de bloc du tout. */}
@@ -2244,15 +2326,23 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           <input
             autoFocus
             value={name}
-            onChange={e => setName(e.target.value)}
+            onChange={e => {
+              setName(e.target.value)
+              // Le nom revient : l'erreur « Nom requis » n'a plus lieu d'être, même
+              // si c'est l'ancien nom (aucun autosave ne passerait l'effacer).
+              if (e.target.value.trim()) setError(er => (er === 'Nom requis' ? null : er))
+            }}
             onBlur={() => {
               if (!editing) return
               const v = name.trim()
               if (!v) { setError('Nom requis'); return }
+              if (nameTaken) return
               if (v !== lastSaved.current.name) autosave({ name: v })
             }}
-            className="input text-sm w-full"
+            aria-invalid={nameTaken ? true : undefined}
+            className={`input text-sm w-full ${nameTaken ? 'border-red-400 focus:border-red-400' : ''}`}
           />
+          {nameTaken && <NameTakenHint label={nameTaken} />}
         </div>
 
         {/* Type du champ — UN SEUL menu. « Formule », « Lookup », « Créé le »…
@@ -2487,7 +2577,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                     value={defaultValue}
                     onChange={e => setDefaultValue(e.target.value)}
                     onBlur={() => {
-                      if (editing && defaultValue !== (lastSaved.current.default_value ?? '')) autosave({ default_value: defaultValue })
+                      if (editing && defaultValue !== (lastSaved.current.default_value ?? '')) autosaveDefault(defaultValue)
                     }}
                     rows={3}
                     className="input text-sm w-full resize-y"
@@ -2496,14 +2586,14 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                 ) : (
                 <input
                   type={type === 'date' ? (dateWithTime ? 'datetime-local' : 'date')
-                    : (type === 'number' || type === 'currency' || type === 'percent' || type === 'rating') ? 'number' : (type === 'url' ? 'url' : (type === 'phone' ? 'tel' : 'text'))}
+                    : (type === 'number' || type === 'currency' || type === 'percent' || type === 'rating') ? 'number' : (type === 'url' ? 'url' : (type === 'email' ? 'email' : (type === 'phone' ? 'tel' : 'text')))}
                   {...(type === 'rating' ? { min: 0, max: RATING_MAX, step: 1 } : {})}
                   value={type !== 'date' ? defaultValue
                     : dateWithTime ? toDateTimeLocalInput(defaultValue) : (String(defaultValue).match(/^\d{4}-\d{2}-\d{2}/)?.[0] || '')}
                   onChange={e => setDefaultValue(type === 'date' && dateWithTime ? fromDateTimeLocalInput(e.target.value) : e.target.value)}
                   onBlur={() => {
                     if (!editing) return
-                    if (defaultValue !== (lastSaved.current.default_value ?? '')) autosave({ default_value: defaultValue })
+                    if (defaultValue !== (lastSaved.current.default_value ?? '')) autosaveDefault(defaultValue)
                   }}
                   className="input text-sm w-full"
                 />
@@ -2716,10 +2806,10 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                 />
               </div>
             )}
-            <div>
+            {!isCount && <div>
               <label className="label">Agrégation</label>
               <div className="grid grid-cols-4 gap-1.5">
-                {ROLLUP_AGG_OPTIONS.map(({ value, label }) => (
+                {ROLLUP_AGG_OPTIONS.filter(o => o.value !== 'COUNT').map(({ value, label }) => (
                   <label key={value} className={`flex items-center justify-center px-2 py-2 text-xs rounded-lg border cursor-pointer transition-colors ${rollupAgg === value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}>
                     <input
                       type="radio" name="cf-rollup-agg" value={value}
@@ -2732,17 +2822,15 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                 ))}
               </div>
               <p className="text-[11px] text-slate-400 mt-1">
-                {rollupAgg === 'COUNT'
-                  ? 'Compte les enregistrements liés.'
-                  : rollupAgg === 'ARRAY'
-                    ? 'Liste toutes les valeurs liées, séparées par des virgules.'
-                    : rollupAgg === 'ARRAYUNIQUE'
-                      ? 'Liste les valeurs distinctes liées, séparées par des virgules.'
-                      : 'Agrège la colonne choisie sur les enregistrements liés.'}
+                {rollupAgg === 'ARRAY'
+                  ? 'Liste toutes les valeurs liées, séparées par des virgules.'
+                  : rollupAgg === 'ARRAYUNIQUE'
+                    ? 'Liste les valeurs distinctes liées, séparées par des virgules.'
+                    : 'Agrège la colonne choisie sur les enregistrements liés.'}
               </p>
-            </div>
+            </div>}
             {/* ARRAY / UNIQUE : toujours une liste texte, pas de format à choisir. */}
-            {!isArrayAgg(rollupAgg) && <ResultTypeSelect value={resultType} onChange={changeResultType} />}
+            {!isArrayAgg(rollupAgg) && !isCount && <ResultTypeSelect value={resultType} onChange={changeResultType} />}
           </>
         )}
 
@@ -2759,7 +2847,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         {/* Formule / rollup numérique : décimales, comme la « précision »
             d'Airtable (le lookup a son propre champ, plus haut). */}
         {['formula', 'rollup'].includes(kind) && DECIMAL_RESULT_TYPES.includes(resultType)
-          && !(kind === 'rollup' && isArrayAgg(rollupAgg)) && (
+          && !(kind === 'rollup' && (isArrayAgg(rollupAgg) || isCount)) && (
           <PrecisionSelect
             value={decimals}
             kind={resultType}
@@ -2834,7 +2922,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
             heure) qu'un champ date. */}
         {['formula', 'lookup', 'rollup'].includes(kind)
           && (kind === 'lookup' ? lookupTargetColumn && lookupFormat : resultType) === 'date'
-          && !(kind === 'rollup' && isArrayAgg(rollupAgg)) && (
+          && !(kind === 'rollup' && (isArrayAgg(rollupAgg) || isCount)) && (
           <DateFormatSelect value={dateFormat} name="cf-computed-date-format" onChange={changeComputedDateFormat} />
         )}
 
@@ -2948,7 +3036,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         ) : (
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-            <button type="submit" disabled={saving} className="btn-primary">
+            <button type="submit" disabled={saving || !!nameTaken} className="btn-primary">
               {saving ? 'Enregistrement…' : 'Créer'}
             </button>
           </div>
@@ -3560,6 +3648,14 @@ function ChoicesEditor({
   const [overIdx, setOverIdx] = useState(null)
   // L'alphabétisation impose l'ordre côté serveur : glisser n'aurait aucun effet.
   const canReorder = native || !alphabetize
+  // …et la liste affichée suit ce même ordre (comparaison du serveur), sinon
+  // elle restait dans l'ordre de saisie jusqu'à la réouverture. Les choix encore
+  // vides restent en bas, là où on les tape.
+  const sortIfAlpha = (list, alpha = alphabetize) => (native || !alpha ? list : [...list].sort((a, b) => {
+    const la = (a.label || '').trim(), lb = (b.label || '').trim()
+    if (!la || !lb) return (la ? 0 : 1) - (lb ? 0 : 1)
+    return la.localeCompare(lb, 'fr', { sensitivity: 'base' })
+  }))
   // Mode d'affichage du champ (simple ou multiple) : 'text' (texte nu) quand TOUS
   // les choix portent la sentinelle, 'gray' (pastille sans couleur) quand tous
   // sont gris, sinon 'color'. Le choix de l'utilisateur prime une fois posé.
@@ -3632,8 +3728,8 @@ function ChoicesEditor({
       ...added,
       ...choices.slice(idx + 1),
     ]
-    focusIdx.current = idx + added.length
-    applyChoices(next, true)
+    focusIdx.current = alphabetize ? null : idx + added.length
+    applyChoices(sortIfAlpha(next), true)
   }
 
   function removeChoice(idx) {
@@ -3778,7 +3874,11 @@ function ChoicesEditor({
                 onChange={e => setLabel(idx, e.target.value)}
                 onKeyDown={e => onLabelKeyDown(e, idx)}
                 onPaste={e => onLabelPaste(e, idx)}
-                onBlur={() => onPersist?.({ ch: choices })}
+                onBlur={() => {
+                  const ch = sortIfAlpha(choices)
+                  if (ch.some((c, i) => c !== choices[i])) setChoices(ch)
+                  onPersist?.({ ch })
+                }}
                 aria-invalid={dup || undefined}
                 title={dup ? 'Doublon : ce choix ne sera pas enregistré' : undefined}
                 className={`input text-sm w-full ${dup ? 'border-red-400 focus:border-red-400' : ''}`}
@@ -3828,7 +3928,13 @@ function ChoicesEditor({
           <input
             type="checkbox"
             checked={alphabetize}
-            onChange={e => { setAlphabetize(e.target.checked); onPersist?.({ alpha: e.target.checked }) }}
+            onChange={e => {
+              const alpha = e.target.checked
+              const ch = sortIfAlpha(choices, alpha)
+              setAlphabetize(alpha)
+              if (ch !== choices) setChoices(ch)
+              onPersist?.({ ch, alpha })
+            }}
             className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
           />
           Trier les choix par ordre alphabétique

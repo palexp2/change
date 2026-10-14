@@ -19,10 +19,18 @@
   #doc { background: #059669; margin-bottom: 4px; }
   #docOut { margin: 0 0 14px; min-height: 14px; font-size: 11px; }
   #docOut a { opacity: 1; font-weight: 600; }
+  #shot { border: 2px dashed #7c3aed; border-radius: 8px; padding: 14px 8px; text-align: center;
+          font-size: 12px; font-weight: 600; color: #7c3aed; margin-bottom: 4px; cursor: pointer; }
+  #shot img { display: block; max-width: 100%; max-height: 120px; margin: 6px auto 0; border-radius: 4px; }
+  #shot.over { background: rgba(124,58,237,.12); }
+  #shotOut { margin: 0 0 14px; min-height: 14px; font-size: 11px; }
   a { font-size: 11px; opacity: .7; color: inherit; }
 </style>
 </head>
 <body>
+  <div id="shot" tabindex="0">Capture pour Claude<br><span class="d">⌘⌃⇧4 puis ouvrir ce module</span></div>
+  <p id="shotOut" class="d"><a href="#" id="tab">ouvrir en onglet</a></p>
+  <input type="file" id="pick" accept="image/*" hidden>
   <button id="doc">Envoyer ce document à l’extracteur</button>
   <p id="docOut" class="d"></p>
   <h1>Tout récolter</h1>

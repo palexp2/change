@@ -4,7 +4,7 @@ import {
   Plus, Truck, Package, FileText, X, Printer,
   Copy, Check, Trash2, ScanBarcode, Boxes,
   Clock, ChevronDown, ChevronRight, AlertCircle, RefreshCw,
-  SkipForward, Cpu, Terminal, Recycle, Sparkles, Maximize2, Minimize2,
+  SkipForward, Cpu, Terminal, Recycle, Sparkles, Maximize2, Minimize2, RotateCcw,
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
@@ -106,14 +106,16 @@ function ScanToast({ toast, onClose }) {
 // support et la feuille de calibration d'un capteur solaire PY…). Le
 // rappel bloque le scan tant que l'opérateur ne l'a pas coché : ni X, ni Échap,
 // ni clic hors modale (pas de titre → pas de bouton fermer, `onClose` no-op).
+// `lineEnd` : au prélèvement, le rappel attend que la ligne soit complète (les
+// piles TH se mettent une fois tous les capteurs scannés — Martin Audesse).
 const SERIAL_REMINDERS = [
-  { prefix: /^TH/i, message: "N'oubliez pas le paquet de 3 piles!" },
+  { prefix: /^TH/i, message: "N'oubliez pas le paquet de 3 piles!", lineEnd: true },
   { prefix: /^CV/i, message: "N'oubliez pas la boîte de carton !" },
   { prefix: /^PY/i, message: "S'assurer d'avoir mis le support à capteur et la feuille de calibration !" },
 ]
 
-function serialReminderMessage(serial) {
-  return SERIAL_REMINDERS.find(r => r.prefix.test(serial || ''))?.message || null
+function serialReminder(serial) {
+  return SERIAL_REMINDERS.find(r => r.prefix.test(serial || '')) || null
 }
 
 function ScanReminderModal({ serial, message, onConfirm }) {
@@ -295,7 +297,8 @@ function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipmen
   // Un produit suivi par numéro de série se prélève au pistolet : le scan
   // rattache la série à la ligne. Sans numéro de série il n'y a rien à scanner
   // — la ligne se coche à la main, et la case doit se voir depuis l'atelier.
-  const manualPick = !isLocked && !(item.product_serial_count > 0)
+  // Une ligne négative (crédit, retour) n'a rien à scanner : elle se coche.
+  const manualPick = !isLocked && (item.qty < 0 || !(item.product_serial_count > 0))
 
   // Locked rows accept a click only when an explicit `onUnship` handler is
   // provided (used by the "Déjà expédié" section to let the user pull an
@@ -709,18 +712,17 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
   })
   const toPick   = items.filter(i => (i.fulfillment_status || 'À prélever') === 'À prélever')
   // Prélèvement un à un : un seul article affiché à la fois. « Passer » le
-  // renvoie en fin de file (il revient une fois les autres traités) — les
+  // sort de la file : une fois le tour fait, l'envoi se crée sans les articles
+  // passés (ils restent « À prélever », la commande reste à envoyer) — les
   // articles JWT, eux, se prélèvent en bloc à la fin de la liste.
   const isJwt = i => String(i.product_type || '').toUpperCase() === 'JWT'
-  const toPickJwt  = toPick.filter(isJwt)
-  const toPickMain = toPick.filter(i => !isJwt(i))
   const skippedSet = new Set(skipped)
-  const queue = [
-    ...toPickMain.filter(i => !skippedSet.has(i.id)),
-    ...skipped.map(sid => toPickMain.find(i => i.id === sid)).filter(Boolean),
-  ]
+  const toPickJwt  = toPick.filter(i => isJwt(i) && !skippedSet.has(i.id))
+  const toPickMain = toPick.filter(i => !isJwt(i))
+  const queue = toPickMain.filter(i => !skippedSet.has(i.id))
+  const skippedItems = skipped.map(sid => toPick.find(i => i.id === sid)).filter(Boolean)
   const current = queue[0]
-  const skip = item => setSkipped(s => [...s.filter(x => x !== item.id), item.id])
+  const skip = list => setSkipped(s => [...s.filter(x => !list.some(i => i.id === x)), ...list.map(i => i.id)])
 
   // L'avis « prendre du reconditionné » ne vaut que pour les articles sans
   // numéro de série : ceux qui en ont un portent déjà leur étagère, décidée sur
@@ -753,12 +755,13 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
 
   function handleToggle(item) {
     const isPicked = (item.fulfillment_status || 'À prélever') === 'Prélevé'
-    if (!isPicked && (item.product_serial_count > 0 || item.serials?.length > 0)) {
+    if (!isPicked && item.qty > 0 && (item.product_serial_count > 0 || item.serials?.length > 0)) {
       setScanToast({ message: 'Scannez un numéro de série distinct par exemplaire.', status: 'warn' })
       return
     }
     const nextStatus = isPicked ? 'À prélever' : 'Prélevé'
-    const nextQty   = isPicked ? 0 : item.qty
+    // Ligne négative : rien n'est pris sur l'étagère, la quantité prélevée reste 0.
+    const nextQty   = isPicked ? 0 : Math.max(0, item.qty)
     // Décochage : on détache aussi les serials côté UI (le serveur fait pareil
     // en DB). Coche : on conserve les serials existants.
     const optimistic = { fulfillment_status: nextStatus, fulfilled_qty: nextQty }
@@ -869,7 +872,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
         ) : null}
 
         {/* À prélever — un article à la fois, « Passer » le renvoie en fin de file */}
-        {(current || toPickJwt.length === 0) && (
+        {(current || (toPickJwt.length === 0 && skippedItems.length === 0)) && (
           <div className="bg-white rounded-xl shadow-sm overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
               <h2 className="font-semibold text-slate-800 flex items-center gap-2">
@@ -899,10 +902,10 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                 <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
                   <span className="text-xs text-slate-400 tabular-nums">
                     {queue.length - 1} après{toPickJwt.length > 0 ? ` + ${toPickJwt.length} JWT` : ''}
+                    {skippedItems.length > 0 ? ` · ${skippedItems.length} passé${skippedItems.length > 1 ? 's' : ''}` : ''}
                   </span>
                   <button
-                    onClick={() => skip(current)}
-                    disabled={queue.length < 2}
+                    onClick={() => skip([current])}
                     className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <SkipForward size={13} />
@@ -910,12 +913,12 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                   </button>
                 </div>
               </>
-            ) : (
+            ) : skippedItems.length === 0 ? (
               <div className="py-10 text-center text-slate-400 text-sm">
                 <Check size={28} className="mx-auto mb-2 text-emerald-300" strokeWidth={2.5} />
                 Tous les articles ont été prélevés
               </div>
-            )}
+            ) : null}
           </div>
         )}
 
@@ -923,14 +926,29 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
         {toPickJwt.length > 0 && !current && (
           <div className="bg-white rounded-xl shadow-sm overflow-hidden border-l-4 border-blue-400">
             <div className="px-5 py-3 border-b border-slate-100">
-              <h2 className="font-semibold text-blue-700 flex items-center gap-2">
-                <Cpu size={16} />
-                JWT
-                <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full">{toPickJwt.length}</span>
-              </h2>
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="font-semibold text-blue-700 flex items-center gap-2">
+                  <Cpu size={16} />
+                  JWT
+                  <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full">{toPickJwt.length}</span>
+                </h2>
+                <button
+                  onClick={() => skip(toPickJwt)}
+                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors"
+                >
+                  <SkipForward size={13} />
+                  Passer
+                </button>
+              </div>
               <p className="mt-1.5 flex items-center gap-1.5 text-sm font-medium text-blue-800">
                 <Terminal size={14} className="flex-shrink-0" />
                 Ouvrir Super&nbsp;Flash sur l'ordinateur
+                {/* ID du contrôleur central du client (adresse Orisha) à saisir dans Super Flash. */}
+                {order.central_controllers?.length > 0 && (
+                  <span className="ml-2 font-mono font-bold tabular-nums bg-blue-100 text-blue-900 px-2 py-0.5 rounded" title="ID contrôleur">
+                    ID {order.central_controllers.map(cc => cc.address).join(', ')}
+                  </span>
+                )}
               </p>
             </div>
             <div className="divide-y divide-slate-100">
@@ -938,6 +956,29 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                 <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} onReturn={handleReturn} flashId={flashItemId} isSubscription={!!order.is_subscription} hero />
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Passés — hors de cet envoi ; restent « À prélever » pour le suivant */}
+        {!picking && skippedItems.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden border-l-4 border-slate-300" data-testid="skipped-items">
+            <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+              <h2 className="font-semibold text-slate-600 flex items-center gap-2">
+                <SkipForward size={16} />
+                Passés
+                <span className="bg-slate-100 text-slate-600 text-xs font-bold px-2 py-0.5 rounded-full">{skippedItems.length}</span>
+              </h2>
+              <button
+                onClick={() => setSkipped([])}
+                className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors"
+              >
+                <RotateCcw size={13} />
+                Reprendre
+              </button>
+            </div>
+            {skippedItems.map(item => (
+              <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} onReturn={handleReturn} flashId={flashItemId} isSubscription={!!order.is_subscription} />
+            ))}
           </div>
         )}
 
@@ -1501,6 +1542,16 @@ export default function OrderDetail({ recordId, onClose }) {
       if (mode === 'pick') {
         if (result.action === 'not_in_order') {
           setScanToast({ message: `Article non trouvé dans cette commande`, status: 'warn' })
+        } else if (result.action === 'not_available' && result.serial.status === 'À analyser') {
+          // Série revenue « À analyser » : proposer de la remettre en location,
+          // puis la prélever comme si on la rescannait.
+          scanConfirmRef.current = value
+          setScanConfirm({
+            value,
+            serial: result.serial,
+            kind: 'to_rental',
+            message: 'Passer à « Disponible - Location » ?',
+          })
         } else if (result.action === 'not_available') {
           setScanToast({ message: `Série ${result.serial.serial} : ${result.serial.status || 'sans statut'}`, status: 'error' })
         } else if (result.action === 'confirm_required') {
@@ -1554,8 +1605,15 @@ export default function OrderDetail({ recordId, onClose }) {
 
       // Séries à accessoire (TH… piles, CV… boîte de carton) : rappel bloquant.
       if (result.type === 'serial' && ['picked', 'linked', 'added'].includes(result.action)) {
-        const reminder = serialReminderMessage(result.serial?.serial)
-        if (reminder) openScanReminder(result.serial.serial, reminder)
+        const reminder = serialReminder(result.serial?.serial)
+        const item = result.item
+        if (reminder?.lineEnd && mode === 'pick' && item) {
+          // Prélèvement : un seul rappel, au dernier capteur de la ligne.
+          if ((item.fulfilled_qty || 0) >= (item.qty || 1)) {
+            const serials = (item.serials || []).map(s => s.serial).filter(Boolean)
+            openScanReminder(serials.join(' · ') || result.serial.serial, reminder.message)
+          }
+        } else if (reminder) openScanReminder(result.serial.serial, reminder.message)
       }
     } catch (e) {
       setScanToast({ message: e.message || 'Erreur lors du scan', status: 'error' })
@@ -1586,11 +1644,23 @@ export default function OrderDetail({ recordId, onClose }) {
   }
 
   // « Prélever quand même » : on rejoue le scan, cette fois avec l'accord.
-  function acceptScanConfirm() {
-    const value = scanConfirm?.value
+  async function acceptScanConfirm() {
+    const { value, serial, kind } = scanConfirm || {}
+    if (kind === 'to_rental') {
+      try {
+        await api.serials.update(serial.id, { status: 'Disponible - Location' })
+      } catch (e) {
+        scanConfirmRef.current = null
+        setScanConfirm(null)
+        setScanToast({ message: e.message || 'Statut non modifié', status: 'error' })
+        return
+      }
+    }
     scanConfirmRef.current = null
     setScanConfirm(null)
-    if (value) handleScan(value, { confirm: true })
+    // Statut changé : second scan normal (peut encore demander la coche
+    // « location sur une commande d'achat »).
+    if (value) handleScan(value, kind === 'to_rental' ? {} : { confirm: true })
   }
 
   const scanReminderModal = (
@@ -1610,8 +1680,12 @@ export default function OrderDetail({ recordId, onClose }) {
             {scanConfirm.serial?.serial} · {scanConfirm.serial?.status}
           </div>
           <div className="flex justify-end gap-2">
-            <button onClick={cancelScanConfirm} className="btn-secondary">Annuler</button>
-            <button onClick={acceptScanConfirm} className="btn-primary">Prélever quand même</button>
+            <button onClick={cancelScanConfirm} className="btn-secondary">
+              {scanConfirm.kind === 'to_rental' ? 'Non' : 'Annuler'}
+            </button>
+            <button onClick={acceptScanConfirm} className="btn-primary">
+              {scanConfirm.kind === 'to_rental' ? 'Oui' : 'Prélever quand même'}
+            </button>
           </div>
         </div>
       )}

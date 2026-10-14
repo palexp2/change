@@ -61,6 +61,7 @@ function controlType(row, defOptions) {
   // Évaluation : une note se donne en étoiles, pas au clavier.
   if (t === 'rating') return 'rating'
   if (t === 'url') return 'url'
+  if (t === 'email') return 'email'
   if (defOptions?.format === 'email') return 'email'
   if (defOptions?.format === 'url') return 'url'
   return 'text'

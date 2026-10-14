@@ -74,6 +74,7 @@ export function piecesConfig() {
     driveFolderId: String(cfg.drive_folder_id || '').trim() || null,
     googleAccountEmail: String(cfg.google_account_email || '').trim() || null,
     slackWebhookEnv: String(cfg.slack_webhook_env || 'SLACK_WEBHOOK_GUILLAUME').trim(),
+    slackChannel: String(cfg.slack_channel || 'UUCQBRLF4').trim(), // Guillaume Lambert
     recipient: String(cfg.recipient || 'Guillaume').trim(),
   }
 }
@@ -441,7 +442,7 @@ export function piecesSlackPreview(month) {
     text: piecesSlackText(state),
     recipient: cfg.recipient,
     webhook_env: cfg.slackWebhookEnv,
-    webhook_configured: !!process.env[cfg.slackWebhookEnv],
+    webhook_configured: !!(cfg.slackChannel && process.env.SLACK_BOT_TOKEN) || !!process.env[cfg.slackWebhookEnv],
     already_sent_at: state.slack_sent_at,
     debourses: state.debourses,
     drive_url: state.drive_url,
@@ -452,12 +453,9 @@ export async function sendPiecesSlack(month, { userId = null } = {}) {
   const state = piecesMonthState(month)
   if (!state.computed) throw new Error('Ce mois n\'a pas encore été calculé')
   const cfg = piecesConfig()
-  const url = process.env[cfg.slackWebhookEnv]
-  if (!url) throw new Error(`Webhook Slack manquant : ajouter ${cfg.slackWebhookEnv} dans server/.env`)
-
   const text = piecesSlackText(state)
-  const { postSlack } = await import('./slack.js')
-  await postSlack(url, text)
+  const { sendSlackConfigured } = await import('./slack.js')
+  await sendSlackConfigured({ slack_channel: cfg.slackChannel, slack_webhook_env: cfg.slackWebhookEnv }, text)
 
   db.prepare(`
     UPDATE pieces_disbursements

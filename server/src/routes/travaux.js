@@ -342,6 +342,12 @@ function isActivePrompt(p) {
 router.get('/prompts', (req, res) => {
   const space = req.query.space || null
   if (space && !PROMPT_SPACES.includes(space)) return res.status(400).json({ error: 'space invalide' })
+  // `ids=a,b` : seulement ces items (bouton « Mes questions » du FAB, qui suit
+  // ses propres questions sans charger toute la file). Un id disparu est omis.
+  if (req.query.ids) {
+    const ids = String(req.query.ids).split(',').map(s => s.trim()).filter(Boolean).slice(0, 50)
+    return res.json({ prompts: ids.map(id => getPrompt(id)).filter(Boolean).map(withResult) })
+  }
   // `active=1` : uniquement la file vivante, sans l'historique terminé et ses fils.
   // La réponse complète pèse plusieurs centaines de Ko — trop lourde pour le
   // panneau rapide, ouvert depuis n'importe quelle page de l'ERP.
@@ -736,8 +742,8 @@ router.get('/agents', (req, res) => {
 })
 
 router.post('/agents', (req, res) => {
-  const { name, instructions, run_hours } = req.body || {}
-  res.status(201).json(createAgent({ name, instructions, run_hours, created_by: req.user?.id || null }))
+  const { name, instructions, run_hours, runs_per_day } = req.body || {}
+  res.status(201).json(createAgent({ name, instructions, run_hours, runs_per_day, created_by: req.user?.id || null }))
 })
 
 router.patch('/agents/:id', (req, res) => {

@@ -79,6 +79,11 @@ export default function RetourActionsSection({ retour, onDone }) {
   const [memoStatus, setMemoStatus] = useState(retour.memo_pdf_path ? 'done' : 'idle')
   const [memoUrl, setMemoUrl] = useState(retour.memo_pdf_path ? withToken(`/erp/api/retours/memos/${retour.memo_pdf_path.split('/').pop()}`) : null)
   const [memoMissing, setMemoMissing] = useState(false)
+  // Facture de douane (client hors Canada) : même fichier que la pièce jointe
+  // des instructions, générée ici pour l'inspecter avant l'envoi.
+  const [customsStatus, setCustomsStatus] = useState('idle')
+  const [customsUrl, setCustomsUrl] = useState(null)
+  const [customsMissing, setCustomsMissing] = useState(false)
   const [composerOpen, setComposerOpen] = useState(false)
   const [gmailAccounts, setGmailAccounts] = useState([])
   const [fromAccount, setFromAccount] = useState('')
@@ -106,7 +111,10 @@ export default function RetourActionsSection({ retour, onDone }) {
   const loadContext = useCallback(() => {
     setLoadingContext(true)
     api.retours.context(retour.id)
-      .then(res => { setContext(res); setAddressId(res.address?.id || null) })
+      .then(res => {
+        setContext(res); setAddressId(res.address?.id || null)
+        if (res.customs_invoice_url) setCustomsUrl(`${res.customs_invoice_url}?token=${localStorage.getItem('erp_token')}`)
+      })
       .catch(e => setError(e.message))
       .finally(() => setLoadingContext(false))
   }, [retour.id])
@@ -201,6 +209,14 @@ export default function RetourActionsSection({ retour, onDone }) {
       const res = await api.retours.generateMemo(retour.id)
       setMemoMissing(false); setMemoUrl(`${withToken(res.memo_url)}&v=${Date.now()}`); setMemoStatus('done'); onDone?.()
     } catch (e) { setMemoStatus('error'); setError(e.message) }
+  }
+
+  async function handleGenerateCustoms() {
+    setCustomsStatus('loading')
+    try {
+      const res = await api.retours.generateCustomsInvoice(retour.id)
+      setCustomsMissing(false); setCustomsUrl(`${withToken(res.url)}&v=${Date.now()}`); setCustomsStatus('done')
+    } catch (e) { setCustomsStatus('error'); setError(e.message) }
   }
 
   return (
@@ -425,6 +441,36 @@ export default function RetourActionsSection({ retour, onDone }) {
         )}
         {memoStatus === 'error' && <p className="text-sm text-red-600">{error}</p>}
       </section>
+
+      {/* ── Douane (client hors Canada) ── */}
+      {context?.customs_invoice && (
+        <section className="space-y-2 border-t border-slate-100 pt-4">
+          <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
+            <FileText size={14} className="text-brand-500" /> Douane
+          </h3>
+          {customsUrl && !customsMissing ? (
+            <div className="flex flex-wrap gap-3">
+              <AttachmentPreview
+                url={customsUrl}
+                fileName={customsUrl.split('?')[0].split('/').pop()}
+                downloadName={`customs-invoice-${retour.id}.pdf`}
+                title="Facture de douane"
+                kind="pdf"
+                testId="retour-customs-attachment"
+                onUnavailable={reason => { if (reason === 'missing') setCustomsMissing(true) }}
+              />
+              <button onClick={handleGenerateCustoms} disabled={customsStatus === 'loading'} className="btn-secondary text-sm self-end inline-flex items-center gap-1.5" data-testid="retour-customs-regenerate">
+                <RefreshCw size={14} className={customsStatus === 'loading' ? 'animate-spin' : ''} /> Régénérer
+              </button>
+            </div>
+          ) : (
+            <button onClick={handleGenerateCustoms} disabled={customsStatus === 'loading'} className="btn-secondary text-sm" data-testid="retour-customs-generate">
+              {customsStatus === 'loading' ? 'Génération…' : 'Générer la facture de douane'}
+            </button>
+          )}
+          {customsStatus === 'error' && <p className="text-sm text-red-600">{error}</p>}
+        </section>
+      )}
 
       {/* ── Instructions au client ── */}
       <section className="space-y-2 border-t border-slate-100 pt-4">

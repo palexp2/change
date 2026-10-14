@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { celebrate } from '../lib/celebrate.js'
-import { FileUp, Table2, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, MoreHorizontal, BookOpen, Download, Clock, Plus, ArrowLeftRight, Check, X, Landmark, Wallet, FileText, Flag, Bookmark, Send, Pencil, Paperclip, Combine, Split } from 'lucide-react'
+import { FileUp, Table2, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, MoreHorizontal, BookOpen, Download, Clock, Plus, ArrowLeftRight, Check, X, Landmark, Wallet, FileText, Flag, Bookmark, Send, Pencil, Paperclip, Combine, Split, ChevronDown, Copy, ClipboardPaste } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import api from '../lib/api.js'
 import { invalidate, prefetch } from '../lib/prefetch.js'
@@ -14,11 +14,12 @@ import { fmtMoney } from '../utils/formatters.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { VendorProfileHint, VendorHover } from '../components/VendorProfileHint.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
-import { StatementDropModal } from '../components/StatementDropModal.jsx'
+import { useStatementDrops, DropChips, DropBands, PasteLinesModal } from '../components/StatementDropStrip.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import DebtPaymentPublish from '../components/DebtPaymentPublish.jsx'
 import { RecordScope } from '../lib/recordLive.jsx'
 import { subscribe } from '../lib/realtime.js'
+import ClaudeBubble from '../components/ClaudeBubble.jsx'
 
 // Le volet « Règles » : même liste que /regles-bancaires, chargée seulement
 // quand on l'ouvre (elle va chercher le plan comptable de QuickBooks).
@@ -962,13 +963,14 @@ const bankOfQb = (qbId, bankAccounts) => (qbId
   : null)
 
 // Le virement : l'autre moitié est la ligne du compte choisi, au même montant.
+// Entre devises, le taux vient des deux lignes du relevé : le montant déclaré
+// est celui de la ligne elle-même.
 async function transferToBank(txn, bank) {
   const candidates = await api.bank.transferCandidates(txn.id)
   const list = Array.isArray(candidates) ? candidates : candidates?.data || []
   const c = list.find((x) => x.account_id === bank.id)
   if (!c) throw new Error(`Aucune ligne de ${bank.name} au même montant (±5 jours).`)
-  if (c.fx) throw new Error('Virement entre devises : passer par le Dossier.')
-  const r = await api.bank.transfer(txn.id, { counterpart_txn_id: c.id })
+  const r = await api.bank.transfer(txn.id, { counterpart_txn_id: c.id, amount: c.fx ? Math.abs(txn.amount) : undefined })
   invalidate('/bank')
   if (r?.qbError) throw new Error(`Virement lié, écriture QuickBooks refusée : ${r.qbError}`)
 }
@@ -1166,13 +1168,13 @@ function LineTransfer({ card, txn, currency, next, bankAccounts, onDone }) {
           <span className="flex flex-col justify-center min-h-[34px] tabular-nums">
             <span className="font-semibold text-slate-900">{money(Math.abs(txn.amount), currency)}</span>
             {bank && <span className={`text-[11px] ${match ? 'text-green-700' : 'text-slate-500'}`}>
-              {cands === null ? '…' : match ? `ligne du ${fmtDate(match.txn_date)} ✓` : 'pas encore au relevé de ce compte'}
+              {cands === null ? '…' : match ? (match.fx ? `${money(Math.abs(match.amount), match.currency)} le ${fmtDate(match.txn_date)} · ~${match.rate}` : `ligne du ${fmtDate(match.txn_date)} ✓`) : 'pas encore au relevé de ce compte'}
             </span>}
           </span>
         </LineField>
       </div>
       <LineBar txn={txn} error={error}>
-        <button type="button" className={LINE_GO} disabled={busy || !bank || cands === null || !!match?.fx || (!match && !bank.qb_account_id)} onClick={go}>
+        <button type="button" className={LINE_GO} disabled={busy || !bank || cands === null || (!match && !bank.qb_account_id)} onClick={go}>
           {busy ? 'Publication…' : card ? 'Payer la carte' : 'Enregistrer le virement'}
         </button>
       </LineBar>
@@ -3012,6 +3014,47 @@ function useQbRobot(accountId, flash) {
   return { ...state, run }
 }
 
+// Robot « Opérations bancaires » de QuickBooks : apparie les lignes « En
+// attente » du flux à l'écriture que Boréal leur a déjà liée (jamais
+// « Publier », qui la doublerait). Une à trois minutes : on relit jusqu'à la fin.
+function useQbFeed(accountId, flash, onDone) {
+  const [state, setState] = useState({ running: false, last: null })
+  const load = useCallback(async () => {
+    if (!accountId) return
+    const s = await api.bank.qbFeedLast(accountId).catch(() => null)
+    if (s) setState((prev) => { if (prev.running && !s.running) onDone?.(); return s })
+  }, [accountId, onDone])
+  useEffect(() => { setState({ running: false, last: null }); load() }, [load])
+  useEffect(() => {
+    if (!state.running) return
+    const t = setInterval(load, 4000)
+    return () => clearInterval(t)
+  }, [state.running, load])
+  const run = async () => {
+    try {
+      await api.bank.qbFeedMatch(accountId)
+      setState((s) => ({ ...s, running: true }))
+    } catch (e) { flash(e.message) }
+  }
+  return { ...state, run }
+}
+
+// « Flux 13 ✓ » / « Flux 2 ⚠ » : le dernier passage, les échecs en infobulle.
+function QbFeedPill({ feed }) {
+  const last = feed.last
+  const base = 'text-[11px] px-1.5 py-0.5 rounded-full whitespace-nowrap tabular-nums'
+  if (feed.running) return <span data-testid="qb-feed-pill" className={`${base} bg-slate-100 text-slate-500 animate-pulse`}>Flux QB …</span>
+  if (!last) return null
+  const bad = !last.ok || last.failed.length
+  const title = !last.ok ? last.error
+    : [`${last.matched} appariée(s)`, ...last.failed.map((f) => `${f.row || ''} : ${f.error}`)].join('\n')
+  const label = !last.ok ? 'Flux QB ⚠' : bad ? `Flux QB ${last.failed.length} ⚠` : `Flux QB ${last.matched} ✓`
+  const cls = bad ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700'
+  return last.capture
+    ? <a href={withToken(`/erp/api/bank/qb-reconcile/captures/${last.capture}`)} target="_blank" rel="noreferrer" title={title} data-testid="qb-feed-pill" className={`${base} ${cls} hover:underline`}>{label}</a>
+    : <span title={title} data-testid="qb-feed-pill" className={`${base} ${cls}`}>{label}</span>
+}
+
 const withToken = (url) => `${url}?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`
 
 // « QB 0 $ ✓ » / « QB −12,34 $ » : la Différence lue au dernier passage du
@@ -3085,7 +3128,6 @@ const SHEET_COLOR_META = {
 }
 
 // Comment le fournisseur a été reconnu derrière le libellé du relevé.
-const VENDOR_VIA = { motif: 'un motif de relevé', alias: 'un alias', nom: 'son nom' }
 
 // Comment l'écriture QuickBooks a été retrouvée (services/bankQbSearch.js).
 const MATCH_METHOD = {
@@ -3122,7 +3164,7 @@ function MenuItem({ icon, label, hint, onClick, disabled, href, testId }) {
   return <button type="button" className={cls} data-testid={testId} disabled={disabled} onClick={onClick}>{body}</button>
 }
 
-function MoreMenu({ onDrop, onRules, flash, robot }) {
+function MoreMenu({ onDrop, onPaste, onRules, flash, robot, feed }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   const mirror = useMirror(flash)
@@ -3150,10 +3192,14 @@ function MoreMenu({ onDrop, onRules, flash, robot }) {
         <div className="absolute right-0 top-9 z-30 w-72 rounded-lg border border-slate-200 bg-white shadow-lg p-1">
           <MenuItem icon={<FileUp size={14} />} label="Déposer un relevé"
             testId="statement-drop" onClick={run(onDrop)} />
+          <MenuItem icon={<ClipboardPaste size={14} />} label="Coller des lignes de relevé"
+            testId="statement-paste-lines" onClick={run(onPaste)} />
           <MenuItem icon={<Wand2 size={14} />} label="Règles bancaires"
             testId="reconcile-rules-link" onClick={run(onRules)} />
           {robot && <MenuItem icon={<CheckCheck size={14} className={robot.running ? 'animate-pulse' : ''} />}
             label="Préparer dans QuickBooks" testId="qb-robot-run" disabled={robot.running} onClick={run(robot.run)} />}
+          {feed && <MenuItem icon={<Link2 size={14} className={feed.running ? 'animate-pulse' : ''} />}
+            label="Apparier le flux QuickBooks" testId="qb-feed-run" disabled={feed.running} onClick={run(feed.run)} />}
           <MenuItem icon={<Table2 size={14} className={mirror.busy ? 'animate-pulse' : ''} />}
             label="Recopier dans le classeur" disabled={mirror.busy} onClick={mirror.run} />
           {mirror.url && <MenuItem icon={<ExternalLink size={14} />} label="Ouvrir le classeur" href={mirror.url} />}
@@ -3202,7 +3248,7 @@ function Kpi({ label, children, cls = 'text-slate-800', testId }) {
 }
 
 // En-tête : le compte en grand, ses trois nombres, le seul bouton d'action.
-function QboHeader({ account, isTodo, rec, robot, menu }) {
+function QboHeader({ account, virtualTitle, rec, robot, feed, menu, accounts, accountId, onAccount, chips }) {
   const { summary, qb, qbLoading, qbError, msg } = rec
   const currency = account?.currency
   const stmt = summary?.statement
@@ -3216,11 +3262,10 @@ function QboHeader({ account, isTodo, rec, robot, menu }) {
   ].filter(Boolean).join(' · ')
   return (
     <header className="flex items-end gap-x-8 gap-y-3 flex-wrap px-6 pt-5 pb-3">
-      <div className="min-w-0">
-        <div className="text-xs text-slate-500">Opérations bancaires</div>
-        <h1 className="text-2xl font-semibold tracking-tight text-slate-900 truncate">{isTodo ? 'À comptabiliser' : account?.name || '—'}</h1>
-      </div>
-      {account && !isTodo && (
+      <AccountPicker accounts={accounts} accountId={accountId} onChange={onAccount}
+        title={virtualTitle || account?.name || '—'} />
+      {chips && <div className="self-center">{chips}</div>}
+      {account && (
         <div data-testid="reconcile-panel" title={detail || undefined}
           data-statement-balance={bank != null ? money(bank, currency) : ''}
           data-qb-balance={bal ? money(bal.qb_as_of, currency) : ''}
@@ -3235,6 +3280,7 @@ function QboHeader({ account, isTodo, rec, robot, menu }) {
           </Kpi>
           <div className="flex items-center gap-2 pb-0.5">
             {robot && <QbRobotPill robot={robot} currency={currency} />}
+            {feed && <QbFeedPill feed={feed} />}
             {qbError && <span className="text-[11px] text-amber-700">QuickBooks indisponible</span>}
             {msg && <span className="text-[11px] text-slate-400 truncate max-w-xs">{msg}</span>}
             <PlaidDuplicates account={account} rec={rec} />
@@ -3242,7 +3288,7 @@ function QboHeader({ account, isTodo, rec, robot, menu }) {
         </div>
       )}
       <div className="ml-auto flex items-center gap-2">
-        {account && !isTodo && (
+        {account && (
           <button type="button" data-testid="reconcile-auto-btn" disabled={rec.busy} onClick={rec.runUpdate}
             title="Apparier aux documents, vérifier dans QuickBooks, recalculer l'écart"
             className="qbo-go h-9 px-4 rounded-full text-sm font-medium inline-flex items-center gap-2 disabled:opacity-60">
@@ -3256,10 +3302,10 @@ function QboHeader({ account, isTodo, rec, robot, menu }) {
   )
 }
 
-function StageTabs({ value, onChange, counts, isTodo }) {
+function StageTabs({ value, onChange, counts, only }) {
   return (
     <nav aria-label="Étapes" className="flex items-end gap-7 px-6 border-b border-slate-200">
-      {STAGES.filter((s) => !isTodo || s.key === 'rev').map((s) => (
+      {STAGES.filter((s) => !only || s.key === only).map((s) => (
         <button key={s.key} type="button" data-testid={`stage-${s.key}`} aria-current={value === s.key ? 'page' : undefined}
           onClick={() => onChange(s.key)}
           className={`py-3 -mb-px border-b-2 text-sm ${value === s.key
@@ -3284,17 +3330,24 @@ const LINE_FILTERS = [
 ]
 // La légende du code couleur, toujours sous les yeux : la barre de gauche de
 // chaque ligne reprend la couleur pleine.
+// Chaque couleur est aussi un filtre (Antoine Lambert, 2026-10-10) ; « Exclu »
+// remplace l'entrée « Exclues » du menu des comptes.
 const LEGEND = [
-  ['À traiter', '#dc2626', '#fde0de'], ['Facture reçue', '#2563eb', '#d6e4ff'], ['Comptabilisé', '#d4a106', '#fff0b3'],
-  ['Rapproché', '#2ca01c', '#cdeec3'], ['Exclu', '#a3aab3', '#eceef1'],
+  ['a_traiter', 'À traiter', '#dc2626', '#fde0de'], ['facture_recue', 'Facture reçue', '#2563eb', '#d6e4ff'],
+  ['comptabilise', 'Comptabilisé', '#d4a106', '#fff0b3'], ['rapproche', 'Rapproché', '#2ca01c', '#cdeec3'],
+  ['ignore', 'Exclu', '#a3aab3', '#eceef1'],
 ]
-function StatusLegend() {
+const colorOf = (r) => (r._ghost ? null : r.awaiting_payment ? 'facture_recue' : bucketOf(r))
+function StatusLegend({ counts, value, onChange }) {
   return (
-    <span className="ml-2 inline-flex items-center gap-3 text-[11.5px] text-slate-500 whitespace-nowrap" data-testid="status-legend">
-      {LEGEND.map(([l, c, t]) => (
-        <span key={l} className="inline-flex items-center gap-1.5">
+    <span className="ml-2 inline-flex items-center gap-1 text-[11.5px] text-slate-500 whitespace-nowrap" data-testid="status-legend">
+      {LEGEND.map(([k, l, c, t]) => (
+        <button key={k} type="button" data-testid={`legend-${k}`} aria-pressed={value === k} disabled={!counts[k]}
+          onClick={() => onChange(value === k ? null : k)}
+          className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-md ${value === k ? 'bg-slate-200 text-slate-900 font-medium'
+            : counts[k] ? 'hover:bg-slate-100 hover:text-slate-800' : 'opacity-50 cursor-default'}`}>
           <span className="w-4 h-3.5 rounded-sm" style={{ background: t, boxShadow: `inset 3px 0 0 ${c}` }} />{l}
-        </span>
+        </button>
       ))}
     </span>
   )
@@ -3643,7 +3696,7 @@ function RowAction({ row, stage, next, target, names, currency, onChanged, onOpe
 }
 
 // Le clic droit sur une ligne : les gestes secondaires (Charles, 2026-10-06).
-function RowContextMenu({ menu, onClose, onDossier, onChanged }) {
+function RowContextMenu({ menu, actions, onClose, onDossier, onChanged }) {
   const ref = useRef(null)
   useEffect(() => {
     const h = (e) => { if (!ref.current?.contains(e.target)) onClose() }
@@ -3664,21 +3717,28 @@ function RowContextMenu({ menu, onClose, onDossier, onChanged }) {
     onClose()
     await fn(); invalidate('/bank'); celebrate(label); await onChanged()
   }
-  const item = 'w-full text-left px-2.5 py-1.5 rounded-md text-sm text-slate-700 hover:bg-slate-50'
+  const item = 'w-full text-left px-2.5 py-1.5 rounded-md text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2'
+  // Mêmes gestes que la barre de sélection, appliqués à cette seule ligne.
+  const one = [row]
   const items = [
-    { label: 'Dossier', onClick: () => { onClose(); onDossier(row) } },
-    row.suggestion && { label: 'Refuser la suggestion', onClick: run(() => api.bank.refuseProposal(row.suggestion.id), 'Refusée') },
-    row.amount < 0 && !row.invoice_requested && row.status !== 'rapproche'
-      && { label: 'Demander la facture', onClick: run(() => api.bank.addInvoiceRequests([row.id]), 'Facture manquante') },
-    row.status === 'ignore'
-      ? { label: 'Rétablir', onClick: run(() => api.bank.updateTransaction(row.id, { status: 'a_traiter' }), 'Rétablie') }
-      : row.status !== 'rapproche' && { label: 'Exclure', onClick: run(() => api.bank.updateTransaction(row.id, { status: 'ignore' }), 'Exclue') },
+    { key: 'dossier', label: 'Dossier', onClick: () => { onClose(); onDossier(row) } },
+    row.suggestion && { key: 'refuse', label: 'Refuser la suggestion', onClick: run(() => api.bank.refuseProposal(row.suggestion.id), 'Refusée') },
+    ...actions.filter((a) => !a.show || a.show(one)).map((a) => ({
+      key: a.key, icon: a.icon,
+      label: typeof a.label === 'function' ? a.label(one) : a.label,
+      onClick: async () => { onClose(); await a.onClick([row.id]); invalidate('/bank') },
+    })),
   ].filter(Boolean)
   return createPortal(
     <div ref={ref} data-testid="bank-row-menu" onContextMenu={(e) => e.preventDefault()}
-      style={{ position: 'fixed', top: Math.min(y, window.innerHeight - 40 * items.length - 16), left: Math.min(x, window.innerWidth - 208) }}
-      className="z-50 w-48 rounded-lg border border-slate-200 bg-white shadow-lg p-1 text-left">
-      {items.map((it) => <button key={it.label} type="button" className={item} onClick={it.onClick}>{it.label}</button>)}
+      style={{ position: 'fixed', top: Math.max(8, Math.min(y, window.innerHeight - 34 * items.length - 16)), left: Math.min(x, window.innerWidth - 232) }}
+      className="z-50 w-56 rounded-lg border border-slate-200 bg-white shadow-lg p-1 text-left">
+      {items.map((it) => (
+        <button key={it.key} type="button" className={item} onClick={it.onClick}>
+          {it.icon ? <it.icon size={14} className="shrink-0 text-slate-500" /> : <span className="w-3.5 shrink-0" />}
+          {it.label}
+        </button>
+      ))}
     </div>,
     document.body,
   )
@@ -3892,20 +3952,24 @@ function InvoiceRequestsPanel({ onChanged }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const [done, setDone] = useState(null)
+  // '' = le canal de tous ; sinon le nom d'une personne (message court, à elle seule).
+  const [person, setPerson] = useState('')
+  const [people, setPeople] = useState([])
 
   const apply = (res) => { setRows(res.requests || []); setMessage(res.message || null) }
-  useEffect(() => { api.bank.invoiceRequests().then(apply).catch((e) => setError(e.message)) }, [])
+  const load = (p) => api.bank.invoiceRequests(p).then((res) => { apply(res); setPeople(res.people || []) })
+  useEffect(() => { load(person).catch((e) => setError(e.message)) }, [person]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (fn) => {
     setBusy(true); setError(null); setDone(null)
-    try { apply(await fn()) } catch (e) { setError(e.message) } finally { setBusy(false) }
+    try { await fn(); await load(person) } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
   const send = async () => {
     setBusy(true); setError(null)
     try {
-      const res = await api.bank.sendInvoiceRequests()
+      const res = await api.bank.sendInvoiceRequests(person)
       apply(res)
-      setDone(`Envoyé — ${res.count} facture${res.count > 1 ? 's' : ''}`)
+      setDone(`Envoyé${person ? ` à ${person}` : ''} — ${res.count} facture${res.count > 1 ? 's' : ''}`)
     } catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
@@ -3938,6 +4002,14 @@ function InvoiceRequestsPanel({ onChanged }) {
         {message && <pre className="mt-3 whitespace-pre-wrap text-xs text-slate-600 bg-slate-50 rounded-lg p-3">{message}</pre>}
       </div>
       <div className="px-5 py-3 border-t border-slate-200 flex items-center gap-3">
+        {people.length > 0 && (
+          <select value={person} onChange={(e) => { setDone(null); setPerson(e.target.value) }} disabled={busy}
+            aria-label="Destinataire" data-testid="invoice-requests-person"
+            className="text-sm border border-slate-300 rounded-md px-2 py-1.5">
+            <option value="">Tous</option>
+            {people.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        )}
         <button type="button" disabled={busy || !inSend} onClick={send}
           data-testid="invoice-requests-send"
           className="px-3 py-1.5 rounded-md bg-brand-600 text-white text-sm hover:bg-brand-700 disabled:opacity-50">
@@ -3952,7 +4024,7 @@ function InvoiceRequestsPanel({ onChanged }) {
 
 // Le signet : un ruban, un seul par compte. Le rond rouge « à réviser » se
 // pose sur la date elle-même (maquette Q2, 2026-10-03).
-function RowMarks({ row, bookmarked, onBookmark }) {
+function RowMarks({ row, bookmarked, onBookmark, account, canBookmark = true }) {
   const [busy, setBusy] = useState(false)
   const click = async (e) => {
     e.stopPropagation()
@@ -3960,11 +4032,47 @@ function RowMarks({ row, bookmarked, onBookmark }) {
     try { await onBookmark(bookmarked ? null : row.id) } finally { setBusy(false) }
   }
   return (
-    <span className="lg-marks flex items-center justify-center h-full">
-      <button type="button" disabled={busy} data-testid="row-bookmark" aria-pressed={bookmarked}
-        aria-label={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'} title={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'}
-        onClick={click} className="lg-mark-ribbon" />
+    <span className="lg-marks flex flex-col items-center justify-center gap-1 h-full">
+      {canBookmark && (
+        <button type="button" disabled={busy} data-testid="row-bookmark" aria-pressed={bookmarked}
+          aria-label={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'} title={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'}
+          onClick={click} className="lg-mark-ribbon" />
+      )}
+      <CopyTxnButton row={row} account={account} />
     </span>
+  )
+}
+
+// La ligne en texte court, prête à coller (demande d'Antoine Lambert, 2026-10-10).
+function txnClipText(r, account) {
+  const cur = r._acct?.currency || account?.currency || 'CAD'
+  const amt = r.amount == null ? '' : `${r.amount < 0 ? '−' : '+'}${fmtMoney(Math.abs(r.amount), cur)}`
+  const vendor = r.resolved_vendor?.name || r.vendor_name
+  const bank = [txnLabel(r), txnSubLabel(r)].filter(Boolean).join(' — ')
+  return [
+    [r.txn_date, amt].filter(Boolean).join(' · '),
+    vendor && vendor !== txnLabel(r) ? `${vendor} (${bank})` : bank,
+    [r._acct?.name || account?.name, STATUS_META[r.status]?.label].filter(Boolean).join(' · '),
+    r.matched_label && `→ ${r.matched_label}`,
+    r.comment && `Note : ${r.comment}`,
+  ].filter(Boolean).join('\n')
+}
+
+function CopyTxnButton({ row, account }) {
+  const [done, setDone] = useState(false)
+  const copy = async (e) => {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(txnClipText(row, account))
+      setDone(true)
+      setTimeout(() => setDone(false), 1200)
+    } catch { /* presse-papiers refusé */ }
+  }
+  return (
+    <button type="button" data-testid="row-copy" title="Copier" aria-label="Copier la transaction" onClick={copy}
+      aria-pressed={done} className={`lg-mark-copy ${done ? 'text-green-600' : 'text-slate-500'}`}>
+      {done ? <Check size={12} /> : <Copy size={12} />}
+    </button>
   )
 }
 
@@ -3976,27 +4084,48 @@ const TODO_TAB = '__todo__'
 const TODO_STATUSES = new Set(['a_traiter', 'facture_recue'])
 // Les années closes n'y figurent plus (Charles, 2026-09-27 : « 2025, ça pu rapport »).
 const TODO_SINCE = '2026-01-01'
+// Pseudo-compte : toutes les lignes exclues, tous comptes confondus (Charles, 2026-10-10).
+const EXCL_TAB = '__exclues__'
+const VIRTUAL_TITLES = { [TODO_TAB]: 'À comptabiliser', [EXCL_TAB]: 'Exclues' }
 
-function AccountTabs({ accounts, accountId, onChange }) {
+// Le nom du compte, en grand, est le sélecteur : le survol déroule la liste des
+// comptes (maquette H3 au survol, Charles 2026-10-10 — remplace les onglets du bas).
+function AccountPicker({ accounts, accountId, onChange, title }) {
+  const [open, setOpen] = useState(false)
+  const t = useRef(null)
+  const show = () => { clearTimeout(t.current); setOpen(true) }
+  const hide = () => { clearTimeout(t.current); t.current = setTimeout(() => setOpen(false), 180) }
+  useEffect(() => () => clearTimeout(t.current), [])
   const todo = accounts.reduce((n, a) => n + (a.todo_count || 0), 0)
+  const cur = accounts.find((a) => a.id === accountId)
+  const pick = (id) => { onChange(id); setOpen(false) }
+  const item = (on) => `w-full flex items-center gap-2 px-3 py-2 rounded-md text-left text-sm whitespace-nowrap ${on ? 'bg-green-50 text-slate-900 font-medium' : 'text-slate-700 hover:bg-slate-100'}`
+  const count = (n, cls) => (n > 0 ? <span className={`min-w-[18px] h-[18px] px-1.5 rounded-full text-[10.5px] font-bold inline-flex items-center justify-center ${cls}`}>{n}</span> : null)
   return (
-    <nav aria-label="Comptes" data-testid="account-tabs"
-      className="lg-tabs flex items-stretch overflow-x-auto">
-      <button type="button" data-testid="account-tab-todo" onClick={() => onChange(TODO_TAB)}
-        aria-current={accountId === TODO_TAB ? 'page' : undefined} title="Tous les comptes"
-        className={`lg-tab shrink-0 flex items-center gap-2 px-4 whitespace-nowrap ${accountId === TODO_TAB ? 'lg-tab-on' : ''}`}>
-        À comptabiliser
-        {todo > 0 && <span className="lg-count">{todo}</span>}
+    <div className="relative min-w-0" onMouseEnter={show} onMouseLeave={hide} data-testid="account-tabs">
+      <button type="button" onClick={() => setOpen((o) => !o)} onFocus={show} aria-haspopup="listbox" aria-expanded={open}
+        className="flex items-center gap-2 text-2xl font-semibold tracking-tight text-slate-900 min-w-0">
+        <span className="truncate">{title}</span>
+        {cur?.review_count > 0 && count(cur.review_count, 'bg-red-600 text-white')}
+        <ChevronDown size={16} className={`shrink-0 text-slate-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {accounts.map((a) => (
-        <button key={a.id} type="button" onClick={() => onChange(a.id)} aria-current={a.id === accountId ? 'page' : undefined}
-          title={[a.institution, a.account_number, a.currency].filter(Boolean).join(' · ')}
-          className={`lg-tab shrink-0 flex items-center gap-2 px-4 whitespace-nowrap ${a.id === accountId ? 'lg-tab-on' : ''}`}>
-          {a.name}
-          {a.review_count > 0 && <span className="lg-count" data-testid="account-review-count">{a.review_count}</span>}
-        </button>
-      ))}
-    </nav>
+      {open && (
+        <div role="listbox" aria-label="Comptes" className="absolute left-0 top-full mt-1 z-30 w-80 max-h-[60vh] overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-lg p-1.5">
+          <button type="button" data-testid="account-tab-todo" onClick={() => pick(TODO_TAB)} className={item(accountId === TODO_TAB)}>
+            <span className="flex-1">À comptabiliser</span>{count(todo, 'bg-red-600 text-white')}
+          </button>
+          <div className="my-1 border-t border-slate-200" />
+          {accounts.map((a) => (
+            <button key={a.id} type="button" onClick={() => pick(a.id)} className={item(a.id === accountId)}
+              title={[a.institution, a.account_number, a.currency].filter(Boolean).join(' · ')}>
+              <span className="flex-1 truncate">{a.name}</span>
+              {a.review_count > 0 && <span data-testid="account-review-count">{count(a.review_count, 'bg-red-600 text-white')}</span>}
+              {count(a.todo_count, 'bg-slate-100 text-slate-500')}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -4145,8 +4274,10 @@ export default function RapprochementBancaire() {
   }, [setParams])
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
-  const [showDrop, setShowDrop] = useState(false)
-  const [droppedFiles, setDroppedFiles] = useState(null)
+  const [pasteOpen, setPasteOpen] = useState(false)
+  const [arriveFrom, setArriveFrom] = useState(null)
+  const [arrived, setArrived] = useState(null)
+  const filePick = useRef(null)
   const [pageDrag, setPageDrag] = useState(false)
   const [notice, setNotice] = useState(null)
   const [rulesOpen, setRulesOpen] = useState(false)
@@ -4154,7 +4285,9 @@ export default function RapprochementBancaire() {
   // L'étape (Pour révision / Catégorisées / Exclues) et le filtre de ligne.
   const [stage, setStage] = useState('rev')
   const [lineFilter, setLineFilter] = useState(null)
-  const account = accounts.find((a) => a.id === accountId) || null
+  const [claudeFocus, setClaudeFocus] = useState(null)
+  const [colorFilter, setColorFilter] = useState(null)
+  const account =accounts.find((a) => a.id === accountId) || null
 
   const loadAccounts = useCallback(async () => {
     const list = await api.bank.accounts()
@@ -4164,8 +4297,8 @@ export default function RapprochementBancaire() {
     // setter brut pour ne pas réécrire l'URL quand personne n'a rien demandé.
     setAccountIdRaw((prev) => {
       const wanted = new URLSearchParams(window.location.search).get('compte')
-      if (wanted === TODO_TAB || (wanted && list.some((a) => a.id === wanted))) return wanted
-      if (prev === TODO_TAB) return prev
+      if (VIRTUAL_TITLES[wanted] || (wanted && list.some((a) => a.id === wanted))) return wanted
+      if (VIRTUAL_TITLES[prev]) return prev
       return prev && list.some((a) => a.id === prev) ? prev : TODO_TAB
     })
   }, [])
@@ -4174,8 +4307,16 @@ export default function RapprochementBancaire() {
     if (!accountId) { setRows([]); setLoading(false); return }
     setLoading(true)
     try {
-      if (accountId !== TODO_TAB) { setRows(await api.bank.transactions(accountId)); return }
+      if (!VIRTUAL_TITLES[accountId]) { setRows(await api.bank.transactions(accountId)); return }
       const list = await api.bank.accounts()
+      if (accountId === EXCL_TAB) {
+        const per = await Promise.all(list.map(async (a) => (
+          (await api.bank.transactions(a.id)).filter((r) => r.status === 'ignore')
+            .map((r) => ({ ...r, _acct: { id: a.id, name: a.name, currency: a.currency } }))
+        )))
+        setRows(per.flat().sort((x, y) => String(y.txn_date).localeCompare(String(x.txn_date))))
+        return
+      }
       const per = await Promise.all(list.filter((a) => a.todo_count > 0).map(async (a) => (
         (await api.bank.transactions(a.id))
           .filter((r) => (TODO_STATUSES.has(r.status) || r.awaiting_payment) && (r.txn_date || '') >= TODO_SINCE)
@@ -4188,12 +4329,12 @@ export default function RapprochementBancaire() {
   useEffect(() => { loadAccounts() }, [loadAccounts])
   // URL → état : clic dans le sous-menu alors que la page est déjà ouverte.
   useEffect(() => {
-    if (askedAccount && askedAccount !== accountId && (askedAccount === TODO_TAB || accounts.some((a) => a.id === askedAccount))) {
+    if (askedAccount && askedAccount !== accountId && (VIRTUAL_TITLES[askedAccount] || accounts.some((a) => a.id === askedAccount))) {
       setAccountIdRaw(askedAccount)
     }
   }, [askedAccount, accounts, accountId])
   useEffect(() => { loadTxns() }, [loadTxns])
-  useEffect(() => { setLineFilter(null); setStage('rev') }, [accountId])
+  useEffect(() => { setLineFilter(null); setColorFilter(null); setStage(accountId === EXCL_TAB ? 'exc' : 'rev') }, [accountId])
   useEffect(() => { setLineFilter(null) }, [stage])
 
   // Incrémenté à chaque refresh : le résumé local se recalcule (la comparaison
@@ -4216,7 +4357,7 @@ export default function RapprochementBancaire() {
   useEffect(() => {
     if (!accountId) { setNextActions({}); return undefined }
     let alive = true
-    const ids = accountId === TODO_TAB ? accounts.filter((a) => a.todo_count > 0).map((a) => a.id) : [accountId]
+    const ids = accountId === TODO_TAB ? accounts.filter((a) => a.todo_count > 0).map((a) => a.id) : accountId === EXCL_TAB ? [] : [accountId]
     Promise.all(ids.map((id) => api.bank.nextActions(id)))
       .then((ms) => { if (alive) setNextActions(Object.assign({}, ...ms.map((m) => m || {}))) })
       .catch(() => { if (alive) setNextActions({}) })
@@ -4349,16 +4490,32 @@ export default function RapprochementBancaire() {
     return c
   }, [stageRows, nextActions])
 
+  // Légende : nombre de lignes par couleur dans le compte affiché. « Exclu »
+  // reste cliquable dans « À comptabiliser » : il ouvre toutes les exclues.
+  const colorCounts = useMemo(() => {
+    const c = {}
+    for (const r of allRows) { const k = colorOf(r); if (k) c[k] = (c[k] || 0) + 1 }
+    if (accountId === TODO_TAB) c.ignore = 1
+    return c
+  }, [allRows, accountId])
+  const pickColor = (k) => {
+    if (accountId === TODO_TAB && k === 'ignore') { setAccountId(EXCL_TAB); return }
+    if (accountId === EXCL_TAB && !k) { setAccountId(TODO_TAB); return }
+    if (k) setStage(k === 'ignore' ? 'exc' : k === 'comptabilise' || k === 'rapproche' ? 'cat' : 'rev')
+    setColorFilter(k)
+  }
+
   const visibleRows = useMemo(() => {
-    if (!lineFilter || stage !== 'rev') return stageRows
-    if (lineFilter === 'review') return stageRows.filter((r) => r.review_flag)
+    const base = colorFilter ? stageRows.filter((r) => colorOf(r) === colorFilter) : stageRows
+    if (!lineFilter || stage !== 'rev') return base
+    if (lineFilter === 'review') return base.filter((r) => r.review_flag)
     // Les plus vieilles d'abord : c'est l'ancienneté qui dit ce qui presse.
     if (lineFilter === 'requested') {
-      return stageRows.filter((r) => r.invoice_requested)
+      return base.filter((r) => r.invoice_requested)
         .sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)))
     }
-    return stageRows.filter((r) => lineKind(r, nextActions[r.id]) === lineFilter)
-  }, [stageRows, lineFilter, stage, nextActions])
+    return base.filter((r) => lineKind(r, nextActions[r.id]) === lineFilter)
+  }, [stageRows, colorFilter, lineFilter, stage, nextActions])
 
   // Les lignes fantômes (`qb:…`) n'existent pas en base : aucune action de lot
   // ne doit leur être envoyée. Elles restent cochables — DataTable ne sait pas
@@ -4372,10 +4529,34 @@ export default function RapprochementBancaire() {
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(null), 6000) }
   const robot = useQbRobot(account?.qb_account_id ? accountId : null, flash)
+  const feed = useQbFeed(account?.qb_account_id ? accountId : null, flash, refresh)
 
-  // Glisser un relevé n'importe où sur la page ouvre la fenêtre de dépôt avec
-  // le fichier déjà pris en charge — aucun bouton à trouver d'abord. On ne
-  // réagit qu'à un vrai fichier, pas au déplacement d'une sélection de texte.
+  // Dépôt sans fenêtre (maquette A2) : ce qui est sûr s'importe seul, les
+  // lignes arrivées s'allument un instant dans la liste.
+  const drops = useStatementDrops({
+    onImported: async () => {
+      setArriveFrom(new Set(rowsRef.current.map((r) => r.id)))
+      invalidate('/bank')
+      await refresh()
+    },
+  })
+  const dropsRef = useRef(drops)
+  dropsRef.current = drops
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  useEffect(() => {
+    if (!arriveFrom) return undefined
+    const fresh = new Set(rows.filter((r) => !arriveFrom.has(r.id)).map((r) => r.id))
+    if (!fresh.size) return undefined
+    setArriveFrom(null)
+    setArrived(fresh)
+    const t = setTimeout(() => setArrived(null), 2600)
+    return () => clearTimeout(t)
+  }, [rows, arriveFrom])
+
+  // Glisser un relevé ou une facture n'importe où sur la page le dépose —
+  // aucun bouton à trouver d'abord. On ne réagit qu'à un vrai fichier, pas au
+  // déplacement d'une sélection de texte.
   useEffect(() => {
     let depth = 0
     const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files')
@@ -4388,10 +4569,22 @@ export default function RapprochementBancaire() {
       depth = 0
       setPageDrag(false)
       const files = [...(e.dataTransfer.files || [])]
-      if (!files.length) return
-      setDroppedFiles(files)
-      setShowDrop(true)
+      if (files.length) dropsRef.current.add(files)
     }
+    // Ctrl+V d'une capture d'écran : elle vit dans le presse-papiers, pas sur
+    // le disque. Le texte collé dans un champ n'est pas concerné.
+    const onPaste = (e) => {
+      const files = [...(e.clipboardData?.items || [])]
+        .filter((it) => it.kind === 'file')
+        .map((it) => it.getAsFile())
+        .filter(Boolean)
+        // Une capture collée n'a pas de nom : on lui en donne un daté, qui sert
+        // aussi de repère d'année à la lecture.
+        .map((f) => (f.name && f.name !== 'image.png' ? f
+          : new File([f], `capture-${new Date().toISOString().slice(0, 10)}.png`, { type: f.type })))
+      if (files.length) { e.preventDefault(); dropsRef.current.add(files) }
+    }
+    window.addEventListener('paste', onPaste)
     window.addEventListener('dragenter', onEnter)
     window.addEventListener('dragover', onOver)
     window.addEventListener('dragleave', onLeave)
@@ -4401,6 +4594,7 @@ export default function RapprochementBancaire() {
       window.removeEventListener('dragover', onOver)
       window.removeEventListener('dragleave', onLeave)
       window.removeEventListener('drop', onDrop)
+      window.removeEventListener('paste', onPaste)
     }
   }, [])
 
@@ -4418,7 +4612,7 @@ export default function RapprochementBancaire() {
     try { await api.bank.setReview(row.id, on) } finally { invalidate('/bank'); loadAccounts().catch(() => {}) }
   }, [loadAccounts])
   const setBookmark = useCallback(async (txnId) => {
-    if (!accountId || accountId === TODO_TAB) return
+    if (!accountId || VIRTUAL_TITLES[accountId]) return
     setAccounts((cur) => cur.map((a) => a.id === accountId ? { ...a, bookmark_txn_id: txnId } : a))
     await api.bank.updateAccount(accountId, { bookmark_txn_id: txnId })
     invalidate('/bank')
@@ -4476,10 +4670,7 @@ export default function RapprochementBancaire() {
         )
         : r.resolved_vendor
           ? (
-            <Link to="/fournisseurs" onClick={(e) => e.stopPropagation()} className="block truncate text-blue-700 hover:underline"
-              title={`Reconnu par ${VENDOR_VIA[r.resolved_vendor.via] || r.resolved_vendor.via}`}>
-              {r.resolved_vendor.name}
-            </Link>
+            <span className="block truncate text-blue-700 hover:underline cursor-pointer">{r.resolved_vendor.name}</span>
           )
           : null),
       bank_state: (r) => {
@@ -4505,8 +4696,9 @@ export default function RapprochementBancaire() {
     const fixed = { alwaysVisible: true, sortable: false, filterable: false, groupable: false }
     const marks = {
       id: '_marks', label: '', width: 30, ...fixed,
-      render: (r) => (r._ghost || accountId === TODO_TAB ? null : (
-        <RowMarks row={r} bookmarked={account?.bookmark_txn_id === r.id} onBookmark={setBookmark} />
+      render: (r) => (r._ghost ? null : (
+        <RowMarks row={r} bookmarked={account?.bookmark_txn_id === r.id} onBookmark={setBookmark}
+          account={account} canBookmark={!VIRTUAL_TITLES[accountId]} />
       )),
     }
     const cur = (r) => r._acct?.currency || currency
@@ -4529,7 +4721,7 @@ export default function RapprochementBancaire() {
           <span className={`block min-w-0 leading-tight ${r._ghost ? 'italic' : ''}`}>
             <span className="flex items-center gap-1.5 min-w-0">
               {r._ghost && <span className="shrink-0 text-slate-400">QuickBooks ·</span>}
-              {v ? <span className="min-w-0 font-semibold text-slate-800 truncate"><VendorHover name={r.resolved_vendor?.name || r.vendor_name}>{v}</VendorHover></span>
+              {v ? <span className="min-w-0 font-semibold text-slate-800 truncate"><VendorHover name={r.resolved_vendor?.name || r.vendor_name} clickable={!r.matched_id}>{v}</VendorHover></span>
                 : <span className="lg-lbl truncate text-slate-700" title={sub || undefined}>{bank}</span>}
               {flags}
             </span>
@@ -4589,21 +4781,153 @@ export default function RapprochementBancaire() {
     prefetch(() => api.bank.rules.opportunity(r.id))
   }
 
+  // Les gestes de la barre de sélection, repris tels quels par le clic droit
+  // sur une ligne (Antoine, 2026-10-10).
+  const txnActions = [
+    {
+      key: 'reconcile', label: 'Confirmer', icon: CheckCheck, busyLabel: 'Rapprochement…',
+      show: (rows) => rows.some((r) => !r._ghost && r.status !== 'rapproche' && r.status !== 'ignore'),
+      onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real)) },
+    },
+    {
+      // Une dépense (ou une répartition AGA) publie dans QuickBooks :
+      // elle ne part JAMAIS en lot, elle attend son clic. Le bouton
+      // annonce donc ce qu'il va vraiment confirmer, et le serveur
+      // refuse les autres de toute façon.
+      key: 'accept-proposals', icon: Wand2, busyLabel: 'Confirmation…',
+      label: (rows) => {
+        const n = rows.reduce((s, r) => s + Math.max(0, (r.proposal_count || 0) - (r.publishing_count || 0)), 0)
+        return n > 1 ? `Confirmer ${n} propositions` : 'Confirmer la proposition'
+      },
+      show: (rows) => rows.some((r) => (r.proposal_count || 0) - (r.publishing_count || 0) > 0),
+      onClick: async (ids) => {
+        const rows = allRows.filter((r) => ids.includes(r.id) && r.proposal_count > 0)
+        if (!rows.length) return
+        const props = (await Promise.all(rows.map((r) => api.bank.txnProposals(r.id)))).flat()
+        const open = props.filter((p) => p.status === 'proposee')
+        const batch = open.filter((p) => !p.publishes).map((p) => p.id)
+        const held = open.length - batch.length
+        if (batch.length) await api.bank.acceptProposals(batch)
+        invalidate('/bank')
+        await refresh()
+        if (held) {
+          flash(held > 1
+            ? `${held} écritures restent à confirmer une par une — elles publient dans QuickBooks.`
+            : 'Une écriture reste à confirmer sur sa ligne — elle publie dans QuickBooks.')
+        }
+      },
+    },
+    {
+      key: 'unreconcile', label: 'Annuler le rapprochement', icon: Undo2, busyLabel: 'Mise à jour…',
+      show: (rows) => rows.length > 0 && rows.every((r) => r.status === 'rapproche'),
+      onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real, true)) },
+    },
+    {
+      // Les deux marques de Michel, posées sur toute la sélection d'un
+      // coup — elles ne se posaient qu'une ligne à la fois.
+      key: 'review', label: 'À réviser', icon: AlertTriangle, busyLabel: 'Mise à jour…',
+      show: (rows) => rows.some((r) => !r._ghost && !r.review_flag),
+      onClick: async (ids) => {
+        await bulkReal(ids, async (real) => {
+          for (const id of real) await api.bank.setReview(id, true)
+        })
+        loadAccounts().catch(() => {})
+      },
+    },
+    {
+      // Un seul signet par compte : sur une sélection, il se pose sur la
+      // ligne la plus récente.
+      key: 'bookmark', label: 'Signet', icon: Bookmark, busyLabel: 'Mise à jour…',
+      show: (rows) => !VIRTUAL_TITLES[accountId] && rows.some((r) => !r._ghost),
+      onClick: async (ids) => {
+        const real = allRows.filter((r) => ids.includes(r.id) && !r._ghost)
+        const last = real.sort((a, b) => String(b.txn_date).localeCompare(String(a.txn_date)))[0]
+        if (last) await setBookmark(last.id)
+      },
+    },
+    {
+      // La liste des factures réclamées ne se remplit que d'ici.
+      key: 'invoice-request', label: 'Facture manquante', icon: Flag, busyLabel: 'Ajout…',
+      show: (rows) => rows.some((r) => !r._ghost && !r.invoice_requested),
+      onClick: async (ids) => {
+        await bulkReal(ids, (real) => api.bank.addInvoiceRequests(real))
+      },
+    },
+    {
+      // Plusieurs lignes du relevé pour un seul montant ailleurs (10
+      // petits crédits Rona contre une ligne de 163,49 $). Si la
+      // sélection contient déjà la ligne du total, les autres s'y fondent.
+      key: 'group', label: 'Regrouper', icon: Combine, busyLabel: 'Regroupement…',
+      show: (rows) => {
+        const real = rows.filter((r) => !r._ghost)
+        if (real.length === 1) return !!real[0].group_parent_id
+        return real.length >= 2 && !real.some((r) => r.group_count)
+      },
+      onClick: async (ids) => {
+        const rows = allRows.filter((r) => ids.includes(r.id) && !r._ghost)
+        try {
+          const parents = new Set(rows.map((r) => r.group_parent_id))
+          if (parents.size === 1 && rows[0].group_parent_id) {
+            await api.bank.regroupTxn(rows[0].id)
+          } else {
+            const sum = rows.reduce((s, r) => s + r.amount, 0)
+            const total = rows.find((r) => Math.abs(2 * r.amount - sum) < 0.005)
+            if (total) await api.bank.groupTxns(rows.filter((r) => r !== total).map((r) => r.id), total.id)
+            else await api.bank.groupTxns(rows.map((r) => r.id))
+          }
+        } catch (e) { flash(e.message) }
+        invalidate('/bank')
+        await refresh()
+      },
+    },
+    {
+      key: 'ungroup', label: 'Dégrouper', icon: Split, busyLabel: 'Mise à jour…',
+      show: (rows) => rows.length === 1 && !!rows[0].group_count,
+      onClick: async (ids) => {
+        try { await api.bank.ungroupTxn(ids[0]) } catch (e) { flash(e.message) }
+        invalidate('/bank')
+        await refresh()
+      },
+    },
+    {
+      key: 'ignore', label: 'Exclure', icon: Unlink, busyLabel: 'Mise à jour…',
+      show: (rows) => rows.some((r) => !r._ghost && r.status !== 'ignore'),
+      onClick: async (ids) => {
+        await bulkReal(ids, async (real) => {
+          for (const id of real) await api.bank.updateTransaction(id, { status: 'ignore' })
+        })
+      },
+    },
+    {
+      key: 'reactivate', label: 'Rétablir', icon: Undo2, busyLabel: 'Mise à jour…',
+      show: (rows) => rows.length > 0 && rows.every((r) => r.status === 'ignore'),
+      onClick: async (ids) => {
+        await bulkReal(ids, async (real) => {
+          for (const id of real) await api.bank.updateTransaction(id, { status: 'a_traiter' })
+        })
+      },
+    },
+  ]
+
   return (
     <Layout>
       <div className="px-3 pt-3">
         {notice && <div className="mb-3 text-sm bg-green-50 text-green-800 rounded-lg px-3 py-2">{notice}</div>}
 
-        <div className="qbo-sheet" onMouseOver={warmRow}>
-          <QboHeader account={account} isTodo={accountId === TODO_TAB} rec={rec}
-            robot={account?.qb_account_id ? robot : null}
-            menu={<MoreMenu onDrop={() => setShowDrop(true)} onRules={() => setRulesOpen(true)} flash={flash} robot={account?.qb_account_id ? robot : null} />} />
-          <StageTabs value={stage} onChange={setStage} counts={stageCounts} isTodo={accountId === TODO_TAB} />
+        <div className={`qbo-sheet${claudeFocus ? ' claude-dim' : ''}`} onMouseOver={warmRow}>
+          <QboHeader account={account} virtualTitle={VIRTUAL_TITLES[accountId]} rec={rec}
+            accounts={accounts} accountId={accountId} onAccount={setAccountId}
+            robot={account?.qb_account_id ? robot : null} feed={account?.qb_account_id ? feed : null}
+            chips={<DropChips drops={drops} />}
+            menu={<MoreMenu onDrop={() => filePick.current?.click()} onPaste={() => setPasteOpen(true)} onRules={() => setRulesOpen(true)} flash={flash}
+              robot={account?.qb_account_id ? robot : null} feed={account?.qb_account_id ? feed : null} />} />
+          <DropBands drops={drops} accounts={accounts} />
+          <StageTabs value={stage} onChange={(s) => { setStage(s); setColorFilter(null) }} counts={stageCounts} only={accountId === TODO_TAB ? 'rev' : accountId === EXCL_TAB ? 'exc' : null} />
         <DataTable
           table="bank_transactions"
           skin="ledger"
           expandToggle={false}
-          height="calc(100vh - 290px)"
+          height="calc(100vh - 250px)"
           rowHeight={52}
           pinnedColumns={PINNED_COLUMNS}
           // Le compte n'est nommé qu'une fois en grand, dans l'en-tête ; les
@@ -4611,7 +4935,7 @@ export default function RapprochementBancaire() {
           toolsMenu
           toolbarStart={<>
             {stage === 'rev' && <LineFilters counts={counts} value={lineFilter} onChange={setLineFilter} onRequests={() => setRequestsOpen(true)} />}
-            <StatusLegend />
+            <StatusLegend counts={colorCounts} value={accountId === EXCL_TAB ? 'ignore' : colorFilter} onChange={pickColor} />
           </>}
           columns={COLUMNS}
           openKey={askedRow}
@@ -4623,138 +4947,14 @@ export default function RapprochementBancaire() {
           // gagne toujours — la règle explicite de l'utilisateur passe avant.
           // Code couleur du classeur (rouge / bleu / jaune / vert / gris) : la ligne
           // entière prend la couleur de son statut — Charles s'en sert, ne pas retirer.
-          rowClassName={(r) => `${r._ghost ? GHOST_META.tint : STATUS_META[r.awaiting_payment ? 'facture_recue' : bucketOf(r)].tint}${r._flag ? ' row-flagged' : ''}`}
+          rowClassName={(r) => `${r._ghost ? GHOST_META.tint : STATUS_META[r.awaiting_payment ? 'facture_recue' : bucketOf(r)].tint}${r._flag ? ' row-flagged' : ''}${arrived?.has(r.id) ? ' row-arrived' : ''}${claudeFocus === r.id ? ' row-claude-focus' : ''}`}
           searchFields={['details', 'description', 'reference', 'amount', 'comment', 'matched_label']}
           // Sans `bulkDeleteAlways`, DataTable n'affiche les cases à cocher que
           // si un admin a activé la suppression en lot sur la table : la
           // confirmation en lot était invisible. Pas de `onBulkDelete` — on ne
           // supprime pas une ligne de relevé depuis la barre.
           bulkDeleteAlways
-          bulkActions={[
-            {
-              key: 'reconcile', label: 'Confirmer', icon: CheckCheck, busyLabel: 'Rapprochement…',
-              show: (rows) => rows.some((r) => !r._ghost && r.status !== 'rapproche' && r.status !== 'ignore'),
-              onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real)) },
-            },
-            {
-              // Une dépense (ou une répartition AGA) publie dans QuickBooks :
-              // elle ne part JAMAIS en lot, elle attend son clic. Le bouton
-              // annonce donc ce qu'il va vraiment confirmer, et le serveur
-              // refuse les autres de toute façon.
-              key: 'accept-proposals', icon: Wand2, busyLabel: 'Confirmation…',
-              label: (rows) => {
-                const n = rows.reduce((s, r) => s + Math.max(0, (r.proposal_count || 0) - (r.publishing_count || 0)), 0)
-                return n > 1 ? `Confirmer ${n} propositions` : 'Confirmer la proposition'
-              },
-              show: (rows) => rows.some((r) => (r.proposal_count || 0) - (r.publishing_count || 0) > 0),
-              onClick: async (ids) => {
-                const rows = allRows.filter((r) => ids.includes(r.id) && r.proposal_count > 0)
-                if (!rows.length) return
-                const props = (await Promise.all(rows.map((r) => api.bank.txnProposals(r.id)))).flat()
-                const open = props.filter((p) => p.status === 'proposee')
-                const batch = open.filter((p) => !p.publishes).map((p) => p.id)
-                const held = open.length - batch.length
-                if (batch.length) await api.bank.acceptProposals(batch)
-                invalidate('/bank')
-                await refresh()
-                if (held) {
-                  flash(held > 1
-                    ? `${held} écritures restent à confirmer une par une — elles publient dans QuickBooks.`
-                    : 'Une écriture reste à confirmer sur sa ligne — elle publie dans QuickBooks.')
-                }
-              },
-            },
-            {
-              key: 'unreconcile', label: 'Annuler le rapprochement', icon: Undo2, busyLabel: 'Mise à jour…',
-              show: (rows) => rows.length > 0 && rows.every((r) => r.status === 'rapproche'),
-              onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real, true)) },
-            },
-            {
-              // Les deux marques de Michel, posées sur toute la sélection d'un
-              // coup — elles ne se posaient qu'une ligne à la fois.
-              key: 'review', label: 'À réviser', icon: AlertTriangle, busyLabel: 'Mise à jour…',
-              show: (rows) => rows.some((r) => !r._ghost && !r.review_flag),
-              onClick: async (ids) => {
-                await bulkReal(ids, async (real) => {
-                  for (const id of real) await api.bank.setReview(id, true)
-                })
-                loadAccounts().catch(() => {})
-              },
-            },
-            {
-              // Un seul signet par compte : sur une sélection, il se pose sur la
-              // ligne la plus récente.
-              key: 'bookmark', label: 'Signet', icon: Bookmark, busyLabel: 'Mise à jour…',
-              show: (rows) => accountId !== TODO_TAB && rows.some((r) => !r._ghost),
-              onClick: async (ids) => {
-                const real = allRows.filter((r) => ids.includes(r.id) && !r._ghost)
-                const last = real.sort((a, b) => String(b.txn_date).localeCompare(String(a.txn_date)))[0]
-                if (last) await setBookmark(last.id)
-              },
-            },
-            {
-              // La liste des factures réclamées ne se remplit que d'ici.
-              key: 'invoice-request', label: 'Facture manquante', icon: Flag, busyLabel: 'Ajout…',
-              show: (rows) => rows.some((r) => !r._ghost && !r.invoice_requested),
-              onClick: async (ids) => {
-                await bulkReal(ids, (real) => api.bank.addInvoiceRequests(real))
-              },
-            },
-            {
-              // Plusieurs lignes du relevé pour un seul montant ailleurs (10
-              // petits crédits Rona contre une ligne de 163,49 $). Si la
-              // sélection contient déjà la ligne du total, les autres s'y fondent.
-              key: 'group', label: 'Regrouper', icon: Combine, busyLabel: 'Regroupement…',
-              show: (rows) => {
-                const real = rows.filter((r) => !r._ghost)
-                if (real.length === 1) return !!real[0].group_parent_id
-                return real.length >= 2 && !real.some((r) => r.group_count)
-              },
-              onClick: async (ids) => {
-                const rows = allRows.filter((r) => ids.includes(r.id) && !r._ghost)
-                try {
-                  const parents = new Set(rows.map((r) => r.group_parent_id))
-                  if (parents.size === 1 && rows[0].group_parent_id) {
-                    await api.bank.regroupTxn(rows[0].id)
-                  } else {
-                    const sum = rows.reduce((s, r) => s + r.amount, 0)
-                    const total = rows.find((r) => Math.abs(2 * r.amount - sum) < 0.005)
-                    if (total) await api.bank.groupTxns(rows.filter((r) => r !== total).map((r) => r.id), total.id)
-                    else await api.bank.groupTxns(rows.map((r) => r.id))
-                  }
-                } catch (e) { flash(e.message) }
-                invalidate('/bank')
-                await refresh()
-              },
-            },
-            {
-              key: 'ungroup', label: 'Dégrouper', icon: Split, busyLabel: 'Mise à jour…',
-              show: (rows) => rows.length === 1 && !!rows[0].group_count,
-              onClick: async (ids) => {
-                try { await api.bank.ungroupTxn(ids[0]) } catch (e) { flash(e.message) }
-                invalidate('/bank')
-                await refresh()
-              },
-            },
-            {
-              key: 'ignore', label: 'Exclure', icon: Unlink, busyLabel: 'Mise à jour…',
-              show: (rows) => rows.some((r) => !r._ghost && r.status !== 'ignore'),
-              onClick: async (ids) => {
-                await bulkReal(ids, async (real) => {
-                  for (const id of real) await api.bank.updateTransaction(id, { status: 'ignore' })
-                })
-              },
-            },
-            {
-              key: 'reactivate', label: 'Rétablir', icon: Undo2, busyLabel: 'Mise à jour…',
-              show: (rows) => rows.length > 0 && rows.every((r) => r.status === 'ignore'),
-              onClick: async (ids) => {
-                await bulkReal(ids, async (real) => {
-                  for (const id of real) await api.bank.updateTransaction(id, { status: 'a_traiter' })
-                })
-              },
-            },
-          ]}
+          bulkActions={txnActions}
           // « Pour révision » : la ligne s'ouvre dessous (L3). Ailleurs, et pour
           // une écriture fantôme, le panneau d'avant.
           singleExpand
@@ -4776,9 +4976,6 @@ export default function RapprochementBancaire() {
             : { title: 'Aucune transaction', description: stage === 'rev' ? 'Importer un relevé pour commencer le rapprochement.' : '' }}
         />
         </div>
-        <div className="dt-skin-ledger">
-          <AccountTabs accounts={accounts} accountId={accountId} onChange={setAccountId} />
-        </div>
       </div>
 
       <RecordPeekDrawer open={!!peekRow}
@@ -4795,7 +4992,7 @@ export default function RapprochementBancaire() {
         </RecordScope>}
       </RecordPeekDrawer>
 
-      {rowMenu && <RowContextMenu menu={rowMenu} onClose={closeRowMenu} onDossier={(r) => (receiptOf(r) ? openTransaction(r) : setPeekOpen({ id: r.id, mode: 'full', forId: r.id }))} onChanged={refresh} />}
+      {rowMenu && <RowContextMenu menu={rowMenu} actions={txnActions} onClose={closeRowMenu} onDossier={(r) => (receiptOf(r) ? openTransaction(r) : setPeekOpen({ id: r.id, mode: 'full', forId: r.id }))} onChanged={refresh} />}
 
       {achatDoc && (
         <RecordPeekDrawer open onClose={() => setAchatDoc(null)} peekKey="achats" width={640}
@@ -4825,26 +5022,21 @@ export default function RapprochementBancaire() {
         </Suspense>
       </RecordPeekDrawer>
 
-      {pageDrag && !showDrop && (
-        <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center bg-brand-600/10 border-4 border-dashed border-brand-500">
-          <span className="px-4 py-2 rounded-lg bg-white text-sm shadow">Lâchez le relevé ici</span>
+      {pageDrag && (
+        <div className="fixed inset-2 z-40 pointer-events-none flex items-center justify-center rounded-xl bg-brand-600/10 border-[3px] border-dashed border-brand-500">
+          <span className="text-lg font-bold text-brand-700">Lâcher</span>
         </div>
       )}
-
-      {showDrop && (
-        <StatementDropModal
-          accounts={accounts}
-          initialFiles={droppedFiles}
-          onClose={() => { setShowDrop(false); setDroppedFiles(null) }}
-          onDone={async (results) => {
-            setShowDrop(false)
-            setDroppedFiles(null)
-            const inserted = results.reduce((n, r) => n + r.inserted, 0)
-            const matched = results.reduce((n, r) => n + r.autoMatched, 0)
-            flash(`${inserted} importée${inserted > 1 ? 's' : ''} depuis ${results.length} relevé${results.length > 1 ? 's' : ''}, ${matched} appariée${matched > 1 ? 's' : ''}.`)
-            await refresh()
-          }}
-        />
+      <input ref={filePick} type="file" multiple className="hidden" data-testid="statement-file-input"
+        accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,.csv,.tsv,.txt,.xlsx,.xls"
+        onChange={(e) => { drops.add([...e.target.files]); e.target.value = '' }} />
+      {pasteOpen && <PasteLinesModal onClose={() => setPasteOpen(false)} onFiles={drops.add} />}
+      {accountId && !VIRTUAL_TITLES[accountId] && (
+        <ClaudeBubble accountId={accountId} currency={currency} onFocus={setClaudeFocus} onChanged={refresh}
+          onShow={(id) => {
+            setColorFilter(null); setLineFilter(null)
+            setParams((prev) => { const next = new URLSearchParams(prev); next.set('ligne', id); return next }, { replace: true })
+          }} />
       )}
     </Layout>
   )

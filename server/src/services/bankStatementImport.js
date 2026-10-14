@@ -160,7 +160,7 @@ export async function readStatement(filePath, ext) {
 
 const SYSTEM_PROMPT = `Tu lis un RELEVÉ BANCAIRE ou un relevé de CARTE DE CRÉDIT (PDF, export ou capture d'écran) appartenant à l'entreprise « Automatisation Orisha Inc ». Tu retournes UNIQUEMENT un JSON valide, sans texte autour, sans bloc de code.
 
-AVANT TOUT — QUEL DOCUMENT EST-CE ? Le fichier déposé n'est pas toujours un relevé : c'est parfois une FACTURE ou un REÇU d'un fournisseur (un seul vendeur, des articles, un sous-total, des taxes, un total à payer), qui n'a rien à faire dans un relevé. Dans ce cas, retourne exactement { "document_kind": "facture", "rows": [] } et rien d'autre. Un relevé, lui, liste les mouvements d'UN COMPTE sur une période, avec des soldes : retourne "document_kind": "releve" et le reste de la structure.
+AVANT TOUT — QUEL DOCUMENT EST-CE ? Le fichier déposé n'est pas toujours un relevé : c'est parfois une FACTURE ou un REÇU d'un fournisseur (un seul vendeur, des articles, un sous-total, des taxes, un total à payer), qui n'a rien à faire dans un relevé. Dans ce cas, retourne exactement { "document_kind": "facture", "rows": [] } et rien d'autre. C'est parfois aussi une simple CAPTURE DU SOLDE d'un compte (l'écran d'accueil d'une banque en ligne : le nom du compte et son solde, sans liste de mouvements) : retourne alors { "document_kind": "solde", "institution", "account_label", "account_number_masked", "currency", "kind", "as_of": "YYYY-MM-DD ou null", "current_balance": solde actuel/courant/comptabilisé (pour une carte, le solde dû) ou null, "available_balance": solde disponible ou null, "rows": [] } — un seul compte, celui qui est mis en avant (ou le COMPTE VISÉ). Sur une capture de solde : "currency" seulement si la devise est écrite (CAD, USD, US$…), un « $ » seul ne dit rien → null ; pour une carte, le crédit disponible n'est PAS un solde → "available_balance": null. Un relevé, lui, liste les mouvements d'UN COMPTE sur une période, avec des soldes : retourne "document_kind": "releve" et le reste de la structure.
 
 Structure exacte attendue :
 {
@@ -237,6 +237,7 @@ export function parseStatementResponse(data) {
   // Une facture n'a pas de lignes de relevé : c'est une réponse valide, elle
   // part à l'extraction de données au lieu d'être importée au compte.
   if (parsed?.document_kind === 'facture') return { document_kind: 'facture', rows: [] }
+  if (parsed?.document_kind === 'solde') return { ...parsed, rows: [] }
   if (!parsed || !Array.isArray(parsed.rows)) {
     throw new Error('Aucune liste de transactions lisible. Déposez une capture du tableau ou un relevé PDF.')
   }
@@ -530,6 +531,9 @@ export function scoreAccount(account, extracted, overlaps = 0, fileName = '', ch
   if (hitHints.length) {
     score += 4
     evidence.push({ label: 'Appris', detail: hitHints.join(', ') })
+    // Un numéro appris (« 4891 ») départage deux comptes de la même banque,
+    // qu'un simple « desjardins » appris des deux côtés laisse à égalité.
+    if (hitHints.some((h) => digitsOf(h).length >= 4)) score += 5
   }
   const inst = norm(extracted?.institution)
   const mine = norm(account.institution)
@@ -730,6 +734,7 @@ export function getUpload(id) {
     ...row,
     detect_evidence: safeJson(row.detect_evidence, []),
     rows_json: safeJson(row.rows_json, []),
+    snapshot: row.snapshot_json ? safeJson(row.snapshot_json, null) : null,
   }
 }
 
@@ -776,6 +781,95 @@ export async function sendUploadToExtractor(id, up = null) {
   return getUpload(id)
 }
 
+// ── Capture du solde seul ────────────────────────────────────────────────────
+// « Y a-t-il du neuf sur ce compte ? » sans relevé : le solde affiché par la
+// banque comparé au dernier solde que Boréal connaît. Même solde = rien à importer.
+
+// Solde porté par la dernière ligne qui en a un, puis les lignes entrées après
+// sans solde (une carte tient sa dette en positif : un achat négatif l'augmente).
+// Les soldes de la même journée valent tous : l'ordre intra-jour n'est pas sûr.
+export function latestKnownBalance(accountId, kind = 'bank') {
+  if (!accountId) return null
+  const anchor = db.prepare(`
+    SELECT txn_date, balance FROM bank_transactions
+    WHERE account_id=? AND balance IS NOT NULL AND deleted_at IS NULL
+    ORDER BY txn_date DESC, rowid DESC LIMIT 1
+  `).get(accountId)
+  if (!anchor) return null
+  const after = db.prepare(`
+    SELECT COALESCE(SUM(amount),0) s, COUNT(*) n, MAX(txn_date) d FROM bank_transactions
+    WHERE account_id=? AND txn_date > ? AND balance IS NULL AND deleted_at IS NULL
+  `).get(accountId, anchor.txn_date)
+  const sameDay = after.n ? [] : db.prepare(`
+    SELECT balance FROM bank_transactions
+    WHERE account_id=? AND txn_date=? AND balance IS NOT NULL AND deleted_at IS NULL
+  `).all(accountId, anchor.txn_date).map((r) => r.balance)
+  const balance = round2(anchor.balance + (kind === 'card' ? -after.s : after.s))
+  return { balance, date: after.d || anchor.txn_date, alternatives: sameDay }
+}
+
+export function compareSnapshot(account, extracted, known) {
+  const shown = [numOrNull(extracted?.current_balance), numOrNull(extracted?.available_balance)].filter((v) => v != null)
+  const base = { shown: shown[0] ?? null, available: numOrNull(extracted?.available_balance), as_of: extracted?.as_of || null }
+  if (!account || !shown.length || !known) return { ...base, verdict: 'inconnu', known: known?.balance ?? null, known_date: known?.date ?? null, delta: null }
+  const card = account.kind === 'card'
+  const v = (x) => (card ? Math.abs(x) : x)
+  const refs = [known.balance, ...known.alternatives]
+  const same = shown.some((s) => refs.some((r) => Math.abs(v(s) - v(r)) <= 0.01))
+  return {
+    ...base,
+    verdict: same ? 'identique' : 'different',
+    known: known.balance,
+    known_date: known.date,
+    delta: same ? 0 : round2(v(shown[0]) - v(known.balance)),
+  }
+}
+
+function snapshotUpload(id, up, extracted, read, { accountId = null, accountHint = null } = {}) {
+  const accounts = listAccounts()
+  let det = detectAccount(extracted, [], accounts, new Map(), up.original_name || '')
+  if (accountId && accountHint) {
+    det = { account_id: accountHint.id, confidence: 1, evidence: [{ label: 'Dossier', detail: accountHint.name }] }
+  } else if (!det.account_id) {
+    // Le solde lui-même désigne le compte, s'il n'en désigne qu'un.
+    const cur = String(extracted.currency || '').toUpperCase()
+    const hits = accounts.filter((a) => (!cur || a.currency === cur)
+      && compareSnapshot(a, extracted, latestKnownBalance(a.id, a.kind)).verdict === 'identique')
+    if (hits.length === 1) det = { account_id: hits[0].id, confidence: 1, evidence: [{ label: 'Solde', detail: hits[0].name }] }
+  }
+  const account = accounts.find((a) => a.id === det.account_id) || null
+  const snap = compareSnapshot(account, extracted, account ? latestKnownBalance(account.id, account.kind) : null)
+  touch(id, {
+    source: read.source,
+    page_count: read.pageCount,
+    document_kind: 'solde',
+    account_id: det.account_id,
+    detect_confidence: det.confidence,
+    detect_evidence: JSON.stringify(det.evidence),
+    institution: extracted.institution || null,
+    account_number_masked: extracted.account_number_masked || null,
+    currency: extracted.currency || null,
+    closing_balance: snap.shown,
+    snapshot_json: JSON.stringify(snap),
+    rows_json: '[]',
+    status: 'pret',
+    error: snap.shown == null ? 'Aucun solde lisible sur la capture' : null,
+  })
+  logSync('bank:statement-upload', 'manual', { status: 'success', modified: 0 })
+  return getUpload(id)
+}
+
+function refreshSnapshot(id) {
+  const up = db.prepare(SELECT_UPLOAD).get(id)
+  if (!up || up.document_kind !== 'solde') return false
+  const prev = safeJson(up.snapshot_json, {})
+  const account = up.account_id ? db.prepare('SELECT * FROM bank_accounts WHERE id=?').get(up.account_id) : null
+  const snap = compareSnapshot(account, { current_balance: prev.shown, available_balance: prev.available, as_of: prev.as_of },
+    account ? latestKnownBalance(account.id, account.kind) : null)
+  touch(id, { snapshot_json: JSON.stringify(snap) })
+  return true
+}
+
 // `accountId` : le compte auquel le fichier est destiné (dossier Drive). Il
 // s'impose à la détection et oriente la lecture d'un relevé à plusieurs
 // comptes. À défaut, une relecture reprend le compte déjà choisi — imposé s'il
@@ -820,6 +914,9 @@ export async function analyzeUpload(id, { extract = extractStatement, refine = r
     // de données, exactement comme si elle y avait été déposée.
     if (String(extracted.document_kind || '').toLowerCase() === 'facture') {
       return await sendUploadToExtractor(id, up)
+    }
+    if (String(extracted.document_kind || '').toLowerCase() === 'solde') {
+      return snapshotUpload(id, up, extracted, read, { accountId, accountHint })
     }
     // Un mois sans mouvement est un vrai relevé, s'il le prouve : soldes
     // d'ouverture et de clôture imprimés, égaux, et une date d'arrêté.
@@ -941,6 +1038,7 @@ export function commitUpload(id, userId, { only = null } = {}) {
   if (!up) throw new Error('Dépôt introuvable')
   if (up.status === 'importe') throw new Error('Ce dépôt est déjà importé')
   if (up.document_kind === 'facture') throw new Error("Ce document est une facture : elle est partie à l'extraction de données")
+  if (up.document_kind === 'solde') throw new Error('Capture de solde : rien à importer')
   if (!up.account_id) throw new Error('Aucun compte choisi')
   const superseded = findSupersededPending(up.account_id, up.rows_json)
   const twins = only ? new Set() : findShiftedTwins(up.account_id, up.rows_json, new Set(superseded.keys()))
@@ -1007,6 +1105,7 @@ export function setUploadAccount(id, accountId) {
 export function replanUpload(id) {
   const up = getUpload(id)
   if (!up) return null
+  if (refreshSnapshot(id)) return getUpload(id)
   const account = up.account_id ? db.prepare('SELECT * FROM bank_accounts WHERE id=?').get(up.account_id) : null
   const rows = applySignConvention(
     up.rows_json.map(({ _new: _ignored, ...r }) => r), account, up.invertible,

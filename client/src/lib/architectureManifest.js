@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-10-09T23:38:05.257Z",
+  "generatedAt": "2026-10-14T18:00:18.241Z",
   "stats": {
-    "routes": 105,
-    "pages": 91,
+    "routes": 104,
+    "pages": 90,
     "groups": 7,
-    "api": 121,
-    "tables": 208,
+    "api": 122,
+    "tables": 210,
     "connectors": 11
   },
   "groups": [
@@ -67,14 +67,6 @@ export const architectureManifest = {
           "to": "/qualification-call",
           "label": "Appels de qualification",
           "component": "QualificationCall",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/relance-qualification",
-          "label": "Relances qualification",
-          "component": "RelanceQualification",
           "adminOnly": false,
           "hrOnly": false,
           "api": null
@@ -880,6 +872,7 @@ export const architectureManifest = {
     "/api/sale-receipts",
     "/api/scrapers",
     "/api/scrapers/session-bridge/document",
+    "/api/scrapers/session-bridge/screenshot",
     "/api/search",
     "/api/serials",
     "/api/shipments",
@@ -940,6 +933,7 @@ export const architectureManifest = {
     "automations",
     "autonomous_agents",
     "bank_accounts",
+    "bank_claude_messages",
     "bank_import_batches",
     "bank_proposals",
     "bank_rules",
@@ -963,6 +957,7 @@ export const architectureManifest = {
     "connector_oauth",
     "connector_sessions",
     "contact_companies",
+    "contact_email_subscriptions",
     "contacts",
     "contract_acceptances",
     "contract_events",

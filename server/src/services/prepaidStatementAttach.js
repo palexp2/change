@@ -200,14 +200,14 @@ async function fetchVendorTxnsInRange(vendorIds, start, end) {
 
 // Pièces jointes déjà présentes sur une transaction QB — sert à ne pas
 // téléverser deux fois le même fichier quand on relance le rattachement.
-async function existingAttachmentNames(entityType, entityId) {
+export async function existingAttachmentNames(entityType, entityId) {
   const query = `SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Type = '${entityType}' AND AttachableRef.EntityRef.Value = '${entityId}'`
   const resp = await qbGet(`/query?query=${encodeURIComponent(query)}`)
   return new Set((resp?.QueryResponse?.Attachable || []).map(a => a.FileName).filter(Boolean))
 }
 
 // Pages du document (page 1 + extra_pages), avec chemin absolu et type MIME.
-function statementFiles(row) {
+export function statementFiles(row) {
   const dir = uploadsPath('receipts')
   let extra = []
   try { extra = JSON.parse(row.extra_pages || '[]') } catch {}

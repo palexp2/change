@@ -38,7 +38,7 @@ function metadataTooltip(item) {
   return lines.length ? lines.join('\n') : undefined
 }
 
-export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeButton = false }) {
+export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeButton = false, hideRachat = false }) {
   // Facture ouverte par-dessus le panneau abonnement (clic sur une ligne de la
   // section « Factures »).
   const [facturePeek, setFacturePeek] = useState(null)
@@ -75,6 +75,19 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
   }, [])
+
+  // Contacts proposés = ceux de l'entreprise de l'abonnement (null = pas
+  // d'entreprise : recherche sur tous les contacts).
+  const companyId = ((localAbo?.id === abonnement?.id ? localAbo : abonnement) || {}).company_id || null
+  const [companyContacts, setCompanyContacts] = useState(null)
+  useEffect(() => {
+    if (!companyId) { setCompanyContacts(null); return }
+    let alive = true
+    api.contacts.list({ company_id: companyId, limit: 'all' })
+      .then(r => { if (alive) setCompanyContacts((r.data || []).map(c => ({ id: c.id, name: `${c.first_name || ''} ${c.last_name || ''}`.trim() || c.email || c.id }))) })
+      .catch(() => { if (alive) setCompanyContacts([]) })
+    return () => { alive = false }
+  }, [companyId])
 
   // Temps réel (hook avant le return anticipé) : `subscription:updated` porte la
   // ligne à jour (édition d'un collègue, webhook Stripe, sync) → en-tête ;
@@ -125,6 +138,12 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
   const totals = details?.items?.length ? subscriptionTotals(details) : null
   const displayedAmount = totals ? totals.subtotal : intervalAmount(aboState)
 
+  // Le contact déjà posé reste affiché même s'il n'est pas de l'entreprise.
+  const currentContact = aboState.contact_id ? { id: aboState.contact_id, name: aboState.contact_name } : null
+  const contactOptions = companyContacts
+    ? (currentContact && !companyContacts.some(c => String(c.id) === String(currentContact.id)) ? [...companyContacts, currentContact] : companyContacts)
+    : (currentContact ? [currentContact] : [])
+
   const body = (
       <div className="space-y-5">
         {stripeButton && aboState.stripe_url && (
@@ -148,8 +167,8 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
             <LinkedRecordField
               name="contact_id"
               value={aboState.contact_id}
-              options={aboState.contact_id ? [{ id: aboState.contact_id, name: aboState.contact_name }] : []}
-              searchTarget="contacts"
+              options={contactOptions}
+              searchTarget={companyContacts ? null : 'contacts'}
               getHref={c => `/contacts/${c.id}`}
               saving={savingCompany}
               onChange={handleContactChange}
@@ -231,6 +250,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
               subscriptionId={aboState.id}
               history={details.history}
               onChanged={() => loadDetails(aboState.id)}
+              hideRachat={hideRachat}
             />
 
             {details.invoices.length > 0 && (

@@ -19,6 +19,10 @@ import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 // { root: [clés], 'group:<nom>': [clés] } — clé d'un item = `to` (ou `href`
 // pour un lien externe), clé d'un groupe = `group:<nom>`. Sémantique partielle :
 // toute clé absente de la liste garde sa position par défaut, à la suite.
+// Clé de masquage de la cloche de notifications (bas du menu), rangée dans
+// nav_hidden comme les autres éléments du menu.
+export const NOTIFICATIONS_NAV_KEY = 'bell:notifications'
+
 export function navKey(item) {
   if (item.group) return `group:${item.group}`
   return item.to || item.href
@@ -80,7 +84,6 @@ export const defaultNavItems = [
     { to: '/tickets',      icon: LifeBuoy,      label: 'Billets' },
     { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
     { to: '/qualification-call', icon: PhoneCall, label: 'Appels de qualification' },
-    { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
     { to: '/modeles-courriel', icon: Mail, label: 'Modèles de courriel' },
     { to: '/discovery-forms', icon: FileText, label: 'System builder' },
     { to: '/catalogue-vente', icon: Tags, label: 'Catalogue de vente' },

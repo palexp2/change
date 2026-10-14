@@ -30,6 +30,19 @@ const DEFAULT_CONFIG = {
   intro: 'Je cherche {n} facture{s} pour fermer les livres.',
   // Plus de dernière ligne par défaut (Antoine Lambert, 2026-10-07).
   outro: '',
+  // Envoi à une personne précise (Charles, 2026-10-13) : une ligne par
+  // personne, « Nom = https://hooks.slack.com/… ». Son message est réduit au
+  // strict nécessaire : son prénom, puis les factures.
+  people: '',
+  person_intro: 'Salut {name} ! Peux-tu m\'envoyer {cette} facture{s} quand tu as une minute ? Merci 🙏',
+}
+
+/** Les personnes à qui l'on peut envoyer directement. */
+export function listPeople(cfg = getMissingInvoiceConfig()) {
+  return String(cfg.people || '').split('\n').map((l) => {
+    const m = l.match(/^\s*([^=]+?)\s*=\s*(https:\/\/hooks\.slack\.com\/\S+)\s*$/)
+    return m ? { name: m[1], url: m[2] } : null
+  }).filter(Boolean)
 }
 
 export function getMissingInvoiceConfig() {
@@ -129,10 +142,19 @@ export function setInSend(txnId, on) {
  * montant · compte, nommé comme l'onglet du relevé). Slack ne sait pas faire de
  * tableau : les colonnes tiennent dans un bloc à chasse fixe.
  */
-export function buildMessage(rows = null) {
+export function buildMessage(rows = null, { person = null } = {}) {
   const list = (rows || listRequests()).filter((r) => r.in_send)
   if (!list.length) return null
   const cfg = getMissingInvoiceConfig()
+  if (person) {
+    const head = cfg.person_intro
+      .replace('{name}', person)
+      .replace('{n}', String(list.length))
+      .replace('{s}', list.length > 1 ? 's' : '')
+      .replace('{cette}', list.length > 1 ? 'ces' : 'cette')
+    const lines = list.map((r) => `${frDate(r.txn_date)}  ${r.vendor}  ${r.amount_label}  ${r.account_name}`)
+    return [head, '```', ...lines, '```'].join('\n')
+  }
   // Deux devises dans la même demande : on ne les additionne pas, on les
   // montre côte à côte (« 2 422,99 $ US + 49,84 $ »).
   const byCurrency = new Map()
@@ -154,30 +176,36 @@ export function buildMessage(rows = null) {
 }
 
 /** Envoi manuel — un clic de Charles, jamais un planificateur. */
-export async function sendRequests({ user = null } = {}) {
+export async function sendRequests({ user = null, person = null } = {}) {
   const started = Date.now()
   if (!isSystemAutomationActive(MISSING_INVOICE_AUTOMATION_ID)) {
     return { sent: false, reason: 'inactive' }
   }
   const rows = listRequests().filter((r) => r.in_send)
   if (!rows.length) return { sent: false, reason: 'vide' }
-  const text = buildMessage(rows)
   const cfg = getMissingInvoiceConfig()
+  const target = person ? listPeople(cfg).find((p) => p.name === person) : null
+  if (person && !target) return { sent: false, reason: 'personne' }
+  const text = buildMessage(rows, { person: target?.name })
   try {
-    const res = await sendSlack({
-      channel: cfg.slack_channel,
-      url: cfg.slack_webhook_url,
-      envName: cfg.slack_webhook_env,
-      text,
-      fallbackNote: "Le canal des factures manquantes n'est pas configuré — le message a été redirigé ici.",
-    })
+    const res = target
+      // Le webhook de la personne, rien d'autre : jamais de repli vers un canal
+      // partagé pour un message qui lui est adressé.
+      ? await sendSlack({ url: target.url, fallbackEnv: null, text })
+      : await sendSlack({
+        channel: cfg.slack_channel,
+        url: cfg.slack_webhook_url,
+        envName: cfg.slack_webhook_env,
+        text,
+        fallbackNote: "Le canal des factures manquantes n'est pas configuré — le message a été redirigé ici.",
+      })
     if (!res.sent) throw new Error('Aucun canal Slack joignable')
     const at = nowIso()
     const mark = db.prepare('UPDATE missing_invoice_requests SET last_sent_at=?, updated_at=? WHERE bank_txn_id=?')
     db.transaction(() => { for (const r of rows) mark.run(at, at, r.bank_txn_id) })()
     logSystemRun(MISSING_INVOICE_AUTOMATION_ID, {
       status: 'success',
-      result: { count: rows.length, via: res.via, by: user },
+      result: { count: rows.length, via: res.via, by: user, to: target?.name || cfg.slack_channel },
       duration_ms: Date.now() - started,
     })
     return { sent: true, count: rows.length, text, requests: listRequests() }

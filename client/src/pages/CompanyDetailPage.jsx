@@ -27,20 +27,25 @@ export default function CompanyDetailPage() {
 
   return (
     <Layout>
-      <div className="flex items-center gap-3 px-5 pt-4">
-        <button
-          onClick={goBack}
-          className="p-1 -ml-1 text-slate-400 hover:text-slate-600 flex-shrink-0"
-          aria-label="Retour"
-        >
-          <ArrowLeft size={20} />
-        </button>
-        <PageTitle icon={null}>{name || 'Entreprise'}</PageTitle>
+      {/* Pleine hauteur : la barre Historique reste tout en bas, même sur une fiche courte. */}
+      <div className="min-h-full flex flex-col">
+        <div className="flex items-center gap-3 px-5 pt-4">
+          <button
+            onClick={goBack}
+            className="p-1 -ml-1 text-slate-400 hover:text-slate-600 flex-shrink-0"
+            aria-label="Retour"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <PageTitle icon={null}>{name || 'Entreprise'}</PageTitle>
+        </div>
+        <div className="flex-1">
+          <RecordScope id={id}>
+            <CompanyDetail recordId={id} onClose={goBack} />
+          </RecordScope>
+        </div>
+        <RecordRevisionHistory table="companies" id={id} variant="page" />
       </div>
-      <RecordScope id={id}>
-        <CompanyDetail recordId={id} onClose={goBack} />
-      </RecordScope>
-      <RecordRevisionHistory table="companies" id={id} variant="page" />
     </Layout>
   )
 }

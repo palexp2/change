@@ -15,7 +15,7 @@
 //      s'en charge.
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
-import { classifyCarmLine, postingSkipReason } from './carmRules.js'
+import { classifyCarmLine, postingSkipReason, isPayingBroker } from './carmRules.js'
 import { getCarmConfig } from './carmAccount.js'
 import { daysBetween } from '../utils/datetime.js'
 import { round2Safe as round2 } from '../utils/money.js'
@@ -27,7 +27,7 @@ const brokerList = cfg => String(cfg?.broker_names || '').split(',').map(s => s.
 // Pur : reçoit les lignes, rend les paires. Trois passes par courtier —
 // même numéro de transaction, puis montant opposé à ≤ 10 jours, puis FIFO sur
 // son sous-grand-livre.
-export function pairBrokerLines(lines) {
+export function pairBrokerLines(lines, brokers = null) {
   const pairs = []
   const byBroker = new Map()
   // Quand l'export du portail ne nomme pas le courtier, toutes ses lignes
@@ -38,6 +38,8 @@ export function pairBrokerLines(lines) {
     const isBrokerPayment = l.kind === 'paiement' && l.payer === 'courtier' && Number(l.amount) < 0
     const isCharge = Number(l.amount) > 0 && l.kind !== 'garantie'
     if (!isBrokerPayment && !isCharge) continue
+    // Une charge déclarée par un courtier non payeur (Axxess) est à nous.
+    if (isCharge && l.broker && brokers && !isPayingBroker(l.broker, brokers)) continue
     if (isCharge && !l.broker && !lines.some(x => x.kind === 'paiement' && x.payer === 'courtier' && !x.broker)) continue
     const key = isBrokerPayment && !l.broker ? '(courtier)' : bucket(l)
     if (!byBroker.has(key)) byBroker.set(key, { charges: [], payments: [] })
@@ -213,14 +215,22 @@ export function backfillCarmClassification() {
 // ligne déjà comptabilisée ni un état forcé à la main (skip_reason 'manuel:…').
 export function matchBrokerPairs() {
   const lines = liveLines().filter(l => l.posting_state !== 'comptabilise')
-  const pairs = pairBrokerLines(lines)
+  const pairs = pairBrokerLines(lines, brokerList(getCarmConfig()))
   const upd = db.prepare(`
     UPDATE carm_transactions SET posting_state = 'non_comptabilise', skip_reason = ?, offset_txn_id = ?,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ? AND deleted_at IS NULL AND COALESCE(posting_state,'') != 'comptabilise'
       AND COALESCE(skip_reason,'') NOT LIKE 'manuel:%'
   `)
+  // Table rase des paires automatiques : une ligne réattribuée (ex. Axxess,
+  // qui ne paie pas l'ASFC) ne doit pas garder une paire d'avant.
+  const reset = db.prepare(`
+    UPDATE carm_transactions SET skip_reason = NULL, offset_txn_id = NULL
+    WHERE deleted_at IS NULL AND skip_reason LIKE 'via_courtier:%'
+      AND COALESCE(posting_state,'') != 'comptabilise'
+  `)
   const tx = db.transaction(() => {
+    reset.run()
     for (const p of pairs) {
       upd.run(`via_courtier:${p.broker}`, p.payment_txn_id, p.charge_txn_id)
       upd.run(`via_courtier:${p.broker}`, p.charge_txn_id, p.payment_txn_id)
@@ -323,7 +333,7 @@ export function refreshPostingStates() {
       if (l.posting_state === 'comptabilise' || l.posting_state === 'a_verifier' || l.posting_state === 'erreur') continue
       if (String(l.skip_reason || '').startsWith('manuel:')) continue
       let state, reason = l.skip_reason || null
-      const skip = postingSkipReason(l)
+      const skip = postingSkipReason(l, brokerList(cfg))
       if (skip) { state = 'non_comptabilise'; reason = skip }
       else if (String(l.skip_reason || '').startsWith('via_courtier')) state = 'non_comptabilise'
       else if (cfg.opening_date && l.transaction_date < cfg.opening_date) { state = 'non_comptabilise'; reason = 'hors_periode' }

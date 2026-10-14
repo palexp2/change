@@ -8,6 +8,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { api } from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { SlackChannelSelect } from '../components/AutomationBuilder.jsx'
 import { WebhookEditor } from '../components/WebhookEditor.jsx'
 import { AUTOMATION_ACTION_LABELS as ACTION_TYPE_LABELS } from '../components/Badge.jsx'
 // Alias : cette page a déjà un composant local `Field` (paramètres d'action).
@@ -38,7 +39,8 @@ const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set([
   'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push', 'sys_ticket_survey_slack',
   'sys_order_item_shipped_cost', 'sys_facture_paid_slack', 'sys_soumission_late_click_task',
   'sys_project_auto_close', 'sys_partnership_hubspot', 'sys_return_item_received',
-  'sys_payment_failed_task',
+  'sys_payment_failed_task', 'sys_carm_balance_alert', 'sys_plaid_silence_alert',
+  'sys_pieces_disbursements', 'sys_marketing_weekly_slack', 'sys_instagram_weekly_slack',
 ])
 
 // Champs de config des automations à éditeur générique clé-valeur.
@@ -65,6 +67,7 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'slack_urgent_days', label: 'Fenêtre d\'urgence Slack (jours) — mode historique', def: '2', hint: 'Utilisé seulement si « Slack seulement si découvert » est à 0 : Slack parle si le seuil est franchi d\'ici ce nombre de jours.' },
       { key: 'stale_reminder_slack', label: 'Rappel Slack « solde non noté » (0 / 1)', def: '0', hint: '0 = rappel loggé seulement (tuile ambre sur la page Trésorerie). 1 = envoi Slack au plus une fois par 20 h.' },
       { key: 'variance_slack', label: 'Slack sur écart de réconciliation (0 / 1)', def: '0', hint: '0 = l\'écart entre le solde réel saisi et le solde projeté est journalisé seulement (visible sur la page Trésorerie). 1 = envoi Slack quand l\'écart dépasse la tolérance.' },
+      { key: 'slack_channel', label: 'Envoyer à', def: 'C0BC7KSM1D5' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Créer un incoming webhook Slack vers le DM d\'Antoine Lambert et ajouter la variable dans server/.env.' },
     ],
   },
@@ -75,6 +78,7 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'cards', label: 'Cartes à rappeler', def: 'Visa CAD, Visa USD', hint: 'Texte libre repris tel quel dans le message Slack.' },
       { key: 'due_day', label: 'Date cible de paiement (jour du mois)', def: '24', hint: 'L\'échéance réelle des cartes est vers le 26-27 ; la cible du 24 garde une marge.' },
       { key: 'work_days', label: 'Jours travaillés', def: '2,6', hint: '0 = dimanche, 1 = lundi … 6 = samedi. Défaut « 2,6 » = mardi et samedi.' },
+      { key: 'slack_channel', label: 'Envoyer à', def: 'U06ECMYHNR2' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_PERSO', hint: 'Message privé Slack (DM Antoine Lambert), distinct du canal de l\'alerte trésorerie. Si la variable est absente de server/.env, repli sur SLACK_WEBHOOK_TREASURY (signalé dans le journal).' },
     ],
   },
@@ -87,7 +91,7 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'min_alert_amount', label: 'Dépassement minimal pour alerter ($)', def: '100', hint: 'Un franchissement de quelques dollars n\'est pas une information.' },
       { key: 'pending_lookback_days', label: 'Ancienneté maximale d\'une transaction « en attente » (jours)', def: '90', hint: 'Au-delà, une transaction du relevé encore non comptabilisée est un retard de tenue de livres, pas un achat qui manque au solde — son relevé est payé depuis longtemps. Elle est affichée à part, sans être comptée.' },
       { key: 'lead_always', label: 'Rappel systématique à J-N (0 / 1)', def: '0', hint: '0 = l\'alerte J-N ne part que s\'il y a réellement un paiement à faire. 1 = elle part chaque mois, même quand la carte est loin du plafond.' },
-      { key: 'slack_channel', label: 'Canal ou personne Slack', def: '#comptabilite', hint: 'Passe par le bot Slack de l\'ERP et prime sur les deux champs webhook ci-dessous. Pour un canal privé, inviter le bot dans le canal.' },
+      { key: 'slack_channel', label: 'Envoyer à', def: '#comptabilite' },
       { key: 'slack_webhook_url', label: 'Webhook Slack — URL collée directement', def: '(aucune)', hint: 'Voie de secours si le bot n\'est pas utilisé.' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Dernier recours : même canal que l\'alerte trésorerie.' },
     ],
@@ -100,6 +104,7 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'max_batch', label: 'Versements maximum par passage', def: '8', hint: 'Cap de sécurité : une semaine normale compte 2 versements (1 CAD + 1 USD). L\'excédent est reporté au passage suivant et signalé sur Slack.' },
       { key: 'stale_alert_days', label: 'Alerte « en souffrance » après (jours)', def: '3', hint: 'Un versement réglé depuis plus de N jours toujours sans Deposit QuickBooks (bloqué par la garde, transactions non synchronisées…) est relancé sur Slack à chaque passage jusqu\'à résolution.' },
       { key: 'slack_on_success', label: 'Résumé Slack des passages réussis (0 / 1)', def: '0', hint: '0 = Slack ne parle que quand quelque chose coince (bloqué, erreur, versement en souffrance) ; un passage qui n\'a fait que publier des dépôts reste dans le journal. 1 = résumé de chaque passage.' },
+      { key: 'slack_channel', label: 'Envoyer à', def: 'C0BC7KSM1D5' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Canal du résumé (versements bloqués, en erreur, en souffrance). Même canal que l\'alerte trésorerie par défaut.' },
     ],
   },
@@ -107,7 +112,7 @@ const GENERIC_CONFIG_FIELDS = {
     title: 'Alerte Slack du sondage de satisfaction',
     intro: 'Destinataire de l\'alerte et seuil de note basse. Le plus simple : écrire le canal ou la personne dans le premier champ — le bot Slack de l\'ERP s\'occupe du reste, aucun webhook à créer. Vider un champ revient au défaut.',
     fields: [
-      { key: 'slack_channel', label: 'Canal ou personne Slack', def: '(aucun — repli sur le webhook)', hint: 'Exemples : « #support », « @philippe », ou son courriel pour un message privé. Passe par le bot Slack (SLACK_BOT_TOKEN) et prime sur les deux champs webhook ci-dessous. Pour un canal privé, inviter le bot dans le canal.' },
+      { key: 'slack_channel', label: 'Envoyer à', def: '(aucun — repli sur le webhook)' },
       { key: 'slack_webhook_url', label: 'Webhook Slack — URL collée directement', def: '(aucune)', hint: 'Voie de secours si le bot n\'est pas utilisé : URL d\'un incoming webhook, figée sur un seul canal.' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_PHILIPPE', hint: 'Dernier recours. Si la variable est absente de server/.env, le message part sur SLACK_WEBHOOK_TREASURY avec un préfixe d\'avertissement.' },
       { key: 'recipient', label: 'Nom du destinataire (affichage)', def: 'Philippe', hint: 'Sert uniquement au libellé du message de repli.' },
@@ -150,7 +155,7 @@ const GENERIC_CONFIG_FIELDS = {
     title: 'Facture payée → Slack',
     intro: 'Vider un champ revient au défaut.',
     fields: [
-      { key: 'slack_channel', label: 'Canal Slack', def: '#paiements' },
+      { key: 'slack_channel', label: 'Envoyer à', def: '#paiements' },
       { key: 'message', label: 'Message', def: '(texte par défaut)', hint: '{lien} = lien vers la facture, {numero} = son numéro.', multiline: true },
       { key: 'upgrade_prefix', label: 'Ligne ajoutée — ajout à un abonnement', def: "Ajout à l'abonnement." },
       { key: 'excluded_products', label: 'Produits exclus', type: 'products', hint: 'Facture entièrement composée de ces produits : aucun message.' },
@@ -164,11 +169,28 @@ const GENERIC_CONFIG_FIELDS = {
     title: 'Retour reçu → Slack',
     intro: 'Vider un champ revient au défaut.',
     fields: [
-      { key: 'slack_channel', label: 'Canal ou personne Slack', def: 'pap@orisha.io', hint: '« #canal », « @personne » ou un courriel.' },
-      { key: 'slack_webhook_url', label: 'Webhook Slack — URL', def: '(aucune)', hint: 'Secours si le bot n\'est pas utilisé.' },
-      { key: 'slack_webhook_env', label: 'Webhook Slack — variable d\'environnement', def: '(aucune)' },
+      { key: 'slack_channel', label: 'Envoyer à', def: 'pap@orisha.io' },
+      { key: 'msg_refund', label: 'Message — rembourser / désabonner', multiline: true, prefill: true, def: "Un retour parce qu'un client a changé d'idée ou un retour de désabonnement est arrivé. SVP prendre les actions nécessaires pour rembourser le client ou le désabonner et s'il y a lieu changer sa phase du cycle de vie. Retour : {retour}", hint: '{retour} = numéro, entreprise et lien du retour.' },
+      { key: 'msg_unknown', label: 'Message — retour sans raison', multiline: true, prefill: true, def: "Réception d'un retour sans justification. Retour : {retour}" },
+      { key: 'sub_end_slack_channel', label: 'Fin d\'abonnement — envoyer à', def: 'philippe@orisha.io' },
+      { key: 'msg_sub_end', label: 'Message — fin d\'abonnement', multiline: true, prefill: true, def: "Un retour de fin d'abonnement a été réceptionné. Retour : {retour}" },
     ],
   },
+  sys_carm_balance_alert: { title: 'Alerte de solde CARM', fields: [
+      { key: 'slack_channel', label: 'Envoyer à', def: 'C0BC7KSM1D5' },
+  ] },
+  sys_plaid_silence_alert: { title: 'Alerte solde figé', fields: [
+      { key: 'slack_channel', label: 'Envoyer à', def: 'U06ECMYHNR2' },
+  ] },
+  sys_pieces_disbursements: { title: 'Message des déboursés de pièces', fields: [
+      { key: 'slack_channel', label: 'Envoyer à', def: 'UUCQBRLF4' },
+  ] },
+  sys_marketing_weekly_slack: { title: 'Message marketing hebdomadaire', fields: [
+      { key: 'slack_channel', label: 'Envoyer à', def: 'U0633QP1KUG' },
+  ] },
+  sys_instagram_weekly_slack: { title: 'Liste Instagram hebdomadaire', fields: [
+      { key: 'slack_channel', label: 'Envoyer à', def: 'U03GS6BQD5G' },
+  ] },
   sys_paie_repartition: {
     title: 'Répartition de la paie — comptes et pourcentages',
     intro: 'Format des répartitions : « compte:poids, compte:poids, … ». Vider un champ revient au défaut.',
@@ -2153,22 +2175,30 @@ function ProductListPicker({ value, onChange, testId }) {
 
 // Éditeur générique clé-valeur pour les automations système à config plate
 // (spec = { title, intro, fields: [{key, label, def, hint?}] }).
+// Champ « destinataire Slack » : liste des canaux et personnes. Là où il
+// existe, les champs webhook (secours technique) ne sont plus montrés.
+const isSlackTargetKey = k => /slack_channel$/.test(k)
+const SLACK_WEBHOOK_KEYS = new Set(['slack_webhook_url', 'slack_webhook_env'])
+
 function GenericConfigEditor({ spec, actionConfig, onChange, compact = false }) {
   const set = (key, value) => onChange({ ...actionConfig, [key]: value })
+  const fields = spec.fields.some(f => isSlackTargetKey(f.key)) ? spec.fields.filter(f => !SLACK_WEBHOOK_KEYS.has(f.key)) : spec.fields
   return (
     <div className={compact ? '' : 'bg-white rounded-lg border p-5'} data-testid="generic-config">
       {spec.title && <h2 className="text-sm font-semibold mb-1">{spec.title}</h2>}
       {spec.intro && <p className="text-xs text-gray-500 mb-4">{spec.intro}</p>}
       <div className={compact ? 'space-y-3' : 'grid grid-cols-2 gap-4'}>
-        {spec.fields.map(f => (
+        {fields.map(f => (
           <div key={f.key} className={!compact && (f.multiline || f.type === 'products' || f.key === 'splits' || f.key === 'aga_splits') ? 'col-span-2' : ''}>
             <label className="label">{f.label}</label>
-            {f.type === 'products' ? (
+            {isSlackTargetKey(f.key) ? (
+              <SlackChannelSelect value={actionConfig?.[f.key] || (f.def?.startsWith('(') ? '' : f.def) || ''} onChange={v => set(f.key, v)} />
+            ) : f.type === 'products' ? (
               <ProductListPicker value={actionConfig?.[f.key]} onChange={v => set(f.key, v)} testId={`generic-config-${f.key}`} />
             ) : f.multiline ? (
               <textarea
-                rows={5}
-                value={actionConfig?.[f.key] ?? ''}
+                rows={f.prefill ? 3 : 5}
+                value={actionConfig?.[f.key] || (f.prefill ? f.def : '')}
                 onChange={e => set(f.key, e.target.value)}
                 placeholder={f.def || '—'}
                 className="input"

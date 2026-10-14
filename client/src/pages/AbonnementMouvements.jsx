@@ -69,7 +69,7 @@ export default function AbonnementMouvements() {
           </div>
         )}
 
-        <AbonnementEventsTable data={displayedEvents} loading={loading} manageViews forceAllView={!!monthFilter} />
+        <AbonnementEventsTable data={displayedEvents} loading={loading} manageViews forceAllView={!!monthFilter} hideRachatInDetail />
       </div>
     </Layout>
   )

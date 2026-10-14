@@ -90,7 +90,6 @@ export default function Purchases() {
       <DataTable
         table="purchases"
         manageViews
-        sortIndicator
         columns={columns}
         columnPatches={COLUMN_PATCHES}
         data={purchases}

@@ -51,7 +51,11 @@ export default function Automations() {
   const [params, setParams] = useSearchParams()
   const selId = params.get('id')
   const [q, setQ] = useState('')
-  const [closed, setClosed] = useState({})
+  const [open, setOpen] = useState({}) // sections repliées par défaut
+  const [extra, setExtra] = useState(() => { try { return JSON.parse(localStorage.getItem('autoSections') || '[]') } catch { return [] } })
+  const [adding, setAdding] = useState(false)
+  const [dragId, setDragId] = useState(null)
+  const [overG, setOverG] = useState(null)
   const [step, setStep] = useState(0)
   const [panel, setPanel] = useState('edit') // edit | history | test
   const [users, setUsers] = useState([])
@@ -75,6 +79,9 @@ export default function Automations() {
   const sel = list.find(a => a.id === selId) || null
   useEffect(() => { if (!selId && list.length) setParams({ id: list.find(isBuilder)?.id || list[0].id }, { replace: true }) }, [selId, list, setParams])
   useEffect(() => { setStep(0); setPanel('edit') }, [selId])
+  const selGroup = sel?.group
+  // La section de l'automatisation ouverte se déplie, les autres restent repliées.
+  useEffect(() => { if (selGroup) setOpen(o => (o[selGroup] ? o : { ...o, [selGroup]: true })) }, [selId, selGroup])
 
   // Brouillon de l'automatisation en blocs choisie, sauvegardé tout seul.
   const [draft, setDraft] = useState(null)
@@ -136,9 +143,32 @@ export default function Automations() {
       if (!m.has(g)) m.set(g, [])
       m.get(g).push(a)
     }
+    if (!needle) for (const g of extra) if (!m.has(g)) m.set(g, [])
     const order = ['Mes automatisations', 'Ventes', 'Banque', 'Comptabilité', 'Expédition & retours', 'Instagram', 'Système']
     return [...m.entries()].sort((x, y) => (order.indexOf(x[0]) + 99) % 99 - (order.indexOf(y[0]) + 99) % 99)
-  }, [list, q])
+  }, [list, q, extra])
+
+  function addSection(name) {
+    setAdding(false)
+    const g = name.trim()
+    if (!g || groups.some(([x]) => x === g)) return
+    const next = [...extra, g]
+    setExtra(next)
+    try { localStorage.setItem('autoSections', JSON.stringify(next)) } catch { /* stockage indisponible */ }
+    setOpen(o => ({ ...o, [g]: true }))
+  }
+  async function moveTo(id, g) {
+    const a = list.find(x => x.id === id)
+    if (!a || a.group === g) return
+    setList(l => l.map(x => (x.id === id ? { ...x, group: g } : x)))
+    try {
+      const r = await api.automations.setGroup(id, g)
+      setList(l => l.map(x => (x.id === id ? { ...x, group_name: g, group: r.group } : x)))
+    } catch (e) {
+      setList(l => l.map(x => (x.id === id ? { ...x, group: a.group } : x)))
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
 
   const triggerTable = draft?.kind === 'flow' ? null : draft?.tc?.erp_table
   const triggerTokens = draft?.tc?.type === 'subscription_product' ? SUB_TOKENS : null
@@ -209,21 +239,38 @@ export default function Automations() {
                 <Plus size={14} /> Nouvelle
               </button>
             </div>
-            {groups.map(([g, items]) => (
-              <div key={g} className="mb-1">
-                <button onClick={() => setClosed(c => ({ ...c, [g]: !c[g] }))} className="w-full flex items-center justify-between px-4 py-2 text-sm font-semibold">
-                  <span className="flex items-center gap-1">{closed[g] ? <ChevronRight size={14} /> : <ChevronDown size={14} />}{g}</span>
-                  <span className="text-xs font-normal text-slate-400">{items.filter(a => a.active).length} actives</span>
-                </button>
-                {!closed[g] && items.map(a => (
-                  <button key={a.id} onClick={() => setParams({ id: a.id })}
-                    className={`w-[calc(100%-12px)] mx-1.5 flex items-start gap-2 px-3 py-2 rounded-lg text-left ${a.id === selId ? 'bg-brand-50' : 'hover:bg-slate-50'}`}>
-                    <span className="min-w-0 flex-1 block text-[13px] font-medium truncate">{a.name}</span>
-                    <span className={`mt-0.5 shrink-0 text-[10px] font-bold rounded px-1.5 ${a.active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'}`}>{a.active ? 'ON' : 'OFF'}</span>
+            {groups.map(([g, items]) => {
+              const isOpen = !!q.trim() || open[g]
+              return (
+                <div key={g} className={`mb-1 rounded-lg ${overG === g ? 'bg-brand-50 ring-1 ring-brand-300' : ''}`}
+                  onDragOver={e => { if (!dragId) return; e.preventDefault(); setOverG(g) }}
+                  onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setOverG(null) }}
+                  onDrop={e => { e.preventDefault(); setOverG(null); if (dragId) moveTo(dragId, g); setDragId(null) }}>
+                  <button onClick={() => setOpen(o => ({ ...o, [g]: !isOpen }))} className="w-full flex items-center justify-between px-4 py-2 text-sm font-semibold">
+                    <span className="flex items-center gap-1">{isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}{g}</span>
+                    <span className="text-xs font-normal text-slate-400">{items.filter(a => a.active).length} actives</span>
                   </button>
-                ))}
-              </div>
-            ))}
+                  {isOpen && items.map(a => (
+                    <button key={a.id} onClick={() => setParams({ id: a.id })} draggable
+                      onDragStart={e => { setDragId(a.id); e.dataTransfer.effectAllowed = 'move' }}
+                      onDragEnd={() => { setDragId(null); setOverG(null) }}
+                      className={`w-[calc(100%-12px)] mx-1.5 flex items-start gap-2 px-3 py-2 rounded-lg text-left ${a.id === selId ? 'bg-brand-50' : 'hover:bg-slate-50'} ${dragId === a.id ? 'opacity-40' : ''}`}>
+                      <span className="min-w-0 flex-1 block text-[13px] font-medium truncate">{a.name}</span>
+                      <span className={`mt-0.5 shrink-0 text-[10px] font-bold rounded px-1.5 ${a.active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'}`}>{a.active ? 'ON' : 'OFF'}</span>
+                    </button>
+                  ))}
+                </div>
+              )
+            })}
+            {adding ? (
+              <input autoFocus className="input input-sm mx-3 my-2 w-[calc(100%-24px)]"
+                onBlur={e => addSection(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { e.target.value = ''; e.target.blur() } }} />
+            ) : (
+              <button onClick={() => setAdding(true)} className="mx-3 my-2 inline-flex items-center gap-1 text-xs text-slate-500 hover:text-brand-600">
+                <Plus size={13} /> Section
+              </button>
+            )}
           </div>
           <Resizer onDrag={(dx, start) => dragLeft(dx, start, 1)} />
 

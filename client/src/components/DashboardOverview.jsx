@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { BarChart3, Table2, ArrowUpRight, ArrowDownRight, AlertTriangle, RefreshCw, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
+import { BarChart3, Table2, AlertTriangle, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney as fmtMoneyBase, fmtNumber } from '../utils/formatters.js'
@@ -8,7 +8,7 @@ import { fmtMoney as fmtMoneyBase, fmtNumber } from '../utils/formatters.js'
 /* ── Vue globale du tableau de bord ────────────────────────────────────────
    Le pendant « Power BI » des sections du dashboard : une planche dense où
    tout se lit d'un coup d'œil — un chiffre héros (la trésorerie), une bande
-   d'indicateurs, six graphiques compacts, deux tableaux.
+   d'indicateurs, six graphiques compacts, trois tableaux (dont le bilan).
 
    Règles de dataviz appliquées ici :
    - Une seule série par graphique → une seule teinte, pas de légende.
@@ -31,6 +31,9 @@ function fmtMoneyCompact(n) {
   }
   return fmtMoney(n)
 }
+
+// État des résultats : tout en milliers entiers (73 k$, 1 235 k$), jamais de décimale ni de M.
+const fmtThousands = n => `${fmtNumber(Math.round(n / 1000) || 0)} k$`
 
 const fmtInt = n => fmtNumber(Math.round(n || 0))
 
@@ -210,7 +213,9 @@ export function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEver
   )
 }
 
-/* Ligne — 2 px, lavis à 10 %, point terminal cerclé de la surface et étiqueté. */
+/* Ligne — 2 px, lavis à 10 %, point terminal cerclé de la surface et étiqueté.
+   Les points `forecast` (projection) forment la fin de la série : tracés en
+   tirets, et c'est le dernier point réel qui porte l'étiquette. */
 function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW }) {
   const [hover, setHover] = useState(null)
   const t = TONES[tone] || TONES.brand
@@ -229,9 +234,13 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
   const yOf = v => PAD_T + PLOT_H - ((v - min) / (max - min || 1)) * PLOT_H
   const ticks = min < 0 ? [min, 0, max] : [0, scale.half, max]
 
-  const line = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${xOf(i)},${yOf(p.value)}`).join(' ')
-  const area = `${line} L${xOf(n - 1)},${yOf(min)} L${xOf(0)},${yOf(min)} Z`
-  const last = points[n - 1]
+  const pathOf = (from, to) => points.slice(from, to + 1).map((p, j) => `${j === 0 ? 'M' : 'L'}${xOf(from + j)},${yOf(p.value)}`).join(' ')
+  const firstForecast = points.findIndex(p => p.forecast)
+  const lastReal = firstForecast > 0 ? firstForecast - 1 : n - 1
+  const line = pathOf(0, lastReal)
+  const forecastLine = lastReal < n - 1 ? pathOf(lastReal, n - 1) : null
+  const area = `${line} L${xOf(lastReal)},${yOf(min)} L${xOf(0)},${yOf(min)} Z`
+  const last = points[lastReal]
 
   return (
     <div className="relative">
@@ -246,8 +255,11 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
         ))}
         <path d={area} className={t.wash} />
         <path d={line} fill="none" className={t.stroke} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        {forecastLine && (
+          <path d={forecastLine} fill="none" className={`${t.stroke} opacity-50`} strokeWidth={2} strokeDasharray="4 3" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        )}
         {points.map((p, i) => {
-          const isLast = i === n - 1
+          const isLast = i === lastReal
           return (
             <g key={p.key}
               onMouseEnter={() => setHover({ xPct: (xOf(i) / vw) * 100, yPct: (yOf(p.value) / CH) * 100, value: format(p.value), label: p.label })}
@@ -260,7 +272,7 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
               {labelAt(i, n, labelEvery) && (
                 // Les points extrêmes sont sur le bord du tracé : on ancre
                 // leur étiquette vers l'intérieur pour ne pas la rogner.
-                <text x={xOf(i)} y={CH - 5} textAnchor={isLast ? 'end' : i === 0 ? 'start' : 'middle'} fontSize="7" className="fill-slate-400">
+                <text x={xOf(i)} y={CH - 5} textAnchor={i === n - 1 ? 'end' : i === 0 ? 'start' : 'middle'} fontSize="7" className="fill-slate-400">
                   {p.short ?? p.label}
                 </text>
               )}
@@ -269,7 +281,7 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
         })}
         {/* Étiquette directe sur le dernier point : la valeur du jour ne
             dépend jamais du survol. */}
-        <text x={Math.min(xOf(n - 1), vw - PAD_R - 2)} y={Math.max(yOf(last.value) - 7, PAD_T + 4)} textAnchor="end" fontSize="8" fontWeight="600" className="fill-slate-600 tabular-nums">
+        <text x={Math.min(xOf(lastReal), vw - PAD_R - 2)} y={Math.max(yOf(last.value) - 7, PAD_T + 4)} textAnchor={lastReal === n - 1 ? 'end' : 'middle'} fontSize="8" fontWeight="600" className="fill-slate-600 tabular-nums">
           {format(last.value)}
         </text>
       </svg>
@@ -517,39 +529,6 @@ function ChartCard({ id, title, subtitle, to, points, format, valueLabel, period
   )
 }
 
-/* ── Tuiles ──────────────────────────────────────────────────────────── */
-
-function Meter({ pct, tone = 'brand' }) {
-  const t = TONES[tone] || TONES.brand
-  return (
-    <div className={`mt-2 h-1.5 overflow-hidden rounded-full ${t.track}`}>
-      <div className={`h-full rounded-full ${t.bar} transition-all`} style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
-    </div>
-  )
-}
-
-function Tile({ id, label, value, sub, tone = 'slate', meter, delta, to, loading }) {
-  const t = TONES[tone] || TONES.slate
-  const inner = (
-    <div className={`card flex h-full flex-col p-3 transition-colors ${to ? 'hover:border-slate-300' : ''} ${loading ? 'opacity-50' : ''}`} data-testid={`overview-tile-${id}`}>
-      <p className="text-[11px] leading-tight text-slate-500">{label}</p>
-      <p className={`mt-1 text-[19px] font-semibold leading-none ${t.text}`}>{value}</p>
-      <div className="mt-auto">
-        {delta != null && (
-          <p className={`mt-1.5 flex items-center gap-0.5 text-[11px] ${delta.good ? 'text-emerald-600' : 'text-rose-600'}`}>
-            {delta.value >= 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-            <span className="tabular-nums">{delta.text}</span>
-            <span className="text-slate-400">{delta.period}</span>
-          </p>
-        )}
-        {sub && <p className="mt-1 truncate text-[11px] text-slate-400">{sub}</p>}
-        {meter && <Meter pct={meter.pct} tone={meter.tone || tone} />}
-      </div>
-    </div>
-  )
-  return to ? <Link to={to} className="block h-full">{inner}</Link> : inner
-}
-
 /* ── Séries dérivées ─────────────────────────────────────────────────── */
 
 // Teinte par compte de revenu QB : les ventes gardent la teinte de marque,
@@ -694,7 +673,7 @@ function IncomeStatementCard({ data, error }) {
 
   const money = (v, extra = '') => (
     <span className={`tabular-nums ${v < 0 ? 'text-rose-600' : ''} ${extra}`}>
-      {v ? fmtMoneyCompact(v) : <span className="text-slate-300">—</span>}
+      {v ? fmtThousands(v) : <span className="text-slate-300">—</span>}
     </span>
   )
 
@@ -785,22 +764,136 @@ function IncomeStatementCard({ data, error }) {
   )
 }
 
+/* ── Bilan ────────────────────────────────────────────────────────────────
+   Le rapport BalanceSheet de QuickBooks en date d'aujourd'hui, une colonne.
+   Mêmes lignes aplaties que l'état des résultats (`value` au lieu de
+   `values`) ; par défaut on voit les grandes sections et leurs totaux. */
+
+// Ouvertes par défaut : les deux moitiés du bilan et « Obligations », pour
+// lire d'emblée court terme / long terme des deux côtés.
+const BS_OPEN_GROUPS = new Set(['Liabilities'])
+
+function BalanceSheetCard({ data, error }) {
+  const [override, setOverride] = useState(null)
+  const rows = mergeSectionTotals((data?.rows || []).map(r => (
+    r.kind === 'header' ? r : { ...r, values: [r.value], total: r.value }
+  )))
+  const sections = rows.filter(r => r.collapsible)
+  const collapsed = override || new Set(sections.filter(r => r.depth > 0 && !BS_OPEN_GROUPS.has(r.group)).map(r => r.id))
+  const allCollapsed = sections.length > 0 && sections.every(r => collapsed.has(r.id))
+  const visible = rows.filter(r => !(r.parents || []).some(p => collapsed.has(p)))
+  const toggle = (id) => setOverride(() => {
+    const next = new Set(collapsed)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const toggleAll = () => setOverride(allCollapsed ? new Set() : new Set(sections.map(r => r.id)))
+  const t = data?.totals || {}
+
+  return (
+    <div className="card p-3" data-testid="overview-balance-sheet">
+      <div className="mb-2 flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-[13px] font-semibold text-slate-800">Bilan</h3>
+          <p className="truncate text-[11px] text-slate-400">QuickBooks · au {data?.as_of ? fmtDate(data.as_of) : "aujourd'hui"}</p>
+        </div>
+        {sections.length > 0 && (
+          <button
+            type="button"
+            onClick={toggleAll}
+            aria-pressed={allCollapsed}
+            aria-label={allCollapsed ? 'Déplier les sections' : 'Replier les sections'}
+            title={allCollapsed ? 'Déplier les sections' : 'Replier les sections'}
+            data-testid="overview-balance-sheet-toggle"
+            className="shrink-0 rounded p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
+          >
+            {allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}
+          </button>
+        )}
+      </div>
+      {error ? (
+        <p className="text-xs text-rose-600" data-testid="overview-balance-sheet-error">Indisponible : {error}</p>
+      ) : !data ? (
+        <EmptyPlot label="Chargement du bilan…" />
+      ) : (
+        <>
+          <div className="mb-2 grid grid-cols-3 gap-2" data-testid="overview-balance-sheet-totals">
+            {[['Actifs', t.assets], ['Passifs', t.liabilities], ['Capital', t.equity]].map(([label, v]) => (
+              <div key={label} className="rounded-lg bg-slate-50 px-2 py-1.5">
+                <p className="text-[11px] text-slate-500">{label}</p>
+                <p className={`text-[15px] font-semibold tabular-nums ${v < 0 ? 'text-rose-600' : 'text-slate-900'}`}>{v == null ? '—' : fmtMoneyCompact(v)}</p>
+              </div>
+            ))}
+          </div>
+          <div className="max-h-[210px] overflow-y-auto">
+            <table className="w-full text-xs">
+              <tbody>
+                {visible.map(r => {
+                  const top = !r.depth
+                  const cls = top
+                    ? 'border-t border-slate-200 font-semibold text-slate-900'
+                    : r.kind === 'data' ? 'text-slate-600' : 'font-medium text-slate-700'
+                  return (
+                    <tr key={r.id} className={cls}>
+                      <td className="max-w-[220px] truncate py-1 pr-2" style={{ paddingLeft: 8 + (r.depth || 0) * 10 }} title={r.label}>
+                        {r.kind === 'header' && r.collapsible ? (
+                          <button type="button" onClick={() => toggle(r.id)} className="flex w-full items-center gap-1 truncate text-left hover:text-brand-700">
+                            {collapsed.has(r.id) ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
+                            <span className="truncate">{r.label}</span>
+                          </button>
+                        ) : r.label}
+                      </td>
+                      <td className={`whitespace-nowrap px-2 py-1 text-right tabular-nums ${r.total < 0 ? 'text-rose-600' : ''}`}>
+                        {r.total == null ? null : r.total ? fmtMoney(r.total) : <span className="text-slate-300">—</span>}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 /* ── La planche ──────────────────────────────────────────────────────── */
 
 export function DashboardOverview({ data, subscriptionEvents }) {
   const [bank, setBank] = useState(null)
   const [bankError, setBankError] = useState(null)
   const [history, setHistory] = useState(null)
+  const [invHistory, setInvHistory] = useState(null)
+  const [invHistoryError, setInvHistoryError] = useState(null)
   const [qbRevenue, setQbRevenue] = useState(null)
   const [qbRevenueError, setQbRevenueError] = useState(null)
   const [pnl, setPnl] = useState(null)
   const [pnlError, setPnlError] = useState(null)
-  const [reloading, setReloading] = useState(false)
+  const [bs, setBs] = useState(null)
+  const [bsError, setBsError] = useState(null)
+  const [debt, setDebt] = useState(null)
+  const [debtError, setDebtError] = useState(null)
+  const [cashFlow, setCashFlow] = useState(null)
+  const [cashFlowError, setCashFlowError] = useState(null)
 
   const loadFinance = (opts = {}) => {
     setBankError(null)
+    setCashFlowError(null)
+    // 13 mois : 12 mois complets pour les mois de trésorerie, le graphique en lit 12.
+    api.dashboard.cashFlow({ months: 13, ...opts })
+      .then(setCashFlow)
+      .catch(e => { setCashFlow(null); setCashFlowError(e?.message || 'Erreur QuickBooks') })
     setQbRevenueError(null)
     setPnlError(null)
+    setBsError(null)
+    setInvHistoryError(null)
+    api.dashboard.inventoryHistory({ months: 12, ...opts })
+      .then(setInvHistory)
+      .catch(e => { setInvHistory(null); setInvHistoryError(e?.message || 'Erreur QuickBooks') })
+    api.dashboard.balanceSheet(opts)
+      .then(setBs)
+      .catch(e => { setBs(null); setBsError(e?.message || 'Erreur QuickBooks') })
     api.dashboard.incomeStatement({ months: 12, ...opts })
       .then(setPnl)
       .catch(e => { setPnl(null); setPnlError(e?.message || 'Erreur QuickBooks') })
@@ -813,13 +906,12 @@ export function DashboardOverview({ data, subscriptionEvents }) {
 
   useEffect(() => { loadFinance() }, [])
 
-  function refreshFinance() {
-    setReloading(true)
-    setBank(null)
-    setQbRevenue(null)
-    setPnl(null)
-    loadFinance({ refresh: true }).finally(() => setReloading(false))
-  }
+  // Dette à long terme : cédules de /dettes-lt, 12 mois passés + 12 projetés.
+  useEffect(() => {
+    api.ltDebts.history({ back: 12, ahead: 12 })
+      .then(setDebt)
+      .catch(e => setDebtError(e?.message || 'Erreur'))
+  }, [])
 
   /* Trésorerie */
   const treasury = bank?.treasury ?? bank?.totals?.net ?? null
@@ -828,6 +920,39 @@ export function DashboardOverview({ data, subscriptionEvents }) {
     const [y, mo] = m.month.split('-').map(Number)
     return { key: m.month, label: `${MONTH_SHORT[mo - 1]} ${y}`, short: MONTH_SHORT[mo - 1].replace('.', ''), value: m.treasury }
   }), [history])
+
+  /* Inventaire — soldes QB de fin de mois, un compte par colonne du tableau */
+  const inventorySeries = useMemo(() => (invHistory?.months || []).map(m => ({
+    ...m, key: m.month, label: monthLabel(m.month), short: MONTH_SHORT[Number(m.month.slice(5)) - 1].replace('.', ''), value: m.total,
+  })), [invHistory])
+  const inventoryAccounts = useMemo(() => (invHistory?.accounts || []).map(a => ({
+    key: a.id, label: a.name, short: a.name.replace(/^Stock (de |d')?/i, ''),
+  })), [invHistory])
+
+  const debtSeries = useMemo(() => (debt?.months || []).map(m => ({
+    key: m.month, label: `${monthLabel(m.month)}${m.is_forecast ? ' · prévu' : ''}`, short: monthLabelShort(m.month),
+    value: m.total, forecast: m.is_forecast,
+    ...Object.fromEntries((debt.debts || []).map(d => [d.id, m[d.id]])),
+  })), [debt])
+  /* Free cash flow — exploitation + investissement, QuickBooks */
+  const fcfSeries = useMemo(() => {
+    const by = new Map((cashFlow?.months || []).map(m => [m.month, m]))
+    return lastMonthKeys(12).map(m => {
+      const row = by.get(m.key)
+      return {
+        ...m, value: Number(row?.fcf) || 0, fcf: Number(row?.fcf) || 0,
+        operating: Number(row?.operating) || 0, investing: Number(row?.investing) || 0,
+      }
+    })
+  }, [cashFlow])
+  const fcf12 = fcfSeries.reduce((s, m) => s + m.value, 0)
+  const fcfCols = [
+    { key: 'operating', label: 'Exploitation' },
+    { key: 'investing', label: 'Investissement' },
+    { key: 'fcf', label: 'FCF' },
+  ]
+
+  const debtCols = (debt?.debts || []).map(d => ({ key: d.id, label: d.label, short: d.label.replace(/^Prêt\s+/i, '') }))
 
   /* Rentabilité — 16 semaines, sommes hebdomadaires */
   const profitWeeks = useMemo(() => {
@@ -921,27 +1046,21 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   }, [subscriptionEvents])
 
   /* Indicateurs ponctuels */
-  const goal = data?.projectGoal || {}
-  const goalPct = goal.target > 0 ? (goal.current / goal.target) * 100 : 0
-  const inventory = data?.inventory?.valuation || {}
-  const serialsValue = (inventory.serialsByStatus || []).reduce((s, r) => s + (r.total_value || 0), 0)
-  const inventoryTotal = (inventory.pieces?.total_value || 0) + serialsValue
-  const parkValue = data?.replacementRate?.parkValue || 0
-  const replacement28 = parkValue > 0 ? ((data?.replacementRate?.last28 || 0) / parkValue) * 100 : 0
-  const shippingCosts = data?.weeklyShippingCosts || []
-  const shipping28 = shippingCosts.length ? shippingCosts[shippingCosts.length - 1].amount : 0
   const failedSections = Object.keys(data?._errors || {})
 
   const bankRows = bank?.accounts || []
-  // Les comptes entre -500 $ et 500 $ n'apportent rien à la lecture : on les masque (les sous-totaux restent inchangés)
+  // Les comptes entre -1 000 $ et 1 000 $ n'apportent rien à la lecture : on les masque (les sous-totaux restent inchangés)
   // Idem pour le compte d'écart de change latent, qui n'est pas un compte réel
   const significant = bankRows.filter(a => {
     if (/variation de change non mat[ée]rialis[ée]e/i.test(a.name || '')) return false
     const v = Number(a.balance_cad ?? a.balance)
-    return Number.isFinite(v) && Math.abs(v) >= 500
+    return Number.isFinite(v) && Math.abs(v) >= 1000
   })
-  const banks = significant.filter(a => a.type === 'Bank')
-  const cards = significant.filter(a => a.type === 'Credit Card')
+  // Bandes du héros : actifs (vert) d'abord, puis dettes (rouge), chacun du plus gros au plus petit.
+  const accountBars = significant
+    .map(a => ({ id: a.id, name: a.name, v: Number(a.balance_cad ?? a.balance) }))
+    .sort((x, y) => (y.v >= 0) - (x.v >= 0) || Math.abs(y.v) - Math.abs(x.v))
+  const barMax = Math.max(1, ...accountBars.map(a => Math.abs(a.v)))
 
   return (
     <div data-testid="dashboard-overview" className="space-y-3">
@@ -954,21 +1073,9 @@ export function DashboardOverview({ data, subscriptionEvents }) {
 
       {/* Bande héros — la trésorerie, seul grand chiffre de la planche. */}
       <section className="card p-4" data-testid="overview-hero">
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]">
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,300px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,300px)_minmax(0,1fr)_minmax(0,260px)]">
           <div>
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Trésorerie nette</p>
-              <button
-                type="button"
-                onClick={refreshFinance}
-                disabled={reloading}
-                aria-label="Rafraîchir les soldes"
-                title="Rafraîchir les soldes"
-                className="rounded p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
-              >
-                <RefreshCw size={13} className={reloading ? 'animate-spin' : ''} />
-              </button>
-            </div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Trésorerie nette</p>
             {bankError ? (
               <p className="mt-2 text-sm text-rose-600" data-testid="overview-treasury-error">
                 Soldes QuickBooks indisponibles : {bankError}
@@ -985,77 +1092,42 @@ export function DashboardOverview({ data, subscriptionEvents }) {
                 </p>
                 <p className="mt-2 text-xs text-slate-500">
                   Banques <span className="font-medium text-slate-700 tabular-nums">{fmtMoney(bank?.totals?.bank || 0)}</span>
-                  {' · '}
+                  <br />
                   Cartes &amp; marges <span className="font-medium text-slate-700 tabular-nums">{fmtMoney(bank?.totals?.credit_card || 0)}</span>
                 </p>
               </>
             )}
           </div>
           <div>
-            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Évolution — 12 derniers mois</p>
             {treasurySeries.length
               ? <MiniLine points={treasurySeries} tone="brand" format={fmtMoneyCompact} labelEvery={2} vw={HERO_VW} />
               : <EmptyPlot label="Historique QuickBooks indisponible" />}
           </div>
+          {/* Soldes par compte : une bande par compte, longueur = poids dans la trésorerie. */}
+          <div className="lg:col-span-2 xl:col-span-1" data-testid="overview-bank-accounts">
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Par compte</p>
+            {bankError ? null : !bankRows.length ? (
+              <p className="text-xs text-slate-300">Chargement…</p>
+            ) : (
+              <ul className="space-y-1">
+                {accountBars.map(a => (
+                  <li key={a.id} title={`${a.name} · ${fmtMoney(a.v)}`}>
+                    <div className="flex items-baseline justify-between gap-2 text-[11px] text-slate-600">
+                      <span className="truncate">{a.name}</span>
+                      <span className={`whitespace-nowrap tabular-nums ${a.v < 0 ? 'text-rose-600' : 'text-slate-700'}`}>{fmtMoneyCompact(a.v)}</span>
+                    </div>
+                    <div className="mt-0.5 h-1.5 rounded-full bg-slate-100">
+                      <div
+                        className={`h-full rounded-full ${a.v < 0 ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                        style={{ width: `${Math.max(2, (Math.abs(a.v) / barMax) * 100)}%` }}
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
-      </section>
-
-      {/* Bande d'indicateurs */}
-      <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6" data-testid="overview-tiles">
-        {/* Projets : on lit les mêmes sources que les sections « Projets créés »
-            et « Taux de closing » (creation + cf_vendu). Les agrégats
-            projects.openValue / wonThisMonth du endpoint reposent sur la colonne
-            `status`, restée à « Ouvert » sur tous les projets importés
-            d'Airtable — ils ne veulent rien dire et ne sont donc pas affichés. */}
-        <Tile
-          id="projects"
-          label="Projets créés ce mois"
-          value={fmtInt(projectsSeries[projectsSeries.length - 1]?.value)}
-          tone="sky"
-          sub={`${fmtInt(projectsSeries.slice(-12).reduce((s, m) => s + m.value, 0))} sur 12 mois`}
-          to="/pipeline"
-        />
-        <Tile
-          id="closing"
-          label="Taux de closing — 12 mois"
-          value={fmtPct(closingRate12, 0)}
-          tone="sky"
-          sub={`${fmtInt(closing12.won)} vendus sur ${fmtInt(closing12.total)} projets tranchés`}
-          to="/dashboard/taux-de-closing"
-        />
-        <Tile
-          id="goal"
-          label="Objectif de projets"
-          value={`${fmtInt(goal.current)} / ${fmtInt(goal.target)}`}
-          tone="brand"
-          sub={`${Math.round(goalPct)} % de la cible`}
-          meter={{ pct: goalPct, tone: goalPct >= 100 ? 'brand' : goalPct >= 60 ? 'amber' : 'rose' }}
-          to="/dashboard/objectif-de-projets"
-        />
-        <Tile
-          id="inventory"
-          label="Valeur de l'inventaire"
-          value={fmtMoneyCompact(inventoryTotal)}
-          tone="teal"
-          sub={`Pièces ${fmtMoneyCompact(inventory.pieces?.total_value || 0)} · Série ${fmtMoneyCompact(serialsValue)}`}
-          to="/dashboard/valeur-inventaire"
-        />
-        <Tile
-          id="replacement"
-          label="Taux de remplacement — 28 j"
-          value={fmtPct(replacement28, 2)}
-          tone={replacement28 > 0.5 ? 'rose' : 'teal'}
-          sub={`Parc ${fmtMoneyCompact(parkValue)}`}
-          to="/dashboard/taux-de-remplacement"
-        />
-        <Tile
-          id="shipping"
-          label="Coûts d'expédition — 28 j"
-          value={fmtMoneyCompact(shipping28)}
-          tone="amber"
-          sub="Compte 65000"
-          to="/dashboard/couts-expedition"
-        />
       </section>
 
       {/* Graphiques compacts */}
@@ -1080,6 +1152,38 @@ export function DashboardOverview({ data, subscriptionEvents }) {
         </ChartCard>
 
         <ChartCard
+          id="fcf" title="Free cash flow"
+          subtitle={cashFlow ? `QuickBooks · ${fmtMoneyCompact(fcf12)} sur 12 mois` : 'QuickBooks · 12 mois'}
+          table={<SeriesTable points={fcfSeries} series={fcfCols} format={fmtMoney} periodLabel="Mois" withTotal={false} />}
+        >
+          {cashFlowError ? (
+            <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600">
+              Indisponible : {cashFlowError}
+            </div>
+          ) : !cashFlow ? (
+            <EmptyPlot label="Chargement…" />
+          ) : (
+            <DivergingColumns points={fcfSeries} format={fmtMoneyCompact} chartId="fcf" />
+          )}
+        </ChartCard>
+
+        <ChartCard
+          id="inventory" title="Valeur de l'inventaire" subtitle="QuickBooks · fin de mois · 12 mois"
+          to="/dashboard/valeur-inventaire"
+          table={<SeriesTable points={inventorySeries} series={inventoryAccounts} format={fmtMoney} periodLabel="Mois" />}
+        >
+          {invHistoryError ? (
+            <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600">
+              Inventaire QuickBooks indisponible : {invHistoryError}
+            </div>
+          ) : !invHistory ? (
+            <EmptyPlot label="Chargement…" />
+          ) : (
+            <MiniLine points={inventorySeries} tone="teal" format={fmtMoneyCompact} />
+          )}
+        </ChartCard>
+
+        <ChartCard
           id="projects" title="Projets créés" subtitle="12 derniers mois"
           to="/dashboard/projets-crees"
           table={<SeriesTable points={projectsSeries} series={projectsCompareSeries} format={fmtInt} periodLabel="Mois" withTotal={false} />}
@@ -1092,7 +1196,8 @@ export function DashboardOverview({ data, subscriptionEvents }) {
         </ChartCard>
 
         <ChartCard
-          id="closing" title="Taux de closing" subtitle="Vendus / (vendus + non vendus) · 12 mois"
+          id="closing" title={`Taux de closing · ${fmtPct(closingRate12, 0)}`}
+          subtitle={`${fmtInt(closing12.won)} vendus sur ${fmtInt(closing12.total)} tranchés · 12 mois`}
           to="/dashboard/taux-de-closing"
           points={closingSeries} format={v => fmtPct(v, 0)} valueLabel="Taux" periodLabel="Mois"
         >
@@ -1119,59 +1224,22 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           />
         </ChartCard>
 
-        {/* Soldes par compte */}
-        <div className="card p-3" data-testid="overview-bank-accounts">
-          <div className="mb-2 flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <h3 className="truncate text-[13px] font-semibold text-slate-800">Soldes par compte</h3>
-              <p className="truncate text-[11px] text-slate-400">QuickBooks · converti en CAD</p>
-            </div>
-          </div>
-          {bankError ? (
-            <p className="text-xs text-rose-600">Indisponible : {bankError}</p>
-          ) : !bankRows.length ? (
-            <EmptyPlot label="Chargement des comptes…" />
+        <ChartCard
+          id="lt-debt" title="Dette à long terme"
+          subtitle="Cédules · 12 mois + 12 prévus"
+          to="/dettes-lt"
+          table={<SeriesTable points={debtSeries} series={debtCols} format={fmtMoney} periodLabel="Mois" />}
+        >
+          {debtError ? (
+            <div className="flex h-[132px] items-center justify-center text-xs text-rose-600">Indisponible : {debtError}</div>
+          ) : !debt ? (
+            <EmptyPlot label="Chargement…" />
           ) : (
-            <div className="max-h-[210px] overflow-y-auto">
-              <table className="w-full text-xs">
-                {[
-                  { label: 'Comptes bancaires', rows: banks, total: bank?.totals?.bank },
-                  { label: 'Cartes & marges', rows: cards, total: bank?.totals?.credit_card },
-                ].map(g => g.rows.length ? (
-                  <tbody key={g.label}>
-                    <tr className="bg-slate-50 text-[11px] font-semibold text-slate-700">
-                      <td className="px-2 py-1" colSpan={2}>{g.label}</td>
-                    </tr>
-                    {g.rows.map(a => (
-                      <tr key={a.id} className="border-b border-slate-100 text-slate-600">
-                        <td className="truncate px-2 py-1">{a.name}</td>
-                        <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums">{fmtMoney(a.balance_cad ?? a.balance)}</td>
-                      </tr>
-                    ))}
-                    <tr className="border-b border-slate-200 text-[11px] font-medium text-slate-700">
-                      <td className="px-2 py-1">Sous-total</td>
-                      <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums">{fmtMoney(g.total || 0)}</td>
-                    </tr>
-                  </tbody>
-                ) : null)}
-                {!banks.length && !cards.length ? (
-                  <tbody>
-                    <tr className="text-[11px] text-slate-400">
-                      <td className="px-2 py-1" colSpan={2}>Aucun compte avec un solde</td>
-                    </tr>
-                  </tbody>
-                ) : null}
-                <tfoot>
-                  <tr className="font-semibold text-slate-900">
-                    <td className="px-2 py-1">Trésorerie nette</td>
-                    <td className="whitespace-nowrap px-2 py-1 text-right tabular-nums">{fmtMoney(treasury || 0)}</td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
+            <MiniLine points={debtSeries} tone="violet" format={fmtMoneyCompact} labelEvery={4} />
           )}
-        </div>
+        </ChartCard>
 
+        <BalanceSheetCard data={bs} error={bsError} />
       </section>
 
       <IncomeStatementCard data={pnl} error={pnlError} />

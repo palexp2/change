@@ -3,6 +3,7 @@ import { sendInstallationFollowups } from './installationFollowup.js'
 import { getAutomationFrom } from './postmarkConfig.js'
 import { syncAndPushStripePayouts } from './quickbooks.js'
 import { migratePartnershipToBlocks, seedPartnershipLostFlow } from './subscriptionProductTrigger.js'
+import { seedReturnSerialStatusFlow } from './returnSerialStatusFlow.js'
 
 // Registry of system automations that can be invoked manually from the UI
 // (dry-run to preview, or run-now to execute). Omit an id here to keep it
@@ -366,6 +367,15 @@ export const MANUAL_RUNNERS = {
     }
     return await syncMarketingExpenses({ trigger: 'manuel', force: true })
   },
+  // Google Sheet du budget : dry-run = où il est ; run-now = réécriture.
+  sys_marketing_budget_sheet: async ({ dryRun }) => {
+    const { mirrorMarketingBudgetSheet, getMarketingSheetConfig, sheetUrl } = await import('./marketingBudgetSheet.js')
+    if (dryRun) {
+      const cfg = getMarketingSheetConfig()
+      return { summary: cfg.spreadsheet_id ? `Fichier : ${sheetUrl(cfg.spreadsheet_id)}` : `Le fichier « ${cfg.title} » sera créé au premier passage (Drive de ${cfg.google_account_email})` }
+    }
+    return await mirrorMarketingBudgetSheet({ trigger: 'manuel', force: true })
+  },
   // Message hebdo à Émilie : dry-run = aperçu du message sans envoi ;
   // run-now = envoi immédiat (ignore le jour et l'idempotence hebdomadaire).
   sys_marketing_weekly_slack: async ({ dryRun }) => {
@@ -530,12 +540,14 @@ export const SYSTEM_AUTOMATIONS = [
     description:
       "Quand un webhook Stripe porte un client que Boréal ne connaît pas (paiement fait sur le site web), " +
       "son courriel est cherché dans les contacts : le client est rattaché à l'entreprise principale du contact (créée s'il n'en a pas). " +
-      "Sinon le courriel des entreprises. Sinon un contact et une entreprise sont créés.",
+      "Sinon le courriel des entreprises. Sinon un contact et une entreprise sont créés. " +
+      "Aussi à la sync quotidienne des abonnements (abonnement sans entreprise). " +
+      "Un contact « Inconnu » au même courriel reçoit le nom du client Stripe.",
     trigger_config: {
       kind: 'webhook',
       source: 'POST /api/stripe-webhooks',
       event: '*',
-      summary: 'Tout webhook Stripe dont le client est inconnu',
+      summary: 'Tout webhook Stripe dont le client est inconnu, et la sync des abonnements',
     },
   },
   {
@@ -858,7 +870,7 @@ export const SYSTEM_AUTOMATIONS = [
     name: 'Douanes ASFC : alerte de solde bas du compte CARM',
     description:
       "Chaque matin (8h) et après chaque import de relevé, calcule le solde du compte CARM de l'ASFC — solde d'ouverture saisi + paiements − évaluations, intérêts et pénalités du relevé importé — et alerte sur Slack quand il passe sous le seuil configuré. " +
-      "MODÈLE COMPTABLE : le compte ASFC est le solde du fournisseur ASFC dans les Comptes fournisseurs (ap_acctnum) — aucun compte de passage à créer. Notre versement est une dépense sur la carte (card_acctnum) imputée à ce compte fournisseur, sans taxe ; l'évaluation B3 devient une facture fournisseur ventilée en droits de douane (duty_acctnum) et en TPS à l'importation, 100 % récupérable en CTI ; les intérêts vont dans interest_acctnum et les pénalités dans penalty_acctnum, hors champ de taxe. Une ligne réglée par un courtier (broker_names : FedEx, UPS, Axxess paient l'ASFC puis nous refacturent) n'est JAMAIS comptabilisée ici — sa dépense et sa TPS arrivent par la facture du courtier — et le dépôt de garantie de 597 $ est ignoré, déjà dans les livres. " +
+      "MODÈLE COMPTABLE : le compte ASFC est le solde du fournisseur ASFC dans les Comptes fournisseurs (ap_acctnum) — aucun compte de passage à créer. Notre versement est une dépense sur la carte (card_acctnum) imputée à ce compte fournisseur, sans taxe ; l'évaluation B3 devient une facture fournisseur ventilée en droits de douane (duty_acctnum) et en TPS à l'importation, 100 % récupérable en CTI ; les intérêts vont dans interest_acctnum et les pénalités dans penalty_acctnum, hors champ de taxe. Une ligne réglée par un courtier (broker_names : FedEx seul paie l'ASFC puis nous refacture ; Axxess, UPS et les autres : leurs lignes sont à nous) n'est JAMAIS comptabilisée ici — sa dépense et sa TPS arrivent par la facture du courtier — et le dépôt de garantie de 597 $ est ignoré, déjà dans les livres. " +
       "opening_balance / opening_date fixent le point de départ : le relevé du portail ne contient que l'activité, sans lui le solde n'est qu'une variation. " +
       "Anti-spam : au plus une alerte par 20 h. Le bouton « Simuler » calcule le solde et affiche le message sans rien envoyer.",
     trigger_config: {
@@ -882,7 +894,7 @@ export const SYSTEM_AUTOMATIONS = [
       post_since: '',
       max_batch: '50',
       delta_tolerance: '0.02',
-      broker_names: 'Federal Express Canada, United Parcells, AXXESS INTERNAtional',
+      broker_names: 'Federal Express Canada',
       slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
     },
     configurable: true,
@@ -980,7 +992,7 @@ export const SYSTEM_AUTOMATIONS = [
       "LE moteur de vérification « est-ce comptabilisé ? » du rapprochement bancaire, pour TOUS les comptes mappés à QuickBooks (pas seulement ceux branchés à la banque). " +
       "Pour chaque transaction pas encore rapprochée, il cherche l'écriture correspondante dans le grand livre QuickBooks avec la recherche approfondie : tolérance de montant (frais, conversion), fenêtre de ±30 jours, virements comptabilisés du côté de l'autre compte, dépôts groupés. " +
       "Ce qui est certain se pose tout seul (auto_apply_methods) ; le reste devient une proposition à confirmer sur la page. AUCUNE écriture n'est publiée dans QuickBooks — la vérification lit, elle n'écrit jamais chez Intuit. " +
-      "PASSAGE AU VERT (auto_reconcile) : une ligne jaune devient « rapprochée » dans Boréal quand son écriture est déjà rapprochée dans QuickBooks (qb_rapproche), ou quand l'écart relevé ↔ QuickBooks du compte est nul — toutes les jaunes jusqu'à la date du relevé (ecart_zero). Vider pour couper. Un rapprochement annulé à la main n'est jamais refait. " +
+      "PASSAGE AU VERT (auto_reconcile) : une ligne jaune devient « rapprochée » dans Boréal quand son écriture est déjà rapprochée dans QuickBooks (qb_rapproche), ou quand l'écart relevé ↔ QuickBooks du compte est nul — toutes les jaunes jusqu'à la date du relevé (ecart_zero), ou, sur tout compte, dès que la ligne reçue de la banque est liée à son écriture au montant exact, même si le compte ne balance pas encore (liste_banque) — c'est-à-dire dès la comptabilisation ; l'écart du compte est alors signalé par la bulle Claude. Vider pour couper. Un rapprochement annulé à la main n'est jamais refait. " +
       "Il remplace à lui seul deux passages qui reconstruisaient le MÊME rapport de grand livre à trente secondes d'intervalle (la sync du fichier TRX_Orisha, coupée, et l'audit des comptes Plaid) : de ~72 rapports par heure à 12. " +
       "PASSAGE HORAIRE sur une fenêtre glissante de window_days (plancher de 30 jours : en deçà, l'orientation des signes ne peut plus être votée et les appariements s'inversent). " +
       "PASSAGE PROFOND chaque jour à 6 h UTC depuis deep_since : c'est le seul qui efface les liens devenus introuvables — sur une fenêtre courte, une écriture simplement hors fenêtre ferait effacer un lien valide. " +
@@ -995,7 +1007,7 @@ export const SYSTEM_AUTOMATIONS = [
       grace_days: '4',
       auto_apply_methods: 'exact,conversion',
       deep_since: '2024-01-01',
-      auto_reconcile: 'qb_rapproche,ecart_zero',
+      auto_reconcile: 'qb_rapproche,ecart_zero,liste_banque',
     },
     configurable: true,
     default_active: 1,
@@ -1015,6 +1027,24 @@ export const SYSTEM_AUTOMATIONS = [
     },
     action_config: {},
     configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_bank_qb_feed_match',
+    name: 'Rapprochement bancaire : apparier le flux bancaire de QuickBooks (robot)',
+    description:
+      "Toutes les heures (à :35) pour chaque compte que QuickBooks télécharge, et au clic « Apparier le flux QuickBooks » (menu ⋯ de /rapprochement) pour un compte : un navigateur ouvre « Opérations bancaires » de QuickBooks (session du module Chrome), onglet « En attente ». " +
+      "Pour chaque ligne téléchargée par QuickBooks, il retrouve la ligne Boréal (même date, même montant) et l'écriture QuickBooks que Boréal lui a déjà liée, " +
+      "ouvre « Trouver d'autres correspondances », coche la seule écriture à cette date et ce montant, et clique « Apparier » seulement si la Différence affichée est 0,00 $. " +
+      "Il ne clique jamais « Publier » (doublon de l'écriture déjà liée) et ne crée ni ne modifie aucune écriture. Ligne sans lien dans Boréal ou plusieurs écritures possibles : rien n'est fait, la raison s'affiche. " +
+      "Aussi : « Exclure dans QuickBooks » (clic droit sur une ligne de /rapprochement) exclut la ligne du flux. " +
+      "Désactiver = plus de passage horaire, les boutons répondent « désactivé ».",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '35 * * * *' (index.js) → matchAllFeeds() ; POST /api/bank/accounts/:id/qb-feed/match → matchFeed() ; POST /api/bank/transactions/:id/qb-feed-exclude → excludeFeed() (services/qbBankFeed.js)",
+      summary: 'Toutes les heures, et au clic sur /rapprochement',
+    },
+    action_config: {},
     default_active: 1,
   },
   {
@@ -1515,6 +1545,29 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_marketing_budget_sheet',
+    name: 'Budget marketing : Google Sheet Budget vs Réel',
+    description:
+      "Tient un Google Sheet à l'image de l'ancien fichier « Annual Marketing budget » : un onglet par année financière (avril → mars), un bloc par compte QB marketing " +
+      "(ligne jaune « QB: #… » + une ligne par fournisseur), une paire Budget | Réel par mois, totaux. " +
+      "Le budget vient des cellules saisies dans la page Budget marketing ; le réel, des dépenses validées « pertinentes ». " +
+      "L'onglet est RÉÉCRIT en entier 5 s après chaque décision, règle ou budget modifié, et chaque nuit à 4h UTC : une saisie faite à la main dans le fichier est écrasée. " +
+      "Le fichier est créé au premier passage dans le Drive du compte Google indiqué ; son identifiant est alors rangé dans spreadsheet_id (le vider en recrée un). " +
+      "Le lien du fichier est ajouté au message Slack hebdomadaire à Émilie.",
+    trigger_config: {
+      kind: 'event',
+      source: 'routes/marketing-budget.js (décision, règle, budget) + cron 0 4 * * * UTC (index.js) → services/marketingBudgetSheet.js',
+      summary: 'À chaque changement dans la page Budget marketing, et chaque nuit',
+    },
+    action_config: {
+      spreadsheet_id: '',
+      google_account_email: 'michel@orisha.io',
+      title: 'Annual Marketing budget',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_marketing_weekly_slack',
     name: 'Budget marketing : message Slack hebdomadaire à Émilie',
     description:
@@ -1561,7 +1614,7 @@ export const SYSTEM_AUTOMATIONS = [
       summary: 'Appelé par ManyChat à chaque commentaire, DM envoyé ou réponse',
     },
     action_config: {
-      keywords: 'coach',
+      keywords: 'coach,partner',
     },
     configurable: true,
     default_active: 1,
@@ -1587,7 +1640,7 @@ export const SYSTEM_AUTOMATIONS = [
     action_config: {
       accounts: 'orisha_auto, growingformarketmagazine',
       our_accounts: 'orisha_auto',
-      keywords: 'coach',
+      keywords: 'coach,partner',
       lookback_days: '7',
       own_accounts: 'orisha_auto, growingformarketmagazine',
       run_weekday: '1',
@@ -1621,7 +1674,7 @@ export const SYSTEM_AUTOMATIONS = [
     name: 'Instagram : trier par type de demande et \u00e9carter les robots',
     description:
       "Range chaque personne dans la pile qui lui correspond \u2014 elle a demand\u00e9 le coaching, elle fait pousser des fleurs, elle nous suit sans rien demander, ou autre chose \u2014 parce que ces trois-l\u00e0 n'appellent pas le m\u00eame message. " +
-      "Les messages \u00e9crits d'avance partent de ces consignes : \u00ab msg_coach \u00bb, \u00ab msg_fleurs \u00bb, \u00ab msg_question \u00bb, \u00ab msg_commentaire \u00bb, \u00ab msg_abonne \u00bb, \u00e9ditables ici. " +
+      "Les messages \u00e9crits d'avance partent de ces consignes : \u00ab msg_coach \u00bb, \u00ab msg_partner \u00bb, \u00ab msg_fleurs \u00bb, \u00ab msg_question \u00bb, \u00ab msg_commentaire \u00bb, \u00ab msg_abonne \u00bb, \u00e9ditables ici. " +
       "ROBOTS : chaque indice (vendeur d'abonn\u00e9s, arnaque de r\u00e9cup\u00e9ration de compte, lien de redirection, nom fabriqu\u00e9\u2026) vaut un poids ; au-del\u00e0 de \u00ab bot_threshold \u00bb la fiche est supprim\u00e9e et le nom d'usager ne peut plus revenir. Le mod\u00e8le tranche les cas moins nets. " +
       "SORTENT AUSSI DE LA LISTE : celles qui n'ont fait que r\u00e9pondre \u00e0 une story, et celles \u00e0 qui quelqu'un a d\u00e9j\u00e0 \u00e9crit de sa main depuis Instagram \u2014 elles reviennent d'elles-m\u00eames si elles r\u00e9\u00e9crivent. " +
       "PROFILS : avant le tri, lit le profil public de \u00ab profiles_per_run \u00bb personnes (bio, 12 derni\u00e8res publications et leurs images), relu au plus tous les \u00ab profile_refresh_days \u00bb jours ; \u00ab profile_model \u00bb en tire la phrase \u00ab Qui c'est \u00bb et l'activit\u00e9 principale. La pile \u00ab fleurs \u00bb exige que le profil le prouve. " +
@@ -1641,6 +1694,8 @@ export const SYSTEM_AUTOMATIONS = [
       profile_model: 'gpt-4o-mini',
       msg_coach:
         "Elle a demand\u00e9 le coaching. Confirme-lui qu'elle est au bon endroit, dis en une phrase ce qu'elle y trouve, et demande-lui o\u00f9 elle en est dans sa saison.",
+      msg_partner:
+        "Elle a \u00e9crit \u00ab partner \u00bb sous notre publication : elle veut devenir partenaire. Remercie-la, confirme qu'on a bien not\u00e9 son int\u00e9r\u00eat et demande-lui ce qu'elle cultive. Philippe relira.",
       msg_fleurs:
         "Elle fait pousser des fleurs. Parle fleurs, pas l\u00e9gumes : parle-lui de ce que le contr\u00f4le du climat change pour une culture de fleurs, et demande-lui ce qu'elle cultive.",
       msg_abonne:
@@ -1748,7 +1803,7 @@ export const SYSTEM_AUTOMATIONS = [
       kind: 'schedule',
       source: 'reconnexion Instagram (services/instagramRefresh.js) → services/instagramProspects.js',
       cron: 'aucun — déclenché par la reconnexion Instagram',
-      summary: 'Après la reconnexion Instagram, une fois par semaine',
+      summary: 'Le samedi, après la lecture Instagram',
     },
     action_config: {
       send_weekday: '6',
@@ -1770,6 +1825,7 @@ export const SYSTEM_AUTOMATIONS = [
       "Décocher une facture dans le panneau la sort du message SANS la sortir de la liste. " +
       "DESTINATAIRE : « slack_channel » (« #questions-importantes ») passe par le bot Slack de l'ERP ; sinon l'URL de webhook entrant de « slack_webhook_url », ou le nom d'une variable d'environnement dans « slack_webhook_env ». " +
       "« intro » accepte {n} (nombre de factures), {s} (pluriel) et {total} ; « outro » est la dernière ligne du message. " +
+      "ENVOI À UNE PERSONNE : « people » liste une personne par ligne (« Marc-Antoine = https://hooks.slack.com/… ») ; le panneau propose alors de lui envoyer directement un message court (« person_intro », accepte {name}, {n}, {s}, {cette}) suivi des factures. " +
       "Désactiver cette automation coupe l'envoi, pas la liste : les factures manquantes restent visibles dans le relevé.",
     trigger_config: {
       kind: 'app_event',
@@ -1782,6 +1838,8 @@ export const SYSTEM_AUTOMATIONS = [
       slack_webhook_env: '',
       intro: 'Je cherche {n} facture{s} pour fermer les livres.',
       outro: '',
+      people: '',
+      person_intro: 'Salut {name} ! Peux-tu m\'envoyer {cette} facture{s} quand tu as une minute ? Merci 🙏',
     },
     configurable: true,
     default_active: 1,
@@ -2053,9 +2111,10 @@ export const SYSTEM_AUTOMATIONS = [
     name: 'Réception d\'un retour (import Airtable #5 + #6)',
     description:
       "Quand un item de retour est marqué reçu (date + réceptionniste renseignés), écrit les instructions au réceptionniste " +
-      "et met à jour le statut du numéro de série selon la raison du retour (À analyser / À reconditionner). Alerte Slack pour " +
+      "(le statut du # de série est réglé par l'automatisation en blocs « Réception d’un retour : statut du # de série »). Alerte Slack pour " +
       "un changement d'idée client / fin d'abonnement, et pour un retour sans raison reconnue — UNE alerte par retour, même s'il " +
       "compte plusieurs articles reçus ensemble. Destinataire : « slack_channel » (message privé à Pierre-Alexandre par défaut). " +
+      "Une fin d'abonnement réceptionnée avise EN PLUS « sub_end_slack_channel » (Philippe par défaut) avec le lien vers le retour, une fois par retour ; vide = pas d'avis. " +
       "Idempotent via return_items.reception_processed_at.",
     trigger_config: {
       kind: 'db_change',
@@ -2066,6 +2125,7 @@ export const SYSTEM_AUTOMATIONS = [
       slack_channel: 'pap@orisha.io',
       slack_webhook_url: '',
       slack_webhook_env: '',
+      sub_end_slack_channel: 'philippe@orisha.io',
     },
     configurable: true,
   },
@@ -2124,6 +2184,26 @@ export const SYSTEM_AUTOMATIONS = [
         'SVP liez la facture au projet : {lien}\n' +
         'Et suivez la procédure inscrite sur la fiche de la facture.\n' +
         "S'il s'agit d'un rachat d'équipement en abonnement, n'oubliez pas d'annuler / modifier l'abonnement et de changer l'état des numéros de série concernés.",
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_conge_slack',
+    name: 'Congé saisi : avis sur Slack #absences',
+    description:
+      "Quand un employé inscrit un congé depuis sa feuille de temps (bouton « Congé »), envoie un message dans « slack_channel » (#absences par défaut) pour aviser l'équipe ; " +
+      "à l'annulation du congé, envoie « cancel_message ». {nom} = nom de l'employé, {quand} = date(s) du congé (ex. « lundi 5 octobre », « du lundi 5 au vendredi 9 octobre (5 jours) », « lundi 5 octobre (demi-journée) »). " +
+      "Désactivée : le congé est enregistré, aucun message n'est envoyé.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'POST/DELETE /api/timesheets/conges',
+      summary: 'Congé ajouté ou annulé depuis la feuille de temps',
+    },
+    action_config: {
+      slack_channel: '#absences',
+      message: ':palm_tree: {nom} sera en congé {quand}.',
+      cancel_message: ':x: Congé annulé : {nom} ne sera finalement pas en congé {quand}.',
     },
     configurable: true,
     default_active: 1,
@@ -2273,6 +2353,8 @@ function mergeMissingKeys(storedJson, defaults) {
 // fichiers, et c'est Boréal qui écrit le classeur — voir sys_trx_sheet_mirror),
 // et les deux audits QuickBooks n'en font plus qu'un, `sys_bank_qb_verify`.
 const RETIRED_SYSTEM_AUTOMATION_IDS = [
+  // Retirées à la demande de Charles (2026-10-14) : remplacées, ponctuelles ou éteintes depuis des mois.
+  'sys_treasury_solde_sheet', 'sys_stripe_refunds_backfill', 'sys_stripe_bulk_bt_sync', 'sys_ctb_programmation_paiement',
   'sys_ctb_abonnements', 'sys_req_import', 'sys_weekly_review_slack', 'sys_purchase_price_check',
   'sys_bank_trx_sheet', 'sys_plaid_qb_audit',
   // Rappel « échange immédiat » : son éligibilité reposait entièrement sur
@@ -2389,6 +2471,7 @@ export function seedSystemAutomations() {
   // Avant le retrait : l'équivalent en blocs reprend son état actif.
   migratePartnershipToBlocks()
   seedPartnershipLostFlow()
+  seedReturnSerialStatusFlow()
   for (const id of RETIRED_SYSTEM_AUTOMATION_IDS) {
     db.prepare(`
       UPDATE automations SET active = 0, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')

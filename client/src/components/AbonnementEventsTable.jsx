@@ -40,6 +40,7 @@ export function AbonnementEventsTable({
   height,
   searchFields = ['company_name', 'stripe_subscription_id', 'amount_cad_delta', 'previous_amount_cad', 'new_amount_cad'],
   manageViews = false,
+  hideRachatInDetail = false,
 }) {
   // Synthétise `month` depuis `event_date` quand absent — nécessaire pour le
   // groupage à deux niveaux mois/catégorie sur les données venant du
@@ -156,7 +157,7 @@ export function AbonnementEventsTable({
         manageViews={manageViews}
         {...(height ? { height } : {})}
       />
-      <AbonnementDetailModal abonnement={selectedAbo} onClose={() => setSelectedAbo(null)} />
+      <AbonnementDetailModal abonnement={selectedAbo} onClose={() => setSelectedAbo(null)} hideRachat={hideRachatInDetail} />
     </>
   )
 }

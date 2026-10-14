@@ -26,6 +26,7 @@ const WINDOW_MS = 24 * 60 * 60 * 1000
 
 const FALLBACK_SEGMENTS = [
   { key: 'coach', label: 'Ont demandé le coaching' },
+  { key: 'partner', label: 'Ont écrit « partner »' },
   { key: 'fleurs', label: 'Font pousser des fleurs' },
   { key: 'question', label: 'Posent une question' },
   { key: 'commentaire', label: 'Ont simplement commenté' },
@@ -35,7 +36,7 @@ const FALLBACK_SEGMENTS = [
 // Les onglets portent un libellé plus court que la liste déroulante : une
 // rangée d'onglets se lit d'un coup d'œil, pas en phrases.
 const SHORT = {
-  coach: 'Coaching', fleurs: 'Fleurs', question: 'Questions',
+  coach: 'Coaching', partner: 'Partner', fleurs: 'Fleurs', question: 'Questions',
   commentaire: 'Commentaires', abonne: 'Abonnés',
 }
 

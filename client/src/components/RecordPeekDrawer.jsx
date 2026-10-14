@@ -218,12 +218,24 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
       return cur?.token === token ? null : cur
     })
   }, [])
+  // Titre renommable (option) : la fiche embarquée publie le nom courant et de
+  // quoi l'enregistrer ; le titre devient alors modifiable au clic.
+  const [rename, setRename] = useState(null) // { token, value, onSave }
+  const publishRename = useCallback((token, src) => {
+    setRename(cur => (src ? { token, ...src } : cur?.token === token ? null : cur))
+  }, [])
+  const [titleDraft, setTitleDraft] = useState(null)
   const fieldEditCtx = useMemo(
-    () => ({ editing: editingFields, setEditing: setEditingFields, register: registerFieldGrid, publishHeader }),
-    [editingFields, registerFieldGrid, publishHeader],
+    () => ({ editing: editingFields, setEditing: setEditingFields, register: registerFieldGrid, publishHeader, publishRename }),
+    [editingFields, registerFieldGrid, publishHeader, publishRename],
   )
   const { header, setHeader } = useDetailHeaderConfig(headerSrc?.entityType || null)
-  const shownTitle = (header?.title && headerSrc && headerFieldText(headerSrc.record, header.title, headerSrc.fields)) || title
+  const shownTitle = (header?.title && headerSrc && headerFieldText(headerSrc.record, header.title, headerSrc.fields)) || rename?.value || title
+  const commitTitle = () => {
+    const next = (titleDraft ?? '').trim()
+    setTitleDraft(null)
+    if (next && next !== rename?.value) rename?.onSave(next)
+  }
   const shownSubtitle = header?.subtitle && headerSrc
     ? header.subtitle.map(k => headerFieldText(headerSrc.record, k, headerSrc.fields)).filter(Boolean).join(' · ')
     : subtitle
@@ -490,7 +502,27 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
         <div className="flex items-center gap-1.5 px-6 py-4 border-b border-slate-200 bg-white flex-shrink-0">
           <div className="flex-1 min-w-0">
             {/* Titre à la Airtable : gros et gras, c'est le nom de l'enregistrement. */}
-            <div className="text-xl font-bold text-slate-900 truncate leading-tight" data-testid="record-peek-title">{shownTitle}</div>
+            {rename && titleDraft !== null ? (
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={e => setTitleDraft(e.target.value)}
+                onBlur={commitTitle}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); commitTitle() }
+                  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setTitleDraft(null) }
+                }}
+                className="w-full text-xl font-bold text-slate-900 leading-tight bg-white border border-brand-300 rounded px-1 -mx-1 focus:outline-none focus:ring-2 focus:ring-brand-400"
+                data-testid="record-peek-title-input"
+              />
+            ) : (
+              <div
+                className={`text-xl font-bold text-slate-900 truncate leading-tight ${rename ? 'cursor-text rounded px-1 -mx-1 hover:bg-slate-100' : ''}`}
+                onClick={rename ? () => setTitleDraft(rename.value || '') : undefined}
+                title={rename ? 'Renommer' : undefined}
+                data-testid="record-peek-title"
+              >{shownTitle}</div>
+            )}
             {shownSubtitle && <div className="text-xs text-slate-400 truncate" data-testid="record-peek-subtitle">{shownSubtitle}</div>}
             {editingFields && editableFields > 0 && headerSrc && (
               <PeekHeaderEditor fields={headerSrc.fields} header={header} onChange={setHeader} />

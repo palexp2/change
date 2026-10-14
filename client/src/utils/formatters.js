@@ -93,10 +93,15 @@ export function fmtPhone(val) {
 }
 
 // Adresse postale sur une ligne : « 123 rue X, Québec, QC, G1S 2P1, Canada ».
-// Retourne '' si l'objet est absent ou n'a aucune composante.
+// Retourne '' si l'objet est absent ou n'a aucune composante. Ne répète pas
+// ville, province, code postal ou pays déjà tapés dans la rue
+// (« 695 Chemin Saint-Antoine Laval QC H7R 6E8 CA »).
+const addressWords = s => ` ${String(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `
 export function fmtAddress(a) {
   if (!a) return ''
-  return [a.line1, a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')
+  const street = a.line1 ? addressWords(a.line1) : ''
+  return [a.line1, ...[a.city, a.province, a.postal_code, a.country].filter(p => p && !street.includes(addressWords(p)))]
+    .filter(Boolean).join(', ')
 }
 
 export function formatRelativeTime(dateStr) {

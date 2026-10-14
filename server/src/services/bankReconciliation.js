@@ -686,13 +686,24 @@ export function findCandidates(txn) {
   // paie par une facture, une entrée par une pièce négative (remboursement
   // d'impôt, note de crédit). Même barème, même barre.
   const account = db.prepare('SELECT * FROM bank_accounts WHERE id=?').get(txn.account_id)
+  // Une pièce dont l'écriture QuickBooks est déjà liée à une AUTRE ligne du
+  // relevé a déjà été payée : l'abonnement du mois d'avant (Anthropic du 5 sept
+  // apparié au débit du 5 oct, 2026-10-10). Elle reste suggérée, jamais posée seule.
+  const qbTaken = new Set(db.prepare(`
+    SELECT qb_txn_id FROM bank_transactions
+    WHERE qb_txn_id IS NOT NULL AND qb_txn_id != '' AND deleted_at IS NULL AND id != ?
+  `).all(txn.id).map((r) => String(r.qb_txn_id)))
   const docCandidates = () => findDocCandidates(txn, account, { limit: 8, excludeTxnId: txn.id }).candidates
-    .map((d) => ({
-      type: d.type, id: String(d.id), label: d.label,
-      date: d.date, total: d.total, quickbooks_id: d.quickbooks_id,
-      score: d.score, reasons: d.reasons, verdict: d.verdict,
-      confidence: confidenceFromScore(d),
-    }))
+    .map((d) => {
+      const taken = d.quickbooks_id != null && qbTaken.has(String(d.quickbooks_id))
+      const conf = confidenceFromScore(d)
+      return {
+        type: d.type, id: String(d.id), label: d.label,
+        date: d.date, total: d.total, quickbooks_id: d.quickbooks_id,
+        score: d.score, reasons: d.reasons, verdict: d.verdict,
+        confidence: taken ? Math.min(conf, 0.5) : conf,
+      }
+    })
 
   if (txn.amount < 0) {
     // Sortie → la pièce : le montant au cent près
@@ -778,6 +789,15 @@ export function deriveStatus(txn) {
 
 // Recalcule le statut des transactions non figées d'un compte : une facture
 // poussée à QB après le matching fait passer la ligne bleu → jaune sans action.
+async function greenAfterBooking(accountId) {
+  try {
+    const { qbVerifyConfig } = await import('./bankQbVerify.js')
+    const { parseAutoReconcile, reconcileFromBankList } = await import('./bankAutoReconcile.js')
+    if (!parseAutoReconcile(qbVerifyConfig().auto_reconcile).has('liste_banque')) return
+    await reconcileFromBankList(accountId)
+  } catch (e) { console.warn('greenAfterBooking:', e.message) }
+}
+
 export function refreshStatuses(accountId) {
   const rows = db.prepare(`
     SELECT id, status, matched_type, matched_id, reconciled_at, sheet_color, qb_txn_id, transfer_txn_id
@@ -796,6 +816,11 @@ export function refreshStatuses(accountId) {
   // passage de vérification au « facture poussée à QB ») : c'est ici que la page
   // ouverte apprend qu'une ligne vient de passer au jaune.
   if (changedIds.length) touchBankTxns(changedIds)
+
+  // Vert dès la comptabilisation (Charles, 2026-10-13) : une ligne qui vient
+  // de passer au jaune et qui est liée à QuickBooks au montant exact n'attend
+  // pas le passage de vérification suivant.
+  if (changedIds.length) setImmediate(() => greenAfterBooking(accountId))
 
   // La date d'une facture appariée est celle de son débit, pas celle imprimée
   // dessus — on la recale ici, au même point d'étranglement.
@@ -899,6 +924,7 @@ export function autoMatchReceipt(receiptId) {
          -- Achat en devise sur carte : ~2,5 % de frais de change, ou montant
          -- initial écrit au relevé (la notation le relit et tranche).
          OR (:rate > 0 AND ABS(ABS(t.amount) - :total * :rate * 1.025) <= :tolc)
+         OR (:rate > 0 AND ABS(ABS(t.amount) - :total * :rate * 1.04) <= :tolc)
          OR ABS(ABS(COALESCE(t.orig_amount, 0)) - :total) <= 0.02
          OR COALESCE(t.description, '') || ' ' || COALESCE(t.details, '') LIKE '%montant initial en devise%'
       )

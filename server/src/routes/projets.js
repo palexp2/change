@@ -1331,7 +1331,8 @@ router.get('/abonnement-events', (req, res) => {
   const { category, event_type, company_id, subscription_id } = req.query
   const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 50)
 
-  let where = 'WHERE 1=1'
+  // Abonnements de test interne exclus, sauf vue d'un abonnement précis.
+  let where = subscription_id ? 'WHERE 1=1' : 'WHERE COALESCE(s.is_test, 0) = 0'
   const params = []
   if (category)        { where += ' AND e.category = ?';        params.push(category) }
   if (event_type)      { where += ' AND e.event_type = ?';      params.push(event_type) }
@@ -1721,6 +1722,10 @@ router.patch('/abonnements/:id', (req, res) => {
     if (!VALID.includes(req.body.rachat)) return res.status(400).json({ error: 'Valeur invalide' })
     updates.push('rachat=?')
     params.push(req.body.rachat)
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'is_test')) {
+    updates.push('is_test=?', 'is_test_manual=1', 'is_test_reason=?')
+    params.push(req.body.is_test ? 1 : 0, req.body.is_test ? 'marqué à la main' : null)
   }
   const companyChanged = Object.prototype.hasOwnProperty.call(req.body, 'company_id')
   const companyId = req.body.company_id || null

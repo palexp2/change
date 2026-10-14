@@ -16,7 +16,7 @@ export const SYSTEM_GROUPS = {
   "Comptabilité": [
     'sys_stripe_batch_factures_sync', 'sys_stripe_bulk_bt_sync', 'sys_stripe_weekly_payout_push',
     'sys_revenue_recognition', 'sys_ctb_programmation_paiement', 'sys_paie_repartition',
-    'sys_month_end_provisions', 'sys_marketing_expense_sync', 'sys_marketing_weekly_slack',
+    'sys_month_end_provisions', 'sys_marketing_expense_sync', 'sys_marketing_weekly_slack', 'sys_marketing_budget_sheet',
     'sys_pieces_disbursements', 'sys_fiscal_anomalies_sheet', 'sys_invoice_collection',
     'sys_digikey_orders', 'sys_bill_payment_qb', 'sys_audit_controles',
     'sys_missing_invoice_request', 'sys_fifo_cost', 'sys_timesheet_paie_sync',

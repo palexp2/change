@@ -836,6 +836,7 @@ export function AirtableModuleFields({ module: moduleProp }) {
           isOpen={showNewField}
           onClose={() => setShowNewField(false)}
           erpTable={erpTable}
+          siblingFields={cols.map(c => ({ id: c.column_name, label: c.label }))}
           onSaved={async () => {
             setShowNewField(false)
             await reload()

@@ -163,6 +163,7 @@ import { logSync, purgeSyncLogs } from './services/syncLog.js'
 import { pullDelta as hsPullDelta, retryFailedPushes as hsRetryFailedPushes } from './services/hubspotSync.js'
 import { drainRachatRetryQueue } from './services/subscriptionEvents.js'
 import { isHubSpotConfigured } from './connectors/hubspot.js'
+import { pullHubSpotContacts, isHubSpotContactsSyncActive } from './services/hubspotContactsSync.js'
 import { syncHubSpotForms, syncScriptedForms } from './services/hubspotForms.js'
 import { importHubSpotHistory, pendingHistoryTypes as hsPendingHistoryTypes, HISTORY_SYNC_KEY as HS_HISTORY_SYNC_KEY } from './services/hubspotHistoryImport.js'
 import db from './db/database.js'
@@ -288,6 +289,7 @@ app.use('/api/quickbooks/webhook', express.raw({ type: () => true }), (req, res,
 // Document envoyé par le module de navigateur, en base64 : une facture PDF
 // scannée dépasse vite 10 Mo une fois encodée.
 app.use('/api/scrapers/session-bridge/document', express.json({ limit: '40mb' }))
+app.use('/api/scrapers/session-bridge/screenshot', express.json({ limit: '40mb' }))
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
@@ -643,6 +645,15 @@ const server = app.listen(PORT, () => {
   // la file s'arrête d'elle-même et repart quand le quota remonte (quotaGuard.js).
   startQuotaGuard()
   initScheduler()
+  // Extractions de reçus/factures tuées par le redémarrage : relancées.
+  setTimeout(() => import('./services/saleReceiptExtraction.js').then(({ resumeStuckReceiptExtractions }) => {
+    try { resumeStuckReceiptExtractions(uploadsPath('receipts')) } catch (e) { console.warn('[receipts] reprise:', e.message) }
+  }), 10e3)
+  // Factures Stripe restées sans entreprise (ancien client Stripe, commande…).
+  import('./services/stripeProjectLink.js')
+    .then(({ relinkOrphanStripeFacturesGently }) => relinkOrphanStripeFacturesGently())
+    .then(n => { if (n) console.log(`[stripe] ${n} facture(s) rattachée(s) à leur entreprise`) })
+    .catch(e => console.warn('[stripe] rattachement des factures:', e.message))
 
   // Contrôle de dérive du schéma (db/schemaDrift.js) — journal uniquement,
   // jamais bloquant, et différé pour rester hors du chemin de démarrage : il
@@ -928,6 +939,30 @@ const server = app.listen(PORT, () => {
   setTimeout(scheduleHubSpotPull, 45_000)
   setInterval(scheduleHubSpotPull, 2 * 60 * 1000)
 
+  // Contacts HubSpot → Boréal en direct (HubSpot fait foi) — chaque minute.
+  // Airtable suivait trop lentement ; il garde les autres champs.
+  let hsContactsRunning = false
+  function scheduleHubSpotContactsPull() {
+    if (hsContactsRunning || !isHubSpotContactsSyncActive()) return
+    hsContactsRunning = true
+    const t0 = Date.now()
+    tracked('hubspot_contacts', () => pullHubSpotContacts()).then((out) => {
+      if (out.created || out.updated || out.subscriptions_error) {
+        logSync('hubspot_contacts', 'scheduled', {
+          status: out.subscriptions_error ? 'error' : 'success',
+          modified: out.created + out.updated,
+          error: out.subscriptions_error ? `Abonnements : ${out.subscriptions_error}` : null,
+          durationMs: Date.now() - t0,
+        })
+      }
+    }).catch(e => {
+      logSync('hubspot_contacts', 'scheduled', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+      console.error('HubSpot contacts pull error:', e.message)
+    }).finally(() => { hsContactsRunning = false })
+  }
+  setTimeout(scheduleHubSpotContactsPull, 60_000)
+  setInterval(scheduleHubSpotContactsPull, 60 * 1000)
+
   // Reprise des push HubSpot échoués (ERP → HubSpot) — toutes les 2 minutes.
   // Sans ça, un push fire-and-forget échoué restait une divergence silencieuse :
   // ici on rejoue ce qui est persisté dans hubspot_push_failures jusqu'à succès.
@@ -1103,11 +1138,10 @@ const server = app.listen(PORT, () => {
         duration_ms: Date.now() - t0,
       })
       try {
-        const { slack_webhook_env } = getStripePayoutPushConfig()
-        const url = process.env[slack_webhook_env]
-        if (url) {
-          const { postSlack } = await import('./services/slack.js')
-          await postSlack(url, `❌ *Payouts Stripe → QuickBooks* — le passage automatique a échoué : ${e.message}\n→ Journal : page Automations de l'ERP.`)
+        const cfg = getStripePayoutPushConfig()
+        const { hasSlackTarget, sendSlackConfigured } = await import('./services/slack.js')
+        if (hasSlackTarget(cfg)) {
+          await sendSlackConfigured(cfg, `❌ *Payouts Stripe → QuickBooks* — le passage automatique a échoué : ${e.message}\n→ Journal : page Automations de l'ERP.`)
         }
       } catch (slackErr) {
         console.error('Stripe payout push Slack alert error:', slackErr.message)
@@ -1154,6 +1188,32 @@ const server = app.listen(PORT, () => {
     .catch(e => console.error('treasury sheet mirror:', e.message))
   cron.schedule('*/20 * * * *', mirrorTreasurySheet)
   setTimeout(mirrorTreasurySheet, 160_000)
+
+  // Flux bancaire QuickBooks : chaque heure, le robot apparie les lignes
+  // « En attente » de QBO à l'écriture déjà liée dans Boréal (Charles,
+  // 2026-10-10). Passage journalisé seulement s'il a fait ou raté quelque chose.
+  cron.schedule('35 * * * *', async () => {
+    if (!isSystemAutomationActive('sys_bank_qb_feed_match')) return
+    const t0 = Date.now()
+    try {
+      const { matchAllFeeds } = await import('./services/qbBankFeed.js')
+      const out = await matchAllFeeds()
+      const all = out.accounts.flatMap((a) => a.results.map((r) => ({ ...r, account: a.account })))
+      const matched = all.filter((r) => r.ok).length
+      const failed = [...out.accounts.filter((a) => !a.ok), ...all.filter((r) => !r.ok && !r.skipped)]
+      if (!out.ok || matched || failed.length) {
+        logSystemRun('sys_bank_qb_feed_match', {
+          status: out.ok && !failed.length ? 'success' : 'error',
+          result: out.ok ? out.accounts.map((a) => `${a.account} : ${a.results.filter((r) => r.ok).length} appariée(s)`).join(' · ') : null,
+          error: out.ok ? (failed.map((f) => `${f.account} ${f.row || ''} : ${f.error}`).join(' · ') || null) : out.error,
+          duration_ms: Date.now() - t0,
+          triggerData: { trigger: 'horaire', accounts: out.accounts },
+        })
+      }
+    } catch (e) {
+      console.error('flux QB horaire:', e.message)
+    }
+  })
 
   // Sync du Google Sheet « Maintien du solde disponible BNC » vers la projection
   // de trésorerie (le fichier fait foi) : toutes les 60 min, à l'heure pile.
@@ -1448,6 +1508,14 @@ const server = app.listen(PORT, () => {
     import('./services/marketingBudget.js')
       .then(({ checkWeeklyMarketingSlack }) => checkWeeklyMarketingSlack({ trigger: 'cron quotidien' }))
       .catch(e => console.error('marketing weekly slack cron:', e.message))
+  })
+  // Google Sheet miroir du Budget vs Réel : réécrit à chaque décision (routes),
+  // plus un passage de rattrapage chaque nuit (4h UTC) — nouvel onglet au
+  // 1er avril, saisies faites pendant une panne Google.
+  cron.schedule('0 4 * * *', () => {
+    import('./services/marketingBudgetSheet.js')
+      .then(({ mirrorMarketingBudgetSheet }) => mirrorMarketingBudgetSheet({ trigger: 'cron nuit' }))
+      .catch(e => console.error('marketing budget sheet cron:', e.message))
   })
 
   // Prospects Instagram : lecture des commentaires à minuit dans la nuit de

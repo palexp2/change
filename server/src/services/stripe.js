@@ -1,6 +1,7 @@
 import { linkSubscriptionContact } from './stripeProjectLink.js'
 import { decryptCredentials } from '../utils/encryption.js'
-import { companyIdForStripeCustomer } from './stripeCustomerCompany.js'
+import { companyIdForStripeCustomer, linkStripeCustomerByEmail, fillUnknownContactNames } from './stripeCustomerCompany.js'
+import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import Stripe from 'stripe'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
@@ -11,6 +12,7 @@ import {
   setCurrentItemsSnapshot,
 } from './subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from './subscriptionMonthly.js'
+import { refreshAllTestFlags } from './subscriptionTestFlag.js'
 import { resolveStripeSubscriptionFields } from './stripeSubscriptionFieldMap.js'
 import { emitSubscription } from './realtimeEmitters.js'
 
@@ -158,16 +160,27 @@ export async function syncStripeSubscriptions() {
   const allSubs = []
   for await (const sub of stripe.subscriptions.list({
     limit: 100,
-    expand: ['data.customer', 'data.items.data.price.product', 'data.latest_invoice'],
+    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice'],
   })) {
     allSubs.push(sub)
   }
   for await (const sub of stripe.subscriptions.list({
     status: 'canceled',
     limit: 100,
-    expand: ['data.customer', 'data.items.data.price.product', 'data.latest_invoice'],
+    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice'],
   })) {
     allSubs.push(sub)
+  }
+
+  // Stripe refuse d'expandre au-delà de 4 niveaux (data.items.data.price.product) :
+  // les produits sont lus à part et recollés sur leur prix (nom de l'article).
+  const products = new Map()
+  for await (const p of stripe.products.list({ limit: 100 })) products.set(p.id, p)
+  for (const sub of allSubs) {
+    for (const it of sub.items?.data || []) {
+      const ref = it.price?.product
+      if (typeof ref === 'string' && products.has(ref)) it.price.product = products.get(ref)
+    }
   }
 
   console.log(`🔄 Stripe: ${allSubs.length} abonnement(s) récupérés (actifs + annulés)`)
@@ -186,6 +199,21 @@ export async function syncStripeSubscriptions() {
       "SELECT id, company_id FROM subscriptions WHERE stripe_id=?"
     ).get(sub.id)
     if (!companyId && existingRow?.company_id) companyId = existingRow.company_id
+
+    // Toujours rien : le client Stripe est cherché par son courriel, comme au
+    // webhook (même automatisation, même journal).
+    if (!companyId && typeof customer === 'object' && isSystemAutomationActive('sys_stripe_customer_link_by_email')) {
+      const r = linkStripeCustomerByEmail(customer)
+      if (r) {
+        companyId = r.companyId
+        logSystemRun('sys_stripe_customer_link_by_email', {
+          status: 'success',
+          result: `${customerId} (${customer.email}) → entreprise ${r.companyId}${r.created ? ' (créée)' : ''} via ${r.via}`,
+          triggerData: { event: 'sync abonnements', customer_id: customerId, email: customer.email || null },
+        })
+      }
+    }
+    if (typeof customer === 'object') fillUnknownContactNames(customer)
 
     // Montant mensuel : APRÈS rabais, AVANT taxes — source unique partagée
     // avec le webhook (cf. subscriptionMonthly.js). Sans ce helper, sync polling
@@ -303,7 +331,8 @@ export async function syncStripeSubscriptions() {
     }
   }
 
-  console.log(`✅ Stripe sync terminé: ${created} créés, ${updated} mis à jour`)
+  const tests = refreshAllTestFlags()
+  console.log(`✅ Stripe sync terminé: ${created} créés, ${updated} mis à jour, ${tests} test(s) interne(s)`)
   return { created, updated, total: allSubs.length }
 }
 

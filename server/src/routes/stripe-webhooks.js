@@ -1,5 +1,5 @@
 import { decryptCredentials } from '../utils/encryption.js'
-import { companyIdForStripeCustomer, linkStripeCustomerByEmail } from '../services/stripeCustomerCompany.js'
+import { companyIdForStripeCustomer, linkStripeCustomerByEmail, fillUnknownContactNames } from '../services/stripeCustomerCompany.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
@@ -534,6 +534,7 @@ async function linkUnknownStripeCustomer(secretKey, event) {
   try {
     const customer = obj.object === 'customer' ? obj : await new Stripe(secretKey).customers.retrieve(customerId)
     const r = linkStripeCustomerByEmail(customer)
+    fillUnknownContactNames(customer)
     logSystemRun(LINK_KEY, {
       status: r ? 'success' : 'skipped',
       result: r

@@ -33,8 +33,8 @@ const COLUMN_LABELS = {
 // Modale d'import : le relevé (collé, CSV, TSV ou Excel) est d'abord analysé
 // côté serveur — l'aperçu montre les colonnes reconnues, les réparations faites
 // et les lignes problématiques avant d'écrire quoi que ce soit.
-function ImportModal({ onClose, onImported }) {
-  const [text, setText] = useState('')
+function ImportModal({ onClose, onImported, initialFile, initialText }) {
+  const [text, setText] = useState(initialText || '')
   const [file, setFile] = useState(null) // { name, base64 } — fichier binaire (Excel) ou CSV brut
   const [preview, setPreview] = useState(null)
   const [previewing, setPreviewing] = useState(false)
@@ -56,6 +56,10 @@ function ImportModal({ onClose, onImported }) {
     }
     reader.readAsDataURL(f) // le serveur décide de l'encodage (UTF-16, latin-1, Excel)
   }
+
+  // Fichier lâché sur la page : la modale s'ouvre déjà chargée.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (initialFile) readFile(initialFile) }, [])
 
   // Aperçu automatique dès que la source change (debounce court pour le collage).
   useEffect(() => {
@@ -146,6 +150,7 @@ function ImportModal({ onClose, onImported }) {
                 <span><b>{preview.to_create}</b> à importer</span>
                 {!!preview.already_known && <span className="text-slate-500">{preview.already_known} déjà connue(s)</span>}
                 {!!preview.errors?.length && <span className="text-amber-700">{preview.errors.length} ligne(s) ignorée(s)</span>}
+                {preview.no_party && <span className="text-amber-700" data-testid="douanes-import-no-party">sans colonne « Fournisseur » : FedEx et Axxess indiscernables</span>}
                 {!preview.header_found && <span className="text-slate-500">aucune en-tête reconnue — colonnes devinées par le contenu</span>}
               </div>
               {!!Object.keys(preview.columns || {}).length && (
@@ -339,6 +344,19 @@ function StatBar({ state, statementBalance, config, onSaved }) {
   )
 }
 
+// « Fournisseur » du relevé (procédure CTB) : seul FedEx paie l'ASFC puis
+// nous refacture → ligne ignorée ici ; les autres (Axxess, UPS) → ligne à nous.
+const PARTIES = [
+  ['Federal Express Canada', 'FedEx'],
+  ['United Parcells', 'UPS'],
+  ['AXXESS INTERNAtional', 'Axxess'],
+  ['Automatisation Orisha Inc.', 'Orisha'],
+]
+const partyKey = p => {
+  const s = String(p || '').toLowerCase()
+  return PARTIES.find(([v]) => s && s.slice(0, 5) === v.toLowerCase().slice(0, 5))?.[0] || (p || '')
+}
+
 // Seules les charges de déclaration se ventilent en droits + TPS.
 const splittable = t => t.category === 'evaluation' || t.category === 'correction'
 
@@ -359,7 +377,7 @@ function postingBadge(t) {
   if (reason.startsWith('via_courtier')) {
     const broker = reason.split(':')[1] || 'courtier'
     return { label: `via ${broker}`, color: 'gray',
-      title: 'Le courtier a payé l\'ASFC : la dépense et la TPS arrivent par sa facture — rien à comptabiliser ici.' }
+      title: `${broker} a payé l'ASFC et nous refacture : comptabilisé par sa facture.` }
   }
   if (reason === 'garantie') return { label: 'Garantie', color: 'gray', title: 'Dépôt de garantie permanent, déjà comptabilisé.' }
   if (reason === 'hors_periode') return { label: 'Hors période', color: 'gray', title: 'Antérieure à la date d\'ouverture du compte.' }
@@ -369,6 +387,33 @@ function postingBadge(t) {
   }
   if (t.posting_error) return { ...base, title: t.posting_error }
   return base
+}
+
+// Une écriture telle qu'elle tombera au grand livre : document QB + débit / crédit.
+function PostingEntry({ entry }) {
+  return (
+    <div className="mt-2 ml-7 text-xs">
+      <div className="text-slate-500">
+        {entry.title}{entry.number && <span className="ml-1.5 font-mono">{entry.number}</span>}
+        {entry.memo && <span className="ml-1.5 text-slate-400">— {entry.memo}</span>}
+      </div>
+      <table className="w-full mt-1 tabular-nums">
+        <thead>
+          <tr className="text-slate-400"><th /><th /><th className="text-right font-normal">Débit</th><th className="text-right font-normal">Crédit</th></tr>
+        </thead>
+        <tbody>
+          {entry.rows.map((r, i) => (
+            <tr key={i} className="border-t border-slate-100">
+              <td className="py-0.5 pr-2 text-slate-700">{r.account}</td>
+              <td className="py-0.5 pr-2 text-slate-400">{r.description}</td>
+              <td className="py-0.5 w-20 text-right">{r.debit != null && fmtMoney(r.debit)}</td>
+              <td className="py-0.5 w-20 text-right">{r.credit != null && fmtMoney(r.credit)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 // Ce que le moteur s'apprête à écrire — contrôlé avant d'engager les livres.
@@ -394,7 +439,7 @@ function PostingModal({ onClose, onPosted }) {
     setSelected(next)
   }
 
-  const ENTITY_LABELS = { purchase: 'Dépense', bill: 'Facture fournisseur', vendorcredit: 'Note de crédit' }
+  const ENTITY_LABELS = { purchase: 'Trop-versé', bill: 'Facture ASFC', vendorcredit: 'Note de crédit ASFC', billpayment: 'Paiement de facture' }
 
   async function submit() {
     setPosting(true)
@@ -427,8 +472,9 @@ function PostingModal({ onClose, onPosted }) {
         {groups.map(g => {
           const blocked = g.blockers.length > 0
           return (
-            <label key={g.id} data-testid="douanes-posting-group"
-              className={`flex gap-3 p-3 border rounded-xl text-sm ${blocked ? 'bg-red-50/50 border-red-200' : 'bg-white border-slate-200 hover:border-brand-300 cursor-pointer'}`}>
+            <div key={g.id} data-testid="douanes-posting-group"
+              className={`p-3 border rounded-xl text-sm ${blocked ? 'bg-red-50/50 border-red-200' : 'bg-white border-slate-200 hover:border-brand-300'}`}>
+            <label className={`flex gap-3 ${blocked ? '' : 'cursor-pointer'}`}>
               <input type="checkbox" disabled={blocked} checked={!blocked && chosen.has(g.id)}
                 onChange={() => toggle(g.id)} className="mt-1" />
               <div className="min-w-0 flex-1">
@@ -452,6 +498,8 @@ function PostingModal({ onClose, onPosted }) {
                 {blocked && <div className="text-xs text-red-700 mt-1">{g.blockers.join(' · ')}</div>}
               </div>
             </label>
+            {g.entries?.map((e, i) => <PostingEntry key={i} entry={e} />)}
+            </div>
           )
         })}
         <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-100">
@@ -484,6 +532,48 @@ export default function DouanesCarmPanel() {
   }, [addToast])
 
   useEffect(() => { load() }, [load])
+
+  // Import sans bouton : un fichier lâché n'importe où sur l'écran, ou un relevé
+  // collé (Ctrl+V hors d'un champ), ouvre la modale d'import déjà remplie.
+  const [dragOver, setDragOver] = useState(false)
+  const modalOpen = !!(importing || posting || linking)
+  useEffect(() => {
+    if (modalOpen) return
+    let depth = 0
+    const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files')
+    const onEnter = e => { if (hasFiles(e)) { e.preventDefault(); depth++; setDragOver(true) } }
+    const onOver = e => { if (hasFiles(e)) e.preventDefault() }
+    const onLeave = () => { if (--depth <= 0) { depth = 0; setDragOver(false) } }
+    const onDrop = e => {
+      if (!hasFiles(e)) return
+      e.preventDefault(); depth = 0; setDragOver(false)
+      const f = e.dataTransfer.files?.[0]
+      if (f) setImporting({ file: f })
+    }
+    const onPaste = e => {
+      const el = e.target
+      if (el?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+      const f = e.clipboardData?.files?.[0]
+      const text = e.clipboardData?.getData('text') || ''
+      if (f) setImporting({ file: f })
+      else if (text.trim()) setImporting({ text })
+      else return
+      e.preventDefault()
+    }
+    window.addEventListener('dragenter', onEnter)
+    window.addEventListener('dragover', onOver)
+    window.addEventListener('dragleave', onLeave)
+    window.addEventListener('drop', onDrop)
+    window.addEventListener('paste', onPaste)
+    return () => {
+      window.removeEventListener('dragenter', onEnter)
+      window.removeEventListener('dragover', onOver)
+      window.removeEventListener('dragleave', onLeave)
+      window.removeEventListener('drop', onDrop)
+      window.removeEventListener('paste', onPaste)
+      setDragOver(false)
+    }
+  }, [modalOpen])
 
   async function unlink(t) {
     try { await api.carm.unlink(t.id); load() }
@@ -539,11 +629,6 @@ export default function DouanesCarmPanel() {
         <StatBar state={state} statementBalance={data?.summary?.balance} config={data?.config}
           onSaved={r => setData(d => ({ ...d, ...r }))} />
         <span className="flex shrink-0 items-center gap-2">
-          <button data-testid="douanes-import-open" onClick={() => setImporting(true)}
-            title="Importer un relevé du portail CARM"
-            className="flex items-center gap-1.5 px-2.5 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">
-            <Upload size={15} /> Importer
-          </button>
           {/* Écriture comptable = action transactionnelle : elle se confirme,
               contrairement aux champs de la page qui s'autosauvegardent. */}
           <button data-testid="douanes-post-open" onClick={() => setPosting(true)}
@@ -574,7 +659,7 @@ export default function DouanesCarmPanel() {
             {data !== null && transactions.length === 0 && (
               <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">
                 <Ship className="mx-auto mb-2 text-slate-300" size={26} />
-                Aucune transaction — importer le relevé téléchargé du portail CARM.
+                Glisse ou colle le relevé CARM.
               </td></tr>
             )}
             {transactions.map(t => (
@@ -589,7 +674,16 @@ export default function DouanesCarmPanel() {
                       className="text-slate-700 bg-transparent border border-transparent hover:border-slate-200 rounded-md px-1 py-0.5 focus:outline-none focus:ring-2 focus:ring-brand-500/30">
                       {CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                     </select>
-                    <span className="block px-1 text-xs text-slate-400 font-mono truncate max-w-56">{t.transaction_number || ''}</span>
+                    <span className="flex items-center gap-1 px-1 text-xs text-slate-400">
+                      <select value={partyKey(t.party)} onChange={e => patch(t, { party: e.target.value || null })}
+                        data-testid="douanes-party" title="Fournisseur au relevé"
+                        className={`bg-transparent border border-transparent hover:border-slate-200 rounded px-0.5 focus:outline-none ${t.party ? 'text-slate-600' : 'text-amber-600'}`}>
+                        <option value="">courtier ?</option>
+                        {PARTIES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                        {t.party && !PARTIES.some(([v]) => v === partyKey(t.party)) && <option value={t.party}>{t.party}</option>}
+                      </select>
+                      <span className="font-mono truncate max-w-40">{t.transaction_number || ''}</span>
+                    </span>
                   </td>
                   <td className={`px-2 py-2 text-right tabular-nums ${t.amount < 0 ? 'text-emerald-700' : ''}`}>{fmtMoney(t.amount, t.currency)}</td>
                   {/* Ventilation : seules les évaluations et corrections portent
@@ -666,7 +760,13 @@ export default function DouanesCarmPanel() {
         </table>
       </div>
 
-      {importing && <ImportModal onClose={() => setImporting(false)} onImported={load} />}
+      {importing && <ImportModal onClose={() => setImporting(false)} onImported={load}
+        initialFile={importing.file} initialText={importing.text} />}
+      {dragOver && (
+        <div data-testid="douanes-drop-overlay" className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center bg-brand-600/10 border-4 border-dashed border-brand-500">
+          <span className="flex items-center gap-2 px-4 py-2 rounded-lg bg-white text-sm shadow"><Upload size={15} /> Relevé CARM</span>
+        </div>
+      )}
       {posting && <PostingModal onClose={() => setPosting(false)} onPosted={load} />}
       {linking && <LinkModal txn={linking} receipts={receipts} onClose={() => setLinking(null)} onLinked={load} />}
     </div>

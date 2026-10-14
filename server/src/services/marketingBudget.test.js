@@ -42,17 +42,26 @@ test('parse GL : devise étrangère — montant maison retenu, étranger conserv
   assert.equal(e.currency, 'USD')
 })
 
-test('parse GL : crédit (remboursement) = montant négatif ; lignes jumelles suffixées', () => {
+test('parse GL : lignes d\'une même facture réunies en une seule dépense', () => {
+  const line = (memo, amt) => [col('2026-10-01'), col('Dépense', '18174'), col('162711'), col('Chez Victor'), col(memo), col('CAD'), col(amt), col(''), col(amt), col('')]
+  const entries = entriesFromGlReport(report([line('Poutine', '5.37'), line('Pourboire', '10.65'), line('Canotier', '24.18')]),
+    { acctnum: '75930', accountLabel: 'Repas aux fins de promotion' })
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].amount, 40.2)
+  assert.equal(entries[0].memo, null)
+  assert.equal(entries[0].import_key, '75930|18174|txn')
+})
+
+test('parse GL : crédit (remboursement) = montant négatif ; lignes jumelles réunies', () => {
   const twin = [col('2026-06-15'), col('Dépense', '17545'), col('1560471-1'), col('Montego Club'), col('Pourboire'), col('CAD'), col('7.04'), col(''), col('7.04'), col('')]
   const rows = [
     twin, twin,
     [col('2026-06-20'), col('Crédit de fournisseur', '18000'), col(''), col('Montego Club'), col('Remb.'), col('CAD'), col(''), col('7.04'), col(''), col('7.04')],
   ]
   const entries = entriesFromGlReport(report(rows), { acctnum: '75930', accountLabel: 'Repas aux fins de promotion' })
-  assert.equal(entries.length, 3)
-  assert.notEqual(entries[0].import_key, entries[1].import_key)
-  assert.ok(entries[1].import_key.endsWith('#2'))
-  assert.equal(entries[2].amount, -7.04)
+  assert.equal(entries.length, 2)
+  assert.equal(entries[0].amount, 14.08)
+  assert.equal(entries[1].amount, -7.04)
 })
 
 // ── matchRule ────────────────────────────────────────────────────────────────

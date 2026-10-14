@@ -11,6 +11,9 @@ import {
   previewWeeklyMarketingSlack, checkWeeklyMarketingSlack,
   budgetSummary, upsertBudgetCell, pendingCount, lastSyncInfo,
 } from '../services/marketingBudget.js'
+import {
+  scheduleMarketingSheetMirror, mirrorMarketingBudgetSheet, getMarketingSheetConfig, sheetUrl,
+} from '../services/marketingBudgetSheet.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -54,6 +57,7 @@ router.patch('/expenses/:id', (req, res) => {
       updated_at=${NOW}
     WHERE id=?
   `).run(status, status, status, req.user?.id || null, req.params.id)
+  if (row.status === 'relevant' || status === 'relevant') scheduleMarketingSheetMirror('décision')
   res.json(withQbUrl(db.prepare('SELECT * FROM marketing_expenses WHERE id=?').get(req.params.id)))
 })
 
@@ -79,6 +83,7 @@ router.post('/expenses/:id/never', (req, res) => {
     WHERE id=?
   `).run(rule.id, req.user?.id || null, req.params.id)
   const applied = applyRuleToPending(rule)
+  if (row.status === 'relevant') scheduleMarketingSheetMirror('règle')
   res.json({ rule, applied_to_pending: applied })
 })
 
@@ -141,10 +146,24 @@ router.get('/summary', (req, res) => {
 router.put('/budget', (req, res) => {
   try {
     const id = upsertBudgetCell(req.body || {})
+    scheduleMarketingSheetMirror('budget')
     res.json({ ok: true, id })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
+})
+
+// ── Google Sheet miroir ──────────────────────────────────────────────────────
+
+router.get('/sheet', (req, res) => {
+  const cfg = getMarketingSheetConfig()
+  res.json({ url: sheetUrl(cfg.spreadsheet_id) })
+})
+
+router.post('/sheet/sync', async (req, res) => {
+  const out = await mirrorMarketingBudgetSheet({ trigger: 'bouton page Budget marketing', force: true })
+  if (out.error) return res.status(502).json(out)
+  res.json(out)
 })
 
 export default router

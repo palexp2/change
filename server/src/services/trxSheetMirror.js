@@ -127,12 +127,31 @@ export function monthFirstOf(grid, cols) {
 // une date qui sort de l'ordre de l'onglet appartient à l'année d'à côté.
 export function anchorYears(list, rawDateOf) {
   const descending = tabDescending(list.map((x) => x.txn_date))
+  const explicit = list.map((x) => hasExplicitYear(rawDateOf(x)))
+  const against = (d, prev) => prev && (descending ? d > prev : d < prev)
   let prev = null
-  for (const x of list) {
-    if (!hasExplicitYear(rawDateOf(x))) x.txn_date = anchorYear(x.txn_date, prev, descending)
+  for (let i = 0; i < list.length; i++) {
+    const x = list[i]
+    if (!explicit[i]) x.txn_date = anchorYear(x.txn_date, prev, descending)
+    else if (against(x.txn_date, prev) && strayRun(list, explicit, i, prev, against)) {
+      // Ligne datée posée hors de sa place (Desj CAD : octobre 2026 au milieu
+      // de 2025) : elle ne donne pas l'année aux suivantes — sinon tout le bloc
+      // de 2025 en dessous se relisait en 2026 — et `placeMissing` l'ignore.
+      x.stray = true
+      continue
+    }
     prev = x.txn_date
   }
   return list
+}
+
+// Courte série (≤ 5) de dates explicites à contre-sens, après laquelle l'onglet
+// reprend son cours : des lignes égarées, pas un changement de sens.
+function strayRun(list, explicit, i, prev, against) {
+  for (let k = i; k < Math.min(list.length, i + 6); k++) {
+    if (!explicit[k] || !against(list[k].txn_date, prev)) return k > i
+  }
+  return list.length - i <= 5
 }
 
 export function readTabRows(grid, cols, spec, { todayIso } = {}) {
@@ -190,7 +209,10 @@ export function amountOfRow(row, cols, spec) {
     const debit = cols.debit != null ? parseTrxAmount(row[cols.debit]) : null
     const credit = cols.credit != null ? parseTrxAmount(row[cols.credit]) : null
     if (debit == null && credit == null) return null
-    amount = (credit != null ? Math.abs(credit) : 0) - (debit != null ? Math.abs(debit) : 0)
+    // Un crédit entre parenthèses est une SORTIE (BNC CAD, janvier 2026 :
+    // « (1 178,49) » dans Crédit, le solde baisse d'autant). Lu en valeur
+    // absolue, la ligne ne s'appariait pas et Boréal la réécrivait en double.
+    amount = (credit != null ? credit : 0) - (debit != null ? Math.abs(debit) : 0)
   }
   if (amount == null || amount === 0) return null
   if (spec?.invert) amount = -amount
@@ -896,7 +918,7 @@ export function growthDescending(dates, { tail = 20 } = {}) {
 // bloc en tête des onglets qui en portent un. Les emplacements tiennent compte
 // des insertions déjà décidées, donc la liste s'applique dans l'ordre rendu.
 export function placeMissing(fileRows, missing, descending, headerIdx, gridLength) {
-  const rows = fileRows.map((r) => ({ ...r }))
+  const rows = fileRows.filter((r) => !r.stray).map((r) => ({ ...r }))
   const out = []
   // De la plus ancienne à la plus récente sur un onglet descendant : chaque
   // nouvelle insertion se place ainsi au-dessus des précédentes.
@@ -930,7 +952,31 @@ async function readTabGrid(sheets, spreadsheetId, title) {
   return res.data.values || []
 }
 
-async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
+// Lignes fondues dans un regroupement (« Regrouper ») : la ligne regroupée les
+// remplace, elles ne doivent plus rester dans l'onglet (Charles, 2026-10-10 :
+// les 10 crédits Rona du 30 sept comptés deux fois).
+export function groupedChildren(accountId, sinceDate) {
+  return db.prepare(`
+    SELECT id, txn_date, amount FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NOT NULL AND group_parent_id IS NOT NULL AND txn_date >= ?
+  `).all(accountId, sinceDate)
+}
+
+// Rangées du fichier à retirer : une par enfant de regroupement, prise parmi
+// celles qu'aucune transaction vivante n'a réclamées.
+export function rowsToRemove(fileRows, paint, children) {
+  const taken = new Set(paint.map((p) => p.rowIndex))
+  const out = []
+  for (const c of children) {
+    const sig = sigOf(c.txn_date, c.amount)
+    const r = fileRows.find((f) => !taken.has(f.rowIndex)
+      && ((f.amount != null && sigOf(f.txn_date, f.amount) === sig) || (f.alt_amount != null && sigOf(f.txn_date, f.alt_amount) === sig)))
+    if (r) { taken.add(r.rowIndex); out.push(r.rowIndex) }
+  }
+  return out.sort((a, b) => b - a)
+}
+
+async function mirrorTab(sheets, spreadsheetId, account, tab, cfg, { pruned = false } = {}) {
   const { title, sheetId, spec } = tab
   // Valeurs ET couleurs en une seule lecture : les couleurs servent à ne
   // repeindre que ce qui change.
@@ -966,6 +1012,17 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   const txns = txnsForAccount(account.id, cfg.paint_since_date)
   const plan = planTab(fileRows, txns)
   const paint = plan.paint
+  if (!pruned) {
+    const drop = rowsToRemove(fileRows, paint, groupedChildren(account.id, cfg.since_date))
+    if (drop.length) {
+      await withRetry(() => sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests: drop.map((i) => ({ deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: i, endIndex: i + 1 } } })) },
+      }))
+      console.log(`Miroir ${title} : ${drop.length} ligne(s) regroupée(s) retirée(s)`)
+      return mirrorTab(sheets, spreadsheetId, account, tab, cfg, { pruned: true })
+    }
+  }
   const missing = plan.missing.filter((t) => t.txn_date >= cfg.since_date)
   // La passe de solde, elle, reste dans la fenêtre : au-delà, le fichier porte
   // des soldes collés à la main qu'on n'a aucune raison de recalculer.

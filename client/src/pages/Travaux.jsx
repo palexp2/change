@@ -21,12 +21,12 @@ import { hasRole } from '../../../shared/roles.mjs'
 // Autosave partout (blur / debounce 500 ms) ; les seuls boutons sont les créations
 // et les actions à effet réel (lancer la file, promouvoir, générer).
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, Link } from 'react-router-dom'
 import {
   Play, Pause, Trash2, ChevronUp, ChevronsUp, Plus, Sparkles, Check, X, ListOrdered, Link2, CheckCircle2, AlertTriangle, RefreshCw, ChevronDown, Send,
   Hourglass, GripVertical, Plug, CircleStop, PauseCircle, PlayCircle,
   Lightbulb, MessageSquare, ChevronLeft, ChevronRight, CalendarDays, Paperclip,
-  Settings2, Square, Wand2, Star, FileText, RotateCw, Power, Settings, Cpu, Github, Bot, Clock, Pencil, CloudUpload,
+  Settings2, Square, Wand2, Star, ArrowUpRight, FileText, RotateCw, Power, Settings, Cpu, Github, Bot, HeartPulse, CloudUpload,
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { useReorderDnd } from '../lib/useReorderDnd.js'
@@ -41,6 +41,7 @@ import { PageLink, requestPage } from '../components/PageLink.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
+import { fmtMoney } from '../utils/formatters.js'
 // Briques partagées avec le panneau rapide (accessible depuis toute l'app) :
 // lecture temps réel de la file, pastille d'état, choix d'une question, réponse.
 // Une seule implémentation, deux points d'entrée — voir lib/travauxQueue.jsx.
@@ -48,6 +49,7 @@ import {
   inputCls, btnCls, btnPrimary,
   isAsking, pillStateOf, firstLine, shortDate,
   StatusPill, QuestionChoices, ReplyBox, useTravauxPrompts, CreatorChip, STATUS_LABELS,
+  ThreadMessage,
 } from '../lib/travauxQueue.jsx'
 import ThinkingOrb from '../components/ThinkingOrb'
 
@@ -282,20 +284,6 @@ function ReorderRail({ p, dnd }) {
         className={arrow} data-testid="travaux-move-down" title="Descendre d'un cran" aria-label="Descendre d'un cran"
         disabled={dnd.isLast(p.id)} onClick={() => dnd.move(p.id, 1)}
       ><ChevronDown size={13} /></button>
-    </div>
-  )
-}
-
-/** Un message du fil. */
-function ThreadMessage({ m }) {
-  return (
-    <div className={`text-sm whitespace-pre-wrap rounded-lg px-3 py-2 ${
-      m.role === 'agent' ? 'bg-slate-50 text-slate-700' : 'bg-brand-50 text-brand-900'
-    }`}>
-      <div className="text-[11px] uppercase tracking-wide opacity-60 mb-0.5">
-        {m.role === 'agent' ? 'Claude' : (m.author_name || 'Toi')}
-      </div>
-      {m.text}
     </div>
   )
 }
@@ -1057,7 +1045,7 @@ function SuggestionChat({ s }) {
   )
 }
 
-function SuggestionCard({ s, onAccept, onDismiss }) {
+function SuggestionCard({ s, onAccept, onDismiss, onToIdea }) {
   const [open, setOpen] = useState(false)
   const [prompt, setPrompt] = useState(s.prompt)
   useEffect(() => { setPrompt(s.prompt) }, [s.prompt])
@@ -1099,6 +1087,9 @@ function SuggestionCard({ s, onAccept, onDismiss }) {
             </button>
             <button className={btnCls} data-testid="suggestion-accept-first" onClick={() => onAccept(s.id, prompt !== s.prompt ? prompt : null, true)} title="Ajouter en tête de file — partira avant tout le reste">
               <ChevronsUp size={14} /> En premier
+            </button>
+            <button className={btnCls} data-testid="suggestion-to-idea" onClick={() => onToIdea(s, prompt)} title="Ranger dans le carnet d'idées">
+              <Lightbulb size={14} /> Idée
             </button>
             <button className={btnCls} onClick={() => onDismiss(s.id)}><X size={14} /> Rejeter</button>
           </div>
@@ -1227,6 +1218,17 @@ function SuggestionsTab({ toast, space }) {
   const dismiss = async (id) => {
     try { await api.travaux.dismissSuggestion(id); load() } catch (e) { toast.error(e.message) }
   }
+  // Ni file ni rejet : la suggestion devient une idée du carnet (onglet « De côté
+  // & idées ») et quitte les nouvelles. Le prompt, ajusté ou non, part en notes —
+  // c'est lui que reprendra « Passer à l'action ».
+  const toIdea = async (s, prompt) => {
+    try {
+      await api.travaux.createIdea({ title: s.title, notes: [s.rationale, prompt].filter(Boolean).join('\n\n') })
+      await api.travaux.dismissSuggestion(s.id, 'Rangée dans les idées')
+      toast.success('Ajoutée aux idées')
+      load()
+    } catch (e) { toast.error(e.message) }
+  }
 
   // Pastilles de domaine : on n'affiche que les domaines réellement présents dans
   // la liste courante — plus celui qui est sélectionné, pour qu'il ne disparaisse
@@ -1345,7 +1347,7 @@ function SuggestionsTab({ toast, space }) {
               </button>
               <div className="space-y-2.5">
                 {items.map(s => (
-                  <SuggestionCard key={s.id} s={s} onAccept={accept} onDismiss={dismiss} />
+                  <SuggestionCard key={s.id} s={s} onAccept={accept} onDismiss={dismiss} onToIdea={toIdea} />
                 ))}
               </div>
             </div>
@@ -1869,10 +1871,18 @@ const DUE_STYLES = {
   due_soon: 'bg-amber-50 text-amber-800 border-amber-200',
   upcoming: 'bg-slate-50 text-slate-500 border-slate-200',
 }
+const shortDay = iso => String(iso).slice(0, 10)
 function dueLabel(t) {
   const d = t.days_until_due
   if (d === null || d === undefined || !t.due_date) return null
-  const day = Number(t.due_date.slice(8))
+  // Délai d'envoi (rapport de taxes) : la date qui compte est celle d'envoi.
+  if (t.send_by) {
+    const tail = `échéance ${shortDay(t.due_date)}`
+    if (d < 0) return `Envoi en retard de ${-d} j · ${tail}`
+    if (d === 0) return `Envoyer aujourd'hui · ${tail}`
+    return `Envoyer d'ici le ${shortDay(t.send_by)} · ${tail}`
+  }
+  const day = shortDay(t.due_date)
   if (d < 0) return `En retard de ${-d} j — était dû le ${day}`
   if (d === 0) return 'Dû aujourd\'hui'
   if (d === 1) return 'Dû demain'
@@ -1905,7 +1915,10 @@ function CatchUpRow({ t, period, currentLabel, onToggle }) {
         <div className="text-[15px] leading-6 text-amber-900">{t.label}</div>
         <div className="text-[13px] leading-relaxed text-amber-700">
           {capitalize(period.period_label)} jamais coché — cocher ici marque {period.period_label}, pas {currentLabel}.
+          {period.send_by && ` Envoyer d'ici le ${shortDay(period.send_by)} · échéance ${shortDay(period.due_date)}.`}
         </div>
+        {t.id === STATEMENTS_TASK_ID && <StatementsChecklist month={period.period_key} />}
+        {TASK_LINKS[t.id] && <TaskLinks links={TASK_LINKS[t.id]} />}
       </div>
     </div>
   )
@@ -2013,6 +2026,67 @@ function AutoGrowNote({ value, onChange, onBlur, className = '', ...rest }) {
 // « Télécharger les relevés bancaires sur le Drive » : les comptes dont le
 // relevé du mois manque encore au Drive. Ceux qui y sont disparaissent.
 const STATEMENTS_TASK_ID = 'rt-al-releves-bancaires-drive'
+
+// Raccourcis d'un travail : là où il se fait (page de l'ERP ou site externe).
+const TASK_LINKS = {
+  'rt-al-ej-mensuelle': [{ label: 'E/J mensuelle', to: '/fin-de-mois' }],
+  'rt-al-payer-fournisseurs': [{ label: 'Paiements émis', to: '/paiements-emis' }],
+  'rt-al-debourses-gui': [{ label: 'Déboursés en pièces', to: '/fin-de-mois#debourses-pieces' }],
+  'rt-ml-verif-debourses-gui': [{ label: 'Déboursés en pièces', to: '/fin-de-mois#debourses-pieces' }],
+  'rt-al-payer-visa': [
+    { label: 'Visa USD', href: 'https://www.desjardinsmacarteus.com/' },
+    { label: 'Visa CAD', href: 'https://accesdc.mouv.desjardins.com/accueil' },
+  ],
+}
+const LINK_BTN = 'inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-slate-300 bg-white text-xs font-medium text-slate-700 hover:bg-slate-100'
+function TaskLinks({ links }) {
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="task-links">
+      {links.map(l => l.href
+        ? <a key={l.label} href={l.href} target="_blank" rel="noopener noreferrer" className={LINK_BTN}>{l.label}<ArrowUpRight size={12} /></a>
+        : <Link key={l.label} to={l.to} className={LINK_BTN}>{l.label}<ArrowUpRight size={12} /></Link>)}
+    </div>
+  )
+}
+
+// « Fin de la subvention BioTalent (LB) : vider le 12400 » — une fois. Le
+// bouton publie dans QuickBooks l'écriture qui ramène le compte à zéro.
+const SUBSIDY_CLEAR_TASK_ID = 'borUa16F1Cqrq9JDy'
+const SUBSIDY_PROVISION_ID = 'prov_subv_salariale_lb'
+function SubsidyClearAction({ taskId }) {
+  const [bal, setBal] = useState(null)
+  const [stop, setStop] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(null)
+  const [err, setErr] = useState(null)
+  useEffect(() => {
+    let live = true
+    api.monthEnd.subsidyReceivable(SUBSIDY_PROVISION_ID).then(r => { if (live) setBal(r) }).catch(e => live && setErr(e.message))
+    return () => { live = false }
+  }, [])
+  const run = async () => {
+    setBusy(true); setErr(null)
+    try { setDone(await api.monthEnd.clearSubsidyReceivable(SUBSIDY_PROVISION_ID, { stop_provision: stop, task_id: taskId })); setBal(b => ({ ...b, balance: 0 })) }
+    catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs" data-testid="subsidy-clear">
+      {bal && <span className="text-slate-600">{bal.acctnum} : {fmtMoney(bal.balance)}</span>}
+      {done ? (
+        <span className="text-emerald-700">Écriture QB #{done.qb_je_id} publiée</span>
+      ) : bal && Math.abs(bal.balance) > 0.005 && (<>
+        <label className="inline-flex items-center gap-1 text-slate-600">
+          <input type="checkbox" className="h-3.5 w-3.5 rounded border-slate-300" checked={stop} onChange={e => setStop(e.target.checked)} />
+          Arrêter la provision LB
+        </label>
+        <button type="button" disabled={busy} onClick={run}
+          className="px-2 py-0.5 rounded-md border border-slate-300 bg-white font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+        >{busy ? '…' : 'Vider dans QB'}</button>
+      </>)}
+      {err && <span className="text-red-600">{err}</span>}
+    </div>
+  )
+}
 function StatementsChecklist({ month }) {
   const [items, setItems] = useState(null)
   useEffect(() => {
@@ -2035,12 +2109,16 @@ function StatementsChecklist({ month }) {
       {missing.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs font-medium text-amber-800">Manque :</span>
+          {/* Le détail (date attendue, mauvais fichier) s'affiche dans la pastille :
+              il ne vivait que dans l'infobulle, qu'il fallait survoler ou toucher. */}
           {missing.map(x => (
             <span key={x.account}
               data-testid="statements-missing"
               title={x.wrong ? `${x.file} : relevé du compte ${x.wrong}` : x.error || `attendu vers le ${fmtDate(x.expected_by)}`}
               className={`px-2 py-0.5 text-xs font-medium rounded-md border ${x.wrong ? 'border-red-300 bg-red-50 text-red-700' : 'border-amber-300 bg-amber-50 text-amber-900'}`}
-            >{x.label}{x.wrong ? ' ✗' : ''}</span>
+            >{x.label}<span className="font-normal opacity-75">{
+              x.wrong ? ` ✗ ${x.wrong}` : x.error ? ' · ?' : x.expected_by ? ` · ${fmtDate(x.expected_by)}` : ''
+            }</span></span>
           ))}
         </div>
       )}
@@ -2111,7 +2189,7 @@ function PayCalendar({ t }) {
 
 function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
   const { draft, edit, flush } = useRecordDraft(
-    { label: t.label, day_hint: t.day_hint || '', notes: t.notes || '', due_day: t.due_day ?? '' },
+    { label: t.label, day_hint: t.day_hint || '', notes: t.notes || '', due_day: t.due_day ?? '', lead_days: t.lead_days ?? '' },
     patch => onPatch(t.id, patch),
   )
   // Pas de badge sur une ligne cochée : l'échéance ne concerne plus personne.
@@ -2202,6 +2280,8 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
           onBlur={flush}
         />
         {t.id === STATEMENTS_TASK_ID && <StatementsChecklist month={t.period_key} />}
+        {TASK_LINKS[t.id] && <TaskLinks links={TASK_LINKS[t.id]} />}
+        {t.id === SUBSIDY_CLEAR_TASK_ID && !t.done && <SubsidyClearAction taskId={t.id} />}
         {t.pay_calendar?.length > 0 && <PayCalendar t={t} />}
         {t.done && t.done_by_name && (
           <div className="text-xs text-emerald-700 mt-1">Fait par {t.done_by_name}</div>
@@ -2266,15 +2346,28 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
             </label>
             {/* Jour du mois où le travail est dû — seule cadence où « le 25 » veut
                 dire quelque chose de calculable. Autosave comme le reste. */}
-            {t.cadence === 'mensuel' && (
+            {['mensuel', 'trimestriel', 'annuel'].includes(t.cadence) && (
               <label className="block">
-                <span className="block text-[11px] font-medium text-slate-500 mb-0.5">Dû le (jour du mois)</span>
+                <span className="block text-[11px] font-medium text-slate-500 mb-0.5">{t.cadence === 'mensuel' ? 'Dû le (jour du mois)' : 'Dû le (jour du mois suivant)'}</span>
                 <input
                   type="number" min="1" max="31"
                   className="w-full text-sm text-slate-700 rounded-md border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-300 placeholder:text-slate-400"
                   data-testid="recurring-due-day"
                   value={draft.due_day}
                   onChange={e => edit('due_day', e.target.value)}
+                  onBlur={flush}
+                />
+              </label>
+            )}
+            {['mensuel', 'trimestriel', 'annuel'].includes(t.cadence) && (
+              <label className="block">
+                <span className="block text-[11px] font-medium text-slate-500 mb-0.5">Envoyer (jours avant)</span>
+                <input
+                  type="number" min="0" max="60"
+                  className="w-full text-sm text-slate-700 rounded-md border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-300"
+                  data-testid="recurring-lead-days"
+                  value={draft.lead_days}
+                  onChange={e => edit('lead_days', e.target.value)}
                   onBlur={flush}
                 />
               </label>
@@ -2332,6 +2425,22 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
  * décocher. Un travail « à faire une fois » coché ne revient jamais ; un
  * hebdomadaire réapparaît, vide, dans la semaine suivante.
  */
+// « À faire aujourd'hui » : ce qui tombe le jour même (ou traîne depuis). Le
+// reste de la semaine reste affiché, atténué, sous « Plus tard ».
+const WEEKDAYS_FR = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche']
+function isForToday(t, today) {
+  if (t.done) return false
+  if (t.priority || t.catch_up?.length) return true
+  if (t.occurrences?.length) return t.occurrences.some(o => !o.done && o.due_date && o.due_date <= today)
+  if (t.days_until_due != null) return t.days_until_due <= 0
+  if (t.cadence === 'hebdo' && t.day_hint) {
+    const hint = WEEKDAYS_FR.findIndex(d => t.day_hint.toLowerCase().includes(d))
+    const now = (new Date(`${today}T12:00:00`).getDay() + 6) % 7
+    return hint >= 0 && now >= hint
+  }
+  return false
+}
+
 function RecurringTab({ toast }) {
   const [tasks, setTasks] = useState([])
   const [owner, setOwner] = useState('AL')
@@ -2449,9 +2558,15 @@ function RecurringTab({ toast }) {
   // le mois courant peut très bien être coché alors que le mois précédent
   // traîne — dans ce cas la ligne du travail est partie sous « Faits » et
   // emporterait le rappel avec elle.
+  const todayIso = new Date().toLocaleDateString('en-CA')
+  const todayIds = useMemo(() => new Set(
+    week?.is_current === false ? [] : tasks.filter(t => isForToday(fading.has(t.id) ? { ...t, done: false } : t, todayIso)).map(t => t.id),
+  ), [tasks, week, todayIso, fading])
+  const todayTasks = tasks.filter(t => todayIds.has(t.id))
+
   const groups = useMemo(() => {
     const by = {}
-    for (const t of tasks) (by[t.cadence] ||= []).push(t)
+    for (const t of tasks) if (!todayIds.has(t.id)) (by[t.cadence] ||= []).push(t)
     // En retard d'abord (urgence réelle), puis prioritaire (épinglé à la main),
     // puis « bientôt dû », puis l'ordre habituel : ce qui presse doit être en
     // haut de sa section, pas noyé au milieu.
@@ -2463,7 +2578,7 @@ function RecurringTab({ toast }) {
       done: by[c].filter(t => t.done && !fading.has(t.id)),
       catchUp: by[c].flatMap(t => (t.catch_up || []).map(period => ({ t, period }))),
     }))
-  }, [tasks, fading])
+  }, [tasks, fading, todayIds])
 
   // Une section vidée de son « à faire » ne doit pas se lire comme une section
   // VIDE : Antoine cherchait « Compiler les dépenses pour Émilie » dans sa
@@ -2516,6 +2631,24 @@ function RecurringTab({ toast }) {
         <div className="text-sm text-slate-500 flex items-center gap-2"><Spinner size="xs" label="Chargement…" /></div>
       ) : (
         <div className="space-y-5">
+          {todayTasks.length > 0 && (
+            <div className="rounded-xl border-2 border-brand-300 bg-white" data-testid="recurring-today">
+              <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-100">
+                <h3 className="text-[15px] font-semibold text-slate-900">Aujourd’hui</h3>
+                <span className="text-xs text-slate-500">{new Intl.DateTimeFormat('fr-CA', { weekday: 'long' }).format(new Date())} {todayIso}</span>
+              </div>
+              <div className="p-1">
+                {todayTasks.flatMap(t => (t.catch_up || []).map(period => (
+                  <CatchUpRow key={`${t.id}:${period.period_key}`} t={t} period={period} currentLabel={t.period_label} onToggle={toggle} />
+                )))}
+                {todayTasks.map(t => (
+                  <RecurringRow key={t.id} t={t} onToggle={toggle} onPatch={patch} onDelete={remove} fading={fading.has(t.id)} />
+                ))}
+              </div>
+            </div>
+          )}
+          {todayTasks.length > 0 && <div className="pt-2 text-xs font-medium uppercase tracking-wide text-slate-400">Plus tard</div>}
+          <div className={todayTasks.length ? 'space-y-5 opacity-60 hover:opacity-100 focus-within:opacity-100 transition-opacity' : 'space-y-5'}>
           {groups.map(g => (
             <div key={g.cadence} className="rounded-xl border border-slate-200 bg-white" data-cadence={g.cadence}>
               <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-100">
@@ -2572,6 +2705,7 @@ function RecurringTab({ toast }) {
               )}
             </div>
           ))}
+          </div>
         </div>
       )}
 
@@ -3145,9 +3279,12 @@ function AgentSettingsControl({ toast }) {
 // À chaque réveil, le serveur dépose un passage dans la file (automation
 // sys_autonomous_agents) : l'historique se lit dans la file, comme le reste.
 
-const HOURS = Array.from({ length: 24 }, (_, h) => h)
+// L'utilisateur choisit seulement la fréquence ; le serveur place les réveils
+// aux heures où la file est la plus calme.
+const RUNS_PER_DAY = [1, 2, 3, 4, 6, 8, 12, 24]
+const hoursTitle = hours => hours.map(h => `${h} h`).join(' · ')
 
-function HoursPicker({ value, onChange }) {
+function RunsPerDayPicker({ hours, onChange }) {
   const [open, setOpen] = useState(false)
   const box = useRef(null)
   useEffect(() => {
@@ -3158,29 +3295,29 @@ function HoursPicker({ value, onChange }) {
     document.addEventListener('keydown', onKey)
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
   }, [open])
-  const toggle = h => onChange(value.includes(h) ? value.filter(x => x !== h) : [...value, h].sort((a, b) => a - b))
+  const n = hours.length
   return (
     <div className="relative shrink-0" ref={box}>
       <button
         type="button"
         data-testid="agent-hours"
-        title="Heures de réveil"
-        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border ${value.length ? 'border-slate-200 text-slate-600' : 'border-amber-300 text-amber-700'} hover:bg-slate-50`}
+        title={n ? hoursTitle(hours) : 'Fréquence'}
+        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border ${n ? 'border-slate-200 text-slate-600' : 'border-amber-300 text-amber-700'} hover:bg-slate-50`}
         onClick={() => setOpen(o => !o)}
       >
-        <Clock size={12} /> {value.length ? value.map(h => `${h} h`).join(' · ') : '—'}
+        <HeartPulse size={12} /> {n ? `${n}×/j` : '—'}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-slate-200 bg-white shadow-lg p-2 grid grid-cols-6 gap-1">
-          {HOURS.map(h => (
+        <div className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-slate-200 bg-white shadow-lg p-2 grid grid-cols-4 gap-1">
+          {RUNS_PER_DAY.map(k => (
             <button
-              key={h}
+              key={k}
               type="button"
-              data-testid={`agent-hour-${h}`}
-              className={`py-1 text-xs rounded-md tabular-nums ${value.includes(h) ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              onClick={() => toggle(h)}
+              data-testid={`agent-runs-${k}`}
+              className={`py-1 text-xs rounded-md tabular-nums ${k === n ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+              onClick={() => { onChange(k); setOpen(false) }}
             >
-              {h}
+              {k}×
             </button>
           ))}
         </div>
@@ -3189,7 +3326,61 @@ function HoursPicker({ value, onChange }) {
   )
 }
 
-function AgentCard({ a, autoFocus, onPatch, onDelete, onRun }) {
+// Petite carte : état, nom, début de mission, heures. Un clic l'ouvre en
+// modale pour éditer la mission.
+function AgentCard({ a, onOpen, onPatch, onRun }) {
+  const last = a.last_prompt_status ? { status: a.last_prompt_status } : null
+  const stop = fn => e => { e.stopPropagation(); fn() }
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-agent-id={a.id}
+      data-testid="agent-card"
+      onClick={onOpen}
+      onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) onOpen() }}
+      className={`flex flex-col gap-1.5 rounded-xl border border-slate-200 bg-white p-3 text-left cursor-pointer hover:border-brand-300 hover:shadow-sm ${a.enabled ? '' : 'opacity-60'}`}
+    >
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          data-testid="agent-enabled"
+          aria-pressed={a.enabled}
+          title={a.enabled ? 'Actif' : 'En veille'}
+          className={`p-1 -ml-1 rounded-md ${a.enabled ? 'text-emerald-600' : 'text-slate-400'} hover:bg-slate-100`}
+          onClick={stop(() => onPatch(a.id, { enabled: !a.enabled }))}
+        >
+          <Power size={14} />
+        </button>
+        <span className="flex-1 min-w-0 truncate text-sm font-semibold text-slate-800" data-testid="agent-name">{a.name || '—'}</span>
+        <button
+          type="button"
+          data-testid="agent-run"
+          title="Lancer maintenant"
+          disabled={!a.instructions}
+          className="p-1 -mr-1 rounded-md text-slate-400 hover:text-brand-700 hover:bg-slate-100 disabled:opacity-40"
+          onClick={stop(() => onRun(a.id))}
+        >
+          <Play size={14} />
+        </button>
+      </div>
+      <p className="text-xs text-slate-500 line-clamp-2 min-h-[2rem] whitespace-pre-line">{a.instructions || '—'}</p>
+      <div className="flex items-center gap-2 text-xs text-slate-400">
+        <span className={`inline-flex items-center gap-1 ${(a.run_hours || []).length ? '' : 'text-amber-600'}`} title={hoursTitle(a.run_hours || [])}>
+          <HeartPulse size={11} /> {(a.run_hours || []).length ? `${a.run_hours.length}×/j` : '—'}
+        </span>
+        {a.last_run_at && (
+          <span className="ml-auto flex items-center gap-1.5" data-testid="agent-last-run">
+            {shortDate(a.last_run_at)}
+            {last && <StatusPill p={last} />}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function AgentModal({ a, autoFocus, onClose, onPatch, onDelete }) {
   const { draft, edit, flush } = useRecordDraft(
     { name: a.name || '', instructions: a.instructions || '' },
     patch => onPatch(a.id, patch),
@@ -3197,25 +3388,15 @@ function AgentCard({ a, autoFocus, onPatch, onDelete, onRun }) {
     sameTrimmed,
   )
   const nameRef = useRef(null)
-  const last = a.last_prompt_status ? { status: a.last_prompt_status } : null
+  const close = () => { flush().catch(() => {}); onClose() }
   return (
-    <div data-agent-id={a.id} className={`rounded-xl border border-slate-200 bg-white p-3 ${a.enabled ? '' : 'opacity-60'}`}>
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          data-testid="agent-enabled"
-          aria-pressed={a.enabled}
-          title={a.enabled ? 'Actif' : 'En veille'}
-          className={`p-1 rounded-md ${a.enabled ? 'text-emerald-600' : 'text-slate-400'} hover:bg-slate-100`}
-          onClick={() => onPatch(a.id, { enabled: !a.enabled })}
-        >
-          <Power size={15} />
-        </button>
-        <label className="group flex-1 min-w-0 flex items-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 hover:border-slate-200 focus-within:border-brand-300 focus-within:bg-white cursor-text" title="Renommer">
+    <Modal isOpen onClose={close} title={draft.name || 'Agent'} size="lg">
+      <div className="space-y-3" data-testid="agent-modal">
+        <div className="flex items-center gap-2">
           <input
             ref={nameRef}
-            className="flex-1 min-w-0 bg-transparent text-sm font-semibold text-slate-800 focus:outline-none"
-            data-testid="agent-name"
+            className={`${inputCls} flex-1 min-w-0 font-semibold`}
+            data-testid="agent-name-input"
             aria-label="Nom de l'agent"
             autoFocus={autoFocus}
             onFocus={autoFocus ? e => e.target.select() : undefined}
@@ -3224,47 +3405,35 @@ function AgentCard({ a, autoFocus, onPatch, onDelete, onRun }) {
             onKeyDown={e => { if (e.key === 'Enter') nameRef.current?.blur() }}
             onBlur={flush}
           />
-          <Pencil size={12} className="shrink-0 text-slate-300 group-hover:text-slate-500 group-focus-within:hidden" />
-        </label>
-        <HoursPicker value={a.run_hours || []} onChange={hours => onPatch(a.id, { run_hours: hours })} />
-        <button
-          type="button"
-          data-testid="agent-run"
-          title="Lancer maintenant"
-          disabled={!a.instructions}
-          className="p-1 rounded-md text-slate-400 hover:text-brand-700 hover:bg-slate-100 disabled:opacity-40"
-          onClick={() => onRun(a.id)}
-        >
-          <Play size={15} />
-        </button>
-        <button
-          type="button"
-          data-testid="agent-delete"
-          title="Supprimer"
-          className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-          onClick={() => onDelete(a)}
-        >
-          <Trash2 size={15} />
-        </button>
-      </div>
-      <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50/60 px-2.5 py-1.5">
-        <AutoGrowNote
-          className="text-sm text-slate-700 min-h-[2.5rem]"
+          <RunsPerDayPicker hours={a.run_hours || []} onChange={k => onPatch(a.id, { runs_per_day: k })} />
+          <button
+            type="button"
+            data-testid="agent-delete"
+            title="Supprimer"
+            className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+            onClick={() => onDelete(a)}
+          >
+            <Trash2 size={15} />
+          </button>
+        </div>
+        <textarea
+          className={`${inputCls} w-full min-h-[18rem] text-sm leading-relaxed`}
           data-testid="agent-instructions"
           aria-label="Mission"
+          autoFocus={!autoFocus}
           value={draft.instructions}
           onChange={e => edit('instructions', e.target.value)}
           onBlur={flush}
         />
+        {a.last_run_at && (
+          <div className="flex items-center gap-2 text-xs text-slate-400">
+            {shortDate(a.last_run_at)}
+            {a.last_prompt_status && <StatusPill p={{ status: a.last_prompt_status }} />}
+            <span>· {a.run_count}</span>
+          </div>
+        )}
       </div>
-      {a.last_run_at && (
-        <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-400" data-testid="agent-last-run">
-          {shortDate(a.last_run_at)}
-          {last && <StatusPill p={last} />}
-          <span>· {a.run_count}</span>
-        </div>
-      )}
-    </div>
+    </Modal>
   )
 }
 
@@ -3272,6 +3441,7 @@ function AgentsTab({ toast }) {
   const [agents, setAgents] = useState([])
   const [loading, setLoading] = useState(true)
   const [fresh, setFresh] = useState(null)
+  const [openId, setOpenId] = useState(null)
 
   const load = useCallback(async () => {
     try { setAgents((await api.travaux.listAgents()).agents) }
@@ -3290,6 +3460,7 @@ function AgentsTab({ toast }) {
       const a = await api.travaux.createAgent({ name: 'Nouvel agent' })
       setFresh(a.id)
       setAgents(prev => [...prev, a])
+      setOpenId(a.id)
     } catch (e) { toast.error(e.message) }
   }
   const patch = async (id, p) => {
@@ -3301,6 +3472,7 @@ function AgentsTab({ toast }) {
   }
   const remove = async (a) => {
     if (!window.confirm(`Supprimer « ${a.name || 'cet agent'} » ?`)) return
+    setOpenId(null)
     setAgents(prev => prev.filter(x => x.id !== a.id))
     try { await api.travaux.deleteAgent(a.id) } catch (e) { toast.error(e.message); load() }
   }
@@ -3313,14 +3485,27 @@ function AgentsTab({ toast }) {
   }
 
   if (loading) return <Spinner size="xs" />
+  const opened = agents.find(x => x.id === openId)
   return (
-    <div className="max-w-3xl space-y-3" data-testid="agents-tab">
-      {agents.map(a => (
-        <AgentCard key={a.id} a={a} autoFocus={a.id === fresh} onPatch={patch} onDelete={remove} onRun={run} />
-      ))}
+    <div className="space-y-3" data-testid="agents-tab">
+      <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(14rem,1fr))]">
+        {agents.map(a => (
+          <AgentCard key={a.id} a={a} onOpen={() => setOpenId(a.id)} onPatch={patch} onRun={run} />
+        ))}
+      </div>
       <button className={btnCls} data-testid="agent-new" onClick={add}>
         <Plus size={14} /> Agent
       </button>
+      {opened && (
+        <AgentModal
+          key={opened.id}
+          a={opened}
+          autoFocus={opened.id === fresh}
+          onClose={() => { setOpenId(null); setFresh(null) }}
+          onPatch={patch}
+          onDelete={remove}
+        />
+      )}
     </div>
   )
 }

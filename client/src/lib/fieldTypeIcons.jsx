@@ -1,7 +1,7 @@
 import {
   Type, AlignLeft, Hash, DollarSign, Timer, Calendar, CalendarClock, Clock,
   Link2, Table2, Phone, CheckSquare, CircleChevronDown, Tags, Search, Sigma, Percent,
-  SquareFunction, MousePointerClick, User, UserCog, Paperclip, Star,
+  SquareFunction, MousePointerClick, User, UserCog, Paperclip, Star, Mail, ListOrdered, Barcode,
 } from 'lucide-react'
 
 // Icônes des types de champ — un pictogramme par type, partagé partout où un
@@ -30,7 +30,9 @@ const ICONS = {
   checkbox:           CheckSquare,
   boolean:            CheckSquare,
   url:                Link2,
+  email:              Mail,
   phone:              Phone,
+  barcode:            Barcode,
   single_select:      CircleChevronDown,
   multi_select:       Tags,
   attachment:         Paperclip,
@@ -45,6 +47,8 @@ const ICONS = {
   formula:            SquareFunction,
   lookup:             Search,
   rollup:             Sigma,
+  // Comptage (Count d'Airtable) : un rollup COUNT, nommé à part dans le menu.
+  count:              ListOrdered,
   button:             MousePointerClick,
   // Champs auto-remplis. 'auto' / 'data' sont les familles de champ proposées à
   // la création (kind), pas des types de valeur : leur icône est celle de leur
@@ -67,9 +71,16 @@ export function fieldIconKey(field) {
   if (typeof field === 'string' && field.startsWith('link:')) return 'link'
   if (typeof field === 'string') return ICONS[field] ? field : 'text'
   const kind = field.kind
+  if (isCountField(field)) return 'count'
   if (kind && kind !== 'data' && ICONS[kind]) return kind
   const type = field.type
   return ICONS[type] ? type : 'text'
+}
+
+// Comptage = rollup COUNT : il compte les enregistrements liés, sans colonne.
+// Airtable en fait un type à part (Count) ; on le nomme pareil.
+export function isCountField(field) {
+  return field?.kind === 'rollup' && String(field.rollup_agg || '').toUpperCase() === 'COUNT'
 }
 
 // Composant d'icône d'un type de champ. `type` accepte une clé de type, un

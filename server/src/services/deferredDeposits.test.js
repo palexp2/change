@@ -108,3 +108,32 @@ test('le même client sous deux noms ne forme qu’un dossier', () => {
   assert.equal(groups.length, 1)
   assert.equal(groups[0].solde, 0)
 })
+
+test('une commande partie (envoi) sans constatation passe en « à constater », datée du jour d’expédition', () => {
+  const [g] = groupLedger(
+    [credit(1340, { name: 'Ferme Décembre' })],
+    [F({ id: 'f7', document_number: 'CCCCCCCC-0001', company_name: 'Ferme Décembre', shipped_at: '2026-10-02T15:00:00Z', order_number: 1076 })],
+  )
+  assert.equal(g.file, 'constater')
+  assert.equal(g.order_number, 1076)
+  const c = correctionFor(g)
+  assert.equal(c.txn_date, '2026-10-02')
+  assert.deepEqual(c.facture_ids, ['f7'])
+})
+
+test('un dépôt dont la commande n’est pas partie reste « en attente »', () => {
+  const [g] = groupLedger([credit(347.92, { name: 'Wisconsin Greenhouse' })],
+    [F({ id: 'f8', document_number: 'DDDDDDDD-0001', company_name: 'Wisconsin Greenhouse' })])
+  assert.equal(g.file, 'attente')
+  assert.equal(correctionFor(g), null)
+})
+
+test('le tas « Sans nom » rejoint le seul dossier dont il annule le solde', () => {
+  const groups = groupLedger(
+    [credit(7650, { memo: "Solde d'ouverture" }), debit(7650, { name: "Ferme d'Orée" })],
+    [],
+  )
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].solde, 0)
+  assert.deepEqual(groups[0].anomalies, [])
+})

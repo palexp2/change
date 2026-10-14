@@ -1191,6 +1191,7 @@ router.get('/subscription-events', (req, res) => {
     LEFT JOIN orders o ON o.id = e.rachat_order_id
     WHERE e.event_date >= ?
       AND e.category IN ('creation', 'churn', 'reactivation', 'upgrade', 'downgrade')
+      AND COALESCE(s.is_test, 0) = 0
     ORDER BY e.event_date ASC
   `).all(cutoff)
 
@@ -1743,6 +1744,130 @@ router.get('/bank-accounts/history', async (req, res) => {
   }
 })
 
+// GET /api/dashboard/inventory/history?months=12
+// Valeur de l'inventaire en fin de mois : comptes QB de sous-type Inventory (14000
+// pièces, 14001 produits finis, 14002 reconditionnés, 1400x en transit…), lus
+// dans le BalanceSheet mensuel. La valeur calculée par l'ERP (FIFO + numéros de
+// série) n'a pas d'historique ; le grand livre, si.
+const inventoryHistoryCache = new Map()
+onQbMutation(() => inventoryHistoryCache.clear())
+
+// GET /api/dashboard/dormant-stock?days=90
+// Pièces en stock sans activité depuis N jours. Activité = consommation ou
+// mouvement de stock (hors ajustements d'inventaire), envoi direct, ou
+// réception d'un achat — une pièce tout juste reçue n'est pas « dormante ».
+router.get('/dormant-stock', (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 7), 730)
+  const rows = db.prepare(`
+    WITH mv AS (SELECT product_id, MAX(created_at) d FROM stock_movements
+                WHERE COALESCE(reason, '') NOT LIKE 'Ajustement%' GROUP BY product_id),
+         sh AS (SELECT product_id, MAX(date_de_l_envoi) d FROM order_items
+                WHERE date_de_l_envoi IS NOT NULL GROUP BY product_id),
+         pu AS (SELECT p.id product_id, MAX(u.cf_date_de_reception_complete) d
+                FROM products p JOIN purchases u ON instr(COALESCE(u.nom_de_la_piece, ''), p.airtable_id) > 0
+                WHERE p.stock_qty > 0 AND p.airtable_id IS NOT NULL GROUP BY p.id)
+    SELECT p.id, p.name_fr AS name, p.type, p.stock_qty AS qty,
+           ROUND(p.stock_qty * p.unit_cost, 2) AS value,
+           NULLIF(MAX(COALESCE(mv.d, ''), COALESCE(sh.d, ''), COALESCE(pu.d, '')), '') AS last_activity
+    FROM products p
+    LEFT JOIN mv ON mv.product_id = p.id
+    LEFT JOIN sh ON sh.product_id = p.id
+    LEFT JOIN pu ON pu.product_id = p.id
+    WHERE p.active = 1 AND p.stock_qty > 0 AND p.unit_cost > 0
+    GROUP BY p.id
+    HAVING last_activity IS NULL OR last_activity < date('now', ?)
+    ORDER BY value DESC
+  `).all(`-${days} days`)
+  res.json({
+    days,
+    total: round2(rows.reduce((s, r) => s + (r.value || 0), 0)),
+    items: rows.map(r => ({ ...r, last_activity: r.last_activity ? r.last_activity.slice(0, 10) : null })),
+  })
+})
+
+router.get('/inventory/history', async (req, res) => {
+  try {
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+    const cacheKey = `m${months}`
+    if (!req.query.refresh) {
+      const hit = inventoryHistoryCache.get(cacheKey)
+      if (hit) return res.json(hit)
+    }
+
+    // « Inventory » est un sous-type d'« Other Current Asset », pas un type :
+    // QB refuse de filtrer dessus dans la requête.
+    const accQ = new URLSearchParams({ query: "SELECT * FROM Account WHERE AccountType = 'Other Current Asset' MAXRESULTS 300" })
+    const accData = await qbGet(`/query?${accQ}`)
+    const accById = new Map()
+    for (const a of (accData.QueryResponse?.Account || [])) {
+      if (a.AccountSubType !== 'Inventory') continue
+      accById.set(String(a.Id), { id: String(a.Id), name: a.Name, acct_num: a.AcctNum || null })
+    }
+
+    const now = new Date()
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
+    const params = new URLSearchParams({
+      accounting_method: 'Accrual',
+      summarize_column_by: 'Month',
+      start_date: start.toISOString().slice(0, 10),
+      end_date: now.toISOString().slice(0, 10),
+    })
+    const data = await qbGet(`/reports/BalanceSheet?${params}`)
+    const report = data?.Report || data
+
+    const monthCols = (report?.Columns?.Column || [])
+      .map((c, idx) => {
+        const meta = {}
+        for (const m of (c.MetaData || [])) meta[m.Name] = m.Value
+        return { type: c.ColType, start: meta.StartDate || null, idx }
+      })
+      .filter(c => c.type === 'Money' && c.start)
+      .map(c => ({ ...c, month: c.start.slice(0, 7) }))
+
+    // Lignes de données seulement (même raison que l'historique bancaire).
+    const byAccount = new Map()
+    const walk = rows => {
+      for (const row of (rows?.Row || [])) {
+        if (row.type === 'Section') { walk(row.Rows); continue }
+        const cd = row.ColData || []
+        const id = String(cd[0]?.id || '')
+        if (!accById.has(id)) continue
+        byAccount.set(id, monthCols.map(c => {
+          const v = Number(cd[c.idx]?.value)
+          return Number.isFinite(v) ? v : 0
+        }))
+      }
+    }
+    walk(report?.Rows)
+
+    const round = v => Math.round(v * 100) / 100
+    // Comptes jamais mouvementés sur la fenêtre : rien à montrer.
+    const accounts = [...byAccount.entries()]
+      .filter(([, vals]) => vals.some(v => v !== 0))
+      .map(([id]) => accById.get(id))
+      .sort((a, b) => String(a.acct_num || a.name).localeCompare(String(b.acct_num || b.name)))
+    const currentMonth = now.toISOString().slice(0, 7)
+    const series = monthCols.map((c, i) => {
+      const point = { month: c.month, is_current_month: c.month === currentMonth }
+      let total = 0
+      for (const a of accounts) {
+        const v = round(byAccount.get(a.id)[i])
+        point[a.id] = v
+        total += v
+      }
+      point.total = round(total)
+      return point
+    })
+
+    const payload = { currency: report?.Header?.Currency || 'CAD', accounts, months: series }
+    inventoryHistoryCache.set(cacheKey, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/inventory/history]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
 // GET /api/dashboard/revenue-by-month?months=12
 // Revenus mensuels lus dans QuickBooks, ventilés par compte de revenu.
 //
@@ -2196,6 +2321,191 @@ router.get('/income-statement', async (req, res) => {
     res.json(payload)
   } catch (e) {
     console.error('[dashboard/income-statement]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/cash-flow?months=12
+// Free cash flow mensuel, lu dans le rapport CashFlow QuickBooks
+// (`summarize_column_by=Month`) : FCF = activités d'exploitation + activités
+// d'investissement (achats d'immobilisations).
+//
+// QB range les cartes et les marges de crédit (AccountType Credit Card) dans
+// les rajustements d'exploitation, ce qui ferait passer un tirage de marge pour
+// du cash généré. Elles sont retirées : le FCF se lit alors comme la variation
+// de la « Trésorerie nette » de la vue globale (banques − cartes & marges),
+// hors financement à long terme.
+const cashFlowCache = new Map()
+onQbMutation(() => cashFlowCache.clear())
+
+// Aide gouvernementale (subventions + crédits d'impôt), par numéro de compte QB.
+// Argent reçu dans le mois = revenu constaté + baisse des comptes à recevoir
+// (ligne CashFlow de ces comptes). Sert au calcul des mois de trésorerie
+// « sans l'aide ».
+const AID_INCOME_ACCTS = ['49000', '72000']
+const AID_RECEIVABLE_ACCTS = ['12400', '15000', '15001']
+const acctNumOf = (label) => String(label || '').match(/^(\d{4,6})\b/)?.[1] || null
+
+router.get('/cash-flow', async (req, res) => {
+  try {
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+    const cacheKey = `m${months}`
+    if (!req.query.refresh) {
+      const hit = cashFlowCache.get(cacheKey)
+      if (hit) return res.json(hit)
+    }
+
+    const accQ = new URLSearchParams({ query: QB_CASH_ACCOUNTS_QUERY })
+    const accData = await qbGet(`/query?${accQ}`)
+    const treasuryIds = new Set((accData.QueryResponse?.Account || []).map(a => String(a.Id)))
+
+    const now = new Date()
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
+    const params = new URLSearchParams({
+      summarize_column_by: 'Month',
+      start_date: start.toISOString().slice(0, 10),
+      end_date: now.toISOString().slice(0, 10),
+    })
+    const [data, pnlData] = await Promise.all([
+      qbGet(`/reports/CashFlow?${params}`),
+      qbGet(`/reports/ProfitAndLoss?${params}`),
+    ])
+    const report = data?.Report || data
+
+    const monthCols = (report?.Columns?.Column || [])
+      .map((c, idx) => {
+        const meta = {}
+        for (const m of (c.MetaData || [])) meta[m.Name] = m.Value
+        return { idx, type: c.ColType, start: meta.StartDate || null }
+      })
+      .filter(c => c.type === 'Money' && c.start)
+
+    const operating = new Array(monthCols.length).fill(0)
+    const investing = new Array(monthCols.length).fill(0)
+    const aid = new Array(monthCols.length).fill(0)
+    const addRow = (target, cd) => monthCols.forEach((c, i) => {
+      const v = Number(cd?.[c.idx]?.value)
+      if (Number.isFinite(v)) target[i] += v
+    })
+    // Lignes de données seulement (pas les Summary) : on peut ainsi écarter
+    // les comptes de trésorerie un à un sans double-compter.
+    const walk = (node, target) => {
+      for (const row of (node?.Row || [])) {
+        if (row.type === 'Section') { walk(row.Rows, target); continue }
+        const cd = row.ColData || []
+        if (treasuryIds.has(String(cd[0]?.id || ''))) continue
+        addRow(target, cd)
+        if (AID_RECEIVABLE_ACCTS.includes(acctNumOf(cd[0]?.value))) addRow(aid, cd)
+      }
+    }
+    for (const sec of (report?.Rows?.Row || [])) {
+      if (sec.group === 'OperatingActivities') walk(sec.Rows, operating)
+      else if (sec.group === 'InvestingActivities') walk(sec.Rows, investing)
+    }
+    // Revenus d'aide du P&L, mêmes colonnes mensuelles (appariées par date de début).
+    const pnl = pnlData?.Report || pnlData
+    const pnlIdx = new Map()
+    ;(pnl?.Columns?.Column || []).forEach((c, idx) => {
+      const st = (c.MetaData || []).find(m => m.Name === 'StartDate')?.Value
+      if (c.ColType === 'Money' && st) pnlIdx.set(st, idx)
+    })
+    const walkPnl = (node) => {
+      for (const row of (node?.Row || [])) {
+        if (row.Rows) walkPnl(row.Rows)
+        const cd = row.ColData
+        if (!cd || !AID_INCOME_ACCTS.includes(acctNumOf(cd[0]?.value))) continue
+        monthCols.forEach((c, i) => {
+          const v = Number(cd[pnlIdx.get(c.start)]?.value)
+          if (Number.isFinite(v)) aid[i] += v
+        })
+      }
+    }
+    walkPnl(pnl?.Rows)
+
+    const currentMonth = now.toISOString().slice(0, 7)
+    const payload = {
+      currency: report?.Header?.Currency || 'CAD',
+      generated_at: new Date().toISOString(),
+      months: monthCols.map((c, i) => ({
+        month: c.start.slice(0, 7),
+        operating: round2(operating[i]),
+        investing: round2(investing[i]),
+        fcf: round2(operating[i] + investing[i]),
+        aid: round2(aid[i]),
+        is_current_month: c.start.slice(0, 7) === currentMonth,
+      })),
+    }
+    cashFlowCache.set(cacheKey, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/cash-flow]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/balance-sheet
+// Bilan QuickBooks en date d'aujourd'hui : rapport BalanceSheet (Accrual),
+// une seule colonne de montants. Aplati comme l'état des résultats
+// (header / data / summary + `parents`), avec `value` au lieu de `values`.
+// Même cache que l'état des résultats (onQbMutation, `?refresh=1`).
+const balanceSheetCache = new Map()
+onQbMutation(() => balanceSheetCache.clear())
+
+router.get('/balance-sheet', async (req, res) => {
+  try {
+    const asOf = new Date().toISOString().slice(0, 10)
+    if (!req.query.refresh) {
+      const hit = balanceSheetCache.get(asOf)
+      if (hit) return res.json(hit)
+    }
+
+    const params = new URLSearchParams({ accounting_method: 'Accrual', start_date: asOf, end_date: asOf })
+    const data = await qbGet(`/reports/BalanceSheet?${params}`)
+    const report = data?.Report || data
+    const moneyIdx = (report?.Columns?.Column || []).findIndex(c => c.ColType === 'Money')
+    const valueOf = (cd) => {
+      const raw = cd?.[moneyIdx < 0 ? 1 : moneyIdx]?.value
+      const v = raw === '' || raw == null ? 0 : Number(raw)
+      return Number.isFinite(v) ? round2(v) : 0
+    }
+
+    const rows = []
+    let seq = 0
+    const walk = (node, depth, parents) => {
+      for (const row of (node?.Row || [])) {
+        if (row.type !== 'Section') {
+          const cd = row.ColData || []
+          rows.push({ id: `n${seq++}`, kind: 'data', label: cd[0]?.value || '', account_id: cd[0]?.id || null, depth, parents, value: valueOf(cd) })
+          continue
+        }
+        const label = row.Header?.ColData?.[0]?.value || ''
+        const hasChildren = !!(row.Rows?.Row?.length)
+        const id = `n${seq++}`
+        if (label) rows.push({ id, kind: 'header', label, group: row.group || null, depth, parents, collapsible: hasChildren })
+        if (hasChildren) walk(row.Rows, label ? depth + 1 : depth, label ? [...parents, id] : parents)
+        const sm = row.Summary?.ColData
+        if (sm) rows.push({ id: `n${seq++}`, kind: 'summary', label: sm[0]?.value || label, group: row.group || null, depth, parents, value: valueOf(sm) })
+      }
+    }
+    walk(report?.Rows, 0, [])
+
+    const totalOf = group => rows.find(r => r.kind === 'summary' && r.group === group)?.value ?? null
+    const payload = {
+      currency: report?.Header?.Currency || 'CAD',
+      generated_at: new Date().toISOString(),
+      as_of: asOf,
+      rows,
+      totals: {
+        assets: totalOf('TotalAssets'),
+        liabilities: totalOf('Liabilities'),
+        equity: totalOf('Equity'),
+      },
+    }
+    balanceSheetCache.clear()
+    balanceSheetCache.set(asOf, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/balance-sheet]', e)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })

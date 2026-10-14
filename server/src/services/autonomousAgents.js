@@ -17,7 +17,7 @@ import { TZ, localDay, naiveLocalToUtcIso } from '../utils/datetime.js'
 import { createPrompt, advanceQueue } from './promptQueue.js'
 
 const CATCH_UP_MS = 3 * 3600_000
-const DEFAULT_HOURS = [9, 15]
+const DEFAULT_RUNS_PER_DAY = 2
 
 function broadcast() { broadcastAll({ type: 'travaux:agents:updated' }) }
 
@@ -49,11 +49,12 @@ export function getAgent(id) {
   return hydrate(db.prepare(`${SELECT} AND a.id=?`).get(id))
 }
 
-export function createAgent({ name = '', instructions = '', run_hours = DEFAULT_HOURS, created_by = null } = {}) {
+export function createAgent({ name = '', instructions = '', run_hours = null, runs_per_day = null, created_by = null } = {}) {
   const id = newRecordId()
-  const hours = parseHours(run_hours)
+  const given = runs_per_day == null ? parseHours(run_hours) : []
+  const hours = given.length ? given : planHours(runs_per_day ?? DEFAULT_RUNS_PER_DAY)
   db.prepare(`INSERT INTO autonomous_agents (id, name, instructions, run_hours, created_by) VALUES (?,?,?,?,?)`)
-    .run(id, String(name || '').trim(), String(instructions || '').trim(), JSON.stringify(hours.length ? hours : DEFAULT_HOURS), created_by)
+    .run(id, String(name || '').trim(), String(instructions || '').trim(), JSON.stringify(hours), created_by)
   broadcast()
   return getAgent(id)
 }
@@ -65,7 +66,9 @@ export function updateAgent(id, patch = {}) {
   const vals = []
   if ('name' in patch) { sets.push('name=?'); vals.push(String(patch.name || '').trim()) }
   if ('instructions' in patch) { sets.push('instructions=?'); vals.push(String(patch.instructions || '').trim()) }
-  if ('run_hours' in patch) { sets.push('run_hours=?'); vals.push(JSON.stringify(parseHours(patch.run_hours))) }
+  // « N fois par jour » : le serveur choisit les heures.
+  if ('runs_per_day' in patch) { sets.push('run_hours=?'); vals.push(JSON.stringify(planHours(patch.runs_per_day, id))) }
+  else if ('run_hours' in patch) { sets.push('run_hours=?'); vals.push(JSON.stringify(parseHours(patch.run_hours))) }
   if ('enabled' in patch) { sets.push('enabled=?'); vals.push(patch.enabled ? 1 : 0) }
   if (!sets.length) return row
   db.prepare(`UPDATE autonomous_agents SET ${sets.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
@@ -82,6 +85,37 @@ export function deleteAgent(id) {
 
 function localHour(date, tz = TZ) {
   return Number(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', hourCycle: 'h23' }).format(date))
+}
+
+/**
+ * `count` heures réparties sur 24 h, décalées vers les heures les plus calmes :
+ * `load[h]` = activité de la file à l'heure h, `taken` = heures déjà prises par
+ * les autres agents (on évite qu'ils se réveillent ensemble).
+ */
+export function pickHours(count, { load = [], taken = [] } = {}) {
+  const n = Math.max(1, Math.min(24, Math.round(Number(count)) || 1))
+  const step = 24 / n
+  const busy = new Set(parseHours(taken))
+  let best = null
+  for (let o = 0; o < Math.ceil(step); o++) {
+    const hours = parseHours(Array.from({ length: n }, (_, i) => Math.round(o + i * step) % 24))
+    const score = hours.reduce((s, h) => s + (load[h] || 0) + (busy.has(h) ? 1000 : 0), 0)
+    if (!best || score < best.score) best = { hours, score }
+  }
+  return best.hours
+}
+
+/** Heures opportunes pour un agent : file la moins chargée sur 30 jours. */
+function planHours(count, excludeId = null) {
+  const load = Array(24).fill(0)
+  const since = new Date(Date.now() - 30 * 86400_000).toISOString()
+  const rows = db.prepare(`
+    SELECT created_at AS t FROM work_prompts WHERE autonomous_agent_id IS NULL AND deleted_at IS NULL AND created_at >= ?
+    UNION ALL
+    SELECT started_at AS t FROM work_prompts WHERE started_at >= ?`).all(since, since)
+  for (const r of rows) { const d = new Date(r.t); if (!isNaN(d)) load[localHour(d)]++ }
+  const taken = listAgents().filter(a => a.id !== excludeId && a.enabled).flatMap(a => a.run_hours)
+  return pickHours(count, { load, taken })
 }
 
 /**

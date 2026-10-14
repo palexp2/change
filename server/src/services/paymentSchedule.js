@@ -25,7 +25,7 @@ import {
   getTreasuryConfig, expandRecurring, variableOccurrence, TREASURY_BANK_ACCOUNT,
 } from './treasury.js'
 import {
-  coveredBillIds, vendorPaymentHints, vendorKey, createPayment, getPayment,
+  coveredBillIds, paymentsFreeToCover, vendorPaymentHints, vendorKey, createPayment, getPayment,
   BILL_COVER_DAY_WINDOW, COVERAGE_DAY_WINDOW,
 } from './treasuryPayments.js'
 import { summarizeAccount } from './bankReconcileSummary.js'
@@ -293,13 +293,13 @@ export function buildSchedule({ from = null, today = new Date() } = {}) {
 
   // 1. Paiement émis en attente qui couvre la facture sans lien achat_id.
   const pendingOut = db.prepare(`
-    SELECT id, label, amount, payment_date, achat_id FROM treasury_payments
+    SELECT id, label, amount, payment_date, achat_id, source, qb_billpayment_id FROM treasury_payments
     WHERE deleted_at IS NULL AND cleared_at IS NULL AND direction = 'out'
   `).all()
   const linkedIds = new Set(rows.filter(b => b.payment_id).map(b => b.id))
   const billCover = coveredBillIds(
     unpaid.map(b => ({ ...b, due_date: dayOnly(b.due_date || b.date_achat) })),
-    pendingOut.filter(p => !p.achat_id || !linkedIds.has(p.achat_id)),
+    paymentsFreeToCover(pendingOut, linkedIds),
     { windowDays: BILL_COVER_DAY_WINDOW },
   )
 

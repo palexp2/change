@@ -47,7 +47,7 @@ test('adhoc : clé unique — une fois cochée, jamais réouverte', () => {
 test('libellés de période', () => {
   assert.equal(periodLabel('hebdo', '2026-08-04'), 'semaine 32')
   assert.equal(periodLabel('mensuel', '2026-08-04'), 'août 2026')
-  assert.equal(periodLabel('trimestriel', '2026-08-04'), 'T3 2026')
+  assert.equal(periodLabel('trimestriel', '2026-08-04'), 'T3 2026 (juill–sept)')
   assert.equal(periodLabel('annuel', '2026-08-04'), '2026')
   assert.equal(periodLabel('adhoc', '2026-08-04'), 'à faire une fois')
 })
@@ -123,6 +123,20 @@ test('periodDueDate : jour du mois, ramené au dernier jour quand il déborde', 
   assert.equal(periodDueDate('mensuel', '2026-02', 31), '2026-02-28', 'le 31 février = le 28')
   assert.equal(periodDueDate('mensuel', '2026-08', null), null)
   assert.equal(periodDueDate('hebdo', '2026-W32', 25), null, 'pas d\'échéance en jour du mois pour l\'hebdo')
+})
+
+test('periodDueDate trimestriel : jour du mois SUIVANT la fin du trimestre', () => {
+  assert.equal(periodDueDate('trimestriel', '2026-Q3', 31), '2026-10-31')
+  assert.equal(periodDueDate('trimestriel', '2026-Q1', 31), '2026-04-30')
+  assert.equal(periodDueDate('trimestriel', '2026-Q4', 31), '2027-01-31', 'change d\'année')
+})
+
+test('dueInfo avec délai d\'envoi : urgence comptée sur la date d\'envoi', () => {
+  const d = dueInfo({ cadence: 'trimestriel', periodKey: '2026-Q3', dueDay: 31, leadDays: 5, done: false, today: '2026-10-21' })
+  assert.equal(d.due_date, '2026-10-31')
+  assert.equal(d.send_by, '2026-10-26')
+  assert.equal(d.days_until_due, 5)
+  assert.equal(d.due_status, 'due_soon')
 })
 
 test('dueInfo : à venir → bientôt → en retard, et rien une fois coché', () => {

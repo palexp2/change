@@ -2,7 +2,7 @@ import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Plus, Search } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Search, TreePalm, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
@@ -12,6 +12,9 @@ import { parseDurationToMinutes, formatMinutes } from '../lib/duration.js'
 import { localISODate } from '../lib/formatDate.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { formatPercent } from '../lib/percent.js'
+
+// Infobulle des totaux : 22:57 → « 22,95 h »
+const decimalHours = m => `${(m / 60).toLocaleString('fr-CA', { maximumFractionDigits: 2 })} h`
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -262,12 +265,29 @@ function secToClock(sec) {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
 }
 
+// Plage saisie dans Début ou Fin : « 12:53 à 18:41 », « 8h-16h30 », « 9 au 17 ».
+// Retourne { start_time, end_time } ou undefined.
+const CLOCK_RE = '(\\d{1,2})(?:\\s*[:h]\\s*(\\d{2})?)?'
+const RANGE_RE = new RegExp(`^${CLOCK_RE}\\s*(?:à|a|au|-|–|—|to)\\s*${CLOCK_RE}$`, 'i')
+function parseClockRange(s) {
+  const m = RANGE_RE.exec(String(s).trim())
+  if (!m) return undefined
+  const clock = (h, mm) => {
+    const H = Number(h), M = Number(mm || 0)
+    return H < 24 && M < 60 ? `${String(H).padStart(2, '0')}:${String(M).padStart(2, '0')}` : null
+  }
+  const start_time = clock(m[1], m[2]), end_time = clock(m[3], m[4])
+  return start_time && end_time ? { start_time, end_time } : undefined
+}
+
 export default function FeuilleDeTemps() {
   const { user } = useAuth()
   const isAdmin = hasRole(user, 'rh')
-  const [period, setPeriod] = useState(() => payPeriodStartOf(todayStr()))
+  // Ouverte depuis la vérification d'une paie : la feuille de cet employé, sur cette période.
+  const openWith = useLocation().state?.timesheetOf
+  const [period, setPeriod] = useState(() => payPeriodStartOf(openWith?.date || todayStr()))
   const [history, setHistory] = useState([])
-  const [selectedUserId, setSelectedUserId] = useState(user?.id)
+  const [selectedUserId, setSelectedUserId] = useState((isAdmin && openWith?.userId) || user?.id)
   const currentUserId = useRef(selectedUserId)
   currentUserId.current = selectedUserId
   const [users, setUsers] = useState([])
@@ -296,18 +316,30 @@ export default function FeuilleDeTemps() {
   }, [selectedUserId])
   useEffect(() => { loadHistory() }, [loadHistory])
 
-  // Payé à la semaine (« Heures par semaine » de la fiche employé) : pas de
-  // Début / Fin / Pause / Total.
-  const [paidWeekly, setPaidWeekly] = useState(false)
-  useEffect(() => {
+  // Congés de l'employé (bouton « Congé ») : marqués sur les lignes du tableau.
+  const [conges, setConges] = useState(null)
+  const loadConges = useCallback(() => {
     if (!selectedUserId) return
-    let alive = true
-    setPaidWeekly(false)
-    api.timesheets.getPreferences({ user_id: selectedUserId })
-      .then(p => { if (alive) setPaidWeekly(!!p?.paid_weekly) })
-      .catch(() => {})
-    return () => { alive = false }
+    const t = new Date()
+    const from = new Date(t.getFullYear(), t.getMonth() - 11, 1).toISOString().slice(0, 10)
+    api.timesheets.conges({ user_id: selectedUserId, from }).then(setConges).catch(() => setConges(null))
   }, [selectedUserId])
+  useEffect(() => { loadConges() }, [loadConges])
+
+  // Lignes cochées → « Congé » / « ½ journée » / « Annuler le congé ». Des jours
+  // séparés seulement par une fin de semaine forment un seul congé (un seul avis #absences).
+  async function addConges(dates, half) {
+    const userId = selectedUserId
+    try {
+      for (const [start_date, end_date] of congeRanges(dates)) await api.timesheets.addConge({ user_id: userId, start_date, end_date, half })
+      addToast({ message: 'Congé inscrit · #absences avisé', type: 'success' })
+    } finally { loadConges() }
+  }
+  async function cancelConges(dates) {
+    const ids = new Set((conges || []).filter(c => dates.some(d => c.start_date <= d && c.end_date >= d)).map(c => c.id))
+    try { for (const id of ids) await api.timesheets.deleteConge(id, selectedUserId) } finally { loadConges() }
+  }
+  const congeActions = { add: addConges, cancel: cancelConges }
 
   // Tableau « Heures par jour » : la journée d'une ligne est créée à sa
   // première saisie, puis remplacée en place dans l'historique.
@@ -379,7 +411,8 @@ export default function FeuilleDeTemps() {
               history={history}
               onPatchDay={patchRowDay}
               onSaveRd={saveRowRd}
-              paidWeekly={paidWeekly}
+              conges={conges}
+              congeActions={conges ? congeActions : null}
             />
           </main>
         </div>
@@ -391,9 +424,7 @@ export default function FeuilleDeTemps() {
 // Heures par jour : toute la saisie se fait ici, une ligne par jour de la
 // période de paie, dans un DataTable en mode tableur. Une journée n'est créée
 // qu'à la première saisie.
-const CLOCK_COLUMNS = new Set(['start_time', 'end_time', 'break_str', 'total_str', 'rsde_pct'])
-
-function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekly }) {
+function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, congeActions }) {
   const { addToast } = useToast()
   // Description saisie sur une ligne encore sans temps RSDE : gardée ici
   // jusqu'à la saisie des heures, qui l'enregistre.
@@ -420,7 +451,9 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekl
       const rdEntries = (day?.entries || []).filter(e => e.rsde)
       const rdMinutes = rdEntries.reduce((s, e) => s + (Number(e.duration_minutes) || 0), 0)
       const total = day ? dayTotal(day) : 0
-      const row = { id: date, date, day, rdMinutes, total }
+      const wd = new Date(date + 'T00:00:00').getDay()
+      const conge = wd !== 0 && wd !== 6 ? (conges || []).find(c => c.start_date <= date && c.end_date >= date) : null
+      const row = { id: date, date, day, rdMinutes, total, conge: conge ? (conge.days === 0.5 ? '½ congé' : 'Congé') : null }
       const savedDesc = rdEntries.find(e => e.description)?.description || ''
       Object.assign(row, {
         rd: rdMinutes,
@@ -441,7 +474,7 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekl
       out.push(row)
     }
     return out
-  }, [history, period, pendingDesc])
+  }, [history, period, pendingDesc, conges])
 
   const totalPayable = rows.reduce((s, r) => s + r.total, 0)
   const totalRd = rows.reduce((s, r) => s + r.rd, 0)
@@ -453,6 +486,11 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekl
     switch (col.id) {
       case 'start_time':
       case 'end_time': {
+        // Plage « 12:53 à 18:41 » : remplit Début et Fin d'un coup.
+        if (value && typeof value === 'object') {
+          if (value.start_time !== row.day?.start_time || value.end_time !== row.day?.end_time) return onPatchDay(row.date, value)
+          return
+        }
         // Durée depuis minuit. Un nombre seul est lu en minutes par le champ
         // Durée : « 8 » (≤ 23 min) vaut ici 8 h, comme avant.
         let sec = value == null ? null : Math.round(Number(value) / 60) * 60
@@ -498,16 +536,25 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekl
   }
 
   const columns = useMemo(() => [
-    { id: 'date', label: 'Date', field: 'date', width: 150, type: 'date', render: r => <DateLabel date={r.date} /> },
-    { id: 'start_time', label: 'Début', field: 'start_s', type: 'duration', width: 90, editable: true },
-    { id: 'end_time', label: 'Fin', field: 'end_s', type: 'duration', width: 90, editable: true },
+    { id: 'date', label: 'Date', field: 'date', width: 150, type: 'date', render: r => <DateLabel date={r.date} conge={r.conge} /> },
+    { id: 'start_time', label: 'Début', field: 'start_s', type: 'duration', width: 90, editable: true, parseInput: parseClockRange },
+    { id: 'end_time', label: 'Fin', field: 'end_s', type: 'duration', width: 90, editable: true, parseInput: parseClockRange },
     { id: 'break_str', label: 'Pause', field: 'break_s', type: 'duration', width: 90, editable: true },
-    { id: 'total_str', label: 'Total', field: 'total_s', type: 'duration', fieldType: 'formula', description: TOTAL_FORMULA, width: 90, footer: <span data-testid="hours-total">{formatMinutes(totalPayable)}</span> },
+    { id: 'total_str', label: 'Total', field: 'total_s', type: 'duration', fieldType: 'formula', description: TOTAL_FORMULA, width: 90, footer: <span data-testid="hours-total" title={decimalHours(totalPayable)}>{formatMinutes(totalPayable)}</span> },
     { id: 'rsde_pct', label: '% RSDE', field: 'rsde_pct', width: 80, editable: true },
-    { id: 'rsde_str', label: 'RSDE', field: 'rsde_str', width: 90, editable: true, footer: <span data-testid="hours-total-rsde">{formatMinutes(totalRd)}</span> },
+    { id: 'rsde_str', label: 'RSDE', field: 'rsde_str', width: 90, editable: true, footer: <span data-testid="hours-total-rsde" title={decimalHours(totalRd)}>{formatMinutes(totalRd)}</span> },
     { id: 'project', label: 'Projet', field: 'project', width: 200, editable: r => r.rdMinutes > 0, type: 'single_select', options: RD_PROJECTS },
     { id: 'description', label: 'Description', field: 'description', editable: true },
-  ].filter(c => !paidWeekly || !CLOCK_COLUMNS.has(c.id)), [totalPayable, totalRd, paidWeekly])
+  ], [totalPayable, totalRd])
+
+  const isWorkday = d => { const w = new Date(d + 'T00:00:00').getDay(); return w !== 0 && w !== 6 }
+  const bulkActions = useMemo(() => !congeActions ? [] : [
+    { key: 'conge', icon: TreePalm, className: 'btn-primary text-xs inline-flex items-center gap-1.5',
+      label: rows => { const n = rows.filter(r => isWorkday(r.date)).length || rows.length; return `Congé · ${n} jour${n > 1 ? 's' : ''}` },
+      show: rows => rows.some(r => !r.conge), onClick: ids => congeActions.add(ids, false) },
+    { key: 'half', label: '½ journée', show: rows => rows.length === 1 && !rows[0].conge, onClick: ids => congeActions.add(ids, true) },
+    { key: 'cancel', icon: X, label: 'Annuler le congé', show: rows => rows.every(r => r.conge), onClick: ids => congeActions.cancel(ids) },
+  ], [congeActions])
 
   return (
     <div data-testid="rsde-report">
@@ -520,7 +567,13 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekl
             <button onClick={() => shiftPeriod(-1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Période précédente">
               <ChevronLeft size={16} />
             </button>
-            <span className="text-sm font-medium text-slate-700 tabular-nums min-w-[11rem] text-center" data-testid="pay-period-label">{label}</span>
+            {/* Champ date invisible posé sur le libellé : un clic ouvre le calendrier de l'app. */}
+            <span className="relative rounded-lg hover:bg-slate-100 cursor-pointer">
+              <span className="block px-1 text-sm font-medium text-slate-700 tabular-nums min-w-[11rem] text-center" data-testid="pay-period-label">{label}</span>
+              <input type="date" value={period} aria-label="Choisir une date" data-testid="pay-period-picker"
+                onChange={e => e.target.value && onPeriod(payPeriodStartOf(e.target.value))}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+            </span>
             <button onClick={() => shiftPeriod(1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Période suivante">
               <ChevronRight size={16} />
             </button>
@@ -533,6 +586,7 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekl
           table="timesheet_hours"
           columns={columns}
           data={rows}
+          rowClassName={r => (r.date === todayStr() ? 'row-today' : '')}
           onCellEdit={editCell}
           height="auto"
           selectedSelectChevron
@@ -540,14 +594,35 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, paidWeekl
           fullHeightCells
           seamlessCellInput
           dragSelectCells
+          bulkDeleteAlways={!!congeActions}
+          bulkActions={bulkActions}
         />
       </div>
     </div>
   )
 }
 
-function DateLabel({ date }) {
-  return <><span className="capitalize text-slate-400 mr-1.5">{weekdayShort(date)}</span>{date}</>
+// Dates cochées → plages de congé ; un trou fait seulement de fins de semaine ne coupe pas la plage.
+function congeRanges(dates) {
+  const sorted = [...dates].sort()
+  const out = []
+  for (const d of sorted) {
+    const last = out[out.length - 1]
+    let gapOk = !!last
+    if (last) for (let x = addDaysISO(last[1], 1); x < d; x = addDaysISO(x, 1)) { const w = new Date(x + 'T00:00:00').getDay(); if (w !== 0 && w !== 6) { gapOk = false; break } }
+    if (gapOk) last[1] = d
+    else out.push([d, d])
+  }
+  return out
+}
+
+function DateLabel({ date, conge }) {
+  return (
+    <>
+      <span className="capitalize text-slate-400 mr-1.5">{weekdayShort(date)}</span>{date}
+      {conge && <span className="ml-1.5 inline-flex items-center gap-0.5 rounded px-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700"><TreePalm size={10} />{conge}</span>}
+    </>
+  )
 }
 
 const PROJECT_DOT = { 'Fiabilité': 'bg-sky-500', 'Intelligence de contrôle': 'bg-violet-500' }

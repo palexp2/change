@@ -105,6 +105,8 @@ export function nameVariants(name) {
  * @param {string} rawLabel libellé du relevé (details en priorité, sinon description)
  * @returns {{profile:{id,name}, via:'motif'|'alias'|'nom', weight:number}|null}
  */
+const VIA_RANK = { motif: 3, alias: 2, nom: 1 }
+
 export function resolveVendorFromBankLabel(rawLabel) {
   const label = stripBankNoise(rawLabel)
   if (!label) return null
@@ -131,10 +133,16 @@ export function resolveVendorFromBankLabel(rawLabel) {
     }
     if (!weight) continue
 
-    if (!best || weight > best.weight) { best = { profile: { id: p.id, name: p.name }, via, weight }; tie = false }
-    else if (weight === best.weight && p.id !== best.profile.id) tie = true
+    // À poids égal, une déclaration explicite (motif, puis alias) bat un nom
+    // deviné : « Postmark » déclaré alias d'ActiveCampaign l'emporte sur une
+    // fiche qui ne fait que s'appeler « Postmark ».
+    const rank = VIA_RANK[via]
+    if (!best || weight > best.weight || (weight === best.weight && rank > best.rank)) {
+      best = { profile: { id: p.id, name: p.name }, via, weight, rank }; tie = false
+    } else if (weight === best.weight && rank === best.rank && p.id !== best.profile.id) tie = true
   }
   // Deux fournisseurs revendiquent le libellé avec la même force : on ne devine pas.
   if (!best || tie) return null
-  return best
+  const { rank: _rank, ...hit } = best
+  return hit
 }

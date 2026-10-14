@@ -31,6 +31,10 @@ function validateSteps(ac) {
   steps.forEach((st, i) => {
     if (!STEP_TYPES.includes(st?.type)) throw new Error(`Action ${i + 1} : type invalide (${st?.type})`)
     if (st.config != null && typeof st.config !== 'object') throw new Error(`Action ${i + 1} : configuration invalide`)
+    if (st.when != null) {
+      if (typeof st.when !== 'object' || !Array.isArray(st.when.rules)) throw new Error(`Action ${i + 1} : condition invalide`)
+      st.when.rules.filter(r => r?.column).forEach((r, j) => validateCondition(r, `Action ${i + 1}, condition ${j + 1}`))
+    }
   })
 }
 
@@ -288,7 +292,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   },
   // Alerte « solde figé » : seuil, anti-spam, destinataires, canal Slack.
   sys_plaid_silence_alert: {
-    actionKeys: new Set(['stale_hours', 'repeat_hours', 'notify_roles', 'slack_webhook_env']),
+    actionKeys: new Set(['stale_hours', 'repeat_hours', 'notify_roles', 'slack_webhook_env', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'stale_hours' || key === 'repeat_hours') {
@@ -364,7 +368,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
       if (key === 'auto_reconcile') {
         for (const m of String(v || '').split(',').map((x) => x.trim()).filter(Boolean)) {
-          if (!['qb_rapproche', 'ecart_zero'].includes(m)) throw new Error(`auto_reconcile : « ${m} » — valeurs possibles : qb_rapproche, ecart_zero`)
+          if (!['qb_rapproche', 'ecart_zero', 'liste_banque'].includes(m)) throw new Error(`auto_reconcile : « ${m} » — valeurs possibles : qb_rapproche, ecart_zero, liste_banque`)
         }
         return
       }
@@ -453,7 +457,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     actionKeys: new Set(['opening_balance', 'opening_date', 'threshold', 'ap_acctnum', 'duty_acctnum',
       'interest_acctnum', 'penalty_acctnum', 'card_acctnum', 'bank_acctnum', 'vendor_name',
       'gst_tax_code_name', 'notax_tax_code_name', 'post_since', 'max_batch', 'delta_tolerance',
-      'broker_names', 'clearing_acctnum', 'slack_webhook_env']),
+      'broker_names', 'clearing_acctnum', 'slack_webhook_env', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if ((key === 'opening_balance' || key === 'threshold') && !/^-?\d{1,9}([.,]\d{1,2})?$/.test(v)) {
@@ -503,7 +507,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   sys_treasury_alert: {
     actionKeys: new Set(['threshold', 'horizon_days', 'balance_stale_days', 'alert_horizon_days',
       'slack_negative_only', 'slack_negative_days', 'slack_urgent_days', 'stale_reminder_slack',
-      'variance_slack', 'slack_webhook_env']),
+      'variance_slack', 'slack_webhook_env', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'slack_webhook_env') {
@@ -522,7 +526,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // Comptabilisation QB des Stripe payouts : périmètre (date plancher), cap de
   // sécurité par passage, filet « en souffrance » et canal Slack du résumé.
   sys_stripe_weekly_payout_push: {
-    actionKeys: new Set(['push_since', 'max_batch', 'stale_alert_days', 'slack_on_success', 'slack_webhook_env']),
+    actionKeys: new Set(['push_since', 'max_batch', 'stale_alert_days', 'slack_on_success', 'slack_webhook_env', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'push_since' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
@@ -541,7 +545,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   },
   // Rappel mensuel de paiement des cartes : libellé, échéance, jours travaillés, canal.
   sys_card_payment_reminder: {
-    actionKeys: new Set(['cards', 'due_day', 'work_days', 'slack_webhook_env']),
+    actionKeys: new Set(['cards', 'due_day', 'work_days', 'slack_webhook_env', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'cards' && v.length > 120) throw new Error('cards trop long (max 120 caractères)')
@@ -593,7 +597,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   },
   // Déboursés mensuels en pièces : compte de stock, dossier Drive, canal Slack.
   sys_pieces_disbursements: {
-    actionKeys: new Set(['acctnum', 'drive_folder_id', 'google_account_email', 'slack_webhook_env', 'recipient']),
+    actionKeys: new Set(['acctnum', 'drive_folder_id', 'google_account_email', 'slack_webhook_env', 'recipient', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'acctnum' && !/^\d{3,8}$/.test(v)) {
@@ -613,7 +617,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   },
   // Demande de factures manquantes sur Slack (envoi manuel depuis le relevé).
   sys_missing_invoice_request: {
-    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'intro', 'outro']),
+    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'intro', 'outro', 'people', 'person_intro']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'slack_channel' && !/^(#?[a-z0-9._-]{1,80}|@[A-Za-z0-9._-]{1,80}|[^\s@]+@[^\s@]+\.[^\s@]+|[CGDU][A-Z0-9]{6,})$/.test(v)) {
@@ -625,7 +629,11 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
         throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
       }
-      if ((key === 'intro' || key === 'outro') && v.length > 300) throw new Error(`${key} trop long (max 300 caractères)`)
+      if ((key === 'intro' || key === 'outro' || key === 'person_intro') && v.length > 300) throw new Error(`${key} trop long (max 300 caractères)`)
+      if (key === 'people') {
+        const bad = v.split('\n').filter((l) => l.trim() && !/^\s*[^=]+?\s*=\s*https:\/\/hooks\.slack\.com\/\S+\s*$/.test(l))
+        if (bad.length) throw new Error('people : une ligne par personne, « Nom = https://hooks.slack.com/… »')
+      }
     },
   },
   // Alerte Slack du sondage de satisfaction. `slack_channel` est la voie
@@ -657,6 +665,17 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       if (key === 'hubspot_property' && !/^[a-z0-9_]{1,100}$/.test(v)) throw new Error('hubspot_property : nom interne HubSpot (minuscules, chiffres, _)')
     },
   },
+  // Congé saisi depuis la feuille de temps → #absences.
+  sys_conge_slack: {
+    actionKeys: new Set(['slack_channel', 'message', 'cancel_message']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'slack_channel' && !/^(#?[a-z0-9._-]{1,80}|@[A-Za-z0-9._-]{1,80}|[^\s@]+@[^\s@]+\.[^\s@]+|[CGDU][A-Z0-9]{6,})$/.test(v)) {
+        throw new Error('slack_channel : « #canal », « @personne », un courriel ou un identifiant Slack')
+      }
+      if (v.length > 1000) throw new Error(`${key} trop long (max 1000 caractères)`)
+    },
+  },
   // « Une facture a été payée » sur #paiements.
   sys_facture_paid_slack: {
     actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'paid_statuses', 'skip_zero_amount', 'message', 'upgrade_prefix', 'excluded_products']),
@@ -684,13 +703,26 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   },
   // Réception d'un retour : destinataire de l'alerte « rembourser / désabonner ».
   sys_return_item_received: {
-    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env']),
-    validateKey(key, v) { CONFIGURABLE_SYSTEM_SPECS.sys_facture_paid_slack.validateKey(key, v) },
+    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'sub_end_slack_channel', 'msg_refund', 'msg_unknown', 'msg_sub_end']),
+    validateKey(key, v) {
+      if (key.startsWith('msg_')) {
+        if (v && v.length > 2000) throw new Error('message trop long (max 2000 caractères)')
+        return
+      }
+      CONFIGURABLE_SYSTEM_SPECS.sys_facture_paid_slack.validateKey(key === 'sub_end_slack_channel' ? 'slack_channel' : key, v)
+    },
   },
   // Prospects Instagram. Les trois automations sont `configurable: true` : sans
   // ces entrées, leur fiche affiche des champs que le PATCH refuse en 400.
   sys_instagram_prospect_intake: {
     actionKeys: new Set(['keywords']),
+    // Des mots séparés par des virgules (« coach,partner ») — sans ce
+    // validateur, la validation par défaut (numéro de compte) les refusait.
+    validateKey(key, v) {
+      if (v && !/^[\p{L}\d ._-]{1,40}(\s*,\s*[\p{L}\d ._-]{1,40})*$/u.test(v)) {
+        throw new Error('keywords : des mots séparés par des virgules')
+      }
+    },
   },
   sys_manychat_contacts: {
     actionKeys: new Set(['max_threads']),
@@ -702,7 +734,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     },
   },
   sys_instagram_segments: {
-    actionKeys: new Set(['model', 'max_per_run', 'bot_threshold', 'profiles_per_run', 'profile_refresh_days', 'profile_model', 'msg_coach', 'msg_fleurs', 'msg_question', 'msg_commentaire', 'msg_abonne']),
+    actionKeys: new Set(['model', 'max_per_run', 'bot_threshold', 'profiles_per_run', 'profile_refresh_days', 'profile_model', 'msg_coach', 'msg_partner', 'msg_fleurs', 'msg_question', 'msg_commentaire', 'msg_abonne']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'max_per_run' && !/^([1-9]|[1-9]\d|[1-4]\d\d|500)$/.test(v)) {
@@ -783,7 +815,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     },
   },
   sys_instagram_weekly_slack: {
-    actionKeys: new Set(['send_weekday', 'send_hour', 'slack_webhook_url', 'slack_webhook_env', 'recipient']),
+    actionKeys: new Set(['send_weekday', 'send_hour', 'slack_webhook_url', 'slack_webhook_env', 'recipient', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'send_weekday' && !/^[1-7]$/.test(v)) throw new Error('send_weekday : 1 (lundi) à 7 (dimanche)')
@@ -816,9 +848,18 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
     },
   },
+  // Budget marketing — Google Sheet miroir : fichier, compte Google, titre.
+  sys_marketing_budget_sheet: {
+    actionKeys: new Set(['spreadsheet_id', 'google_account_email', 'title']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'spreadsheet_id' && !/^[A-Za-z0-9_-]{20,}$/.test(v)) throw new Error('spreadsheet_id : identifiant Google Sheets (dans l\'URL après /d/)')
+      if (key === 'google_account_email' && !/^[^@\s]+@[^@\s]+$/.test(v)) throw new Error('google_account_email : adresse courriel')
+    },
+  },
   // Budget marketing — message hebdo : jour d'envoi, canal Slack, destinataire.
   sys_marketing_weekly_slack: {
-    actionKeys: new Set(['send_weekday', 'slack_webhook_env', 'recipient']),
+    actionKeys: new Set(['send_weekday', 'slack_webhook_env', 'recipient', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
       if (key === 'send_weekday' && !/^[1-7]$/.test(v)) {
@@ -917,7 +958,10 @@ function validateConfigurableSystemPatch(automation, { trigger_config, action_co
     for (const key of spec.actionKeys) {
       if (!(key in incoming)) continue
       const v = String(incoming[key] ?? '').trim()
-      if (spec.validateKey) {
+      // Destinataire Slack choisi dans la liste : même règle pour toutes.
+      if (key === 'slack_channel') {
+        if (v && !SLACK_TARGET_RE.test(v)) throw new Error('slack_channel : « #canal », « @personne », un courriel ou un identifiant Slack')
+      } else if (spec.validateKey) {
         spec.validateKey(key, v)
       } else if (v && !ACCTNUM_RE.test(v)) {
         throw new Error(`Numéro de compte invalide pour ${key}: « ${v} »`)
@@ -1030,6 +1074,8 @@ function ensureBaselineVersion(automationRow) {
     snap.trigger_config, snap.action_type, snap.action_config, snap.script, snap.active ? 1 : 0,
     snap.kind, null, null, 'État initial (avant suivi de versions)')
 }
+
+const SLACK_TARGET_RE = /^(#?[a-z0-9._-]{1,80}|@[A-Za-z0-9._-]{1,80}|[^\s@]+@[^\s@]+\.[^\s@]+|[CGDU][A-Z0-9]{6,})$/
 
 const router = Router()
 router.use(requireAdmin)
@@ -1203,6 +1249,16 @@ router.post('/', (req, res) => {
   }
 
   res.status(201).json(created)
+})
+
+// PATCH /api/automations/:id/group — range l'automatisation (système comprise)
+// dans une section de la colonne de gauche ; vide = section par défaut.
+router.patch('/:id/group', (req, res) => {
+  const automation = db.prepare('SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  if (!automation) return res.status(404).json({ error: 'Introuvable' })
+  const name = String(req.body.group_name ?? '').trim().slice(0, 80)
+  db.prepare('UPDATE automations SET group_name = ? WHERE id = ?').run(name || null, automation.id)
+  res.json({ id: automation.id, group: groupOf({ ...automation, group_name: name || null }) })
 })
 
 // PATCH /api/automations/:id

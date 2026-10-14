@@ -21,7 +21,7 @@
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
-import { sendSlackWebhook } from './slack.js'
+import { sendSlackConfigured, slackBotToken } from './slack.js'
 import { completeFromAutomation } from './recurringWork.js'
 import { shiftDate, localDay } from '../utils/datetime.js'
 export { localDay }
@@ -49,6 +49,7 @@ export const MARKETING_SYNC_DEFAULT_CONFIG = {
 export const MARKETING_SLACK_DEFAULT_CONFIG = {
   send_weekday: '2',          // ISO : 1=lundi … 7=dimanche. 2 = mardi (jour de la procédure).
   slack_webhook_env: 'SLACK_WEBHOOK_MARKETING',
+  slack_channel: 'U0633QP1KUG', // Émilie Carignan (= SLACK_WEBHOOK_MARKETING)
   recipient: 'Émilie',
 }
 
@@ -126,7 +127,39 @@ export function entriesFromGlReport(report, { acctnum, accountLabel }) {
       currency,
     })
   }
-  return entries
+  return mergeByTransaction(entries)
+}
+
+// Une facture = une dépense (Charles, 2026-10-13 : « je veux la facture complète,
+// pas ligne par ligne »). Le GL sort une ligne par ligne de facture (Chez Victor :
+// poutine, pourboire…) ; on les réunit par transaction QB et par compte. Une
+// transaction d'une seule ligne garde sa clé de ligne (dédup historique).
+export const txnImportKey = (acctnum, qbTxnId) => `${acctnum}|${qbTxnId}|txn`
+
+function mergeByTransaction(entries) {
+  const groups = new Map()
+  const out = []
+  for (const e of entries) {
+    if (!e.qb_txn_id) { out.push(e); continue }
+    const k = `${e.acctnum}|${e.qb_txn_id}`
+    let g = groups.get(k)
+    if (!g) { g = []; groups.set(k, g); out.push(g) }
+    g.push(e)
+  }
+  return out.map(g => {
+    if (!Array.isArray(g)) return g
+    if (g.length === 1) return g[0]
+    const memos = [...new Set(g.map(e => e.memo).filter(Boolean))]
+    const foreign = g.every(e => e.amount_foreign == null) ? null
+      : r2(g.reduce((s, e) => s + Number(e.amount_foreign || 0), 0))
+    return {
+      ...g[0],
+      import_key: txnImportKey(g[0].acctnum, g[0].qb_txn_id),
+      memo: memos.length === 1 ? memos[0] : null,
+      amount: r2(g.reduce((s, e) => s + e.amount, 0)),
+      amount_foreign: foreign,
+    }
+  }).filter(e => e.amount)
 }
 
 // Libellés GL (FR/EN) → entité des URLs QB /app/<entity>?txnId= (sous-ensemble
@@ -326,10 +359,11 @@ export function pendingCount() {
 // Message court et clair : une puce par dépense (date, fournisseur, montant
 // maison + devise d'origine si étrangère, catégorie), total, ou « aucune ».
 // Pur — testé.
-export function buildWeeklyMessage(expenses, { dayIso }) {
+export function buildWeeklyMessage(expenses, { dayIso, sheetLink = null }) {
   const header = `:chart_with_upwards_trend: *Budget marketing — semaine du ${previousWeekRangeFr(dayIso)}*`
+  const footer = sheetLink ? `\n<${sheetLink}|Budget vs Réel>` : ''
   if (!expenses.length) {
-    return `${header}\nAucune nouvelle dépense pertinente comptabilisée cette semaine.`
+    return `${header}\nAucune nouvelle dépense pertinente comptabilisée cette semaine.${footer}`
   }
   const lines = expenses.map(e => {
     const foreign = e.currency !== 'CAD' && e.amount_foreign
@@ -338,7 +372,17 @@ export function buildWeeklyMessage(expenses, { dayIso }) {
     return `• ${fmtDateFr(e.txn_date)} · ${what} · ${fmtMoney(e.amount)}${foreign} _(${e.account_name})_`
   })
   const total = r2(expenses.reduce((s, e) => s + Number(e.amount), 0))
-  return `${header}\n${lines.join('\n')}\n*Total : ${fmtMoney(total)}*`
+  return `${header}\n${lines.join('\n')}\n*Total : ${fmtMoney(total)}*${footer}`
+}
+
+// Lien du Google Sheet miroir (marketingBudgetSheet.js), lu ici sans l'importer
+// (il importe ce module).
+function marketingSheetLink() {
+  try {
+    const row = db.prepare("SELECT action_config FROM automations WHERE id='sys_marketing_budget_sheet' AND active=1").get()
+    const id = JSON.parse(row?.action_config || '{}').spreadsheet_id
+    return id ? `https://docs.google.com/spreadsheets/d/${id}/edit` : null
+  } catch { return null }
 }
 
 // Semaine ISO (clé d'idempotence : un seul envoi planifié par semaine).
@@ -451,8 +495,8 @@ export async function checkWeeklyMarketingSlack({ force = false, trigger = 'sche
       return { ok: true, sent: false, reason: gate.reason, pending }
     }
 
-    const message = buildWeeklyMessage(expenses, { dayIso })
-    await sendSlackWebhook(cfg.slack_webhook_env, message)
+    const message = buildWeeklyMessage(expenses, { dayIso, sheetLink: marketingSheetLink() })
+    await sendSlackConfigured(cfg, message)
 
     const markSent = db.prepare(`
       UPDATE marketing_expenses SET notified_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
@@ -495,11 +539,13 @@ export function previewWeeklyMarketingSlack() {
   return {
     summary: `${expenses.length} dépense(s) validée(s) à annoncer · ${pending} en attente de validation · ` +
       `envoi le jour ISO ${cfg.send_weekday} (2 = mardi), en fin d'après-midi · ` +
-      (process.env[cfg.slack_webhook_env]
+      (cfg.slack_channel && slackBotToken()
+        ? `destinataire : ${cfg.slack_channel}`
+        : process.env[cfg.slack_webhook_env]
         ? `canal : ${cfg.slack_webhook_env} ✓ configuré`
         : `⚠️ ${cfg.slack_webhook_env} absent de server/.env — l'envoi échouera tant que le webhook n'est pas configuré`) +
       (gate.send ? '' : ` · ⚠️ envoi automatique RETENU : ${gate.reason}`),
-    apercu: buildWeeklyMessage(expenses, { dayIso }),
+    apercu: buildWeeklyMessage(expenses, { dayIso, sheetLink: marketingSheetLink() }),
   }
 }
 
@@ -529,10 +575,18 @@ export function budgetSummary(fyStart) {
     WHERE status='relevant' AND deleted_at IS NULL AND substr(txn_date, 1, 7) >= ? AND substr(txn_date, 1, 7) <= ?
     GROUP BY acctnum, substr(txn_date, 1, 7)
   `).all(first, last)
+  // Lignes détaillées (reprises du fichier annuel) : s'ajoutent au budget du
+  // compte et au réel QB.
+  const items = db.prepare(`
+    SELECT acctnum, month, SUM(budget) AS budget, SUM(real) AS real FROM marketing_budget_items
+    WHERE deleted_at IS NULL AND month >= ? AND month <= ? GROUP BY acctnum, month
+  `).all(first, last)
+  const add = (o, m, v) => { if (v) o[m] = r2((o[m] || 0) + v) }
   const categories = MARKETING_ACCOUNTS.map(a => {
     const budget = {}, real = {}
     for (const b of budgets.filter(x => x.acctnum === a.acctnum)) budget[b.month] = r2(b.budget)
     for (const r of reals.filter(x => x.acctnum === a.acctnum)) real[r.month] = r2(r.total)
+    for (const i of items.filter(x => x.acctnum === a.acctnum)) { add(budget, i.month, i.budget); add(real, i.month, i.real) }
     return {
       acctnum: a.acctnum, label: a.label,
       budget, real,
@@ -546,8 +600,15 @@ export function budgetSummary(fyStart) {
 export function upsertBudgetCell({ acctnum, month, budget }) {
   if (!MARKETING_ACCOUNTS.some(a => a.acctnum === String(acctnum))) throw new Error('Compte inconnu')
   if (!/^\d{4}-\d{2}$/.test(String(month || ''))) throw new Error('month au format YYYY-MM')
-  const amount = r2(budget)
-  if (!Number.isFinite(amount) || amount < 0) throw new Error('budget doit être un nombre ≥ 0')
+  // La cellule saisie est le TOTAL du mois ; les lignes détaillées en sont déjà
+  // une part, la cellule du compte garde le reste.
+  const total = r2(budget)
+  if (!Number.isFinite(total) || total < 0) throw new Error('budget doit être un nombre ≥ 0')
+  const detailed = r2(db.prepare(
+    'SELECT COALESCE(SUM(budget), 0) AS s FROM marketing_budget_items WHERE acctnum=? AND month=? AND deleted_at IS NULL'
+  ).get(String(acctnum), month).s)
+  if (total < detailed) throw new Error(`Les lignes détaillées de ce mois font déjà ${detailed} $`)
+  const amount = r2(total - detailed)
   const existing = db.prepare(
     'SELECT id FROM marketing_budget_lines WHERE acctnum=? AND month=? AND deleted_at IS NULL'
   ).get(String(acctnum), month)

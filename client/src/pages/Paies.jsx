@@ -14,6 +14,7 @@ import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import Spinner from '../components/Spinner.jsx'
+import PaieVerification from '../components/PaieVerification.jsx'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -494,6 +495,7 @@ function PaieDetail({ paie, onEdit, onDeleted }) {
         </div>
       </div>
 
+      {isHR && <PaieVerification paieId={detail.id} />}
       {isHR && (
         <div className="flex items-center gap-2 text-sm border-t border-slate-200 pt-3">
           <button
@@ -614,7 +616,7 @@ export default function Paies() {
           onOpenConsumed: clearOpenId,
           title: row => `Paie — ${fmtDate(row.period_end)}${row.number ? ` (#${row.number})` : ''}`,
           subtitle: row => row.status || '',
-          width: 860,
+          width: isHR ? 1120 : 860,
           render: (row, { close }) => (
             <PaieDetail
               paie={row}

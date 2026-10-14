@@ -2,7 +2,7 @@ import db from '../db/database.js'
 import { APP_URL } from '../config/appUrl.js'
 import { liveSubscriptionsOf, subInterval, subscriptionLines } from './soumissionCheckout.js'
 import { siblingStripeProducts } from './stripeCatalog.js'
-import { getPageByToken, contactCompanyId } from './hostedPages.js'
+import { getPageByToken, contactCompanyId, FORTY_HOUR_NAME_RE, hasReceivedHardware } from './hostedPages.js'
 import { ensureStripeCustomer } from './stripeInvoices.js'
 import { markUpgradeInvoice } from './facturePaidSlackWatcher.js'
 import { fireScheduledSubscriptionProduct } from './subscriptionProductTrigger.js'
@@ -42,9 +42,19 @@ function pickPriceId(c, tier, currency, strict) {
     || (tier === 'existing' ? c[`price_new_${currency}`] : null) || null
 }
 
+// Produits Stripe « The 40hr Farmer » (lus des lignes d'abonnements connues).
+function fortyHourProductIds() {
+  const ids = new Set()
+  for (const r of db.prepare("SELECT items_json FROM subscription_current_items WHERE items_json LIKE '%40%'").all()) {
+    try { for (const x of JSON.parse(r.items_json)) if (x.stripe_product_id && FORTY_HOUR_NAME_RE.test(x.name || '')) ids.add(x.stripe_product_id) } catch {}
+  }
+  return ids
+}
+
 /**
  * État du paiement d'une acceptation. Client existant = son entreprise est en
- * phase « Customer » ou a un abonnement actif → prix « client existant ».
+ * phase « Customer », a reçu du matériel, ou a un abonnement actif autre que
+ * le seul 40hr Farmer → prix « client existant ».
  * Abonnement actif → le produit s'y ajoute (page d'approbation) ; sinon
  * nouvel abonnement (Checkout). Lien sans contact reconnu → nouveau client.
  */
@@ -56,7 +66,9 @@ export async function pagePayPlan({ stripe, token, acceptanceId }) {
     : null
   const customer = company?.stripe_customer_id || null
   const live = await liveSubscriptionsOf(stripe, customer)
-  const existing = live.length > 0 || company?.lifecycle_phase === 'Customer'
+  const forty = fortyHourProductIds()
+  const clientSub = live.some(sub => !sub.items.data.length || sub.items.data.some(it => !forty.has(productOf(it))))
+  const existing = clientSub || company?.lifecycle_phase === 'Customer' || hasReceivedHardware(company?.id)
   const tier = existing ? 'existing' : 'new'
   // Devise : celle de ses abonnements, sinon celle du client Stripe, sinon le pays.
   let currency = live[0]?.currency
@@ -83,8 +95,9 @@ export async function pagePayPlan({ stripe, token, acceptanceId }) {
   const sub = live.find(s => s.currency === price.currency && subInterval(s) === (price.recurring?.interval || null))
   // Premier paiement différé : l'ajout est programmé à la date (prorata du
   // premier mois, sauf si l'abonnement se renouvelle ce jour-là). Abonnement
-  // déjà programmé ailleurs → abonnement séparé avec essai jusqu'à la date.
-  if (!sub || (base.billingStart && sub.schedule)) {
+  // déjà sous calendrier (ex. hausse de prix programmée) : le produit rejoint
+  // ce calendrier, jamais un second abonnement (Charles, 2026-10-13).
+  if (!sub) {
     // Déjà abonné, mais à une autre fréquence : abonnement séparé confirmé en
     // un clic sur la carte au dossier (Charles, 2026-10-09). Pas de carte → Checkout.
     // Ancien client sans abonnement mais avec une carte au dossier : même
@@ -154,7 +167,11 @@ function metadataOf(c, contact) {
   return { erp_page_id: c.id, ...(contact ? { erp_contact_id: contact.id } : {}) }
 }
 
-/** Nouvel abonnement : session Checkout du produit de la page. */
+/**
+ * Nouvel abonnement : session Checkout du produit de la page, affichée sur
+ * notre propre page de carte (bouton « Confirmer » au lieu du « Start trial »
+ * imposé par la page Stripe ; Charles, 2026-10-13). Retourne la session.
+ */
 export async function createPageCheckout({ stripe, plan }) {
   const { c, a, price, contact, isFr } = plan
   // Entreprise connue sans client Stripe : il est créé et relié à la fiche
@@ -168,20 +185,19 @@ export async function createPageCheckout({ stripe, plan }) {
   const metadata = metadataOf(c, contact)
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
+    ui_mode: 'elements',
     line_items: [{ price: price.id, quantity: 1 }],
     automatic_tax: { enabled: true },
-    tax_id_collection: { enabled: true },
     billing_address_collection: 'required',
     ...(customer
       ? { customer, customer_update: { address: 'auto', name: 'auto' } }
       : (a.email ? { customer_email: a.email } : {})),
     locale: isFr ? 'fr-CA' : 'en',
-    success_url: `${APP_URL}/erp/pay/page/${encodeURIComponent(c.token)}/merci`,
-    cancel_url: `${APP_URL}/erp/p/${encodeURIComponent(c.token)}`,
+    return_url: `${APP_URL}/erp/pay/page/${encodeURIComponent(c.token)}/merci`,
     metadata,
     subscription_data: { metadata, ...(plan.billingStart ? { trial_end: plan.billingStart.ts } : {}) },
   })
-  return session.url
+  return { session, needsEmail: !customer && !a.email }
 }
 
 // Pose le contact signataire sur l'abonnement local s'il n'en a pas.
@@ -220,6 +236,9 @@ export async function applyPageUpgrade({ stripe, token, acceptanceId }) {
       if (e.type === 'StripeCardError' || /payment/i.test(e.message || '')) throw fail('payment_failed', e.message)
       throw e
     }
+    // Calendrier en cours : sans le produit dans ses phases, la prochaine
+    // phase l'enlèverait de l'abonnement.
+    if (sub.schedule) await addToSchedule({ stripe, plan, at: null }).catch(e => console.error('[pageCheckout] calendrier', sub.id, e.message))
     linkPageContact(updated.id, contact?.id)
     markUpgradeInvoice(updated, `page:${c.id}`)
     return { sub: updated, plan }
@@ -272,6 +291,12 @@ const itemOf = i => ({
 // calendrier relâché, l'abonnement reste tel quel.
 async function scheduleUpgrade({ stripe, plan }) {
   const { sub, price, c, contact, startsAt } = plan
+  if (sub.schedule) {
+    await addToSchedule({ stripe, plan, at: startsAt.at, prorate: startsAt.prorate })
+    linkPageContact(sub.id, contact?.id)
+    await fireScheduledSubscriptionProduct(sub.id, contact?.id, price.product.id).catch(e => console.error('[pageCheckout] hubspot', e.message))
+    return { sub, plan, scheduled: true }
+  }
   const taxRates = sub.automatic_tax?.enabled ? null
     : sub.items.data.find(i => i.tax_rates?.length)?.tax_rates.map(idOf)
   const sched = await stripe.subscriptionSchedules.create({ from_subscription: sub.id })
@@ -305,4 +330,55 @@ async function scheduleUpgrade({ stripe, plan }) {
   linkPageContact(sub.id, contact?.id)
   await fireScheduledSubscriptionProduct(sub.id, contact?.id, price.product.id).catch(e => console.error('[pageCheckout] hubspot', e.message))
   return { sub, plan, scheduled: true }
+}
+
+// Ajoute le produit aux phases d'un calendrier Stripe déjà posé sur
+// l'abonnement, à partir de `at` (null : phase en cours et suivantes — le
+// produit est déjà sur l'abonnement). Le calendrier finit avant `at` → il est
+// prolongé jusqu'à `at`, puis une phase avec le produit, relâchée ensuite.
+async function addToSchedule({ stripe, plan, at, prorate = false }) {
+  const sched = await stripe.subscriptionSchedules.retrieve(idOf(plan.sub.schedule))
+  const phases = phasesWithProduct(sched, plan, at, prorate)
+  await stripe.subscriptionSchedules.update(sched.id, { end_behavior: 'release', phases, proration_behavior: 'none' })
+}
+
+// Phases du calendrier avec le produit (fonction pure, vérifiable à blanc).
+export function phasesWithProduct(sched, { sub, price, c, contact }, at, prorate = false) {
+  const taxRates = sub.automatic_tax?.enabled ? null
+    : sub.items.data.find(i => i.tax_rates?.length)?.tax_rates.map(idOf)
+  const added = { price: price.id, quantity: 1, ...(taxRates ? { tax_rates: taxRates } : {}), metadata: metadataOf(c, contact) }
+  const keep = p => ({
+    items: p.items.map(itemOf), start: p.start_date, end: p.end_date,
+    ...(p.discounts?.length ? { discounts: discountsOf(p.discounts) } : {}),
+    ...(p.default_tax_rates?.length ? { default_tax_rates: p.default_tax_rates.map(idOf) } : {}),
+    ...(p.automatic_tax?.enabled ? { automatic_tax: { enabled: true } } : {}),
+    ...(p.default_payment_method ? { default_payment_method: idOf(p.default_payment_method) } : {}),
+    ...(p.collection_method ? { collection_method: p.collection_method } : {}),
+    ...(p.proration_behavior ? { proration_behavior: p.proration_behavior } : {}),
+    ...(p.trial_end ? { trial_end: p.trial_end } : {}),
+    ...(p.metadata && Object.keys(p.metadata).length ? { metadata: p.metadata } : {}),
+  })
+  const plus = p => ({ ...p, items: [...p.items.filter(i => i.price !== price.id), added] })
+  const now = Math.floor(Date.now() / 1000)
+  const out = []
+  for (const p0 of sched.phases.filter(p => p.end_date > now)) {
+    const p = keep(p0)
+    if (at == null || p.start >= at) out.push(plus(p))
+    else if (p.end <= at) out.push(p)
+    else out.push({ ...p, end: at }, { ...plus(p), start: at, proration_behavior: prorate ? 'always_invoice' : 'none' })
+  }
+  const last = out[out.length - 1]
+  if (at != null && last && last.end < at) {
+    out.push({ ...keep(sched.phases[sched.phases.length - 1]), start: last.end, end: at })
+    out.push({ ...plus(keep(sched.phases[sched.phases.length - 1])), start: at, end: null, proration_behavior: prorate ? 'always_invoice' : 'none' })
+  }
+  if (!out.length) throw new Error('calendrier sans phase en cours')
+  // Phases contiguës : date de début sur la première seulement ; dernière sans fin → un mois.
+  const phases = out.map(({ start, end, ...p }, i) => ({
+    ...p,
+    ...(i === 0 ? { start_date: start } : {}),
+    ...(end ? { end_date: end } : { duration: { interval: 'month', interval_count: 1 } }),
+  }))
+  phases[phases.length - 1].metadata = { ...(phases[phases.length - 1].metadata || {}), erp_last_page_id: String(c.id) }
+  return phases
 }

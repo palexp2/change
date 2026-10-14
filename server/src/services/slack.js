@@ -60,12 +60,7 @@ export async function postSlack(url, text) {
   if (!url) throw new Error('URL de webhook Slack manquante')
   const botChannel = slackBotToken() ? webhookBotChannel(url) : null
   if (botChannel) { await postSlackChat(botChannel, text); return }
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
+  await postWebhook(url, text)
 }
 
 /**
@@ -100,6 +95,31 @@ export async function sendSlack({ channel = null, url = null, envName = null, fa
     : text
   await postSlack(target.url, body)
   return { sent: true, fallback: target.fallback, via: 'webhook', env: target.env, missing: target.missing }
+}
+
+/**
+ * Envoi selon la config d'une automation : le destinataire choisi dans la
+ * liste (`slack_channel`, via le bot) prime ; sinon l'URL ou la variable de
+ * webhook historiques. Throw si rien n'est joignable. Retourne un libellé.
+ */
+export async function sendSlackConfigured(cfg, text) {
+  const ch = String(cfg?.slack_channel || '').trim()
+  if (ch && slackBotToken()) { await postSlackChat(ch, text); return `Slack (${ch})` }
+  if (cfg?.slack_webhook_url) { await postSlack(cfg.slack_webhook_url, text); return 'Slack (webhook)' }
+  if (cfg?.slack_webhook_env) { await sendSlackWebhook(cfg.slack_webhook_env, text); return `Slack (${cfg.slack_webhook_env})` }
+  throw new Error('aucun destinataire Slack configuré')
+}
+
+export const hasSlackTarget = cfg => !!(String(cfg?.slack_channel || '').trim() || cfg?.slack_webhook_url || cfg?.slack_webhook_env)
+
+// Destinataires par défaut, équivalents des webhooks historiques (même relais
+// que WEBHOOK_BOT_CHANNELS) : la liste montre la vraie personne ou le canal.
+export const SLACK_DEFAULT_TARGETS = {
+  SLACK_WEBHOOK_TREASURY: 'C0BC7KSM1D5', // #comptabilité
+  SLACK_WEBHOOK_PERSO: 'U06ECMYHNR2',    // Antoine Lambert
+  SLACK_WEBHOOK_GUILLAUME: 'UUCQBRLF4',  // Guillaume Lambert
+  SLACK_WEBHOOK_MARKETING: 'U0633QP1KUG', // Émilie Carignan
+  SLACK_WEBHOOK_PHILIPPE: 'U03GS6BQD5G', // Philippe
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +242,7 @@ export async function listSlackUsers() {
     const json = await slackApi('users.list', { limit: 200, ...(cursor ? { cursor } : {}) })
     for (const u of json.members || []) {
       if (u.deleted || u.is_bot || u.id === 'USLACKBOT') continue
-      out.push({ id: u.id, name: u.profile?.real_name || u.real_name || u.name })
+      out.push({ id: u.id, name: u.profile?.real_name || u.real_name || u.name, email: u.profile?.email || null })
     }
     cursor = json.response_metadata?.next_cursor || null
   } while (cursor)
@@ -292,9 +312,34 @@ export async function resolveSlackChannelId(target) {
   return cacheSet(raw, channelId)
 }
 
+// Messages à une personne → un webhook de groupe choisi par Charles
+// (2026-10-13) : la conversation qui réunit la personne, Charles et Antoine,
+// plutôt qu'un tête-à-tête avec le bot que personne d'autre ne voit.
+// Réglage connector_config(slack, person_webhooks_secret) = JSON chiffré
+// { "U…": "https://hooks.slack.com/…" }. S'applique à tout message adressé à
+// cette personne : webhook historique relayé, @nom, courriel ou id.
+export function personWebhooks() {
+  const v = db.prepare("SELECT value FROM connector_config WHERE connector='slack' AND key='person_webhooks_secret'").get()?.value
+  if (!v) return {}
+  try { return JSON.parse(decryptCredentials(v) || '{}') || {} } catch { return {} }
+}
+
+async function postWebhook(url, text) {
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
+}
+
 /** Poste un message via chat.postMessage. Throw si Slack refuse. */
 export async function postSlackChat(target, text) {
   const channel = await resolveSlackChannelId(target)
+  if (/^U/.test(channel)) {
+    const hook = personWebhooks()[channel]
+    if (hook) { await postWebhook(hook, text); return channel }
+  }
   // Message privé à une personne : il part du compte d'Antoine quand son jeton
   // personnel est branché (Connecteurs → Instagram), pas de l'app « ERP Orisha ».
   if (/^U/.test(channel)) {

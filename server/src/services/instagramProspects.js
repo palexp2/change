@@ -33,6 +33,7 @@ import { sendSlack, resolveSlackTarget } from './slack.js'
 import { writeBackRecord, createInAirtable } from './airtableWriteback.js'
 import { APP_URL } from '../config/appUrl.js'
 import { TZ } from '../utils/datetime.js'
+import { createNotification } from './notifications.js'
 
 export const INSTAGRAM_INTAKE_AUTOMATION_ID = 'sys_instagram_prospect_intake'
 export const INSTAGRAM_SLACK_AUTOMATION_ID = 'sys_instagram_weekly_slack'
@@ -40,7 +41,7 @@ export const INSTAGRAM_SLACK_AUTOMATION_ID = 'sys_instagram_weekly_slack'
 const MAX_TEXT = 4000
 
 export const INSTAGRAM_INTAKE_DEFAULT_CONFIG = {
-  keywords: 'coach',          // mots-clés qui déclenchent le DM, séparés par des virgules
+  keywords: 'coach,partner',  // mots-clés qui déclenchent le DM, séparés par des virgules
 }
 
 export const INSTAGRAM_SLACK_DEFAULT_CONFIG = {
@@ -49,7 +50,9 @@ export const INSTAGRAM_SLACK_DEFAULT_CONFIG = {
                               // après la reconnexion Instagram (instagramRefresh.js).
   slack_webhook_url: '',      // URL collée ici = aucun besoin de toucher server/.env
   slack_webhook_env: 'SLACK_WEBHOOK_PHILIPPE',
+  slack_channel: 'U03GS6BQD5G', // Philippe — prime sur les webhooks (bot Slack)
   recipient: 'Philippe',
+  notify_email: 'antoine.lambert96@gmail.com', // reçoit dans Boréal la copie du message envoyé
 }
 
 function loadConfig(automationId, defaults) {
@@ -642,7 +645,8 @@ export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = nul
     ].join('\n') + footer
   }
 
-  const keyword = prospects.filter(p => p.has_keyword).length
+  const keyword = prospects.filter(p => p.has_keyword && p.keyword !== 'partner').length
+  const partner = prospects.filter(p => p.keyword === 'partner').length
   const dmCount = prospects.filter(p => p.dm_sent).length
   const replied = prospects.filter(p => p.replied).length
 
@@ -660,7 +664,9 @@ export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = nul
       const label = `${n} ${n > 1 ? many : one}`
       // Le mot-clé ne qualifie que des commentaires : il s'accroche à leur
       // ligne. « dont tous » n'apprend rien → on se tait quand ils l'ont tous.
-      return kind === 'comment' && keyword && keyword < n ? `${label} — dont ${keyword} « coach »` : label
+      if (kind !== 'comment') return label
+      const tags = [keyword < n && keyword && `${keyword} « coach »`, partner < n && partner && `${partner} « partner »`].filter(Boolean)
+      return tags.length ? `${label} — dont ${tags.join(', ')}` : label
     })
 
   const activity = []
@@ -673,6 +679,20 @@ export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = nul
     ...lines.map(l => `• ${l}`),
     ...backlogLine.map(l => `• ${l}`),
   ].join('\n') + footer
+}
+
+/** Copie du message envoyé, dans la cloche de Boréal de `notify_email`. */
+function notifyDigestSent(cfg, message, count) {
+  try {
+    const user = cfg.notify_email
+      && db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(cfg.notify_email)
+    if (!user) return
+    createNotification({
+      userId: user.id, type: 'instagram_digest',
+      title: `Liste Instagram envoyée à ${cfg.recipient} · ${count} personne${count > 1 ? 's' : ''}`,
+      body: message, link: '/prospects-instagram',
+    })
+  } catch (e) { console.error('instagram notification:', e.message) }
 }
 
 function alreadySentThisWeek(dayIso) {
@@ -700,9 +720,10 @@ export async function runWeeklyProspectDigest({ force = false, weekly = false, t
     const sendHour = Math.min(23, Math.max(0, Number(cfg.send_hour) || 0))
 
     // `weekly` : l'envoi de la semaine, déclenché par une reconnexion plutôt
-    // que par l'horloge — n'importe quel jour, mais une seule fois par semaine.
+    // que par l'horloge — seulement le jour d'envoi (samedi), une fois par
+    // semaine (Charles, 2026-10-10 : « à chaque samedi, plus les lundis »).
     if (!force) {
-      if (!weekly && isoWeekday(dayIso) !== sendDay) return { ok: true, sent: false, reason: "pas le jour d'envoi" }
+      if (isoWeekday(dayIso) !== sendDay) return { ok: true, sent: false, reason: "pas le jour d'envoi" }
       if (!weekly && nowHour !== sendHour) return { ok: true, sent: false, reason: "pas l'heure d'envoi" }
       if (alreadySentThisWeek(dayIso)) return { ok: true, sent: false, reason: 'déjà envoyé cette semaine' }
     }
@@ -718,6 +739,7 @@ export async function runWeeklyProspectDigest({ force = false, weekly = false, t
     })
 
     const res = await sendSlack({
+      channel: cfg.slack_channel || null,
       url: cfg.slack_webhook_url,
       envName: cfg.slack_webhook_env,
       text: message,
@@ -749,6 +771,7 @@ export async function runWeeklyProspectDigest({ force = false, weekly = false, t
       .then(({ completeFromAutomation }) => completeFromAutomation('rt-al-liste-instagram-phil', { note: `${prospects.length} personne(s) annoncée(s)` }))
       .catch(() => {})
     for (const p of prospects) pushToAirtable(p.id).catch(() => {})
+    notifyDigestSent(cfg, message, ofWeek.length + backlog.length)
 
     // Seul l'envoi planifié porte le préfixe HEBDO <semaine> : c'est lui qui
     // consomme l'idempotence. Un « Exécuter » manuel ne fait pas sauter le
@@ -777,7 +800,9 @@ export function previewWeeklyProspectDigest() {
   const prospects = unnotifiedProspects()
   const { ofWeek, backlog } = splitByWeek(stillToHandle(prospects), coveredWeek(dayIso))
   const target = resolveSlackTarget({ url: cfg.slack_webhook_url, envName: cfg.slack_webhook_env })
-  const canal = target.url
+  const canal = cfg.slack_channel && process.env.SLACK_BOT_TOKEN
+    ? `destinataire : ${cfg.slack_channel}`
+    : target.url
     ? (target.fallback
         ? `⚠️ ${cfg.slack_webhook_env} absent — repli sur ${target.env}`
         : `canal : ${target.env || 'URL configurée dans cette automation'}`)

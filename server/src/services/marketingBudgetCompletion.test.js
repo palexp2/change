@@ -9,6 +9,7 @@ const testDir = mkdtempSync(join(tmpdir(), 'erp-marketing-completion-'))
 process.env.DATABASE_PATH = join(testDir, 'test.db')
 const { default: db } = await import('../db/database.js')
 const { checkWeeklyMarketingSlack, previewWeeklyMarketingSlack, EMILIE_RECURRING_TASK_ID } = await import('./marketingBudget.js')
+delete process.env.SLACK_BOT_TOKEN // sans bot : le destinataire par défaut cède au webhook de test
 
 db.exec(`
   CREATE TABLE automations (id TEXT PRIMARY KEY, system INTEGER, active INTEGER, action_config TEXT, last_run_at TEXT, last_run_status TEXT);

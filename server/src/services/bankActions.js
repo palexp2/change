@@ -387,14 +387,17 @@ export async function pushTransferToQB(txn, other, { post = null } = {}) {
   // Devise du compte source ≠ dollar canadien : QuickBooks veut la devise de la
   // transaction et le taux. Le taux est celui que la banque a réellement
   // appliqué (les deux montants du relevé), pas un taux de référence.
-  let fxNote = null
   if (fromCcy !== 'CAD') {
     payload.CurrencyRef = { value: fromCcy }
     payload.ExchangeRate = round2((Math.abs(toRow.amount) / amount) * 10000) / 10000
   } else if (toCcy !== 'CAD') {
-    // Source en CAD, destination en devise : QuickBooks applique SON taux du
-    // jour au compte destinataire, qu'on ne contrôle pas depuis ce payload.
-    fxNote = 'Compte destinataire en devise : vérifier le taux appliqué dans QuickBooks.'
+    // Source en CAD, destination en devise : QuickBooks exige la transaction
+    // dans la devise étrangère (« une seule devise étrangère par opération ») —
+    // montant reçu en devise, taux = CAD débités / devise reçue.
+    const received = round2(Math.abs(toRow.amount))
+    payload.Amount = received
+    payload.CurrencyRef = { value: toCcy }
+    payload.ExchangeRate = round2((amount / received) * 10000) / 10000
   }
 
   const send = post || qbPost
@@ -412,7 +415,7 @@ export async function pushTransferToQB(txn, other, { post = null } = {}) {
   `).run(String(qbId), txn.id, other.id)
   touchBankTxns([txn.id, other.id])
 
-  return { quickbooks_id: String(qbId), fx_note: fxNote }
+  return { quickbooks_id: String(qbId) }
 }
 
 /**

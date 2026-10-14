@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Totaux revenus d avance</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f6f7f9;--line:#eceef1;--ink:#2b2c2f;--ink3:#7a7c82;--ink4:#a9abb0;--g:#2ca01c;--gd:#1d7f12;--gs:#eaf6e7;--r:#d52b1e;--rs:#fdf0ef;--a:#b86e00;--sh:0 1px 2px rgb(0 0 0/.04),0 8px 24px rgb(0 0 0/.06)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1e2125;--line:#25292e;--ink:#eceef0;--ink3:#959ba2;--ink4:#656b72;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--r:#ff7a6e;--rs:#2e1e1c;--a:#f0b04a}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1e2125;--line:#25292e;--ink:#eceef0;--ink3:#959ba2;--ink4:#656b72;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--r:#ff7a6e;--rs:#2e1e1c;--a:#f0b04a}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:17px;margin:48px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.scr{background:var(--s);border-radius:12px;box-shadow:var(--sh);padding:28px 32px}
+.n{font-variant-numeric:tabular-nums}
+.ok{color:var(--gd)}.bad{color:var(--r)}.mut{color:var(--ink3)}.faint{color:var(--ink4)}
+.t{font-size:20px;font-weight:600;margin:0}
+.go{background:var(--g);color:#fff;border:0;border-radius:999px;height:32px;padding:0 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.go.big{height:44px;padding:0 24px;font-size:15px}
+.txt{background:none;border:0;padding:0;font:inherit;font-size:13px;font-weight:600;color:var(--gd);cursor:pointer}
+.txt.r{color:var(--r)}
+.row{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row .who{flex:1;min-width:0}
+.row .who div:first-child{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .who small{color:var(--ink3);font-size:12.5px}
+.row .amt{font-weight:500;min-width:90px;text-align:right}
+.row .act{min-width:86px;text-align:right}
+.lab{font-size:12px;color:var(--ink3);margin:26px 0 2px;display:flex;justify-content:space-between}
+.lab:first-of-type{margin-top:18px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.d-g{background:var(--g)}.d-r{background:var(--r)}.d-n{background:var(--ink4)}
+.hero{text-align:center;padding:10px 0 24px;border-bottom:1px solid var(--line)}
+.hero .big{font-size:40px;font-weight:600;letter-spacing:-.02em;margin:6px 0 16px}
+.hero small{color:var(--ink3)}
+.quiet{display:flex;justify-content:center;gap:28px;padding-top:18px;color:var(--ink3);font-size:13px;flex-wrap:wrap}
+.quiet b{color:var(--ink);font-weight:500}
+.legend{display:flex;gap:18px;font-size:13px;color:var(--ink3);margin-top:10px;flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.legend span.on{color:var(--ink);font-weight:500}
+.head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.chk{font-size:12.5px;color:var(--ink3)}
+@media (max-width:600px){.scr{padding:20px 18px}.hero .big{font-size:32px}}
+.g{display:grid;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line)}
+.c4{grid-template-columns:10px 1fr 110px 110px 110px}
+.c3{grid-template-columns:10px 1fr 120px}
+.c6{grid-template-columns:80px 1fr 1fr 100px 100px 100px}
+.g .r{text-align:right}
+.hd{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--ink4);padding:6px 0;border-bottom:1px solid var(--ink4)}
+.tot{font-weight:600;border-top:2px solid var(--ink);border-bottom:0;padding-top:12px}
+.sub{font-weight:600;background:var(--soft);padding:9px 0}
+.sm{font-size:12.5px}
+.foot3{display:flex;justify-content:flex-end;gap:36px;padding-top:16px;border-top:1px solid var(--line);margin-top:4px;flex-wrap:wrap}
+.foot3 div{display:flex;flex-direction:column;align-items:flex-end}.foot3 small{font-size:11.5px;color:var(--ink3)}.foot3 b{font-size:17px;font-weight:600}
+.scrollx{overflow-x:auto}.scrollx>div{min-width:600px}
+</style></head><body><div class="wrap">
+<h1>Totaux en bas — Débit / Crédit</h1>
+
+<!-- T1 -->
+<h2><b>T1</b> Débit · Crédit · Solde par client <span>total en bas</span></h2>
+<div class="scr scrollx"><div>
+  <div class="legend"><span class="on"><i class="dot d-g"></i>À constater 0</span><span class="on"><i class="dot d-r"></i>À corriger 0</span><span class="on"><i class="dot d-n"></i>En attente 4</span></div>
+  <div class="g c4 hd" style="margin-top:10px"><i></i><span>Client</span><span class="r">Débit</span><span class="r">Crédit</span><span class="r">Solde</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>Consortium pomme de terre</span><span class="r n mut"></span><span class="r n mut">13 300,00</span><span class="r n">13 300,00</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>8CBFE0EF-0045</span><span class="r n mut"></span><span class="r n mut">1 340,00</span><span class="r n">1 340,00</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>Ferme Décembre</span><span class="r n mut">1 200,00</span><span class="r n mut">1 760,00</span><span class="r n">560,00</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>Wisconsin Greenhouse</span><span class="r n mut"></span><span class="r n mut">347,92</span><span class="r n">347,92</span></div>
+  <div class="g c4 tot"><i></i><span>Total <span class="ok sm" style="font-weight:500;margin-left:8px">= QuickBooks</span></span><span class="r n">1 200,00</span><span class="r n">16 747,92</span><span class="r n">15 547,92</span></div>
+</div></div>
+
+<!-- T2 -->
+<h2><b>T2</b> Grand livre QBO <span>chaque écriture, sous-total par client</span></h2>
+<div class="scr scrollx"><div>
+  <div class="g c6 hd"><span>Date</span><span>Opération</span><span>Mémo</span><span class="r">Débit</span><span class="r">Crédit</span><span class="r">Solde</span></div>
+  <div class="g c6 sub"><span style="grid-column:1/4">&nbsp;<i class="dot d-n" style="display:inline-block;margin-right:8px"></i>Consortium pomme de terre</span><span></span><span></span><span class="r n">13 300,00</span></div>
+  <div class="g c6 sm"><span class="mut">2026-01-15</span><span>Dépôt</span><span class="mut">#B2FCDAB7-0023</span><span></span><span class="r n">13 300,00</span><span class="r n mut">13 300,00</span></div>
+  <div class="g c6 sub"><span style="grid-column:1/4">&nbsp;<i class="dot d-n" style="display:inline-block;margin-right:8px"></i>Ferme Décembre</span><span></span><span></span><span class="r n">560,00</span></div>
+  <div class="g c6 sm"><span class="mut">2026-03-06</span><span>Reçu de vente</span><span class="mut">Paiement 1 de 3</span><span></span><span class="r n">1 200,00</span><span class="r n mut">1 200,00</span></div>
+  <div class="g c6 sm"><span class="mut">2026-09-15</span><span>Écriture n° 612</span><span class="mut">Constatation</span><span class="r n">1 200,00</span><span></span><span class="r n mut">0,00</span></div>
+  <div class="g c6 sm"><span class="mut">2026-09-15</span><span>Reçu de vente</span><span class="mut">Paiement 2 de 3</span><span></span><span class="r n">560,00</span><span class="r n mut">560,00</span></div>
+  <div class="g c6 sub"><span style="grid-column:1/4">&nbsp;<i class="dot d-n" style="display:inline-block;margin-right:8px"></i>Wisconsin Greenhouse</span><span></span><span></span><span class="r n">347,92</span></div>
+  <div class="g c6 sm"><span class="mut">2026-07-06</span><span>Reçu de vente</span><span class="mut">#1SDLRCSZ-0001</span><span></span><span class="r n">347,92</span><span class="r n mut">347,92</span></div>
+  <div class="g c6 tot"><span style="grid-column:1/4">Total <span class="ok sm" style="font-weight:500;margin-left:8px">= QuickBooks</span></span><span class="r n">1 200,00</span><span class="r n">16 747,92</span><span class="r n">15 547,92</span></div>
+</div></div>
+
+<!-- T3 -->
+<h2><b>T3</b> Solde seul, trois chiffres en bas <span>la liste reste nue</span></h2>
+<div class="scr">
+  <div class="legend"><span class="on"><i class="dot d-g"></i>À constater 0</span><span class="on"><i class="dot d-r"></i>À corriger 0</span><span class="on"><i class="dot d-n"></i>En attente 4</span></div>
+  <div style="margin-top:8px">
+  <div class="g c3"><i class="dot d-n"></i><span>Consortium pomme de terre</span><span class="r n">13 300,00</span></div>
+  <div class="g c3"><i class="dot d-n"></i><span>8CBFE0EF-0045</span><span class="r n">1 340,00</span></div>
+  <div class="g c3"><i class="dot d-n"></i><span>Ferme Décembre</span><span class="r n">560,00</span></div>
+  <div class="g c3" style="border-bottom:0"><i class="dot d-n"></i><span>Wisconsin Greenhouse</span><span class="r n">347,92</span></div>
+  </div>
+  <div class="foot3">
+    <div><small>Débit</small><b class="n">1 200,00</b></div>
+    <div><small>Crédit</small><b class="n">16 747,92</b></div>
+    <div><small>Solde</small><b class="n">15 547,92</b></div>
+    <div><small>QuickBooks</small><b class="n ok">15 547,92 ✓</b></div>
+  </div>
+</div>
+
+<!-- T4 -->
+<h2><b>T4</b> En mots : Encaissé · Constaté · Reste <span>même chose, sans jargon</span></h2>
+<div class="scr scrollx"><div>
+  <div class="g c4 hd"><i></i><span>Client</span><span class="r">Encaissé</span><span class="r">Constaté</span><span class="r">Reste</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>Consortium pomme de terre</span><span class="r n mut">13 300,00</span><span class="r n mut">—</span><span class="r n">13 300,00</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>8CBFE0EF-0045</span><span class="r n mut">1 340,00</span><span class="r n mut">—</span><span class="r n">1 340,00</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>Ferme Décembre</span><span class="r n mut">1 760,00</span><span class="r n mut">1 200,00</span><span class="r n">560,00</span></div>
+  <div class="g c4"><i class="dot d-n"></i><span>Wisconsin Greenhouse</span><span class="r n mut">347,92</span><span class="r n mut">—</span><span class="r n">347,92</span></div>
+  <div class="g c4 tot"><i></i><span>Total <span class="ok sm" style="font-weight:500;margin-left:8px">= QuickBooks</span></span><span class="r n">16 747,92</span><span class="r n">1 200,00</span><span class="r n">15 547,92</span></div>
+</div></div>
+
+</div></body></html>

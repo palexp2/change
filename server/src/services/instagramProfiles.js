@@ -185,14 +185,20 @@ function requeueSegment(id) {
   `).run(id)
 }
 
-function dueProfiles(limit, refreshDays, onlyIds = null) {
+// Lecture « bio seule » : le serveur, refusé par Instagram, ne reçoit que la
+// page publique — ni photos ni publications. Le navigateur, lui, les voit :
+// ces fiches lui reviennent sans attendre les 30 jours.
+const BIO_ONLY = `(p.profile_status = 'ok' AND json_extract(p.profile_json, '$.via') IS NULL
+  AND COALESCE(json_array_length(json_extract(p.profile_json, '$.posts')), 0) = 0)`
+
+function dueProfiles(limit, refreshDays, onlyIds = null, { bioOnly = false } = {}) {
   const cutoff = new Date(Date.now() - refreshDays * 86400_000).toISOString()
   const scope = onlyIds?.length ? `AND p.id IN (${onlyIds.map(() => '?').join(',')})` : ''
   return db.prepare(`
     SELECT p.id, p.ig_username, p.full_name, p.segment FROM instagram_prospects p
     WHERE p.deleted_at IS NULL AND p.ig_username IS NOT NULL
       AND COALESCE(p.segment,'') NOT IN ('robot','story')
-      AND (p.profile_read_at IS NULL OR p.profile_read_at < ?)
+      AND (p.profile_read_at IS NULL OR p.profile_read_at < ?${bioOnly ? ` OR ${BIO_ONLY}` : ''})
       ${scope}
     ORDER BY (p.profile_read_at IS NULL) DESC, (p.segment = 'fleurs') DESC, (p.segment_source IS NOT 'manual') DESC, p.contacted ASC,
              COALESCE(p.last_event_at, p.created_at) DESC
@@ -256,7 +262,7 @@ export async function readProfiles({ limit = 25, refreshDays = 30, model = 'gpt-
 
 /** Les noms d'usager à lire, ceux de la liste à traiter d'abord. */
 export function dueForBrowser(limit = 10, refreshDays = 30) {
-  return dueProfiles(limit, refreshDays).map(p => p.ig_username)
+  return dueProfiles(limit, refreshDays, null, { bioOnly: true }).map(p => p.ig_username)
 }
 
 /** Forme `web_profile_info` → forme interne de `fetchProfile`. */
@@ -316,10 +322,9 @@ export async function ingestBrowserProfiles(items, { model = 'gpt-4o-mini' } = {
 
 // ── « Comment elle est arrivée » ─────────────────────────────────────────────
 
-const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.']
 function shortDate(iso) {
   const d = iso ? new Date(iso) : null
-  return d && !isNaN(d) ? `${d.getDate()} ${MONTHS[d.getMonth()]}` : null
+  return d && !isNaN(d) ? d.toLocaleDateString('en-CA', { timeZone: 'America/Montreal' }) : null
 }
 function clip(t, n = 90) {
   const s = String(t || '').replace(/\s+/g, ' ').trim()

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { ExternalLink, Package, PackageCheck } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ExternalLink, Package, PackageCheck, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
@@ -310,6 +310,16 @@ export default function RetourDetail({ recordId: id }) {
     setShelfNotes(r.instructions || [])
   }, [id, user?.name, patchItem, refreshRetourFields])
 
+  // « Remplacement différé » : commande neuve (client, adresses de livraison et
+  // de ferme, produit et # de série remplacé des articles cochés), puis ouverte.
+  const navigate = useNavigate()
+  const deferReplacement = useCallback(async (itemIds) => {
+    const r = await api.retours.deferredReplacement(id, { item_ids: itemIds })
+    for (const itemId of r.item_ids || []) patchItem({ id: itemId, commande: JSON.stringify([r.order.id]) })
+    addToast({ message: `Commande #${r.order.order_number} créée`, type: 'success' })
+    navigate(`/orders/${r.order.id}`)
+  }, [id, patchItem, addToast, navigate])
+
   const pending = detailPending({ loading, loadError, onRetry: load, record: retour, notFound: 'Retour introuvable.' })
   if (pending) return pending
 
@@ -376,6 +386,13 @@ export default function RetourDetail({ recordId: id }) {
               busyLabel: 'Réception…',
               className: 'inline-flex items-center gap-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 px-3 py-1.5 rounded transition-colors',
               onClick: receiveItems,
+            }, {
+              key: 'deferred-replacement',
+              label: 'Remplacement différé',
+              icon: RefreshCw,
+              busyLabel: 'Création…',
+              className: 'inline-flex items-center gap-1.5 text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 disabled:opacity-50 px-3 py-1.5 rounded transition-colors',
+              onClick: deferReplacement,
             }]}
             // Tous les articles s'affichent : pas d'ascenseur dans la table,
             // c'est le panneau de la fiche qui défile.

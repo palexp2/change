@@ -13,6 +13,7 @@
 import db from '../db/database.js'
 import { findTimesheetFile, timesheetFileName } from './rdTimesheetImport.js'
 import { listProvisions, grossSalaryForMonth } from './monthEnd.js'
+import { getCarmConfig, setCarmConfig } from './carmAccount.js'
 
 const ok = (key, label, detail = null) => ({ key, label, status: 'ok', detail })
 const warn = (key, label, detail = null) => ({ key, label, status: 'warn', detail })
@@ -130,6 +131,44 @@ function checkAccounts() {
     : ok('accounts', 'Comptes QuickBooks configurés sur toutes les provisions')
 }
 
+// Relevé ASFC (procédure CTB, fichier « ASFC_Suivi_Trx ») : chaque mois, le
+// relevé du portail est importé dans Douanes puis comptabilisé (facture ASFC
+// du mois). Les lignes FedEx sont ignorées — FedEx nous refacture.
+const asfcQuietMonths = () => String(getCarmConfig().quiet_months || '').split(',').map(s => s.trim()).filter(Boolean)
+
+// « Rien au portail ce mois-ci » : la dernière transaction précède le mois, il
+// n'y a pas de relevé à importer.
+export function setAsfcQuietMonth(month, quiet) {
+  const set = new Set(asfcQuietMonths())
+  if (quiet) set.add(month); else set.delete(month)
+  setCarmConfig({ quiet_months: [...set].sort().join(',') })
+  return checkAsfc(month)
+}
+
+export function checkAsfc(month) {
+  const [y, m] = month.split('-').map(Number)
+  const next = `${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, '0')}-01`
+  const lastImport = db.prepare(`
+    SELECT MAX(created_at) AS t FROM carm_transactions WHERE source = 'import'
+  `).get()?.t || null
+  const quiet = asfcQuietMonths().includes(month)
+  if ((!lastImport || lastImport < next) && quiet) {
+    return { ...ok('asfc', 'Aucune transaction ASFC ce mois-ci', 'Marqué à la main.'), quiet: true }
+  }
+  if (!lastImport || lastImport < next) {
+    return warn('asfc', `Relevé ASFC de ${month} pas encore importé`,
+      'Page Douanes : importer le relevé du portail (avec la colonne « Fournisseur »), puis Comptabiliser.')
+  }
+  const pending = db.prepare(`
+    SELECT COUNT(*) AS n FROM carm_transactions
+    WHERE deleted_at IS NULL AND transaction_date < ?
+      AND posting_state IN ('a_comptabiliser', 'attente_imputation', 'a_verifier', 'erreur')
+  `).get(next).n
+  return pending
+    ? warn('asfc', `${pending} ligne(s) ASFC à comptabiliser`, 'Page Douanes : bouton « Comptabiliser ».')
+    : ok('asfc', 'Relevé ASFC importé et comptabilisé')
+}
+
 export async function monthEndChecks(month, { googleAccountEmail = null } = {}) {
   const checks = [
     checkQuickBooks(),
@@ -137,6 +176,7 @@ export async function monthEndChecks(month, { googleAccountEmail = null } = {}) 
     await checkTimesheet(month, googleAccountEmail),
     ...checkPaie(month),
     checkAccounts(),
+    checkAsfc(month),
   ]
   return {
     month,

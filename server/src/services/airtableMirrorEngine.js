@@ -60,6 +60,7 @@ import {
   BOM_FIELD_MAP_PLAN,
 } from './airtableUiFieldMap.js'
 import { uploadsPath } from '../config/uploads.js'
+import { HUBSPOT_OWNED_COLUMNS, isHubSpotContactsSyncActive, normHsId } from './hubspotContactsSync.js'
 
 // ── Transformations nommées ─────────────────────────────────────────────────
 //
@@ -580,6 +581,25 @@ function projetsDerive(fields, rec, fieldMap) {
 }
 
 // ── Entreprises et contacts ─────────────────────────────────────────────────
+
+// Adoption d'un contact créé par la synchro HubSpot (airtable_id encore vide).
+function contactsAdoptOrphan(rec, values) {
+  const hsField = db.prepare(
+    "SELECT airtable_field_name FROM airtable_field_mappings WHERE erp_table='contacts' AND column_name='hubspot_record_id'"
+  ).get()?.airtable_field_name || 'Hubspot record ID'
+  const hsId = normHsId(rec.fields?.[hsField])
+  if (hsId) {
+    const row = db.prepare(
+      "SELECT id FROM contacts WHERE airtable_id IS NULL AND hubspot_record_id IN (?, ?) LIMIT 1"
+    ).get(hsId, `${hsId}.0`)
+    if (row) return row.id
+  }
+  const email = String(values.email || '').trim().toLowerCase()
+  if (!email) return null
+  return db.prepare(
+    "SELECT id FROM contacts WHERE airtable_id IS NULL AND hubspot_record_id IS NOT NULL AND lower(email)=? LIMIT 1"
+  ).get(email)?.id || null
+}
 //
 // Le CRM est le cas où Airtable COMPLÈTE sans jamais effacer : presque toutes
 // les colonnes passent par un COALESCE dans la fonction historique. Un champ
@@ -1155,6 +1175,15 @@ export const CORE_PLANS = {
       // dernier recours « Inconnu » — mieux qu'une fiche sans nom du tout.
       if (fieldMap?.last_name || fieldMap?.first_name) {
         out.last_name = getVal(fields, fieldMap?.last_name) || getVal(fields, fieldMap?.first_name) || 'Inconnu'
+        // Airtable sans nom : un nom posé côté Boréal (ex. lu dans Stripe) n'est
+        // pas ramené à « Inconnu ».
+        if (out.last_name === 'Inconnu') {
+          const cur = db.prepare('SELECT first_name, last_name FROM contacts WHERE airtable_id=?').get(rec.id)
+          if (cur?.last_name && cur.last_name !== 'Inconnu') {
+            out.last_name = cur.last_name
+            if (fieldMap?.first_name) out.first_name = cur.first_name || ''
+          }
+        }
       }
       if (fieldMap?.language) {
         const rawLang = (getVal(fields, fieldMap.language) || '').trim()
@@ -1177,6 +1206,13 @@ export const CORE_PLANS = {
       return out
     },
     dynamicFieldsKey: 'airtable_contacts',
+    // HubSpot écrit directement ces colonnes (services/hubspotContactsSync.js) :
+    // tant que cette synchro tourne, Airtable — en retard sur HubSpot — ne les
+    // réécrit plus. À la création, rien à protéger.
+    hubspotOwned: () => (isHubSpotContactsSyncActive() ? HUBSPOT_OWNED_COLUMNS : []),
+    // Fiche déjà créée par la synchro HubSpot : le record Airtable l'adopte au
+    // lieu de la dédoubler (même id HubSpot, sinon même courriel).
+    adoptOrphan: contactsAdoptOrphan,
   },
   achats: {
     // Plan cœur VIDE : les 7 dernières colonnes natives du miroir achats ont été
@@ -1343,14 +1379,24 @@ async function pushAssignedOrderNumbers(fieldMap) {
   }
 }
 
-function differentialUpsert(table, airtableId, values, { dryRun = false, insertOnly = false, updateOnly = false, existingScope = null, keepIfNull = [], frozen = null, insertExtras = null, onWrite = null } = {}) {
+function differentialUpsert(table, airtableId, values, { dryRun = false, insertOnly = false, updateOnly = false, existingScope = null, keepIfNull = [], frozen = null, insertExtras = null, adoptOrphan = null, onWrite = null } = {}) {
   const columns = Object.keys(values)
   // `existingScope` restreint ce qui compte comme « la ligne jumelle » : les
   // prospects Instagram ne reconnaissent que les fiches vivantes, une fiche à
   // la corbeille ne doit pas se faire réanimer par un sync.
   const scope = existingScope ? ` AND ${existingScope}` : ''
   const select = columns.length ? `id, ${columns.map(c => `"${c}"`).join(', ')}` : 'id'
-  const existing = db.prepare(`SELECT ${select} FROM ${table} WHERE airtable_id=?${scope}`).get(airtableId)
+  let existing = db.prepare(`SELECT ${select} FROM ${table} WHERE airtable_id=?${scope}`).get(airtableId)
+
+  // Ligne née ailleurs (ex. synchro HubSpot des contacts) et pas encore
+  // rattachée à Airtable : on la rattache au lieu d'en créer une seconde.
+  if (!existing && adoptOrphan) {
+    const orphanId = adoptOrphan()
+    if (orphanId) {
+      if (!dryRun) db.prepare(`UPDATE ${table} SET airtable_id=? WHERE id=? AND airtable_id IS NULL`).run(airtableId, orphanId)
+      existing = db.prepare(`SELECT ${select} FROM ${table} WHERE id=?`).get(orphanId)
+    }
+  }
 
   // Miroir en lecture de suivi seulement : Airtable peut modifier une fiche
   // existante, jamais en créer une. Voir le plan `instagram`.
@@ -1513,6 +1559,7 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
   // fonction historique des projets le consultait ; ici il vaut pour tous les
   // miroirs — c'est un réglage explicite, pas une préférence par module.
   const frozenColumns = getFrozenColumns(erpTable)
+  for (const c of plan.hubspotOwned?.() || []) frozenColumns.add(c)
 
   // Préparation asynchrone du plan (caches d'autres tables Airtable) — avant la
   // transaction, qui est synchrone par construction.
@@ -1584,6 +1631,7 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
         keepIfNull: plan.keepIfNull || [],
         frozen: frozenColumns,
         insertExtras: plan.insertExtras ? () => plan.insertExtras(rec, fieldMap) : null,
+        adoptOrphan: plan.adoptOrphan ? () => plan.adoptOrphan(rec, values) : null,
         // `onWrite` n'est appelé que sur une écriture RÉELLE — c'est là toute la
         // différence avec le legacy, qui poussait un message temps réel par
         // record traité (1 159 messages par sync des commandes, dont la quasi-

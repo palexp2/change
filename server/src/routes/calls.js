@@ -38,21 +38,35 @@ function normalizePhone(phone) {
   return digits.length >= 10 ? digits.slice(-10) : null
 }
 
+// Index « 10 derniers chiffres → contact », construit en une lecture. Le premier
+// contact rencontré gagne, comme l'ancien balayage.
+function phoneIndex() {
+  const idx = new Map()
+  const contacts = db.prepare(
+    `SELECT id, company_id, phone, mobile FROM contacts WHERE phone IS NOT NULL OR mobile IS NOT NULL`
+  ).all()
+  for (const c of contacts) {
+    for (const n of [normalizePhone(c.phone), normalizePhone(c.mobile)]) {
+      if (n && !idx.has(n)) idx.set(n, c)
+    }
+  }
+  return idx
+}
+
 function findContactByPhone(...numbers) {
+  return findInIndex(phoneIndex(), numbers)
+}
+
+function findInIndex(idx, numbers) {
   for (const num of numbers) {
     const norm = normalizePhone(num)
-    if (!norm) continue
-    // Search all contacts where phone or mobile normalized to 10 digits matches
-    const contacts = db.prepare(
-      `SELECT id, company_id, phone, mobile FROM contacts WHERE phone IS NOT NULL OR mobile IS NOT NULL`
-    ).all()
-    for (const c of contacts) {
-      if (normalizePhone(c.phone) === norm || normalizePhone(c.mobile) === norm) return c
-    }
+    if (norm && idx.has(norm)) return idx.get(norm)
   }
   return null
 }
 
+// Une seule lecture des contacts pour tous les appels orphelins : l'ancien
+// balayage relisait la table par appel et figeait le serveur ~13 s.
 export function rematchCalls() {
   const unlinked = db.prepare(`
     SELECT i.id as interaction_id, ca.caller_number, ca.callee_number
@@ -60,17 +74,21 @@ export function rematchCalls() {
     JOIN calls ca ON ca.interaction_id = i.id
     WHERE i.contact_id IS NULL
   `).all()
+  if (!unlinked.length) return 0
 
+  const idx = phoneIndex()
+  const upd = db.prepare(`UPDATE interactions SET contact_id=?, company_id=COALESCE(company_id,?) WHERE id=?`)
   let matched = 0
-  for (const row of unlinked) {
-    const contact = findContactByPhone(row.callee_number, row.caller_number)
-    if (contact) {
-      db.prepare(`UPDATE interactions SET contact_id=?, company_id=COALESCE(company_id,?) WHERE id=?`)
-        .run(contact.id, contact.company_id, row.interaction_id)
-      matched++
+  db.transaction(() => {
+    for (const row of unlinked) {
+      const contact = findInIndex(idx, [row.callee_number, row.caller_number])
+      if (contact) {
+        upd.run(contact.id, contact.company_id, row.interaction_id)
+        matched++
+      }
     }
-  }
-  if (unlinked.length > 0) console.log(`📞 Appels rematchés: ${matched}/${unlinked.length}`)
+  })()
+  console.log(`📞 Appels rematchés: ${matched}/${unlinked.length}`)
   return matched
 }
 

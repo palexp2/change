@@ -517,7 +517,7 @@ router.put('/config/:connector', requireAdmin, async (req, res) => {
     quickbooks: ['webhook_verifier_token'],
     stripe: ['secret_key', 'webhook_secret', 'publishable_key'],
     hubspot: ['access_token'],
-    slack: ['user_token'],
+    slack: ['user_token', 'person_webhooks_secret'],
   }[connector]
   if (!allowed || !req.body || Array.isArray(req.body) || Object.keys(req.body).some(key => !allowed.includes(key))) {
     return res.status(400).json({ error: 'Configuration non autorisée' })

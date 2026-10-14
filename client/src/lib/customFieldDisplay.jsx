@@ -1,7 +1,7 @@
 import { usePrivateFile } from './usePrivateFile.js'
 import { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, Check, Zap, Phone, ImageOff, Paperclip, FileText } from 'lucide-react'
+import { ExternalLink, Check, Zap, Phone, Mail, ImageOff, Paperclip, FileText } from 'lucide-react'
 import { PdfThumb, attachmentKind, AttachmentPreviewModal } from '../components/AttachmentPreview.jsx'
 import { SheetThumb } from '../components/SheetPreview.jsx'
 import { useRecordLinks } from './useRecordLinks.js'
@@ -287,6 +287,25 @@ export function PhoneValue({ value, countryCode = 'auto' }) {
     >
       <Phone size={12} className="shrink-0 opacity-70" />
       <span className="truncate">{display}</span>
+    </a>
+  )
+}
+
+// Adresse courriel : cliquable (mailto:) quand elle a la forme a@b.c, texte
+// simple sinon. stopPropagation : même raison que PhoneValue.
+export function EmailValue({ value }) {
+  if (value == null || value === '') return null
+  const str = String(value).trim()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str)) return <span className="text-slate-700 truncate">{str}</span>
+  return (
+    <a
+      href={`mailto:${str}`}
+      onClick={e => e.stopPropagation()}
+      className="inline-flex items-center gap-1 link-record truncate"
+      title={str}
+    >
+      <Mail size={12} className="shrink-0 opacity-70" />
+      <span className="truncate">{str}</span>
     </a>
   )
 }
@@ -1301,6 +1320,8 @@ export function renderCustomFieldValue(field, value, row, { detail = false, link
   // texte simple sinon (UrlValue s'en charge).
   if (field.type === 'url' || field.result_type === 'url') return <UrlValue value={value} />
   if (field.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodeOf(field)} />
+  if (field.type === 'email') return <EmailValue value={value} />
+  if (field.type === 'barcode') return <span className="font-mono text-slate-700">{value}</span>
   if (linkifyTextUrls && typeof value === 'string' && /^https?:\/\/\S+$/i.test(value.trim()) && normalizeUrl(value)) {
     return <UrlValue value={value} />
   }

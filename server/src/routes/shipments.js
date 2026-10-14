@@ -24,6 +24,8 @@ import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { resolveInstallationDocsLang } from './orders.js'
 import { trackEmailHtml } from '../services/emailTracking.js'
+import { normalizeCountry } from '../services/novoxpress.js'
+import { shipmentCustomsInvoice, buildCustomsInvoicePdf } from '../services/customsInvoicePdf.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -182,7 +184,26 @@ router.get('/:id', (req, res) => {
   const order = row.order_id ? db.prepare('SELECT * FROM orders WHERE id = ?').get(row.order_id) : null
   const docs_lang = order ? resolveInstallationDocsLang(row.address_id ? { ...order, address_id: row.address_id } : order) : null
 
-  res.json({ ...row, order_items, items_fallback, docs_lang, external_links: shipmentExternalLinks(row) })
+  // Client hors Canada → facture commerciale à imprimer (vignette « Douane »).
+  const customs_invoice = normalizeCountry(row.address_country) !== 'CA'
+
+  res.json({ ...row, order_items, items_fallback, docs_lang, customs_invoice, external_links: shipmentExternalLinks(row) })
+})
+
+// GET /api/shipments/:id/customs-invoice.pdf — facture commerciale (3 copies),
+// générée à la demande. 404 si le client est au Canada.
+router.get('/:id/customs-invoice.pdf', async (req, res) => {
+  try {
+    const model = shipmentCustomsInvoice(req.params.id)
+    if (!model) return res.status(404).json({ error: 'Aucun document de douane pour cet envoi' })
+    const pdf = await buildCustomsInvoicePdf(model)
+    res.set('Content-Type', 'application/pdf')
+    res.set('Content-Disposition', `inline; filename="customs-invoice-${req.params.id}.pdf"`)
+    res.send(pdf)
+  } catch (e) {
+    console.error('Shipments customs-invoice error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
 })
 
 // POST /api/shipments

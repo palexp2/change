@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Revenus d'avance épuré</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#f4f5f8;--s:#fff;--soft:#f6f7f9;--line:#eceef1;--ink:#2b2c2f;--ink3:#7a7c82;--ink4:#a9abb0;--g:#2ca01c;--gd:#1d7f12;--gs:#eaf6e7;--r:#d52b1e;--rs:#fdf0ef;--a:#b86e00;--sh:0 1px 2px rgb(0 0 0/.04),0 8px 24px rgb(0 0 0/.06)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#111315;--s:#181b1e;--soft:#1e2125;--line:#25292e;--ink:#eceef0;--ink3:#959ba2;--ink4:#656b72;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--r:#ff7a6e;--rs:#2e1e1c;--a:#f0b04a}}
+:root[data-theme="dark"]{--bg:#111315;--s:#181b1e;--soft:#1e2125;--line:#25292e;--ink:#eceef0;--ink3:#959ba2;--ink4:#656b72;--g:#5cc34a;--gd:#6ccf5c;--gs:#1a2a18;--r:#ff7a6e;--rs:#2e1e1c;--a:#f0b04a}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 Inter,system-ui,sans-serif;padding:24px 16px 80px}
+.wrap{max-width:820px;margin:0 auto}
+h1{font-size:20px;margin:0}
+h2{font-size:17px;margin:48px 0 10px;display:flex;align-items:baseline;gap:10px}h2 b{color:var(--g)}
+h2 span{font-size:12.5px;font-weight:400;color:var(--ink3)}
+.scr{background:var(--s);border-radius:12px;box-shadow:var(--sh);padding:28px 32px}
+.n{font-variant-numeric:tabular-nums}
+.ok{color:var(--gd)}.bad{color:var(--r)}.mut{color:var(--ink3)}.faint{color:var(--ink4)}
+.t{font-size:20px;font-weight:600;margin:0}
+.go{background:var(--g);color:#fff;border:0;border-radius:999px;height:32px;padding:0 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.go.big{height:44px;padding:0 24px;font-size:15px}
+.txt{background:none;border:0;padding:0;font:inherit;font-size:13px;font-weight:600;color:var(--gd);cursor:pointer}
+.txt.r{color:var(--r)}
+.row{display:flex;align-items:center;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row .who{flex:1;min-width:0}
+.row .who div:first-child{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .who small{color:var(--ink3);font-size:12.5px}
+.row .amt{font-weight:500;min-width:90px;text-align:right}
+.row .act{min-width:86px;text-align:right}
+.lab{font-size:12px;color:var(--ink3);margin:26px 0 2px;display:flex;justify-content:space-between}
+.lab:first-of-type{margin-top:18px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.d-g{background:var(--g)}.d-r{background:var(--r)}.d-n{background:var(--ink4)}
+.hero{text-align:center;padding:10px 0 24px;border-bottom:1px solid var(--line)}
+.hero .big{font-size:40px;font-weight:600;letter-spacing:-.02em;margin:6px 0 16px}
+.hero small{color:var(--ink3)}
+.quiet{display:flex;justify-content:center;gap:28px;padding-top:18px;color:var(--ink3);font-size:13px;flex-wrap:wrap}
+.quiet b{color:var(--ink);font-weight:500}
+.legend{display:flex;gap:18px;font-size:13px;color:var(--ink3);margin-top:10px;flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.legend span.on{color:var(--ink);font-weight:500}
+.head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.chk{font-size:12.5px;color:var(--ink3)}
+@media (max-width:600px){.scr{padding:20px 18px}.hero .big{font-size:32px}}
+</style></head><body><div class="wrap">
+<h1>Revenus d'avance — épuré</h1>
+
+<!-- V1 -->
+<h2><b>V1</b> Liste nue <span>nom, montant, un geste</span></h2>
+<div class="scr">
+  <div class="head"><p class="t">Revenus perçus d'avance</p><span class="chk n">15 547,92 $ <span class="ok">= QuickBooks</span></span></div>
+  <div class="lab"><span>Expédié, à constater</span><span class="n">21 536,35</span></div>
+  <div class="row"><div class="who"><div>Consortium pomme de terre</div><small>#1012 · 2 oct.</small></div><div class="amt n">13 300,00</div><div class="act"><button class="txt">Constater</button></div></div>
+  <div class="row"><div class="who"><div>Canticle Farm</div><small>#1041 · 28 sept.</small></div><div class="amt n">8 236,35</div><div class="act"><button class="txt">Constater</button></div></div>
+  <div class="lab"><span>À corriger</span><span class="n">−8 236,35</span></div>
+  <div class="row"><div class="who"><div>Ferme d'Orée</div><small>sans dépôt · 2019</small></div><div class="amt n bad">−7 650,00</div><div class="act"><button class="txt r">Corriger</button></div></div>
+  <div class="row"><div class="who"><div class="mut">Sans nom</div><small>sans dépôt · mai</small></div><div class="amt n bad">−586,35</div><div class="act"><button class="txt r">Corriger</button></div></div>
+  <div class="lab"><span>En attente de livraison</span><span class="n">2 247,92</span></div>
+  <div class="row"><div class="who"><div>Ferme Décembre</div><small>#1076</small></div><div class="amt n mut">1 900,00</div><div class="act"></div></div>
+  <div class="row"><div class="who"><div>Wisconsin Greenhouse</div><small>#1030 · 96 j</small></div><div class="amt n mut">347,92</div><div class="act"></div></div>
+</div>
+
+<!-- V2 -->
+<h2><b>V2</b> Un chiffre, un bouton <span>le reste en une ligne</span></h2>
+<div class="scr">
+  <div class="hero">
+    <small>Expédié, à constater</small>
+    <div class="big n">21 536,35 $</div>
+    <button class="go big">Constater les 2</button>
+  </div>
+  <div class="row"><div class="who"><div>Consortium pomme de terre</div><small>#1012 · expédiée 2 oct.</small></div><div class="amt n">13 300,00</div></div>
+  <div class="row"><div class="who"><div>Canticle Farm</div><small>#1041 · expédiée 28 sept.</small></div><div class="amt n">8 236,35</div></div>
+  <div class="quiet">
+    <span><b class="bad">2</b> à corriger ›</span>
+    <span><b>3</b> en attente ›</span>
+    <span>QuickBooks <b class="ok">✓</b></span>
+  </div>
+</div>
+
+<!-- V3 -->
+<h2><b>V3</b> Un point de couleur <span>une seule liste, la légende filtre</span></h2>
+<div class="scr">
+  <div class="head"><p class="t">Revenus perçus d'avance</p><span class="chk n">15 547,92 $ <span class="ok">= QuickBooks</span></span></div>
+  <div class="legend">
+    <span class="on"><i class="dot d-g"></i>À constater 2</span>
+    <span class="on"><i class="dot d-r"></i>À corriger 2</span>
+    <span class="on"><i class="dot d-n"></i>En attente 3</span>
+  </div>
+  <div style="margin-top:12px">
+  <div class="row"><i class="dot d-g"></i><div class="who"><div>Consortium pomme de terre</div></div><div class="amt n">13 300,00</div><div class="act"><button class="txt">Constater</button></div></div>
+  <div class="row"><i class="dot d-g"></i><div class="who"><div>Canticle Farm</div></div><div class="amt n">8 236,35</div><div class="act"><button class="txt">Constater</button></div></div>
+  <div class="row"><i class="dot d-r"></i><div class="who"><div>Ferme d'Orée</div></div><div class="amt n bad">−7 650,00</div><div class="act"><button class="txt r">Corriger</button></div></div>
+  <div class="row"><i class="dot d-r"></i><div class="who"><div class="mut">Sans nom</div></div><div class="amt n bad">−586,35</div><div class="act"><button class="txt r">Corriger</button></div></div>
+  <div class="row"><i class="dot d-n"></i><div class="who"><div class="mut">Ferme Décembre</div></div><div class="amt n mut">1 900,00</div><div class="act"></div></div>
+  <div class="row"><i class="dot d-n"></i><div class="who"><div class="mut">Wisconsin Greenhouse</div></div><div class="amt n mut">347,92</div><div class="act"></div></div>
+  </div>
+</div>
+
+<!-- V4 -->
+<h2><b>V4</b> Seulement ce qui demande un geste <span>vide = tout est réglé</span></h2>
+<div class="scr">
+  <div class="head"><p class="t">Revenus perçus d'avance</p><button class="go">Constater 2</button></div>
+  <div style="margin-top:14px">
+  <div class="row"><div class="who"><div>Consortium pomme de terre</div><small>expédiée 2 oct.</small></div><div class="amt n">13 300,00</div><div class="act"><button class="txt">Constater</button></div></div>
+  <div class="row"><div class="who"><div>Canticle Farm</div><small>expédiée 28 sept.</small></div><div class="amt n">8 236,35</div><div class="act"><button class="txt">Constater</button></div></div>
+  <div class="row"><div class="who"><div>Ferme d'Orée</div><small class="bad">constaté sans dépôt</small></div><div class="amt n bad">−7 650,00</div><div class="act"><button class="txt r">Corriger</button></div></div>
+  <div class="row"><div class="who"><div class="mut">Sans nom</div><small class="bad">constaté sans dépôt</small></div><div class="amt n bad">−586,35</div><div class="act"><button class="txt r">Corriger</button></div></div>
+  </div>
+  <div class="quiet" style="justify-content:space-between;border-top:1px solid var(--line);margin-top:4px">
+    <span>3 en attente de livraison · <b class="n">2 247,92</b> ›</span>
+    <span class="n">Solde 15 547,92 <b class="ok">= QB</b></span>
+  </div>
+</div>
+
+</div></body></html>

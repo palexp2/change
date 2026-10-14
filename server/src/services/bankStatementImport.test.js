@@ -9,7 +9,7 @@ import {
   normalizeExtracted, checkBalance, buildBalanceCorrection,
   scoreAccount, detectAccount, isInvertible, applySignConvention,
   extractStatement, MIN_DETECT_CONFIDENCE, dateHintFromName, yearDriftAgainstHint,
-  parseStatementResponse, isolateAccountChain, accountMismatch, ACCOUNT_MISMATCH, accountHintText,
+  parseStatementResponse, isolateAccountChain, compareSnapshot, accountMismatch, ACCOUNT_MISMATCH, accountHintText,
 } from './bankStatementImport.js'
 import { planImportFromCounts } from './bankTrxSheet.js'
 import { parseStatementTable } from './bankReconciliation.js'
@@ -522,4 +522,24 @@ test('export BNC anglais : la date de transaction, pas la date d’inscription a
   assert.equal(fr.rows[0].txn_date, '2026-09-23')
   const postedOnly = parseStatementTable([['Posting date', 'Description', 'Amount'], ['2026-09-24', 'X', '-1']])
   assert.equal(postedOnly.rows[0].txn_date, '2026-09-24')
+})
+
+// ── Capture du solde seul ────────────────────────────────────────────────────
+test('compareSnapshot : même solde = rien de nouveau, sinon l\'écart', () => {
+  const known = { balance: 4897.98, date: '2026-09-07', alternatives: [4897.98, 4814.65] }
+  assert.equal(compareSnapshot({ kind: 'card' }, { current_balance: -4897.98 }, known).verdict, 'identique')
+  assert.equal(compareSnapshot({ kind: 'bank' }, { current_balance: 4814.65 }, known).verdict, 'identique')
+  assert.equal(compareSnapshot({ kind: 'bank' }, { current_balance: 1, available_balance: 4897.98 }, known).verdict, 'identique')
+  const d = compareSnapshot({ kind: 'card' }, { current_balance: 5000 }, known)
+  assert.equal(d.verdict, 'different')
+  assert.equal(d.delta, 102.02)
+  assert.equal(compareSnapshot(null, { current_balance: 1 }, known).verdict, 'inconnu')
+  assert.equal(compareSnapshot({ kind: 'bank' }, {}, known).verdict, 'inconnu')
+})
+
+test('parseStatementResponse : une capture de solde passe sans lignes', () => {
+  const data = { choices: [{ message: { content: JSON.stringify({ document_kind: 'solde', current_balance: 12.5 }) } }] }
+  const out = parseStatementResponse(data)
+  assert.equal(out.document_kind, 'solde')
+  assert.deepEqual(out.rows, [])
 })

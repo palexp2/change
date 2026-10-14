@@ -31,9 +31,9 @@ router.get('/correction/:key', (req, res) => {
 
 // Envoi dans QuickBooks — l'écriture affichée, pas une autre.
 router.post('/correction', (req, res) => {
-  const { key, lines, memo, txn_date } = req.body || {}
+  const { key, lines, memo, txn_date, facture_ids } = req.body || {}
   if (!key) return res.status(400).json({ error: 'key requis' })
-  run(res, () => publishCorrection({ key, lines, memo, txn_date, userId: req.user.id }))
+  run(res, () => publishCorrection({ key, lines, memo, txn_date, facture_ids: Array.isArray(facture_ids) ? facture_ids : [], userId: req.user.id }))
 })
 
 export default router

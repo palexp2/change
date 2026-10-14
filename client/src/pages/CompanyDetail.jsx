@@ -40,6 +40,7 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { stripeFactureUrl } from '../lib/stripeLinks.js'
+import { intervalAmount, intervalLabel } from '../lib/subscriptionPricing.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
@@ -56,6 +57,7 @@ const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead
 import { fmtMoney } from '../utils/formatters.js'
 import { fmtPhone, fmtAddress as fmtAddressBase } from '../utils/formatters.js'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { usePeekFieldEdit } from '../lib/detailFieldLayout.jsx'
 import { shipmentTitle, shipmentSubtitle } from '../lib/shipmentLabel.js'
 
 const fmtCad = (n) => fmtMoney(n, 'CAD', { fallback: '$0', zeroIsEmpty: true, maximumFractionDigits: 0 })
@@ -1015,6 +1017,21 @@ export default function CompanyDetail({ recordId, onClose }) {
     }
   }
 
+  // Renommer : le titre du panneau devient modifiable au clic. Pas pour une
+  // entreprise liée à Airtable : son nom y est une formule, le sync l'écraserait.
+  const publishRename = usePeekFieldEdit()?.publishRename
+  const [renameToken] = useState(() => ({}))
+  const saveFieldRef = useRef(saveField)
+  saveFieldRef.current = saveField
+  const companyName = company?.name
+  const renamable = !!company && !company.airtable_id
+  useEffect(() => {
+    if (!publishRename) return
+    if (!renamable) { publishRename(renameToken, null); return }
+    publishRename(renameToken, { value: companyName || '', onSave: v => saveFieldRef.current('name', v) })
+  }, [publishRename, renameToken, companyName, renamable])
+  useEffect(() => () => publishRename?.(renameToken, null), [publishRename, renameToken])
+
   async function handleAddContact(e) {
     e.preventDefault()
     if (contactMode === 'link') {
@@ -1239,7 +1256,7 @@ export default function CompanyDetail({ recordId, onClose }) {
         onClick: () => setSelectedAbonnement(r),
         primary: r.product_name || '—',
         secondary: ABO_STATUS[r.status] || r.status || null,
-        meta: fmtCad(r.amount_cad),
+        meta: r.amount_cad ? `${fmtCad(intervalAmount(r))}/${intervalLabel(r)}` : fmtCad(r.amount_cad),
       }),
       table: () => (
         <DataTable

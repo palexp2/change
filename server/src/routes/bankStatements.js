@@ -91,6 +91,14 @@ router.get('/:id', (req, res) => {
   res.json(up)
 })
 
+// Le fichier déposé lui-même : revoir la capture ou le relevé depuis la carte.
+router.get('/:id/file', (req, res) => {
+  const up = getUpload(req.params.id)
+  if (!up?.file_path) return res.status(404).json({ error: 'Not found' })
+  if (up.mime) res.type(up.mime)
+  res.sendFile(up.file_path, (err) => { if (err && !res.headersSent) res.status(404).json({ error: 'Fichier introuvable' }) })
+})
+
 // Corriger le compte deviné (ou en choisir un quand la lecture n'a pas tranché).
 router.patch('/:id', (req, res) => {
   try {

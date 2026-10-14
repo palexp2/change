@@ -30,7 +30,8 @@ import { COLOR_MEANS_IN_QB } from './bankTrxSheet.js'
 import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
-import { parseAutoReconcile, reconcileFromQbCleared, reconcileIfBalanced } from './bankAutoReconcile.js'
+import { syncFindings } from './bankClaude.js'
+import { parseAutoReconcile, reconcileFromBankList, reconcileFromQbCleared, reconcileIfBalanced } from './bankAutoReconcile.js'
 
 export const QB_VERIFY_AUTOMATION_ID = 'sys_bank_qb_verify'
 
@@ -64,7 +65,7 @@ export const QB_VERIFY_DEFAULT_CONFIG = {
   // Passage automatique au vert (services/bankAutoReconcile.js) :
   // qb_rapproche = déjà rapprochée dans QuickBooks · ecart_zero = écart nul.
   // Vider = couper.
-  auto_reconcile: 'qb_rapproche,ecart_zero',
+  auto_reconcile: 'qb_rapproche,ecart_zero,liste_banque',
 }
 
 export function qbVerifyConfig() {
@@ -258,12 +259,19 @@ async function verifyOneAccount(account, index, { from, to, graceDays, autoMetho
   if (autoReconcile.has('ecart_zero')) {
     try { reconciled += await reconcileIfBalanced(account.id) } catch (e) { console.error('autoReconcile(ecart):', e.message) }
   }
+  if (autoReconcile.has('liste_banque')) {
+    try { reconciled += await reconcileFromBankList(account.id) } catch (e) { console.error('autoReconcile(liste):', e.message) }
+  }
 
   try { detectClosedFromLedger(account.id, index.byAccount.get(account.id)) } catch (e) { console.error('monthClose:', e.message) }
 
   const { anomalies, toBook, gaps, uncleared } = deriveFindings(account, {
     bankTxns, matches, unmatchedBank, unmatchedQb, txnById, from, cutoff, todayIso,
   })
+
+  let balance = null
+  try { balance = (await (await import('./bankReconcileSummary.js')).compareWithQb(account.id))?.balance || null } catch { balance = null }
+  try { syncFindings(account, { anomalies, gaps, balance, from, to: cutoff }) } catch (e) { console.error('bankClaude:', e.message) }
 
   const methods = {}
   for (const [, m] of matches) methods[m.method] = (methods[m.method] || 0) + 1

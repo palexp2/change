@@ -26,20 +26,25 @@ export default function ContactDetailPage() {
 
   return (
     <Layout>
-      <div className="flex items-center gap-3 px-5 pt-4">
-        <button
-          onClick={goBack}
-          className="p-1 -ml-1 text-slate-400 hover:text-slate-600 flex-shrink-0"
-          aria-label="Retour"
-        >
-          <ArrowLeft size={20} />
-        </button>
-        <PageTitle icon={null}>{name || 'Contact'}</PageTitle>
+      {/* Pleine hauteur : la barre Historique reste tout en bas, même sur une fiche courte. */}
+      <div className="min-h-full flex flex-col">
+        <div className="flex items-center gap-3 px-5 pt-4">
+          <button
+            onClick={goBack}
+            className="p-1 -ml-1 text-slate-400 hover:text-slate-600 flex-shrink-0"
+            aria-label="Retour"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <PageTitle icon={null}>{name || 'Contact'}</PageTitle>
+        </div>
+        <div className="flex-1">
+          <RecordScope id={id}>
+            <ContactDetail recordId={id} onClose={() => navigate('/contacts')} />
+          </RecordScope>
+        </div>
+        <RecordRevisionHistory table="contacts" id={id} variant="page" />
       </div>
-      <RecordScope id={id}>
-        <ContactDetail recordId={id} onClose={() => navigate('/contacts')} />
-      </RecordScope>
-      <RecordRevisionHistory table="contacts" id={id} variant="page" />
     </Layout>
   )
 }

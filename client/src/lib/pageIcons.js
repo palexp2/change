@@ -59,7 +59,6 @@ const ROUTES = [
   [/^\/tickets/, LifeBuoy],
   [/^\/interactions/, MessageSquare],
   [/^\/qualification-call/, PhoneCall],
-  [/^\/relance-qualification/, Mail],
   [/^\/orders/, ShoppingCart],
   [/^\/envois/, Truck],
   [/^\/retours/, RotateCcw],

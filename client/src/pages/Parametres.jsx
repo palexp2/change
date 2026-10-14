@@ -1,12 +1,12 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
-import { Check, Search, MapPin, RefreshCw, Settings2 } from 'lucide-react'
+import { Bell, Check, Search, MapPin, RefreshCw, Settings2 } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { useNavPrefs } from '../lib/navPrefs.jsx'
-import { defaultNavItems, applyNavOrder } from '../lib/navItems.js'
+import { defaultNavItems, applyNavOrder, NOTIFICATIONS_NAV_KEY } from '../lib/navItems.js'
 import { SETTINGS_ROUTE, settingsSectionsFor } from '../lib/settingsSections.js'
 import QuickBooksAccountCard from '../components/QuickBooksAccountCard.jsx'
 import GmailAccountCard from '../components/GmailAccountCard.jsx'
@@ -113,7 +113,7 @@ function MenuSection() {
           />
         </div>
 
-        {sections.length === 0 && (
+        {sections.length === 0 && !matches('Notifications') && (
           <p className="text-sm text-slate-400 py-4 text-center" data-testid="nav-search-empty">
             Aucun élément ne correspond à « {query} ».
           </p>
@@ -163,6 +163,17 @@ function MenuSection() {
             </div>
           )
         })}
+        {(!q || matches('Notifications')) && (
+          <div className="pt-2">
+            <VisibilityCheckbox
+              checked={!isHidden(NOTIFICATIONS_NAV_KEY)}
+              Icon={Bell}
+              label="Notifications"
+              onChange={() => toggle(NOTIFICATIONS_NAV_KEY)}
+              testid="nav-toggle-notifications"
+            />
+          </div>
+        )}
         </div>
       </div>
     </div>

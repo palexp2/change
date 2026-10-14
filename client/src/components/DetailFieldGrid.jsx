@@ -342,7 +342,7 @@ export function DetailFieldGrid({
   const [fieldModal, setFieldModal] = useState(null) // { cf } | { col } | null
 
   const openFieldEditor = useCallback((f) => {
-    if (f.cf) { setFieldModal({ cf: f.cf }); return }
+    if (f.cf) { setFieldModal({ cf: f.cf, key: f.key }); return }
     // Champ natif : la modale attend la définition D'ORIGINE de la colonne
     // (pré-override). Les fiches nomment parfois la FK (`company_id`) là où le
     // tableau nomme le libellé joint (`company_name`) — on accepte les deux.
@@ -350,7 +350,7 @@ export function DetailFieldGrid({
     const meta = cols.find(c => (c.id ?? c.field) === f.key) || cols.find(c => (c.field ?? c.id) === f.key)
     const base = meta || { id: f.key, field: f.key, label: f.origLabel || f.label }
     const renderTypeLabel = LINKED_RECORD_TYPE_LABELS[base.id]
-    setFieldModal({ col: renderTypeLabel ? { ...base, renderTypeLabel } : base })
+    setFieldModal({ col: renderTypeLabel ? { ...base, renderTypeLabel } : base, key: f.key })
   }, [fieldTable])
 
   const closeFieldModal = useCallback(() => setFieldModal(null), [])
@@ -724,6 +724,8 @@ export function DetailFieldGrid({
           onClose={closeFieldModal}
           erpTable={fieldModal.col ? fieldTable : cfTable}
           editing={fieldModal.cf || null}
+          // Noms des autres champs de la fiche : un doublon est signalé dès la saisie.
+          siblingFields={declared.filter(f => f.key !== fieldModal.key).map(f => ({ id: f.key, label: f.label }))}
           native={fieldModal.col
             ? { column: fieldModal.col, override: fieldOverrides.get(fieldModal.col.id) || fieldOverrides.get(fieldModal.col.field) || null }
             : null}

@@ -2,7 +2,7 @@ import { round2Safe as round2 } from '../utils/money.js'
 
 // Une seule pièce absorbe son transport et son escompte, même avant rattachement LIA.
 // Libellés de frais précis : « caisse de transport » reste un véritable article.
-const TRANSPORT = /^(?:(?:frais|co[uû]ts?|charges?)\s+(?:de\s+|d[e’']\s*)?)?(?:transport|livraison|expedition|port|manutention)(?:\s+(?:et\s+manutention|charges?|fees?))?\s*$|^(?:shipping(?:\s*(?:&|and)\s*handling)?|freight|delivery|handling)(?:\s+(?:cost|charges?|fees?))?\s*$/i
+const TRANSPORT = /^(?:(?:frais|co[uû]ts?|charges?)\s+(?:de\s+|d[e’']\s*)?)?(?:transport|livraison|expedition|port|manutention|fret)(?:\s+(?:et\s+manutention|charges?|fees?))?\s*$|^(?:shipping(?:\s*(?:&|and)\s*handling)?|freight|delivery|handling)(?:\s+(?:cost|charges?|fees?))?\s*$/i
 const DISCOUNT = /^(?:escompte|remise|rabais|discount)(?:\s+global)?(?:\s+[\d.,]+\s*%)?\s*$/i
 // Frais globaux de la facture (Charles, 2026-09-27 : « Frais de traitement bancaire »
 // PCBWay) : répartis comme le transport. Ajouter ici les prochains frais à ventiler.

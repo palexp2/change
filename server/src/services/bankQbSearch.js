@@ -399,6 +399,20 @@ function assignReverseAggregates(bankTxns, entries, sign, results, usedEntries) 
   }
 }
 
+// Écriture QuickBooks → comptes ERP dont une ligne de relevé la porte déjà
+// (hors le compte cherché).
+function claimedAccountsByQbId(accountId) {
+  const map = new Map()
+  const rows = db.prepare(`SELECT qb_txn_id, account_id FROM bank_transactions
+    WHERE qb_txn_id IS NOT NULL AND deleted_at IS NULL AND account_id != ?`).all(accountId)
+  for (const r of rows) {
+    const k = String(r.qb_txn_id)
+    if (!map.has(k)) map.set(k, new Set())
+    map.get(k).add(r.account_id)
+  }
+  return map
+}
+
 // Recherche complète pour un compte. `index` vient de buildLedgerIndex().
 // Retourne { matches: Map(txnId → match), unmatchedBank, unmatchedQb, sign }.
 export function searchAccount(account, bankTxns, index) {
@@ -418,7 +432,11 @@ export function searchAccount(account, bankTxns, index) {
   assignAggregates(bankTxns, own, sign, results, usedEntries)
   assignReverseAggregates(bankTxns, own, sign, results, usedEntries)
   // 6. autres comptes mappés : le virement interne comptabilisé de l'autre côté.
-  const others = index.all.filter((e) => e.accountId !== account.id)
+  // Sauf une écriture dont l'autre moitié est déjà prise par la ligne d'un
+  // TROISIÈME compte : ce virement-là relie deux autres comptes.
+  const claimed = claimedAccountsByQbId(account.id)
+  const others = index.all.filter((e) => e.accountId !== account.id
+    && ![...(claimed.get(String(e.qbId)) || [])].some((a) => a !== e.accountId))
   assign(bankTxns, others, sign, false, results, usedEntries)
   // Le signe s'inverse quand on regarde l'autre côté d'un virement.
   assign(bankTxns, others, -sign, false, results, usedEntries)

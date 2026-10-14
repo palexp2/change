@@ -5,10 +5,13 @@
 //     (100 % TPS, CTI récupérable), « Droit à l'importation » / « Surtaxes »
 //     (100 % droits, coût du bien), « Intérêts », « Encaissement »…
 //   • « Fournisseur » → QUI paie : « Automatisation Orisha Inc. » = nos fonds
-//     (carte / paiement électronique) ; « Federal Express Canada », « United
-//     Parcells », « AXXESS INTERNAtional » = le courtier a payé l'ASFC et nous
-//     refacture ensuite — la dépense et la TPS arrivent alors par SA facture,
-//     donc rien ne doit être comptabilisé du côté ASFC.
+//     (carte / paiement électronique) ; « Federal Express Canada » = courtier
+//     PAYEUR (broker_names, FedEx seul — décision Charles 2026-10-10) : il paie
+//     l'ASFC et nous refacture — dépense et TPS arrivent par SA facture, donc
+//     TOUTES ses lignes (charges, intérêts, encaissements) sont ignorées ici.
+//     « AXXESS INTERNAtional » (et UPS) déposent sans payer : leurs
+//     charges sont à nous, réglées par nos versements, et se comptabilisent
+//     depuis le relevé (procédure CTB, fichier ASFC_Suivi_Trx).
 //
 // Module volontairement PUR (aucun accès DB) : testable sans base, et réutilisé
 // à l'import comme au backfill. Les enveloppes DB vivent dans carmPosting.js.
@@ -157,8 +160,19 @@ export function classifyCarmLine(row = {}, { brokerNames = [] } = {}) {
 // 597 $ (caution permanente MAP, janv. 2025) est déjà dans les livres et ne se
 // consomme jamais ; un paiement fait par un courtier — comme la charge qu'il
 // éteint — arrive par sa facture (module reçus) et ne doit rien produire ici.
-export function postingSkipReason(row = {}) {
+export function postingSkipReason(row = {}, brokerNames = []) {
   if (row.kind === 'garantie') return 'garantie'
   if (row.payer === 'courtier') return `via_courtier:${row.broker || 'courtier'}`
+  const who = row.broker || matchBroker(row.party)
+  if (who && isPayingBroker(who, brokerNames)) return `via_courtier:${who}`
   return null
+}
+
+// Le courtier nommé paie-t-il l'ASFC pour nous ? Oui s'il figure dans
+// broker_names (FedEx) ; Axxess, UPS et les autres déclarants : non.
+export function isPayingBroker(broker, brokerNames = []) {
+  const canon = matchBroker(broker)
+  if (!canon) return false
+  const list = Array.isArray(brokerNames) ? brokerNames : String(brokerNames || '').split(',')
+  return list.some(n => matchBroker(n) === canon)
 }

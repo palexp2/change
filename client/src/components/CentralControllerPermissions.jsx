@@ -2,7 +2,9 @@ import {
   Fan, Wind, Flame, Heater, Waves, CloudDrizzle, Tent, Gauge, Blinds, SlidersHorizontal,
   ShieldCheck, Droplets, Sprout, AlignVerticalSpaceAround,
 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { fmtNumber } from '../utils/formatters.js'
+import { api } from '../lib/api.js'
 
 const PERMISSION_LABELS = {
   maxNumberOfCirculationFans: 'Ventilateurs de circulation',
@@ -23,24 +25,40 @@ const PERMISSION_LABELS = {
   maxNumberOfGreenhousesWithRollupVentilation: 'Serres — ventilation par rouleau',
 }
 
-// Vue en tuiles : libellé court (le groupe « Serres » porte déjà le préfixe) + icône.
+// Vue en tuiles : libellé court (le groupe « Serres » porte déjà le préfixe),
+// produit de la soumission dont on reprend l'image, icône de repli.
 const TILE_META = {
-  maxNumberOfCirculationFans: ['Circulation', Fan],
-  maxNumberOfFans: ['Ventilateurs', Fan],
-  maxNumberOfVentilationFans: ['Extraction', Wind],
-  maxNumberOfHeaters: ['Chaufferettes', Heater],
-  maxNumberOfHeatPipes: ['Tuyaux chauffants', Waves],
-  maxNumberOfMisters: ['Brumisateurs', CloudDrizzle],
-  maxNumberOfRoofs: ['Toits', Tent],
+  maxNumberOfCirculationFans: ['Circulation', Fan, 'SVC-009'],
+  maxNumberOfFans: ['Ventilateurs', Fan, 'SVC-009'],
+  maxNumberOfVentilationFans: ['Extraction', Wind, 'SVC-009'],
+  maxNumberOfHeaters: ['Chaufferettes', Heater, 'SVC-011'],
+  maxNumberOfHeatPipes: ['Tuyaux chauffants', Waves, 'SVC-011'],
+  maxNumberOfMisters: ['Brumisateurs', CloudDrizzle, 'SVC-006'],
+  maxNumberOfRoofs: ['Toits', Tent, 'SVC-010'],
   maxNumberOfTensiometers: ['Tensiomètres', Gauge],
-  maxNumberOfThermalScreens: ['Écrans thermiques', Blinds],
-  maxNumberOfValves: ['Valves', SlidersHorizontal],
-  maxNumberOfGreenhousesWithAdvancedVentilation: ['Ventilation avancée', Wind],
-  maxNumberOfGreenhousesWithDiseasePrevention: ['Prévention maladies', ShieldCheck],
-  maxNumberOfGreenhousesWithHeating: ['Chauffage', Flame],
-  maxNumberOfGreenhousesWithHumidityConservation: ['Humidité', Droplets],
-  maxNumberOfGreenhousesWithIrrigation: ['Irrigation', Sprout],
-  maxNumberOfGreenhousesWithRollupVentilation: ['Rouleaux', AlignVerticalSpaceAround],
+  maxNumberOfThermalScreens: ['Écrans thermiques', Blinds, 'SVC-013'],
+  maxNumberOfValves: ['Valves', SlidersHorizontal, 'SVC-008'],
+  maxNumberOfGreenhousesWithAdvancedVentilation: ['Ventilation avancée', Wind, 'SVC-009'],
+  maxNumberOfGreenhousesWithDiseasePrevention: ['Prévention maladies', ShieldCheck, 'SVC-005'],
+  maxNumberOfGreenhousesWithHeating: ['Chauffage', Flame, 'SVC-011'],
+  maxNumberOfGreenhousesWithHumidityConservation: ['Humidité', Droplets, 'SVC-006'],
+  maxNumberOfGreenhousesWithIrrigation: ['Irrigation', Sprout, 'SVC-008'],
+  maxNumberOfGreenhousesWithRollupVentilation: ['Rouleaux', AlignVerticalSpaceAround, 'SVC-007'],
+}
+
+// Images du catalogue de soumission par SKU, chargées une fois.
+let catalogImages = null
+function useCatalogImages() {
+  const [images, setImages] = useState({})
+  useEffect(() => {
+    catalogImages ||= api.catalog.list()
+      .then(l => Object.fromEntries((l || []).filter(p => p.sku && p.image_url).map(p => [p.sku, p.image_url])))
+      .catch(() => { catalogImages = null; return {} })
+    let live = true
+    catalogImages.then(m => { if (live) setImages(m) })
+    return () => { live = false }
+  }, [])
+  return images
 }
 
 function formatLabel(key) {
@@ -94,8 +112,9 @@ function normalize(permissions) {
   return { entries: Object.entries(values), notes }
 }
 
-function Tile({ k, v }) {
-  const [label, Icon] = TILE_META[k] || [formatLabel(k), SlidersHorizontal]
+function Tile({ k, v, images }) {
+  const [label, Icon, sku] = TILE_META[k] || [formatLabel(k), SlidersHorizontal]
+  const img = sku && images[sku]
   const n = Number(v)
   const off = v === '' || v == null || (Number.isFinite(n) && n === 0)
   return (
@@ -103,7 +122,9 @@ function Tile({ k, v }) {
       className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 ${off ? 'border-slate-100 text-slate-300' : 'border-slate-200 bg-white'}`}
       title={formatLabel(k)}
     >
-      <Icon size={16} className={off ? 'text-slate-300' : 'text-brand-500'} />
+      {img ? (
+        <img src={img} alt="" className={`w-5 h-5 object-contain flex-shrink-0 mix-blend-multiply dark:mix-blend-normal ${off ? 'grayscale opacity-40' : ''}`} />
+      ) : <Icon size={16} className={off ? 'text-slate-300' : 'text-brand-500'} />}
       <span className={`text-lg font-semibold tabular-nums leading-none ${off ? '' : 'text-slate-900'}`}>{formatValue(v)}</span>
       <span className={`text-xs truncate ${off ? '' : 'text-slate-500'}`}>{label}</span>
     </div>
@@ -111,13 +132,14 @@ function Tile({ k, v }) {
 }
 
 function Tiles({ entries, notes }) {
+  const images = useCatalogImages()
   const greenhouses = entries.filter(([k]) => k.startsWith('maxNumberOfGreenhousesWith'))
   const equipment = entries.filter(([k]) => !k.startsWith('maxNumberOfGreenhousesWith'))
   const group = (title, list) => list.length > 0 && (
     <div>
       <div className="text-[11px] text-slate-400 mb-1">{title}</div>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
-        {list.map(([k, v]) => <Tile key={k} k={k} v={v} />)}
+        {list.map(([k, v]) => <Tile key={k} k={k} v={v} images={images} />)}
       </div>
     </div>
   )

@@ -3214,6 +3214,9 @@ db.exec(`
     )
   `)
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_vacations_employee ON vacations(employee_id)') } catch {}
+  // Jours payés du congé (comme « Jours payés » d'Airtable : 0,5 = demi-journée) et auteur de la saisie.
+  try { db.exec('ALTER TABLE vacations ADD COLUMN days REAL') } catch {}
+  try { db.exec('ALTER TABLE vacations ADD COLUMN created_by TEXT') } catch {}
 
   // Revenu perçu d'avance — pour factures publiées avant qu'un envoi soit fait sur la commande liée.
   try { db.exec('ALTER TABLE factures ADD COLUMN deferred_revenue_at TEXT') } catch {}
@@ -3819,6 +3822,15 @@ db.exec(`
   // « Chèque post-daté »…) : c'est la MANIÈRE de payer ce fournisseur, apprise du dernier
   // paiement saisi dans /paiements-emis et re-proposée dès qu'on retape son nom.
   try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN payment_note TEXT`) } catch {}
+  // Où aller chercher la facture : l'adresse du portail et l'identifiant de
+  // connexion. Jamais le mot de passe (Charles, 2026-10-13) : il reste dans le
+  // gestionnaire de mots de passe du navigateur.
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN invoice_portal_url TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN invoice_login TEXT`) } catch {}
+  // Échéance « au prochain <jour> » à partir du jour où la facture est
+  // comptabilisée (0 = dimanche … 6 = samedi). BTTH : payée le mardi (Charles,
+  // 2026-10-13) — comptabilisée un mardi = payable le jour même.
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN due_weekday INTEGER`) } catch {}
 
   // Migration one-shot vendor_directory → vendor_profiles. La table de miroir est
   // ensuite renommée (jamais droppée : copie de sécurité du dernier état du doc) —
@@ -3959,6 +3971,11 @@ db.exec(`
   // Nethris) qui EST cette paie. Depuis que la banque est branchée, le montant
   // passé au compte n'est plus recopié à la main — il vient de cette ligne.
   try { db.exec(`ALTER TABLE paies ADD COLUMN bank_txn_id TEXT`) } catch {}
+
+  // Vérification de la paie (section « Montants » de la fiche) : qui l'a
+  // approuvée et quand. Vide = pas encore vérifiée.
+  try { db.exec(`ALTER TABLE paies ADD COLUMN verified_by TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE paies ADD COLUMN verified_at TEXT`) } catch {}
 
   // Trésorerie BNC — remplace le fichier « Maintien du solde disponible BNC ».
   // treasury_balances : saisies du solde disponible réel (une ligne par saisie,
@@ -4454,6 +4471,8 @@ db.exec(`
   // 'depose' = envoyé par Boréal, 'deja' = le relevé y était déjà, 'erreur'.
   try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN drive_filing TEXT') } catch {}
   try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN drive_file_name TEXT') } catch {}
+  // Capture du solde seul : solde lu, dernier solde connu, verdict (bankStatementImport.compareSnapshot).
+  try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN snapshot_json TEXT') } catch {}
   // Jetons de reconnaissance d'un compte sur un relevé (numéro masqué, intitulé
   // imprimé) : appris quand l'humain corrige le compte deviné.
   try { db.exec('ALTER TABLE bank_accounts ADD COLUMN statement_hints TEXT') } catch {}
@@ -5265,6 +5284,9 @@ db.exec(`
   // « août » tout le mois de septembre plutôt qu'une ligne « septembre » vide
   // à côté d'un rattrapage « août » — les deux disaient la même chose.
   try { db.exec(`ALTER TABLE recurring_tasks ADD COLUMN period_offset INTEGER NOT NULL DEFAULT 0`) } catch {}
+  // Délai d'envoi : le travail doit partir N jours AVANT l'échéance (paiement au
+  // gouvernement). NULL = aucun délai.
+  try { db.exec(`ALTER TABLE recurring_tasks ADD COLUMN lead_days INTEGER`) } catch {}
   // La cadence 'bihebdo' est arrivée après la création de la table : sur une DB
   // existante, le CHECK refuse encore la valeur, et SQLite ne sait pas modifier
   // une contrainte en place. On reconstruit donc la table (procédure officielle
@@ -6362,6 +6384,21 @@ db.exec(`
 `)
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mfsr_form ON marketing_form_script_runs(form_id, ran_at)`) } catch {}
 
+// Abonnements HubSpot de chaque courriel d'un contact (principal + secondaires)
+// — services/hubspotContactsSync.js, HubSpot fait foi.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS contact_email_subscriptions (
+    contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    email TEXT NOT NULL,
+    subscription_id TEXT NOT NULL,
+    subscription_name TEXT,
+    status TEXT,
+    updated_at TEXT,
+    PRIMARY KEY (contact_id, email, subscription_id)
+  )
+`)
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_hubspot_record_id_contacts ON contacts(hubspot_record_id)`) } catch {}
+
 // Historique HubSpot importé (notes, réunions, appels, courriels depuis 2018) —
 // services/hubspotHistoryImport.js. hubspot_id rend l'import rejouable sans
 // doublon ; interaction_files garde les pièces jointes HubSpot d'une
@@ -6617,3 +6654,25 @@ export function seedPaymentCards() {
   })
   run()
 }
+
+// Bulle « Claude » du rapprochement (Charles, 2026-10-13, maquette B2 projecteur) :
+// les anomalies du passage de vérification, dites comme des messages, et la
+// conversation avec Claude, par compte bancaire.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS bank_claude_messages (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    txn_id TEXT,
+    role TEXT NOT NULL,
+    kind TEXT,
+    finding_key TEXT,
+    body TEXT,
+    card TEXT,
+    resolved_at TEXT,
+    resolution TEXT,
+    user_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_claude_acct ON bank_claude_messages(account_id, created_at)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_claude_key ON bank_claude_messages(finding_key)`)

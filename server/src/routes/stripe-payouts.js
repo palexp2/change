@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { syncStripePayouts, syncStripeBalanceTransactions, syncAllPayoutsBalanceTransactions, backfillRefundsToFactures, fixRefundDocumentNumbers, migrateRefundsToPayments } from '../services/stripe.js'
+import { syncStripePayouts, syncStripeBalanceTransactions, fixRefundDocumentNumbers, migrateRefundsToPayments } from '../services/stripe.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { buildDepositFromPayout, pushDepositFromPayout } from '../services/quickbooks.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
@@ -74,45 +74,6 @@ router.get('/:stripeId/preview-deposit', async (req, res) => {
     res.json({ deposit, summary, warnings, notices, lineAccounts, lineRefs })
   } catch (e) {
     res.status(400).json({ error: e.message })
-  }
-})
-
-// Sync balance_transactions for every payout that has none yet (or all, with onlyMissing=false).
-router.post('/sync-all-transactions', async (req, res) => {
-  const started = Date.now()
-  try {
-    const onlyMissing = req.body?.onlyMissing !== false
-    const limit = req.body?.limit ? parseInt(req.body.limit, 10) : null
-    const result = await syncAllPayoutsBalanceTransactions({ onlyMissing, limit })
-    logSystemRun('sys_stripe_bulk_bt_sync', {
-      status: 'success',
-      result: `${result.payoutsProcessed} payouts traités · ${result.created} BT créés · ${result.updated} MAJ · ${result.errors.length} erreur(s)`,
-      duration_ms: Date.now() - started,
-      triggerData: { onlyMissing, limit },
-    })
-    res.json(result)
-  } catch (e) {
-    logSystemRun('sys_stripe_bulk_bt_sync', { status: 'error', error: e.message, duration_ms: Date.now() - started })
-    res.status(500).json({ error: e.message })
-  }
-})
-
-// Backfill the factures table from refund balance_transactions already synced.
-router.post('/backfill-refunds', (req, res) => {
-  const started = Date.now()
-  try {
-    const dryRun = req.body?.dryRun === true
-    const result = backfillRefundsToFactures({ dryRun })
-    logSystemRun('sys_stripe_refunds_backfill', {
-      status: 'success',
-      result: `${result.created} créé(s) · ${result.skipped} skip · ${result.unmatched} sans company sur ${result.total}${dryRun ? ' (dry-run)' : ''}`,
-      duration_ms: Date.now() - started,
-      triggerData: { dryRun },
-    })
-    res.json(result)
-  } catch (e) {
-    logSystemRun('sys_stripe_refunds_backfill', { status: 'error', error: e.message, duration_ms: Date.now() - started })
-    res.status(500).json({ error: e.message })
   }
 })
 

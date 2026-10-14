@@ -21,7 +21,11 @@ wait_health() { # url, secondes max, boot_id à éviter (facultatif)
 
 classic() { pm2 restart erp-server; }
 
-if [ "$1" = "--force" ]; then classic; exit $?; fi
+# Serveur de paiement (erp-pay, 3008) : reprend le nouveau code. Pendant ses
+# ~2 s de redémarrage, nginx sert les paiements depuis Boréal (backup).
+restart_pay() { pm2 start erp-pay.config.cjs >/dev/null 2>&1 || pm2 restart erp-pay >/dev/null 2>&1; }
+
+if [ "$1" = "--force" ]; then classic; rc=$?; restart_pay; exit $rc; fi
 
 # 1. Relais en route (même code que le principal va charger).
 pm2 start erp-standby.config.cjs >/dev/null 2>&1 || pm2 restart erp-standby >/dev/null 2>&1
@@ -42,4 +46,5 @@ sleep 3
 
 # 3. Relais arrêté : il finit ses requêtes en cours avant de sortir.
 pm2 stop erp-standby >/dev/null
+restart_pay
 echo "✅ erp-server redémarré sans coupure."

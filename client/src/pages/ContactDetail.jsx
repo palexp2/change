@@ -693,6 +693,29 @@ export default function ContactDetail({ recordId, onClose }) {
                 />
               </CrmCard>
 
+              {(contact.email_subscriptions?.length > 0 || contact.email_subscriptions_error === 'scope') && (
+                <CrmCard
+                  title="Abonnements"
+                  count={(contact.email_subscriptions || []).reduce((n, e) => n + e.subscriptions.filter(s => s.status === 'SUBSCRIBED').length, 0)}
+                  testId="crm-card-abonnements"
+                >
+                  {contact.email_subscriptions_error === 'scope' && !contact.email_subscriptions?.length ? (
+                    <div className="px-2 pb-1 text-sm text-slate-400">Accès HubSpot à autoriser</div>
+                  ) : contact.email_subscriptions.map(e => (
+                    <div key={e.email} className="px-2 pb-2">
+                      <div className="text-xs text-slate-500 truncate">{e.email}</div>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {e.subscriptions.map(s => (
+                          <Badge key={s.id} color={s.status === 'SUBSCRIBED' ? 'green' : s.status === 'UNSUBSCRIBED' ? 'red' : 'gray'}>
+                            {s.name}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </CrmCard>
+              )}
+
               <CrmCard
                 title="Tâches"
                 count={tasks.length}

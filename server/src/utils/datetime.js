@@ -31,6 +31,14 @@ export function localDay(date = new Date(), tz = TZ) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
 }
 
+/** Instant lisible (fuseau `tz`), en `YYYY-MM-DD HH:MM` — pour les textes affichés. */
+export function localDateTime(date = new Date(), tz = TZ) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).map(x => [x.type, x.value]))
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`
+}
+
 /**
  * Écart signé en jours entre deux dates civiles `YYYY-MM-DD` : positif quand
  * `b` est après `a` (« jours de a vers b »). Ancrage à midi UTC — le quotient

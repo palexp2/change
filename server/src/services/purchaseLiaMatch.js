@@ -292,8 +292,14 @@ export function foldCableTokens(tokens) {
   return out
 }
 
+// Unité de longueur après un nombre : « 4 pi » = 4 pieds, jamais le « Pi » de
+// « Raspberry Pi 4 » (gaine thermorétractable 4 pi découpée sur un achat de Pi).
+const MEASURE_UNITS = { pi: 'pied', pieds: 'pied', ft: 'pied', po: 'pouce', in: 'pouce' }
+const foldMeasureUnits = tokens => tokens.map((t, i) =>
+  (MEASURE_UNITS[t] && i > 0 && /^\d+$/.test(tokens[i - 1]) ? MEASURE_UNITS[t] : t))
+
 const tokenize = s => foldCableTokens(
-  normalizeText(s).split(' ').filter(t => t && !STOP_TOKENS.has(t)).map(canonical),
+  foldMeasureUnits(normalizeText(s).split(' ').filter(t => t && !STOP_TOKENS.has(t))).map(canonical),
 )
 
 // Similarité de Dice pondérée : les tokens rares (alphanumériques, ≥ 3 caractères, du
@@ -432,10 +438,35 @@ export function convertQty(qty, fromUnit, toUnit) {
   return null
 }
 
+// VENDU AU PAQUET : McMaster facture « 2 » paquets « Packs of 100 », l'achat compte
+// 200 vis. La quantité comparée est le nombre d'UNITÉS : quantité × taille du paquet.
+// Taille lue par l'extraction (`pack_size`), sinon dans le libellé imprimé.
+const PACK_RE = [
+  /\b(?:packs?|paquets?|pqts?|pkgs?|packages?|boxe?s?|bo[iî]tes?|bags?|sacs?|lots?|rolls?|rouleaux?|sets?|ensembles?)\s+(?:of|de)\s+(\d{1,6})\b/i,
+  /\b(\d{1,6})\s*(?:\/|par|per)\s*(?:pk|pkg|pack|paquet|bo[iî]te|box|bag|sac)\b/i,
+  /\b(\d{1,6})\s*-?\s*(?:pack|pk|pcs?\s*pack)\b/i,
+]
+export function packSize(line) {
+  const explicit = num(line?.pack_size)
+  if (explicit && explicit > 1) return explicit
+  const text = String(line?.source_description || line?.description || '')
+  for (const re of PACK_RE) {
+    const m = text.match(re)
+    const n = m ? Number(m[1]) : null
+    if (n && n > 1) return n
+  }
+  return 1
+}
+// Quantité de la ligne en unités (paquets dépliés). null si non lue.
+export function lineUnits(line) {
+  const q = num(line?.quantity)
+  return q == null ? null : q * packSize(line)
+}
+
 const lineUnitPrice = line => {
   const up = num(line?.unit_price)
-  if (up) return up
-  const t = num(line?.total), q = num(line?.quantity)
+  if (up) return up / packSize(line)
+  const t = num(line?.total), q = lineUnits(line)
   return t && q ? t / q : null
 }
 
@@ -539,7 +570,7 @@ export function scoreLine(line, purchase, ctx = {}) {
 
   // Prix unitaire et montant total de la ligne.
   // Quantité et unités : lues avant le prix, qui se convertit avec elles.
-  const q = num(line?.quantity), qo = num(purchase.qty_ordered)
+  const q = lineUnits(line), qo = num(purchase.qty_ordered)
   const lineUnit = unitOfText(line?.description)
   const partUnit = unitOfText(haystack)
   const qConverted = convertQty(q, lineUnit, partUnit)
@@ -965,7 +996,7 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
       const ref = orderDate || receiptDate
       const keys = s => {
         const gap = orderGapDays(s.purchase.order_date, ref)
-        const q = num(line?.quantity), qo = num(s.purchase.qty_ordered)
+        const q = lineUnits(line), qo = num(s.purchase.qty_ordered)
         const amt = lineAmount(line)
         const expected = num(s.purchase.unit_cost) && qo ? num(s.purchase.unit_cost) * qo : null
         return [
@@ -1012,7 +1043,7 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
       if (top?.detail?.ident === 1 && top.purchase.id !== purchase.id) continue
       const s = scoreLine(line, purchase, ctx)
       const agrees = top?.purchase.id === purchase.id
-      const q = num(line?.quantity), qo = num(purchase.qty_ordered)
+      const q = lineUnits(line), qo = num(purchase.qty_ordered)
       for (let k = pairs.length - 1; k >= 0; k--) if (pairs[k].index === index) pairs.splice(k, 1)
       delete lines[index].review
       pairs.push({
@@ -1044,7 +1075,7 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
   list.forEach((line, index) => {
     if (lines[index].locked || lines[index].blocked_by || lines[index].review?.reason === 'egalite') return
     if (pairs.some(p => p.index === index)) return
-    const q = num(line?.quantity)
+    const q = lineUnits(line)
     if (!q || (q < 2 && openCandidates.length > 1)) return
     const sameQty = openCandidates.filter(p => num(p.qty_ordered) === q)
     if (sameQty.length !== 1) return
@@ -1203,7 +1234,7 @@ export function splitCoveredPurchases({ items, lines = [], candidates = [] }) {
     if (!qtySum) continue
     const free = list
       .map((it, i) => ({ it, i }))
-      .filter(({ it, i }) => !anchors[i] && !groups.has(i) && lineAmount(it) > 0 && num(it?.quantity) === qtySum)
+      .filter(({ it, i }) => !anchors[i] && !groups.has(i) && lineAmount(it) > 0 && lineUnits(it) === qtySum)
     // Une seule ligne possible, sinon on ne sait pas laquelle porte le groupe.
     if (free.length !== 1) continue
     for (const p of group) addTo(free[0].i, p)

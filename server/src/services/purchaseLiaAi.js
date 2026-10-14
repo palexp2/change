@@ -15,17 +15,23 @@
 import crypto from 'crypto'
 import db from '../db/database.js'
 import { ask } from './bankAiGuess.js'
-import { listCandidatePurchases, learnLineAliases, partKey, hasLiaRef } from './purchaseLiaMatch.js'
+import { listCandidatePurchases, learnLineAliases, partKey, hasLiaRef, packSize } from './purchaseLiaMatch.js'
 
 const MIN_CONFIDENCE = 0.6
 const clip = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n)
 const qtyText = v => (v == null || v === '' ? '?' : String(Number(v)))
+// « 2 paquets de 100 = 200 u. » : l'achat compte des unités, la facture des paquets.
+const lineQtyText = it => {
+  const pack = packSize(it)
+  if (pack <= 1 || it?.quantity == null || it.quantity === '') return qtyText(it?.quantity)
+  return `${qtyText(it.quantity)} paquets de ${pack} = ${Number(it.quantity) * pack} u.`
+}
 
 /** Prompt : la facture complète + les achats à recevoir du fournisseur. PUR. */
 export function buildLiaPrompt({ receipt = {}, items = [], candidates = [], aliasesByPart = new Map() }) {
   const lines = items.map((it, i) => (hasLiaRef(it?.description) || it?.purchase_id
     ? `#${i} [déjà relié — ${clip(it.lia_ref || it.description, 40)}] ${clip(it.source_description, 160)}`
-    : `#${i} « ${clip(it?.description, 200)} » qté ${qtyText(it?.quantity)} · prix unit. ${it?.unit_price ?? '?'} · total ${it?.total ?? '?'}`))
+    : `#${i} « ${clip(it?.description, 200)} » qté ${lineQtyText(it)} · prix unit. ${it?.unit_price ?? '?'} · total ${it?.total ?? '?'}`))
   const purchases = candidates.map(c => {
     const bits = [
       `${c.lia_ref} : ${clip(c.part_name, 80)}${c.part_name_en ? ` / ${clip(c.part_name_en, 80)}` : ''}`,

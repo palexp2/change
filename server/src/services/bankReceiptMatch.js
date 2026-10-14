@@ -62,6 +62,8 @@ export function parseOrigAmount(txn) {
 
 // Les cartes ajoutent ~2,5 % au taux du jour sur un achat en devise.
 const CARD_FX_FEE = 0.025
+const FX_FEE_MIN = 0.015
+const FX_FEE_MAX = 0.045
 function conversionBand(converted, amountAbs) {
   if (!(converted > 0)) return null
   const gap = Math.abs(converted - amountAbs)
@@ -70,7 +72,9 @@ function conversionBand(converted, amountAbs) {
   // près.
   if (gap <= Math.max(0.5, amountAbs * 0.005)) return 'exact'
   const ratio = amountAbs / converted
-  if (ratio >= 1 + CARD_FX_FEE - 0.01 && ratio <= 1 + CARD_FX_FEE + 0.01) return 'frais'
+  // Frais de change : ~2,5 % chez les banques, jusqu'à 4 % chez le marchand
+  // (Stripe : « includes 4% conversion fee », Circle 2026-10).
+  if (ratio >= 1 + FX_FEE_MIN && ratio <= 1 + FX_FEE_MAX) return 'frais'
   if (gap <= amountAbs * 0.025) return 'proche'
   return null
 }
@@ -124,7 +128,7 @@ function scoreAmount(amountAbs, doc, ctx) {
   // 10 points de moins qu'au cent près : la conversion reste une hypothèse.
   const band = conversionBand(converted, amountAbs)
   if (band === 'exact') return { pts: 40, reason: `montant exact une fois converti (≈ ${ctx.rate})` }
-  if (band === 'frais') return { pts: 32, reason: 'converti + ~2,5 % de frais de change' }
+  if (band === 'frais') return { pts: 32, reason: 'converti + frais de change' }
   if (band === 'proche') return { pts: 14, reason: 'montant proche une fois converti' }
   return { pts: 0, reason: 'montant différent' }
 }
@@ -275,9 +279,10 @@ export function candidatePool(txn, { sources = ['receipt', 'achat'], windowDays 
           OR (:orig > 0 AND ABS(ABS(total) - :orig) <= 0.02)
           OR (:rate > 0 AND ABS(ABS(total) * :rate - :amt) <= :tol)
           OR (:rate > 0 AND ABS(ABS(total) * :rate * :fee - :amt) <= :tol)
+          OR (:rate > 0 AND ABS(ABS(total) * :rate * :feeMax - :amt) <= :tol)
           OR (:rate > 0 AND ABS(ABS(total) / :rate - :amt) <= :tol)
           OR (:rate > 0 AND ABS(ABS(total) / :rate * :fee - :amt) <= :tol))
-    `).all({ any: needle ? 1 : 0, from, to, amt: amountAbs, tol, rate: rate || 0, fee: 1 + CARD_FX_FEE, orig: orig?.amount || 0, dir })
+    `).all({ any: needle ? 1 : 0, from, to, amt: amountAbs, tol, rate: rate || 0, fee: 1 + CARD_FX_FEE, feeMax: 1 + FX_FEE_MAX - 0.005, orig: orig?.amount || 0, dir })
     for (const r of rows) {
       const profile = byId.get(r.vendor_profile_id) || byName.get(normalizeText(r.company))
       out.push({
@@ -355,8 +360,17 @@ function sameVendor(a, b) {
   return bestNameMatch([a], b).ratio >= 0.5 || bestNameMatch([b], a).ratio >= 0.5
 }
 
+// Même fournisseur sous deux noms : l'achat « Postmark USD » et la facture
+// « ActiveCampaign » portent le même profil — ses noms font foi (cas Postmark,
+// Charles, 2026-10-13).
+function docsSameVendor(a, b) {
+  if (sameVendor(a.company, b.company)) return true
+  const has = (doc, name) => !!name && (doc.names || []).some(n => normalizeText(n) === normalizeText(name))
+  return has(a, b.company) || has(b, a.company)
+}
+
 function isTwin(a, b) {
-  return sameVendor(a.company, b.company)
+  return docsSameVendor(a, b)
     && Math.abs((Math.abs(a.total) || 0) - (Math.abs(b.total) || 0)) <= AMOUNT_EPS
     && Math.abs(daysBetween(a.date, b.date) ?? 99) <= 2
 }
@@ -418,7 +432,7 @@ function docGap(doc, txnDate) {
 export function demoteOtherPeriods(scored, txnDate) {
   const groups = []
   for (const c of scored) {
-    const g = groups.find(grp => sameVendor(grp[0].company, c.company)
+    const g = groups.find(grp => docsSameVendor(grp[0], c)
       && Math.abs(Math.abs(grp[0].total || 0) - Math.abs(c.total || 0)) <= AMOUNT_EPS)
     if (g) g.push(c); else groups.push([c])
   }

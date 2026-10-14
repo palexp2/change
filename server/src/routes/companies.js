@@ -196,13 +196,17 @@ router.post('/', (req, res) => {
 
 // PUT /api/companies/:id — patch partial : n'écrit que les champs présents dans le body
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM companies WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id, airtable_id FROM companies WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Company not found' });
 
   // Champs personnalisés : seuls ceux que l'ERP a le droit d'écrire (règle
   // unique de customFieldWritability). Un champ Airtable en import seul est
   // refusé en 400 plutôt qu'écrit puis écrasé au sync suivant.
-  if (refusedAirtablePullKeys('companies', req.body).length > 0) {
+  // Exception : le nom d'une entreprise sans jumeau Airtable — aucun sync ne
+  // l'écrasera (côté Airtable, « Entreprise » est une formule).
+  const refused = refusedAirtablePullKeys('companies', req.body)
+    .filter(col => !(col === 'name' && !existing.airtable_id));
+  if (refused.length > 0) {
     return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
   }
   const customCols = getWritableCustomColumns('companies').map(c => c.column_name);

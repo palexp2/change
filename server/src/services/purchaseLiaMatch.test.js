@@ -5,7 +5,7 @@
 // vraiment une pièce) est couvert par purchaseLiaIdentity.test.js.
 import test from 'node:test'
 import assert from 'node:assert'
-import {
+import { tokenSimilarity,
   buildLiaLabel, completeLiaDescription, normalizeVendorKey, sameVendor,
   matchLines, autoLinkReceiptItems, candidateTier, hasLiaRef,
   splitCoveredPurchases, allocateAmount,
@@ -228,4 +228,10 @@ test('Dernier recours quantité : quantité ambiguë ou de 1 → rien', () => {
   assert.equal(lines[0].match, null)
   ;({ lines } = matchLines({ items: [{ description: 'XQ-77 widget', quantity: 1 }], candidates: [a, c] }))
   assert.equal(lines[0].match, null)
+})
+
+test('« 4 pi » de gaine = 4 pieds, jamais un Raspberry Pi 4', () => {
+  const gaine = 'Gaine thermorétractable noire 1/4 po × 4 pi — A014B-4-ND, Alpha Wire F221B1/4 BK100'
+  assert.ok(tokenSimilarity(gaine, 'Raspberry Pi 4 2GB') < 0.15)
+  assert.ok(tokenSimilarity(gaine, 'HEAT SHRINK 1/4 IN X (pied linéaire)') >= 0.3)
 })

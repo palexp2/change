@@ -17,9 +17,10 @@ import db from '../db/database.js'
 import { evaluateFieldRulesForRecord } from './fieldRuleEngine.js'
 import { createChangeLogWatcher } from './changeLogWatcher.js'
 
-// Must stay in sync with WRITABLE_TABLES in scriptSandbox.js.
+// WRITABLE_TABLES de scriptSandbox.js + return_items (réception d'un retour).
+// Miroir côté client : WATCHED_TABLES de lib/automationBlocks.js.
 export const WATCHED_TABLES = [
-  'factures', 'products', 'orders', 'shipments', 'companies', 'contacts', 'serial_numbers',
+  'factures', 'products', 'orders', 'shipments', 'companies', 'contacts', 'serial_numbers', 'return_items',
 ]
 
 const POLL_MS = 5000

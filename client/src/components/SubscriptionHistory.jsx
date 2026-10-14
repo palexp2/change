@@ -35,7 +35,7 @@ function fmtAmount(v) {
   return v == null ? '' : String(v)
 }
 
-export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
+export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRachat = false }) {
   const confirm = useConfirm()
   const { addToast } = useToast()
   const [editingId, setEditingId] = useState(null)
@@ -323,7 +323,7 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
                     Δ MRR : {h.amount_cad_delta >= 0 ? '+' : ''}{h.amount_cad_delta.toFixed(2)} CAD
                   </div>
                 )}
-                {h.category === 'churn' && h.id && (
+                {!hideRachat && h.category === 'churn' && h.id && (
                   <RachatPicker event={h} />
                 )}
               </div>

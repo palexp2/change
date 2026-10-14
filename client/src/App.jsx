@@ -51,7 +51,6 @@ import Automations from './pages/Automations.jsx'
 import AutomationDetail from './pages/AutomationDetail.jsx'
 import Tasks from './pages/Tasks.jsx'
 import SoumissionCreate from './pages/SoumissionCreate.jsx'
-import RelanceQualification from './pages/RelanceQualification.jsx'
 import QualificationCall from './pages/QualificationCall.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import VendorSubscriptions from './pages/VendorSubscriptions.jsx'
@@ -250,7 +249,6 @@ function AppRoutes() {
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
       <Route path="/soumissions/nouvelle" element={<ProtectedRoute><SoumissionCreate /></ProtectedRoute>} />
-      <Route path="/relance-qualification" element={<ProtectedRoute><RelanceQualification /></ProtectedRoute>} />
       <Route path="/qualification-call" element={<ProtectedRoute><QualificationCall /></ProtectedRoute>} />
       <Route path="/discovery-forms" element={<ProtectedRoute><DiscoveryForms /></ProtectedRoute>} />
       {/* Hors /discovery-forms/:id — les fiches passent par recordPeekRoutes. */}

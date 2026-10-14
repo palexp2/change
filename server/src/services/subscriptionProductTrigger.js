@@ -11,7 +11,8 @@
 // retenté au plus une fois par heure.
 
 import db from '../db/database.js'
-import { runSteps, stepsLog } from './ruleActions/steps.js'
+import { runSteps, stepsLog, triggerRecordUrl } from './ruleActions/steps.js'
+import { buildStripeUrl } from './externalLinks.js'
 import { logRuleRun } from './systemAutomations.js'
 import { siblingStripeProducts } from './stripeCatalog.js'
 import { APP_URL } from '../config/appUrl.js'
@@ -38,6 +39,7 @@ function rowFor(sub, ct, role, items) {
     hubspot_record_id: ct.hubspot_record_id ? String(ct.hubspot_record_id).replace(/\.0$/, '') : '',
     company_id: sub.company_id, role, produits: items.map(i => i.name).filter(Boolean).join(', '),
     maintenant: now.toISOString(), maintenant_ms: String(now.getTime()), app_url: APP_URL,
+    lien_fiche: triggerRecordUrl('contacts', ct.id), lien_abonnement: buildStripeUrl(sub.stripe_id) || '',
   }
 }
 

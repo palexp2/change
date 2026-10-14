@@ -19,12 +19,15 @@
 // dans server/src/db/changeLog.js (CACHED_TABLES).
 
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { Router } from 'express'
 import db, { openReaderConnection } from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { CACHED_TABLES, getAllCachedTableSpecs, CHANGE_LOG_RETENTION_HOURS, rollupParentsChangedSince } from '../db/changeLog.js'
 
 import { filterCachedSpecs } from '../services/dataAccess.js'
+import { ensureUploadsDir } from '../config/uploads.js'
 
 const router = Router()
 
@@ -88,8 +91,63 @@ function writeChunk(res, chunk) {
 // ~100 ms, et la mémoire ne monte plus au niveau du payload entier.
 const ROWS_PER_CHUNK = 500
 
+// Cache du snapshot — chaque redémarrage du serveur ou nouvelle version du
+// client faisait recharger les ~7 Mo à plusieurs onglets à la fois : 2-3 s de
+// calcul chacun, et l'API ralentie pour tout le monde. Le snapshot est le même
+// pour tous les utilisateurs qui voient les mêmes tables (la clé = l'empreinte
+// des colonnes, qui inclut la liste des tables) ; un snapshot de quelques
+// minutes reste exact, le client rattrape la suite par delta depuis son
+// snapshot_ts. Gardé aussi sur disque : il survit au redémarrage, qui est
+// justement le moment où les onglets rechargent.
+const SNAPSHOT_TTL_MS = 10 * 60_000
+const cacheDir = ensureUploadsDir('cache')
+const snapshotCache = new Map() // clé → { at, body: Buffer }
+const snapshotBuilds = new Map() // clé → Promise<Buffer|null>
+
+function cachedSnapshot(key) {
+  const hit = snapshotCache.get(key)
+  if (hit && Date.now() - hit.at < SNAPSHOT_TTL_MS) return hit.body
+  const file = path.join(cacheDir, `bootstrap-${key}.json`)
+  try {
+    const at = fs.statSync(file).mtimeMs
+    if (Date.now() - at >= SNAPSHOT_TTL_MS) return null
+    const body = fs.readFileSync(file)
+    snapshotCache.set(key, { at, body })
+    return body
+  } catch { return null }
+}
+
+function storeSnapshot(key, body) {
+  snapshotCache.set(key, { at: Date.now(), body })
+  const file = path.join(cacheDir, `bootstrap-${key}.json`)
+  fs.promises.writeFile(`${file}.tmp`, body)
+    .then(() => fs.promises.rename(`${file}.tmp`, file))
+    .catch(e => console.warn('[bootstrap] cache disque:', e.message))
+}
+
+async function sendBody(res, body) {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Content-Length', body.length)
+  res.end(body)
+}
+
 router.get('/', requireAuth, async (req, res) => {
   const specs = filterCachedSpecs(getAllCachedTableSpecs(), req.user)
+  const signature = columnsSignature(specs)
+
+  const cached = cachedSnapshot(signature)
+  if (cached) return sendBody(res, cached)
+  // Un autre onglet construit déjà ce snapshot : on attend le sien.
+  if (snapshotBuilds.has(signature)) {
+    const body = await snapshotBuilds.get(signature).catch(() => null)
+    if (body) return sendBody(res, body)
+  }
+
+  let settle
+  snapshotBuilds.set(signature, new Promise(r => { settle = r }))
+  const parts = []
+  const emit = (chunk) => { parts.push(chunk); return writeChunk(res, chunk) }
+
   const snapshotTs = db.prepare(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS ts`).get().ts
 
   // Connexion dédiée : l'itérateur reste ouvert pendant les `await` de
@@ -99,15 +157,17 @@ router.get('/', requireAuth, async (req, res) => {
   const reader = openReaderConnection()
 
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  let complete = false
+  let tableFailed = false
   try {
-    await writeChunk(res, `{"snapshot_ts":${JSON.stringify(snapshotTs)}` +
-      `,"columns_signature":${JSON.stringify(columnsSignature(specs))},"tables":{`)
+    await emit(`{"snapshot_ts":${JSON.stringify(snapshotTs)}` +
+      `,"columns_signature":${JSON.stringify(signature)},"tables":{`)
 
     let firstTable = true
     for (const tableName of Object.keys(specs)) {
       const spec = specs[tableName]
       const columns = spec.columns
-      await writeChunk(res, `${firstTable ? '' : ','}${JSON.stringify(tableName)}` +
+      await emit(`${firstTable ? '' : ','}${JSON.stringify(tableName)}` +
         `:{"columns":${JSON.stringify(columns)},"rows":[`)
       firstTable = false
 
@@ -125,28 +185,36 @@ router.get('/', requireAuth, async (req, res) => {
           buffer += (count ? ',' : '') + JSON.stringify(tuple)
           count++
           if (count % ROWS_PER_CHUNK === 0) {
-            await writeChunk(res, buffer)
+            await emit(buffer)
             buffer = ''
           }
         }
       } catch (err) {
         // Table illisible : on ferme proprement le tableau de lignes déjà émises
         // plutôt que de casser tout le snapshot pour les autres tables.
+        // Un tel snapshot n'est pas mis en cache.
+        if (err.message === 'client déconnecté') throw err
+        tableFailed = true
         console.error(`[bootstrap] failed to load ${tableName}:`, err.message)
       }
-      if (buffer) await writeChunk(res, buffer)
-      await writeChunk(res, ']}')
+      if (buffer) await emit(buffer)
+      await emit(']}')
     }
-
+    parts.push('}}')
     res.end('}}')
+    complete = true
   } catch (err) {
     // Client parti en cours de route (onglet fermé, rechargement) : rien à dire.
     // Toute autre panne au milieu du flux ne peut plus devenir un code d'erreur —
     // les entêtes sont déjà partis —, on coupe pour que le client refasse un appel.
-    if (!res.headersSent) return res.status(500).json({ error: err.message })
-    res.destroy()
+    if (!res.headersSent) res.status(500).json({ error: err.message })
+    else res.destroy()
   } finally {
     try { reader.close() } catch { /* connexion déjà fermée */ }
+    const body = complete && !tableFailed ? Buffer.from(parts.join('')) : null
+    if (body) storeSnapshot(signature, body)
+    snapshotBuilds.delete(signature)
+    settle(body)
   }
 })
 

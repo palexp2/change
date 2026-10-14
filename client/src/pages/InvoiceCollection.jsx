@@ -587,7 +587,7 @@ export function InvoiceCollectionPanel() {
           </button>
           <a href={api.scrapers.bridgeModuleUrl()} download
             className="px-2.5 py-2 text-xs text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg">
-            Module de navigateur
+            Extension Boréal
           </a>
           <CopyButton text={() => localStorage.getItem('erp_token') || ''} label="Jeton"
             title="À coller dans les réglages du module de navigateur" testId="bridge-token"

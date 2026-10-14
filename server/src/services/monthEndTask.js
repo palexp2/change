@@ -2,11 +2,13 @@
 //
 // Le travail EST fait quand les écritures de fin de mois du mois visé sont dans
 // QuickBooks : chaque provision active publiée (ou sans montant ce mois-là) et
-// plus aucune ligne FPA à publier. Au moins une provision doit être publiée —
+// plus aucune ligne FPA à publier, et le relevé ASFC du mois importé puis
+// comptabilisé (page Douanes). Au moins une provision doit être publiée —
 // des heures R&D pas encore importées donnent un montant nul, pas un mois fini.
 import { listRecurringTasks, completeFromAutomation } from './recurringWork.js'
 import { monthEndState } from './monthEnd.js'
 import { buildFpaMonth } from './prepaid.js'
+import { checkAsfc } from './monthEndChecks.js'
 
 export const MONTH_END_TASK_ID = 'rt-al-ej-mensuelle'
 
@@ -15,7 +17,9 @@ export function monthEndEntriesDone(month) {
   const pushed = active.filter(p => p.pushed_at)
   if (!pushed.length) return false
   if (active.some(p => !p.pushed_at && p.amount > 0)) return false
-  return buildFpaMonth(month).publishable_count === 0
+  if (buildFpaMonth(month).publishable_count !== 0) return false
+  // Relevé ASFC du mois importé et comptabilisé (procédure CTB).
+  return checkAsfc(month).status === 'ok'
 }
 
 /** Coche le travail pour la période courante et les rattrapages dont les écritures sont passées. */

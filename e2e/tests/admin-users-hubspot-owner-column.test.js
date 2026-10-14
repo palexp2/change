@@ -116,14 +116,14 @@ describe('Admin utilisateurs — colonne Owner HubSpot', () => {
       }
       assert.equal(persisted?.override_owner_id, String(targetOwner.id), 'le mapping doit être sauvegardé automatiquement')
 
-      // La cellule reflète le choix et la source « manuel »
+      // La cellule reflète le choix ; la source « manuel » est dans l'infobulle
       await page.waitForFunction(
         (id) => (document.querySelector(`[data-testid="hubspot-owner-select-${id}"]`)?.innerText || '').trim() !== '—',
         userId, { timeout: 10000 }
       )
       assert.match(await select.innerText(), new RegExp(targetOwner.name.split(' ')[0]))
       const cell = page.locator(`[data-testid="hubspot-owner-cell-${userId}"]`)
-      assert.match(await cell.innerText(), /manuel/i) // le badge est en majuscules via CSS
+      assert.match(await cell.getAttribute('title'), /manuellement/i)
 
       // Le clic dans la cellule ne doit pas avoir ouvert la modale d'édition
       assert.equal(await page.locator('text=Modifier l\'utilisateur').count(), 0)

@@ -60,7 +60,7 @@ export default function AbonnementMouvements() {
               {' '}({displayedEvents.length})
             </span>
             <button
-              onClick={() => setSearchParams({})}
+              onClick={() => setSearchParams(prev => { const p = new URLSearchParams(prev); p.delete('month'); return p })}
               className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700"
               data-testid="abo-events-month-clear"
             >
@@ -69,7 +69,7 @@ export default function AbonnementMouvements() {
           </div>
         )}
 
-        <AbonnementEventsTable data={displayedEvents} loading={loading} manageViews forceAllView={!!monthFilter} hideRachatInDetail />
+        <AbonnementEventsTable data={displayedEvents} loading={loading} manageViews forceAllView={!!monthFilter} hideRachatInDetail urlParam="abonnement" />
       </div>
     </Layout>
   )

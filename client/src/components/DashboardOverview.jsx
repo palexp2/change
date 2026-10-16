@@ -1,9 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { BarChart3, Table2, AlertTriangle, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney as fmtMoneyBase, fmtNumber } from '../utils/formatters.js'
+import { Modal } from './Modal.jsx'
+import { ProfitabilityOrdersTable, rollingWindow, ordersInWindow } from './ProfitabilityOrdersTable.jsx'
+import { ReplacementItemsTable, replacementItemsInMonth } from './ReplacementItems.jsx'
 
 /* ── Vue globale du tableau de bord ────────────────────────────────────────
    Le pendant « Power BI » des sections du dashboard : une planche dense où
@@ -106,7 +109,7 @@ function ChartTooltip({ hover }) {
           <div className="font-semibold">{hover.label}</div>
           {hover.rows.map(r => (
             <div key={r.label} className="mt-0.5 flex items-center gap-2">
-              <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${r.dot}`} />
+              {r.dot && <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${r.dot}`} />}
               <span className="opacity-70">{r.label}</span>
               <span className="ml-auto tabular-nums">{r.value}</span>
             </div>
@@ -215,8 +218,10 @@ export function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEver
 
 /* Ligne — 2 px, lavis à 10 %, point terminal cerclé de la surface et étiqueté.
    Les points `forecast` (projection) forment la fin de la série : tracés en
-   tirets, et c'est le dernier point réel qui porte l'étiquette. */
-function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW }) {
+   tirets, et c'est le dernier point réel qui porte l'étiquette.
+   `onPointClick(point)` (optionnel) rend chaque point cliquable.
+   `rowsFor(point)` (optionnel) : lignes détaillées de l'infobulle. */
+function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW, onPointClick, chartId, rowsFor }) {
   const [hover, setHover] = useState(null)
   const t = TONES[tone] || TONES.brand
   if (!points?.length) return <EmptyPlot />
@@ -226,20 +231,23 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
   const rawMax = Math.max(...values, 0)
   const rawMin = Math.min(...values, 0)
   const scale = axisScale(rawMax)
-  const max = rawMin < 0 ? (niceCeil(rawMax) || 1) : scale.top
-  const min = rawMin < 0 ? -niceCeil(-rawMin) : 0
+  // Série entièrement négative (ex. capital) : l'axe s'arrête à zéro en haut.
+  const negScale = rawMax <= 0 && rawMin < 0 ? axisScale(-rawMin) : null
+  const max = negScale ? 0 : rawMin < 0 ? (niceCeil(rawMax) || 1) : scale.top
+  const min = negScale ? -negScale.top : rawMin < 0 ? -niceCeil(-rawMin) : 0
   const n = points.length
   const step = n > 1 ? plotW / (n - 1) : 0
   const xOf = i => PAD_L + i * step
   const yOf = v => PAD_T + PLOT_H - ((v - min) / (max - min || 1)) * PLOT_H
-  const ticks = min < 0 ? [min, 0, max] : [0, scale.half, max]
+  const ticks = negScale ? [min, -negScale.half, 0] : min < 0 ? [min, 0, max] : [0, scale.half, max]
 
   const pathOf = (from, to) => points.slice(from, to + 1).map((p, j) => `${j === 0 ? 'M' : 'L'}${xOf(from + j)},${yOf(p.value)}`).join(' ')
   const firstForecast = points.findIndex(p => p.forecast)
   const lastReal = firstForecast > 0 ? firstForecast - 1 : n - 1
   const line = pathOf(0, lastReal)
   const forecastLine = lastReal < n - 1 ? pathOf(lastReal, n - 1) : null
-  const area = `${line} L${xOf(lastReal)},${yOf(min)} L${xOf(0)},${yOf(min)} Z`
+  const base = yOf(negScale ? 0 : min)
+  const area = `${line} L${xOf(lastReal)},${base} L${xOf(0)},${base} Z`
   const last = points[lastReal]
 
   return (
@@ -262,7 +270,16 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
           const isLast = i === lastReal
           return (
             <g key={p.key}
-              onMouseEnter={() => setHover({ xPct: (xOf(i) / vw) * 100, yPct: (yOf(p.value) / CH) * 100, value: format(p.value), label: p.label })}
+              {...(onPointClick ? {
+                'data-testid': chartId ? `overview-point-${chartId}-${p.key}` : undefined,
+                role: 'button',
+                tabIndex: 0,
+                'aria-label': `${p.label} — voir les enregistrements`,
+                className: 'cursor-pointer outline-none',
+                onClick: () => onPointClick(p),
+                onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPointClick(p) } },
+              } : {})}
+              onMouseEnter={() => setHover({ xPct: (xOf(i) / vw) * 100, yPct: (yOf(p.value) / CH) * 100, value: format(p.value), label: p.label, rows: rowsFor?.(p), hint: onPointClick ? CLICK_HINT : null })}
               onMouseLeave={() => setHover(null)}
             >
               <rect x={xOf(i) - step / 2} y={0} width={Math.max(step, 8)} height={CH} fill="transparent" />
@@ -290,8 +307,10 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
   )
 }
 
-/* Colonnes divergentes — la couleur porte le signe (hausse / baisse). */
-function DivergingColumns({ points, format = fmtMoneyCompact, labelEvery = 2, vw = CW, linkFor, chartId }) {
+/* Colonnes divergentes — la couleur porte le signe (hausse / baisse).
+   `breakdown` (option) : séries ventilées dans l'infobulle ; une série sans
+   `tone` prend la couleur de son signe. */
+function DivergingColumns({ points, format = fmtMoneyCompact, labelEvery = 2, vw = CW, linkFor, chartId, breakdown }) {
   const [hover, setHover] = useState(null)
   const navigate = useNavigate()
   if (!points?.length) return <EmptyPlot />
@@ -324,7 +343,14 @@ function DivergingColumns({ points, format = fmtMoneyCompact, labelEvery = 2, vw
           return (
             <g key={p.key}
               {...barGroupProps({ href, point: p, navigate, chartId })}
-              onMouseEnter={() => setHover({ xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100, yPct: (Math.min(y, zeroY) / CH) * 100, value: format(v), label: p.label, hint: href ? CLICK_HINT : null })}
+              onMouseEnter={() => setHover({
+                xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100, yPct: (Math.min(y, zeroY) / CH) * 100,
+                value: format(v), label: p.label, hint: href ? CLICK_HINT : null,
+                rows: breakdown?.map(s => {
+                  const sv = Number(p[s.key]) || 0
+                  return { label: s.label, value: format(sv), dot: s.tone ? TONES[s.tone].bar : (sv >= 0 ? 'bg-emerald-500' : 'bg-rose-500') }
+                }),
+              })}
               onMouseLeave={() => setHover(null)}
             >
               <rect x={PAD_L + i * band} y={0} width={band} height={CH} fill="transparent" />
@@ -444,87 +470,18 @@ function GroupedColumns({ points, series, format = fmtMoneyCompact, labelEvery =
   )
 }
 
-/* Jumeau tableau des colonnes groupées : une colonne par série, plus le total. */
-function SeriesTable({ points, series, format, periodLabel = 'Période', withTotal = true }) {
-  return (
-    <table className="w-full text-xs">
-      <thead className="sticky top-0 bg-white">
-        <tr className="border-b border-slate-200 text-left text-[11px] text-slate-500">
-          <th className="py-1 pr-2 font-medium">{periodLabel}</th>
-          {series.map(s => <th key={s.key} className="py-1 pl-2 text-right font-medium">{s.short || s.label}</th>)}
-          {withTotal && <th className="py-1 pl-2 text-right font-medium">Total</th>}
-        </tr>
-      </thead>
-      <tbody>
-        {[...points].reverse().map(p => (
-          <tr key={p.key} className="border-b border-slate-100 text-slate-600">
-            <td className="py-1 pr-2">{p.label}</td>
-            {series.map(s => (
-              <td key={s.key} className="py-1 pl-2 text-right tabular-nums">{format(Number(p[s.key]) || 0)}</td>
-            ))}
-            {withTotal && <td className="py-1 pl-2 text-right font-medium tabular-nums text-slate-700">
-              {format(series.reduce((sum, s) => sum + (Number(p[s.key]) || 0), 0))}
-            </td>}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-/* Le jumeau tableau de n'importe quel graphique : aucune valeur n'est
-   accessible uniquement au survol. */
-function PointsTable({ points, format, valueLabel = 'Valeur', periodLabel = 'Période' }) {
-  return (
-    <table className="w-full text-xs">
-      <thead className="sticky top-0 bg-white">
-        <tr className="border-b border-slate-200 text-left text-[11px] text-slate-500">
-          <th className="py-1 pr-2 font-medium">{periodLabel}</th>
-          <th className="py-1 pl-2 text-right font-medium">{valueLabel}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {[...points].reverse().map(p => (
-          <tr key={p.key} className="border-b border-slate-100 text-slate-600">
-            <td className="py-1 pr-2">{p.label}</td>
-            <td className="py-1 pl-2 text-right tabular-nums">{format(p.value)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-/* Carte de graphique : titre, sous-titre, bascule graphique ↔ tableau,
-   lien de détail vers la section correspondante du dashboard classique. */
-function ChartCard({ id, title, subtitle, to, points, format, valueLabel, periodLabel, table, children, className = '' }) {
-  const [asTable, setAsTable] = useState(false)
+/* Carte de graphique : titre, sous-titre, lien de détail vers la section
+   correspondante du dashboard classique. */
+function ChartCard({ id, title, subtitle, to, children, className = '' }) {
   return (
     <div className={`card p-3 ${className}`} data-testid={`overview-chart-${id}`}>
-      <div className="mb-2 flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[13px] font-semibold text-slate-800">
-            {to ? <Link to={to} className="hover:text-brand-700 hover:underline">{title}</Link> : title}
-          </h3>
-          {subtitle && <p className="truncate text-[11px] text-slate-400">{subtitle}</p>}
-        </div>
-        <button
-          type="button"
-          onClick={() => setAsTable(v => !v)}
-          aria-pressed={asTable}
-          aria-label={asTable ? 'Afficher le graphique' : 'Afficher le tableau'}
-          title={asTable ? 'Afficher le graphique' : 'Afficher le tableau'}
-          data-testid={`overview-chart-toggle-${id}`}
-          className="shrink-0 rounded p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
-        >
-          {asTable ? <BarChart3 size={14} /> : <Table2 size={14} />}
-        </button>
+      <div className="mb-2 min-w-0">
+        <h3 className="truncate text-[13px] font-semibold text-slate-800">
+          {to ? <Link to={to} className="hover:text-brand-700 hover:underline">{title}</Link> : title}
+        </h3>
+        {subtitle && <p className="truncate text-[11px] text-slate-400">{subtitle}</p>}
       </div>
-      {asTable
-        ? <div className="max-h-[132px] overflow-y-auto" data-testid={`overview-chart-table-${id}`}>
-            {table || <PointsTable points={points} format={format} valueLabel={valueLabel} periodLabel={periodLabel} />}
-          </div>
-        : children}
+      {children}
     </div>
   )
 }
@@ -765,15 +722,16 @@ function IncomeStatementCard({ data, error }) {
 }
 
 /* ── Bilan ────────────────────────────────────────────────────────────────
-   Le rapport BalanceSheet de QuickBooks en date d'aujourd'hui, une colonne.
-   Mêmes lignes aplaties que l'état des résultats (`value` au lieu de
-   `values`) ; par défaut on voit les grandes sections et leurs totaux. */
+   La carte montre l'évolution du capital (fin de mois, QuickBooks) ; un clic
+   sur un point ouvre le bilan complet à cette date dans une modale. Mêmes
+   lignes aplaties que l'état des résultats (`value` au lieu de `values`) ;
+   par défaut on voit les grandes sections et leurs totaux. */
 
 // Ouvertes par défaut : les deux moitiés du bilan et « Obligations », pour
 // lire d'emblée court terme / long terme des deux côtés.
 const BS_OPEN_GROUPS = new Set(['Liabilities'])
 
-function BalanceSheetCard({ data, error }) {
+function BalanceSheetTable({ data }) {
   const [override, setOverride] = useState(null)
   const rows = mergeSectionTotals((data?.rows || []).map(r => (
     r.kind === 'header' ? r : { ...r, values: [r.value], total: r.value }
@@ -791,11 +749,15 @@ function BalanceSheetCard({ data, error }) {
   const t = data?.totals || {}
 
   return (
-    <div className="card p-3" data-testid="overview-balance-sheet">
+    <div data-testid="overview-balance-sheet">
       <div className="mb-2 flex items-start gap-2">
-        <div className="min-w-0 flex-1">
-          <h3 className="truncate text-[13px] font-semibold text-slate-800">Bilan</h3>
-          <p className="truncate text-[11px] text-slate-400">QuickBooks · au {data?.as_of ? fmtDate(data.as_of) : "aujourd'hui"}</p>
+        <div className="grid flex-1 grid-cols-3 gap-2" data-testid="overview-balance-sheet-totals">
+          {[['Actifs', t.assets], ['Passifs', t.liabilities], ['Capital', t.equity]].map(([label, v]) => (
+            <div key={label} className="rounded-lg bg-slate-50 px-2 py-1.5">
+              <p className="text-[11px] text-slate-500">{label}</p>
+              <p className={`text-[15px] font-semibold tabular-nums ${v < 0 ? 'text-rose-600' : 'text-slate-900'}`}>{v == null ? '—' : fmtMoneyCompact(v)}</p>
+            </div>
+          ))}
         </div>
         {sections.length > 0 && (
           <button
@@ -811,56 +773,66 @@ function BalanceSheetCard({ data, error }) {
           </button>
         )}
       </div>
+      <table className="w-full text-xs">
+        <tbody>
+          {visible.map(r => {
+            const top = !r.depth
+            const cls = top
+              ? 'border-t border-slate-200 font-semibold text-slate-900'
+              : r.kind === 'data' ? 'text-slate-600' : 'font-medium text-slate-700'
+            return (
+              <tr key={r.id} className={cls}>
+                <td className="max-w-[320px] truncate py-1 pr-2" style={{ paddingLeft: 8 + (r.depth || 0) * 10 }} title={r.label}>
+                  {r.kind === 'header' && r.collapsible ? (
+                    <button type="button" onClick={() => toggle(r.id)} className="flex w-full items-center gap-1 truncate text-left hover:text-brand-700">
+                      {collapsed.has(r.id) ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
+                      <span className="truncate">{r.label}</span>
+                    </button>
+                  ) : r.label}
+                </td>
+                <td className={`whitespace-nowrap px-2 py-1 text-right tabular-nums ${r.total < 0 ? 'text-rose-600' : ''}`}>
+                  {r.total == null ? null : r.total ? fmtMoney(r.total) : <span className="text-slate-300">—</span>}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+// Bilan à la date d'un point du graphique du capital.
+function BalanceSheetModal({ asOf, onClose }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+  useEffect(() => {
+    let alive = true
+    api.dashboard.balanceSheet({ as_of: asOf })
+      .then(d => { if (alive) setData(d) })
+      .catch(e => { if (alive) setError(e?.message || 'Erreur QuickBooks') })
+    return () => { alive = false }
+  }, [asOf])
+  return (
+    <Modal isOpen onClose={onClose} size="lg" title={`Bilan au ${fmtDate(asOf)}`}>
       {error ? (
         <p className="text-xs text-rose-600" data-testid="overview-balance-sheet-error">Indisponible : {error}</p>
       ) : !data ? (
-        <EmptyPlot label="Chargement du bilan…" />
+        <EmptyPlot label="Chargement…" />
       ) : (
-        <>
-          <div className="mb-2 grid grid-cols-3 gap-2" data-testid="overview-balance-sheet-totals">
-            {[['Actifs', t.assets], ['Passifs', t.liabilities], ['Capital', t.equity]].map(([label, v]) => (
-              <div key={label} className="rounded-lg bg-slate-50 px-2 py-1.5">
-                <p className="text-[11px] text-slate-500">{label}</p>
-                <p className={`text-[15px] font-semibold tabular-nums ${v < 0 ? 'text-rose-600' : 'text-slate-900'}`}>{v == null ? '—' : fmtMoneyCompact(v)}</p>
-              </div>
-            ))}
-          </div>
-          <div className="max-h-[210px] overflow-y-auto">
-            <table className="w-full text-xs">
-              <tbody>
-                {visible.map(r => {
-                  const top = !r.depth
-                  const cls = top
-                    ? 'border-t border-slate-200 font-semibold text-slate-900'
-                    : r.kind === 'data' ? 'text-slate-600' : 'font-medium text-slate-700'
-                  return (
-                    <tr key={r.id} className={cls}>
-                      <td className="max-w-[220px] truncate py-1 pr-2" style={{ paddingLeft: 8 + (r.depth || 0) * 10 }} title={r.label}>
-                        {r.kind === 'header' && r.collapsible ? (
-                          <button type="button" onClick={() => toggle(r.id)} className="flex w-full items-center gap-1 truncate text-left hover:text-brand-700">
-                            {collapsed.has(r.id) ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
-                            <span className="truncate">{r.label}</span>
-                          </button>
-                        ) : r.label}
-                      </td>
-                      <td className={`whitespace-nowrap px-2 py-1 text-right tabular-nums ${r.total < 0 ? 'text-rose-600' : ''}`}>
-                        {r.total == null ? null : r.total ? fmtMoney(r.total) : <span className="text-slate-300">—</span>}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </>
+        <BalanceSheetTable data={data} />
       )}
-    </div>
+    </Modal>
   )
 }
 
 /* ── La planche ──────────────────────────────────────────────────────── */
 
 export function DashboardOverview({ data, subscriptionEvents }) {
+  const navigate = useNavigate()
+  // Point cliqué du graphique de marge brute → commandes de sa fenêtre 28 j, en modale.
+  const [marginWeek, setMarginWeek] = useState(null)
+  const [replacementMonth, setReplacementMonth] = useState(null)
   const [bank, setBank] = useState(null)
   const [bankError, setBankError] = useState(null)
   const [history, setHistory] = useState(null)
@@ -870,12 +842,16 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   const [qbRevenueError, setQbRevenueError] = useState(null)
   const [pnl, setPnl] = useState(null)
   const [pnlError, setPnlError] = useState(null)
-  const [bs, setBs] = useState(null)
-  const [bsError, setBsError] = useState(null)
+  const [equity, setEquity] = useState(null)
+  const [equityError, setEquityError] = useState(null)
+  // Date (YYYY-MM-DD) du point cliqué du graphique du capital → bilan en modale.
+  const [bsAsOf, setBsAsOf] = useState(null)
   const [debt, setDebt] = useState(null)
   const [debtError, setDebtError] = useState(null)
   const [cashFlow, setCashFlow] = useState(null)
   const [cashFlowError, setCashFlowError] = useState(null)
+  const [prod, setProd] = useState(null)
+  const [prodError, setProdError] = useState(null)
 
   const loadFinance = (opts = {}) => {
     setBankError(null)
@@ -886,18 +862,22 @@ export function DashboardOverview({ data, subscriptionEvents }) {
       .catch(e => { setCashFlow(null); setCashFlowError(e?.message || 'Erreur QuickBooks') })
     setQbRevenueError(null)
     setPnlError(null)
-    setBsError(null)
+    setEquityError(null)
     setInvHistoryError(null)
     api.dashboard.inventoryHistory({ months: 12, ...opts })
       .then(setInvHistory)
       .catch(e => { setInvHistory(null); setInvHistoryError(e?.message || 'Erreur QuickBooks') })
-    api.dashboard.balanceSheet(opts)
-      .then(setBs)
-      .catch(e => { setBs(null); setBsError(e?.message || 'Erreur QuickBooks') })
+    api.dashboard.balanceSheetHistory({ months: 13, ...opts })
+      .then(setEquity)
+      .catch(e => { setEquity(null); setEquityError(e?.message || 'Erreur QuickBooks') })
     api.dashboard.incomeStatement({ months: 12, ...opts })
       .then(setPnl)
       .catch(e => { setPnl(null); setPnlError(e?.message || 'Erreur QuickBooks') })
-    api.dashboard.bankAccountsHistory({ months: 12, ...opts }).then(setHistory).catch(() => setHistory({ months: [] }))
+    setProdError(null)
+    api.dashboard.productivity({ months: 12, scope: 'sales_service', ...opts })
+      .then(setProd)
+      .catch(e => { setProd(null); setProdError(e?.message || 'Erreur QuickBooks') })
+    api.dashboard.bankAccountsHistory({ period: 'week', weeks: 52, ...opts }).then(setHistory).catch(() => setHistory({ months: [] }))
     api.dashboard.revenueByMonth({ months: 12, ...opts })
       .then(setQbRevenue)
       .catch(e => { setQbRevenue(null); setQbRevenueError(e?.message || 'Erreur QuickBooks') })
@@ -916,18 +896,21 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   /* Trésorerie */
   const treasury = bank?.treasury ?? bank?.totals?.net ?? null
 
+  // Une valeur par semaine (solde de fin de semaine), 52 semaines.
   const treasurySeries = useMemo(() => (history?.months || []).map(m => {
-    const [y, mo] = m.month.split('-').map(Number)
-    return { key: m.month, label: `${MONTH_SHORT[mo - 1]} ${y}`, short: MONTH_SHORT[mo - 1].replace('.', ''), value: m.treasury }
+    const day = m.period_start || `${m.month}-01`
+    return { key: m.period_start || m.month, label: `Sem. du ${fmtDate(day)}`, short: day.slice(5), value: m.treasury }
   }), [history])
 
-  /* Inventaire — soldes QB de fin de mois, un compte par colonne du tableau */
+  /* Inventaire — soldes QB de fin de mois */
   const inventorySeries = useMemo(() => (invHistory?.months || []).map(m => ({
     ...m, key: m.month, label: monthLabel(m.month), short: MONTH_SHORT[Number(m.month.slice(5)) - 1].replace('.', ''), value: m.total,
   })), [invHistory])
-  const inventoryAccounts = useMemo(() => (invHistory?.accounts || []).map(a => ({
-    key: a.id, label: a.name, short: a.name.replace(/^Stock (de |d')?/i, ''),
-  })), [invHistory])
+
+  /* Capital — fin de mois QuickBooks, le dernier point = aujourd'hui */
+  const equitySeries = useMemo(() => (equity?.points || []).map(m => ({
+    ...m, key: m.month, label: `Au ${fmtDate(m.as_of)}`, short: MONTH_SHORT[Number(m.month.slice(5)) - 1].replace('.', ''), value: m.equity,
+  })), [equity])
 
   const debtSeries = useMemo(() => (debt?.months || []).map(m => ({
     key: m.month, label: `${monthLabel(m.month)}${m.is_forecast ? ' · prévu' : ''}`, short: monthLabelShort(m.month),
@@ -947,14 +930,28 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   }, [cashFlow])
   const fcf12 = fcfSeries.reduce((s, m) => s + m.value, 0)
   const fcfCols = [
-    { key: 'operating', label: 'Exploitation' },
-    { key: 'investing', label: 'Investissement' },
+    { key: 'operating', label: 'Exploitation', tone: 'sky' },
+    { key: 'investing', label: 'Investissement', tone: 'amber' },
     { key: 'fcf', label: 'FCF' },
   ]
 
-  const debtCols = (debt?.debts || []).map(d => ({ key: d.id, label: d.label, short: d.label.replace(/^Prêt\s+/i, '') }))
+  /* Productivité — ventes + service ÷ heures des Opérations ($/h). Les mois incomplets
+     de fin de série (mois en cours, paie pas encore entrée) sont tracés en
+     tirets : leur ratio est surestimé. Un mois sans heures n'a pas de ratio. */
+  const prodSeries = useMemo(() => {
+    const rows = (prod?.months || []).filter(m => m.productivity != null)
+    let tail = rows.length
+    while (tail > 0 && rows[tail - 1].partial) tail--
+    return rows.map((m, i) => ({
+      key: m.month, label: `${monthLabel(m.month)}${m.partial ? ' · incomplet' : ''}`,
+      short: MONTH_SHORT[Number(m.month.slice(5)) - 1].replace('.', ''),
+      value: m.productivity, forecast: i >= tail && tail > 0,
+      sales: m.sales, hours: m.hours,
+    }))
+  }, [prod])
 
-  /* Rentabilité — 16 semaines, sommes hebdomadaires */
+  /* Rentabilité — 16 semaines affichées + 3 de recul (fenêtre de 4 sem. pleine
+     dès le premier point), sommes hebdomadaires */
   const profitWeeks = useMemo(() => {
     const rows = data?.weeklyProfitability || []
     const byWeek = new Map()
@@ -964,21 +961,28 @@ export function DashboardOverview({ data, subscriptionEvents }) {
       cur.cogs += Number(r.cogs) || 0
       byWeek.set(r.week_start, cur)
     }
-    return lastMondayKeys(16).map(w => {
+    return lastMondayKeys(19).map(w => {
       const v = byWeek.get(w.key) || { revenue: 0, cogs: 0 }
       return { ...w, revenue: v.revenue, cogs: v.cogs }
     })
   }, [data])
 
-  const sum = (arr, k) => arr.reduce((s, x) => s + (x[k] || 0), 0)
-  // Marge en fenêtre glissante de 28 jours (4 semaines) : une semaine sans
-  // expédition n'a pas de marge — la lisser évite les chutes à 0 % qui ne
-  // veulent rien dire. Même convention que la section « Rentabilité ».
-  const marginSeries = profitWeeks.map((w, i) => {
-    const win = profitWeeks.slice(Math.max(0, i - 3), i + 1)
-    const rev = sum(win, 'revenue')
-    return { ...w, label: `4 sem. au ${w.short}`, value: rev > 0 ? ((rev - sum(win, 'cogs')) / rev) * 100 : 0 }
-  })
+  // Marge en fenêtre glissante de 28 jours (4 semaines pleines, y compris les
+  // premiers points). Une fenêtre sans vente n'a pas de marge : elle reprend la
+  // valeur précédente (la suivante en début de série) plutôt que 0 %.
+  const marginSeries = useMemo(() => {
+    const sum = (arr, k) => arr.reduce((s, x) => s + (x[k] || 0), 0)
+    const raw = profitWeeks.slice(3).map((w, j) => {
+      const win = profitWeeks.slice(j, j + 4)
+      const rev = sum(win, 'revenue')
+      return { ...w, value: rev > 0 ? ((rev - sum(win, 'cogs')) / rev) * 100 : null }
+    })
+    let prev = raw.find(p => p.value !== null)?.value ?? 0
+    return raw.map(p => {
+      if (p.value !== null) { prev = p.value; return { ...p, label: `4 sem. au ${p.key}` } }
+      return { ...p, value: prev, label: `4 sem. au ${p.key} · sans expédition` }
+    })
+  }, [profitWeeks])
 
   /* Revenus QuickBooks par mois, un compte de revenu par série. Les comptes et
      leur ordre viennent du serveur (plan comptable QB), pas d'une liste figée
@@ -1034,6 +1038,15 @@ export function DashboardOverview({ data, subscriptionEvents }) {
     })
   }, [data])
 
+  /* Taux de remplacement — coût des pièces de remplacement envoyées ÷ valeur du parc */
+  const replacement = data?.replacementRate
+  const replacementSeries = useMemo(() => {
+    const park = Number(replacement?.parkValue) || 0
+    const by = new Map((replacement?.byMonth || []).map(r => [r.month, Number(r.replacement_cost) || 0]))
+    return lastMonthKeys(12).map(m => ({ ...m, value: park > 0 ? ((by.get(m.key) || 0) / park) * 100 : 0, cost: by.get(m.key) || 0, park }))
+  }, [replacement])
+  const replacementCost12 = (replacement?.byMonth || []).reduce((s, r) => s + (Number(r.replacement_cost) || 0), 0)
+
   const closing12 = closingSeries.reduce((acc, m) => ({ won: acc.won + m.won, total: acc.total + m.total }), { won: 0, total: 0 })
   const closingRate12 = closing12.total ? (closing12.won / closing12.total) * 100 : 0
 
@@ -1058,7 +1071,11 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   })
   // Bandes du héros : actifs (vert) d'abord, puis dettes (rouge), chacun du plus gros au plus petit.
   const accountBars = significant
-    .map(a => ({ id: a.id, name: a.name, v: Number(a.balance_cad ?? a.balance) }))
+    .map(a => {
+      const v = Number(a.balance_cad ?? a.balance)
+      // Cartes et marges : la bande part de la droite.
+      return { id: a.id, name: a.name, v, debt: a.type === 'Credit Card' || v < 0 }
+    })
     .sort((x, y) => (y.v >= 0) - (x.v >= 0) || Math.abs(y.v) - Math.abs(x.v))
   const barMax = Math.max(1, ...accountBars.map(a => Math.abs(a.v)))
 
@@ -1100,12 +1117,12 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           </div>
           <div>
             {treasurySeries.length
-              ? <MiniLine points={treasurySeries} tone="brand" format={fmtMoneyCompact} labelEvery={2} vw={HERO_VW} />
+              ? <MiniLine points={treasurySeries} tone="brand" format={fmtMoneyCompact} labelEvery={8} vw={HERO_VW} />
               : <EmptyPlot label="Historique QuickBooks indisponible" />}
           </div>
           {/* Soldes par compte : une bande par compte, longueur = poids dans la trésorerie. */}
           <div className="lg:col-span-2 xl:col-span-1" data-testid="overview-bank-accounts">
-            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Par compte</p>
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Par compte <span className="normal-case tracking-normal font-normal text-slate-300">· Converti en CAD</span></p>
             {bankError ? null : !bankRows.length ? (
               <p className="text-xs text-slate-300">Chargement…</p>
             ) : (
@@ -1118,7 +1135,7 @@ export function DashboardOverview({ data, subscriptionEvents }) {
                     </div>
                     <div className="mt-0.5 h-1.5 rounded-full bg-slate-100">
                       <div
-                        className={`h-full rounded-full ${a.v < 0 ? 'bg-rose-500' : 'bg-emerald-500'}`}
+                        className={`h-full rounded-full ${a.debt ? 'ml-auto' : ''} ${a.v < 0 ? 'bg-rose-500' : 'bg-emerald-500'}`}
                         style={{ width: `${Math.max(2, (Math.abs(a.v) / barMax) * 100)}%` }}
                       />
                     </div>
@@ -1138,7 +1155,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           subtitle={qbRevenueLastFull
             ? `QuickBooks · par compte de revenu · ${fmtMoneyCompact(qbRevenueLastFull.total)} en ${monthLabel(qbRevenueLastFull.month)}`
             : 'QuickBooks · par compte de revenu · 12 mois'}
-          table={<SeriesTable points={qbRevenuePoints} series={qbRevenueSeries} format={fmtMoney} periodLabel="Mois" />}
         >
           {qbRevenueError ? (
             <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600" data-testid="overview-qb-revenue-error">
@@ -1154,7 +1170,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
         <ChartCard
           id="fcf" title="Free cash flow"
           subtitle={cashFlow ? `QuickBooks · ${fmtMoneyCompact(fcf12)} sur 12 mois` : 'QuickBooks · 12 mois'}
-          table={<SeriesTable points={fcfSeries} series={fcfCols} format={fmtMoney} periodLabel="Mois" withTotal={false} />}
         >
           {cashFlowError ? (
             <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600">
@@ -1163,14 +1178,13 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           ) : !cashFlow ? (
             <EmptyPlot label="Chargement…" />
           ) : (
-            <DivergingColumns points={fcfSeries} format={fmtMoneyCompact} chartId="fcf" />
+            <DivergingColumns points={fcfSeries} format={fmtMoneyCompact} chartId="fcf" breakdown={fcfCols} />
           )}
         </ChartCard>
 
         <ChartCard
           id="inventory" title="Valeur de l'inventaire" subtitle="QuickBooks · fin de mois · 12 mois"
-          to="/dashboard/valeur-inventaire"
-          table={<SeriesTable points={inventorySeries} series={inventoryAccounts} format={fmtMoney} periodLabel="Mois" />}
+          to="/products?vue=997d024c-a474-4e01-98bb-74a9530d6b41"
         >
           {invHistoryError ? (
             <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600">
@@ -1185,8 +1199,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
 
         <ChartCard
           id="projects" title="Projets créés" subtitle="12 derniers mois"
-          to="/dashboard/projets-crees"
-          table={<SeriesTable points={projectsSeries} series={projectsCompareSeries} format={fmtInt} periodLabel="Mois" withTotal={false} />}
         >
           <GroupedColumns
             points={projectsSeries} series={projectsCompareSeries} format={fmtInt}
@@ -1198,24 +1210,50 @@ export function DashboardOverview({ data, subscriptionEvents }) {
         <ChartCard
           id="closing" title={`Taux de closing · ${fmtPct(closingRate12, 0)}`}
           subtitle={`${fmtInt(closing12.won)} vendus sur ${fmtInt(closing12.total)} tranchés · 12 mois`}
-          to="/dashboard/taux-de-closing"
-          points={closingSeries} format={v => fmtPct(v, 0)} valueLabel="Taux" periodLabel="Mois"
         >
-          <MiniLine points={closingSeries} tone="sky" format={v => fmtPct(v, 0)} />
+          <MiniLine points={closingSeries} tone="sky" format={v => fmtPct(v, 0)} chartId="closing" onPointClick={p => { if (p.total) navigate(`/pipeline?closingMonth=${p.key}`) }} />
         </ChartCard>
 
         <ChartCard
           id="margin" title="Marge brute hebdomadaire" subtitle="Commandes expédiées · 16 semaines"
-          to="/dashboard/rentabilite"
-          points={marginSeries} format={v => fmtPct(v, 0)} valueLabel="Marge" periodLabel="Semaine"
         >
-          <MiniLine points={marginSeries} tone="brand" format={v => fmtPct(v, 0)} labelEvery={4} />
+          <MiniLine points={marginSeries} tone="brand" format={v => fmtPct(v, 0)} labelEvery={4} chartId="margin" onPointClick={p => setMarginWeek(p.key)} />
+        </ChartCard>
+
+        <ChartCard
+          id="replacement" title="Taux de remplacement"
+          subtitle={`Pièces de remplacement envoyées · ${fmtMoneyCompact(replacementCost12)} sur 12 mois`}
+        >
+          <MiniLine points={replacementSeries} tone="rose" format={v => fmtPct(v, 2)} chartId="replacement" onPointClick={p => setReplacementMonth(p)}
+            rowsFor={p => [
+              { label: 'Remplacements', value: fmtMoney(p.cost) },
+              { label: 'Parc', value: fmtMoney(p.park) },
+            ]} />
+        </ChartCard>
+
+        <ChartCard
+          id="productivity" title="Productivité"
+          subtitle={prod?.totals?.productivity != null
+            ? `Ventes + service ÷ heures Opérations · ${fmtMoney(prod.totals.productivity)}/h sur ${prod.totals.months} mois`
+            : 'Ventes + service ÷ heures Opérations · 12 mois'}
+        >
+          {prodError ? (
+            <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600">Indisponible : {prodError}</div>
+          ) : !prod ? (
+            <EmptyPlot label="Chargement…" />
+          ) : (
+            <MiniLine points={prodSeries} tone="amber" format={fmtMoney} chartId="productivity"
+              rowsFor={p => [
+                { label: '$/h', value: fmtMoney(p.value), dot: TONES.amber.bar },
+                { label: 'Revenus', value: fmtMoney(p.sales) },
+                { label: 'Heures Opérations', value: `${fmtInt(p.hours)} h` },
+              ]} />
+          )}
         </ChartCard>
 
         <ChartCard
           id="mrr" title="Delta MRR net" subtitle="Hausses moins baisses d'abonnements · 12 mois"
-          to="/dashboard/mouvements-abonnements"
-          points={mrrSeries} format={fmtMoneyCompact} valueLabel="Delta MRR" periodLabel="Mois"
+          to="/abonnements/mouvements"
         >
           <DivergingColumns
             points={mrrSeries} format={fmtMoneyCompact}
@@ -1228,7 +1266,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           id="lt-debt" title="Dette à long terme"
           subtitle="Cédules · 12 mois + 12 prévus"
           to="/dettes-lt"
-          table={<SeriesTable points={debtSeries} series={debtCols} format={fmtMoney} periodLabel="Mois" />}
         >
           {debtError ? (
             <div className="flex h-[132px] items-center justify-center text-xs text-rose-600">Indisponible : {debtError}</div>
@@ -1239,10 +1276,57 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           )}
         </ChartCard>
 
-        <BalanceSheetCard data={bs} error={bsError} />
+        <ChartCard id="equity" title="Capital" subtitle="QuickBooks · fin de mois · bilan au clic">
+          {equityError ? (
+            <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600">Indisponible : {equityError}</div>
+          ) : !equity ? (
+            <EmptyPlot label="Chargement…" />
+          ) : (
+            <MiniLine points={equitySeries} tone="sky" format={fmtMoneyCompact} labelEvery={3} chartId="equity"
+              onPointClick={p => setBsAsOf(p.as_of)}
+              rowsFor={p => [
+                { label: 'Capital', value: fmtMoney(p.equity), dot: TONES.sky.bar },
+                { label: 'Actifs', value: fmtMoney(p.assets) },
+                { label: 'Passifs', value: fmtMoney(p.liabilities) },
+              ]} />
+          )}
+        </ChartCard>
       </section>
 
       <IncomeStatementCard data={pnl} error={pnlError} />
+
+      {marginWeek && (() => {
+        const win = rollingWindow(marginWeek)
+        const orders = ordersInWindow(data?.recentShippedOrders, win)
+        return (
+          <Modal isOpen onClose={() => setMarginWeek(null)} size="xl" title={`Commandes — 28 jours au ${win.label} (${orders.length})`}>
+            <div className="overflow-x-auto" data-testid="overview-margin-orders">
+              <ProfitabilityOrdersTable
+                orders={orders}
+                onOpen={o => { setMarginWeek(null); navigate(`/orders/${o.id}`) }}
+                emptyLabel="Aucune commande envoyée"
+              />
+            </div>
+          </Modal>
+        )
+      })()}
+
+      {bsAsOf && <BalanceSheetModal asOf={bsAsOf} onClose={() => setBsAsOf(null)} />}
+
+      {replacementMonth && (() => {
+        const items = replacementItemsInMonth(replacement?.items, replacementMonth.key)
+        return (
+          <Modal isOpen onClose={() => setReplacementMonth(null)} size="xl" title={`Remplacements — ${replacementMonth.label} (${items.length})`}>
+            <div className="overflow-x-auto" data-testid="overview-replacement-items">
+              <ReplacementItemsTable
+                items={items}
+                onOpen={it => { setReplacementMonth(null); navigate(`/orders/${it.order_id}`) }}
+                emptyLabel="Aucun remplacement envoyé"
+              />
+            </div>
+          </Modal>
+        )
+      })()}
     </div>
   )
 }

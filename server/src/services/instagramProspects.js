@@ -45,6 +45,8 @@ export const INSTAGRAM_INTAKE_DEFAULT_CONFIG = {
 }
 
 export const INSTAGRAM_SLACK_DEFAULT_CONFIG = {
+  cadence: 'quotidien',       // 'quotidien' = chaque matin à daily_hour ; 'hebdo' = samedi après la reconnexion
+  daily_hour: '7',            // heure locale (Montréal) de la liste quotidienne
   send_weekday: '6',          // ISO : 1=lundi … 7=dimanche. 6 = samedi.
   send_hour: '20',            // plus lu par aucun horaire : la liste part seulement
                               // après la reconnexion Instagram (instagramRefresh.js).
@@ -625,10 +627,10 @@ const CAPTURE_KIND_ORDER = [
  * (il coche « contacté ») ; le recopier dans Slack donnerait un pavé à faire
  * défiler, périmé dès qu'une case est cochée.
  */
-export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = null, backlogCount = 0 } = {}) {
+export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = null, backlogCount = 0, label = null } = {}) {
   // « du 2026-09-07 au 2026-09-13 » → sans « du » : le titre porte déjà le
   // contexte, l'article ne sert qu'à allonger la ligne.
-  const range = weekRangeLabel(coveredWeek(dayIso || localDay())).replace(/^du /, '')
+  const range = label || weekRangeLabel(coveredWeek(dayIso || localDay())).replace(/^du /, '')
   // Un seul lien : Phil travaille dans Boréal (maquette P1, Charles 2026-10-03).
   const target = erpUrl || url
   const footer = target ? `\n<${target}|Ouvrir dans Boréal>` : ''
@@ -640,7 +642,7 @@ export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = nul
   if (!prospects.length) {
     return [
       `:camera_with_flash: *Instagram · ${range}*`,
-      '• Personne de nouveau cette semaine.',
+      `• Personne de nouveau${label ? '' : ' cette semaine'}.`,
       ...backlogLine.map(l => `• ${l}`),
     ].join('\n') + footer
   }
@@ -695,6 +697,14 @@ function notifyDigestSent(cfg, message, count) {
   } catch (e) { console.error('instagram notification:', e.message) }
 }
 
+function alreadySentToday(dayIso) {
+  return !!db.prepare(`
+    SELECT 1 FROM automation_logs
+    WHERE automation_id = ? AND status = 'success' AND result LIKE ?
+    LIMIT 1
+  `).get(INSTAGRAM_SLACK_AUTOMATION_ID, `JOUR ${dayIso}%`)
+}
+
 function alreadySentThisWeek(dayIso) {
   return !!db.prepare(`
     SELECT 1 FROM automation_logs
@@ -709,20 +719,31 @@ function alreadySentThisWeek(dayIso) {
  * bien `send_hour` envoie, et `alreadySentThisWeek` sert de ceinture.
  * `force` court-circuite jour, heure et idempotence (bouton « Exécuter »).
  */
-export async function runWeeklyProspectDigest({ force = false, weekly = false, trigger = 'schedule', today = null, hour = null } = {}) {
+export async function runWeeklyProspectDigest({ force = false, weekly = false, daily = false, trigger = 'schedule', today = null, hour = null } = {}) {
   const t0 = Date.now()
   try {
     if (!isSystemAutomationActive(INSTAGRAM_SLACK_AUTOMATION_ID)) return { skipped: 'inactive' }
     const cfg = getSlackConfig()
+    // « Exécuter » suit la cadence réglée.
+    if (force && cfg.cadence !== 'hebdo') daily = true
     const dayIso = today || localDay()
     const nowHour = hour == null ? localHour() : Number(hour)
+    // Chaque matin (Charles, 2026-10-14) : ce qui a été capté depuis la veille,
+    // que la lecture de la nuit ait eu lieu ou non (Mac en veille).
+    if (daily && !force) {
+      if (cfg.cadence === 'hebdo') return { ok: true, sent: false, reason: 'liste hebdomadaire' }
+      if (nowHour !== Math.min(23, Math.max(0, Number(cfg.daily_hour) || 7))) return { ok: true, sent: false, reason: "pas l'heure d'envoi" }
+      if (alreadySentToday(dayIso)) return { ok: true, sent: false, reason: "déjà envoyé aujourd'hui" }
+    }
     const sendDay = Math.min(7, Math.max(1, Number(cfg.send_weekday) || 1))
     const sendHour = Math.min(23, Math.max(0, Number(cfg.send_hour) || 0))
 
     // `weekly` : l'envoi de la semaine, déclenché par une reconnexion plutôt
     // que par l'horloge — seulement le jour d'envoi (samedi), une fois par
     // semaine (Charles, 2026-10-10 : « à chaque samedi, plus les lundis »).
-    if (!force) {
+    if (!force && !daily) {
+      // Liste quotidienne en place : la reconnexion du samedi n'envoie plus rien.
+      if (cfg.cadence !== 'hebdo') return { ok: true, sent: false, reason: 'liste quotidienne' }
       if (isoWeekday(dayIso) !== sendDay) return { ok: true, sent: false, reason: "pas le jour d'envoi" }
       if (!weekly && nowHour !== sendHour) return { ok: true, sent: false, reason: "pas l'heure d'envoi" }
       if (alreadySentThisWeek(dayIso)) return { ok: true, sent: false, reason: 'déjà envoyé cette semaine' }
@@ -733,13 +754,18 @@ export async function runWeeklyProspectDigest({ force = false, weekly = false, t
     try { await reconcileAirtable() } catch (e) { console.error('instagram reconcile:', e.message) }
 
     const prospects = unnotifiedProspects()
-    const { ofWeek, backlog } = splitByWeek(stillToHandle(prospects), coveredWeek(dayIso))
+    // Quotidien : tout ce qui n'a pas encore été annoncé, sans découpe par semaine.
+    const { ofWeek, backlog } = daily
+      ? { ofWeek: stillToHandle(prospects), backlog: [] }
+      : splitByWeek(stillToHandle(prospects), coveredWeek(dayIso))
     const message = buildWeeklyMessage(ofWeek, {
       dayIso, url: airtableUrl(), erpUrl: erpProspectsUrl(), backlogCount: backlog.length,
+      label: daily ? 'depuis hier' : null,
     })
 
     const res = await sendSlack({
-      channel: cfg.slack_channel || null,
+      // Un webhook collé dans l’automation prime sur le bot (Charles, 2026-10-14).
+      channel: cfg.slack_webhook_url ? null : (cfg.slack_channel || null),
       url: cfg.slack_webhook_url,
       envName: cfg.slack_webhook_env,
       text: message,
@@ -779,7 +805,7 @@ export async function runWeeklyProspectDigest({ force = false, weekly = false, t
     const scheduled = !force
     logSystemRun(INSTAGRAM_SLACK_AUTOMATION_ID, {
       status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger, day: dayIso },
-      result: `${scheduled ? `HEBDO ${week}` : 'ENVOI MANUEL'} — ${ofWeek.length} prospect(s) de la semaine` +
+      result: `${!scheduled ? 'ENVOI MANUEL' : daily ? `JOUR ${dayIso}` : `HEBDO ${week}`} — ${ofWeek.length} prospect(s)${daily ? '' : ' de la semaine'}` +
         (backlog.length ? ` + ${backlog.length} d'arriéré` : '') + ` annoncé(s) à ${cfg.recipient}` +
         (res.fallback ? ` · ⚠️ envoyé sur le canal de repli (${res.env})` : ''),
     })
@@ -798,9 +824,12 @@ export function previewWeeklyProspectDigest() {
   const cfg = getSlackConfig()
   const dayIso = localDay()
   const prospects = unnotifiedProspects()
-  const { ofWeek, backlog } = splitByWeek(stillToHandle(prospects), coveredWeek(dayIso))
+  const daily = cfg.cadence !== 'hebdo'
+  const { ofWeek, backlog } = daily
+    ? { ofWeek: stillToHandle(prospects), backlog: [] }
+    : splitByWeek(stillToHandle(prospects), coveredWeek(dayIso))
   const target = resolveSlackTarget({ url: cfg.slack_webhook_url, envName: cfg.slack_webhook_env })
-  const canal = cfg.slack_channel && process.env.SLACK_BOT_TOKEN
+  const canal = !cfg.slack_webhook_url && cfg.slack_channel && process.env.SLACK_BOT_TOKEN
     ? `destinataire : ${cfg.slack_channel}`
     : target.url
     ? (target.fallback
@@ -811,9 +840,10 @@ export function previewWeeklyProspectDigest() {
     summary: `${ofWeek.length} prospect(s) de la semaine` +
       (backlog.length ? ` + ${backlog.length} d'arriéré` : '') +
       ` à annoncer à ${cfg.recipient} · ` +
-      `envoi après la reconnexion Instagram · ${canal}`,
+      `${daily ? `envoi chaque matin à ${cfg.daily_hour} h` : 'envoi après la reconnexion Instagram'} · ${canal}`,
     apercu: buildWeeklyMessage(ofWeek, {
       dayIso, url: airtableUrl(), erpUrl: erpProspectsUrl(), backlogCount: backlog.length,
+      label: daily ? 'depuis hier' : null,
     }),
   }
 }

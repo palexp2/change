@@ -113,7 +113,6 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
         record={issue}
         onSaveCustom={save}
         savingKeys={savingKeys}
-        selectPills
         className="card p-5"
         testId="ops-issue-fields"
       >

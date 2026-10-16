@@ -27,10 +27,29 @@ import { writebackModuleForTable, dynamicFieldDirection } from './airtableWriteb
 export const AIRTABLE_PULL_EDIT_ERROR =
   "Champ importé d'Airtable (sens import) — passez-le en bidirectionnel ou coupez l'import pour l'éditer"
 
+// Colonnes CALCULÉES par Boréal : jamais saisissables, quel que soit le mapping
+// (le calcul réécrirait la saisie). `orders.status` : services/orderStatus.js.
+// `products` : stock et seuil dynamique (services/dynamicThresholdWatcher.js).
+export const ERP_COMPUTED_COLUMNS = {
+  orders: new Set(['status']),
+  products: new Set([
+    'stock_qty', 'quantite_a_commander', 'seuil_dynamique', 'restant_avant_seuil_dynamique',
+    'pourcentage_restant_seuil_dynamique', 'quantite_sera_disponible',
+    'seuil_minimum_produits_x_quantite_necessaire',
+    'quantite_dans_les_produits_produits_x_quantite_necessaire', 'quantite_a_recevoir',
+    'quantite_a_fabriquer',
+  ]),
+}
+
+export const isErpComputedColumn = (erpTable, column) => !!ERP_COMPUTED_COLUMNS[erpTable]?.has(column)
+
+export const ERP_COMPUTED_EDIT_ERROR = 'Champ calculé par Boréal — non modifiable'
+
 // Vrai si la colonne (ligne custom_fields enrichie de son mapping Airtable)
 // est éditable dans l'ERP selon la règle ci-dessus.
 //   row : { column_name, source, mapping_id, import_disabled }
 export function isColumnWritable(erpTable, row, module = writebackModuleForTable(erpTable)) {
+  if (ERP_COMPUTED_COLUMNS[erpTable]?.has(row.column_name)) return false
   const hasActiveMapping = row.mapping_id != null && row.import_disabled !== 1
   if (hasActiveMapping) {
     const direction = dynamicFieldDirection(module, row.column_name)

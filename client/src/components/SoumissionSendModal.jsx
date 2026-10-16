@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Send, Eye, ChevronDown } from 'lucide-react'
+import { Send, Eye, ChevronDown, MousePointerClick } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import EmailComposerModal from './EmailComposerModal.jsx'
@@ -11,7 +11,7 @@ export const soumissionWasSent = s => Boolean(s?.sent_at) || ['Envoyée', 'Accep
 
 // Heure du dernier envoi et de la 1re ouverture du courriel (pixel de suivi).
 // `history` : dernière ouverture à la place, et un chevron qui déplie tous les
-// envois et toutes leurs ouvertures.
+// envois, toutes leurs ouvertures et tous leurs clics.
 export function SoumissionSentStamp({ soumission: s, history = false }) {
   const [open, setOpen] = useState(false)
   const [sends, setSends] = useState(null)
@@ -55,6 +55,13 @@ export function SoumissionSentStamp({ soumission: s, history = false }) {
                 : e.opens.map((o, i) => (
                   <div key={i} className="flex items-center gap-1 pl-3 text-green-600"><Eye size={11} /> {fmtDateTime(o)}</div>
                 ))}
+              {(e.clicks || []).map((c, i) => (
+                <div key={`c${i}`} className="flex items-center gap-1 pl-3 text-blue-600" title={c.label || ''}
+                  data-testid="soumission-sent-click">
+                  <MousePointerClick size={11} className="shrink-0" /> {fmtDateTime(c.at)}
+                  <span className="truncate text-blue-400">{c.label}</span>
+                </div>
+              ))}
             </div>
           ))}
         </div>

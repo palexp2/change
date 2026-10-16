@@ -8,6 +8,9 @@ import { useListData } from '../lib/useListData.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
+import { ChoiceBadge } from '../lib/customFieldDisplay.jsx'
+import { useFieldGate } from '../lib/fieldGate.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { fmtMoney, fmtNumber } from '../utils/formatters.js'
@@ -45,7 +48,7 @@ const COLUMNS_PAIES = TABLE_COLUMN_META.paies.map(meta => ({ ...meta, render: RE
 
 const RENDERS_PAIE_ITEMS = {
   employee_name:           row => <span>{row.first_name} {row.last_name}</span>,
-  accounting_department:   row => <span className="text-slate-500">{row.accounting_department || '—'}</span>,
+  accounting_department:   row => row.accounting_department || '—',
   hourly_rate:             row => <span className="tabular-nums">{fmtMoney(row.hourly_rate)}</span>,
   regular_hours:           row => <span className="tabular-nums">{num(row.regular_hours)}</span>,
   holiday_hours:           row => <span className="tabular-nums">{num(row.holiday_hours)}</span>,
@@ -140,12 +143,7 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
   // Inputs texte/nombre : maj du form au change, persistance au blur en édition.
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }))
   const blurSave = k => () => { if (editing) saveField(k, form[k]) }
-  // Select / checkbox : changement discret → maj du form + persistance immédiate.
-  const sel = k => e => {
-    const v = e.target.value
-    setForm(p => ({ ...p, [k]: v }))
-    if (editing) saveField(k, v)
-  }
+  // Checkbox : changement discret → maj du form + persistance immédiate.
   const chk = k => e => {
     const v = e.target.checked ? 1 : 0
     setForm(p => ({ ...p, [k]: v }))
@@ -195,9 +193,16 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
           </div>
           <div>
             <label className="label">Statut</label>
-            <select value={form.status || ''} onChange={sel('status')} className="input">
-              {STATUSES.map(s => <option key={s}>{s}</option>)}
-            </select>
+            <ChoiceSelect
+              value={form.status || ''}
+              choices={STATUSES}
+              table="paies"
+              field="status"
+              onChange={v => { setForm(p => ({ ...p, status: v })); if (editing) saveField('status', v) }}
+              emptyOption={null}
+              className="input w-full"
+              testId="paie-form-status"
+            />
           </div>
           <div>
             <label className="label">Nombre de congés fériés</label>
@@ -391,6 +396,8 @@ function PaieDetail({ paie, onEdit, onDeleted }) {
   const { addToast } = useToast()
   const { user } = useAuth()
   const isHR = hasRole(user, 'rh')
+  const statusGate = useFieldGate('paies')
+  const statusChoices = statusGate.choicesFor('status', STATUSES)
   const paieItemsColumns = useMemo(() => buildPaieItemsColumns(isHR), [isHR])
   const [detail, setDetail] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -464,11 +471,19 @@ function PaieDetail({ paie, onEdit, onDeleted }) {
         <div>
           <div className="text-xs text-slate-500">Statut</div>
           {isHR ? (
-            <select value={detail.status || ''} onChange={e => changeStatus(e.target.value)} className="input font-medium" data-testid="paie-status-select">
-              {!detail.status && <option value="" />}
-              {[...new Set([...STATUSES, detail.status].filter(Boolean))].map(st => <option key={st}>{st}</option>)}
-            </select>
-          ) : <div className="font-medium">{detail.status || '—'}</div>}
+            <ChoiceSelect
+              value={detail.status || ''}
+              choices={STATUSES}
+              table="paies"
+              field="status"
+              onChange={changeStatus}
+              emptyOption={null}
+              className="input w-full"
+              testId="paie-status-select"
+            />
+          ) : detail.status
+            ? <ChoiceBadge color={statusChoices.find(c => c.value === detail.status)?.color || 'gray'}>{detail.status}</ChoiceBadge>
+            : <div className="font-medium">—</div>}
         </div>
         <div>
           <div className="text-xs text-slate-500">Total paie (Airtable)</div>

@@ -58,6 +58,11 @@ export const LOOKUP_TARGET_WHITELIST = new Set([
   // lien parasite. Les articles du retour sont la source évidente (# d'items,
   // valeur totale, liste des produits…).
   'return_items',
+  // Fournitures ↔ leurs achats (achats_fournitures.fourniture_id) : lookup de
+  // la fourniture depuis un achat, rollup des achats depuis la fourniture.
+  'fournitures', 'achats_fournitures',
+  // Numéros de série : lookup depuis le champ lien « # de série » des produits.
+  'serial_numbers',
 ])
 
 // Tables autorisées comme CIBLE d'un champ link bidirectionnel. Doit rester
@@ -68,6 +73,7 @@ export const LINK_TARGET_WHITELIST = new Set([
   'projects', 'factures', 'companies', 'contacts', 'products', 'orders',
   'tickets', 'tasks', 'shipments', 'employees', 'purchases',
   'achats_fournisseurs', 'returns', 'sale_receipts', 'serial_numbers', 'interactions',
+  'fournitures', 'achats_fournitures',
 ])
 
 // Colonnes qu'on n'expose JAMAIS en lookup (secrets, hashes, tokens).
@@ -133,12 +139,87 @@ export const ACTIVITY_ENTITY_MAP = {
 //   - last_modified_time : reprend la colonne physique updated_at de la table
 //   - created_by         : nom de l'utilisateur du 1er event 'created' d'activity_log
 //   - last_modified_by   : nom de l'utilisateur du dernier event d'activity_log
-export const AUTO_KINDS = new Set(['created_time', 'last_modified_time', 'created_by', 'last_modified_by'])
+//   - autonumber         : rang d'insertion de la ligne (rowid SQLite), croissant
+export const AUTO_KINDS = new Set(['created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber'])
 
 // Fonctions d'agrégation autorisées pour les rollups.
 // ARRAY / ARRAYUNIQUE concatènent les valeurs liées (toutes / distinctes) en une
 // liste texte séparée par « , » — utile pour lister des id, noms, etc.
 export const ROLLUP_AGGS = new Set(['SUM', 'COUNT', 'AVG', 'MIN', 'MAX', 'ARRAY', 'ARRAYUNIQUE'])
+
+// Condition d'un rollup ({ column, op, value }) : seuls les enregistrements liés
+// qui la remplissent sont agrégés (« conditions » d'un rollup Airtable).
+//   last_days : date dans les N derniers jours (valeur = N)
+//   eq / neq  : égal / différent (texte)
+//   gt / lt   : plus grand / plus petit (nombre)
+//   not_empty / empty
+export const ROLLUP_FILTER_OPS = new Set(['last_days', 'eq', 'neq', 'gt', 'lt', 'not_empty', 'empty'])
+
+// Normalise une condition (objet ou JSON) ; null = aucune condition. Lève si
+// elle est incomplète ou vise une colonne absente de la table enfant.
+export function normalizeRollupFilter(raw, childTable) {
+  let f = raw
+  if (typeof f === 'string') { try { f = JSON.parse(f) } catch { throw new Error('Condition du rollup invalide') } }
+  if (!f || typeof f !== 'object' || !f.column) return null
+  const op = String(f.op || '')
+  if (!ROLLUP_FILTER_OPS.has(op)) throw new Error('Opérateur de condition invalide')
+  if (!SAFE_IDENT.test(f.column) || !isSafeColumn(f.column)) throw new Error('Colonne de condition invalide')
+  if (childTable && !childColumns(childTable).includes(f.column)) {
+    throw new Error(`Colonne "${f.column}" introuvable sur ${childTable}`)
+  }
+  if (op === 'empty' || op === 'not_empty') return { column: f.column, op }
+  if (op === 'last_days') {
+    const n = Math.round(Number(f.value))
+    if (!Number.isFinite(n) || n < 1 || n > 36500) throw new Error('Nombre de jours invalide')
+    return { column: f.column, op, value: n }
+  }
+  if (op === 'gt' || op === 'lt') {
+    const n = Number(f.value)
+    if (f.value === '' || f.value == null || !Number.isFinite(n)) throw new Error('Valeur numérique requise')
+    return { column: f.column, op, value: n }
+  }
+  if (f.value == null) throw new Error('Valeur de condition requise')
+  return { column: f.column, op, value: String(f.value) }
+}
+
+// Clause SQL (préfixée « AND ») d'une condition déjà normalisée.
+function rollupFilterClause(filter, ralias) {
+  if (!filter) return ''
+  const c = `${ralias}.${filter.column}`
+  switch (filter.op) {
+    // Comparaison texte (dates ISO) et non date(${c}) : l'index couvrant se lit
+    // alors par plage au lieu d'être parcouru en entier.
+    case 'last_days': return ` AND ${c} >= date('now', '-${filter.value} days')`
+    case 'eq': return ` AND ${c} = ${sqlQuote(filter.value)}`
+    case 'neq': return ` AND (${c} IS NULL OR ${c} <> ${sqlQuote(filter.value)})`
+    case 'gt': return ` AND CAST(${c} AS REAL) > ${filter.value}`
+    case 'lt': return ` AND CAST(${c} AS REAL) < ${filter.value}`
+    case 'not_empty': return ` AND ${c} IS NOT NULL AND ${c} <> ''`
+    case 'empty': return ` AND (${c} IS NULL OR ${c} = '')`
+    default: return ''
+  }
+}
+
+// Champs lien Airtable (options.airtable_link_hint) : la colonne porte des
+// record IDs (« ["recX","recY"] »), pas l'id ERP du parent. Un rollup peut les
+// suivre à rebours (ex. purchases.nom_de_la_piece → products) : l'appariement
+// se fait alors par id ERP OU par airtable_id cité dans la liste.
+function isLinkListColumn(table, column) {
+  const row = db.prepare(
+    `SELECT options FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
+  ).get(table, column)
+  return /"airtable_link_hint"\s*:\s*true/.test(row?.options || '')
+}
+
+// Condition d'appartenance d'une ligne enfant au parent courant.
+function rollupMatchExpr(cf, erpTable, ralias) {
+  const fkRef = `${ralias}.${cf.rollup_target_fk}`
+  if (!isLinkListColumn(cf.rollup_target_table, cf.rollup_target_fk)) return `${fkRef} = ${erpTable}.id`
+  const byAirtable = childColumns(erpTable).includes('airtable_id')
+    ? ` OR (${erpTable}.airtable_id <> '' AND instr(coalesce(${fkRef}, ''), ${erpTable}.airtable_id) > 0)`
+    : ''
+  return `(${fkRef} = ${erpTable}.id OR instr(coalesce(${fkRef}, ''), '"' || ${erpTable}.id || '"') > 0${byAirtable})`
+}
 
 // Colonnes d'une table, colonnes GÉNÉRÉES comprises. `PRAGMA table_info` les
 // ignore silencieusement — un rollup sur `paie_items.regular_amount` (heures ×
@@ -399,6 +480,22 @@ export function getLookupMeta(erpTable) {
   const singulars = singularCandidates(erpTable)
   const inferredFkNames = new Set(singulars.map(s => `${s}_id`))
   const rollupSources = []
+  // Champs lien Airtable (toutes tables) qui visent erpTable : table → colonnes.
+  const linkListsToHere = new Map()
+  for (const f of db.prepare(
+    `SELECT cf.erp_table, cf.column_name, cf.options, m.options AS mapping_options
+     FROM custom_fields cf
+     LEFT JOIN airtable_field_mappings m
+       ON m.erp_table = cf.erp_table AND m.column_name = cf.column_name
+     WHERE cf.deleted_at IS NULL AND cf.options LIKE '%airtable_link_hint%'`
+  ).all()) {
+    if (!/"airtable_link_hint"\s*:\s*true/.test(f.options || '')) continue
+    let mo = null
+    try { mo = JSON.parse(f.mapping_options || 'null') } catch { mo = null }
+    if ((mo?.link_target_table || erpTableForAirtableTableId(mo?.linked_table_id)) !== erpTable) continue
+    if (!linkListsToHere.has(f.erp_table)) linkListsToHere.set(f.erp_table, [])
+    linkListsToHere.get(f.erp_table).push(f.column_name)
+  }
   for (const t of LOOKUP_TARGET_WHITELIST) {
     if (t === erpTable) continue
     let cols
@@ -419,6 +516,13 @@ export function getLookupMeta(erpTable) {
         seen.add(c)
         rollupSources.push({ table: t, fk_column: c, inferred: true })
       }
+    }
+    // 3) Champ lien Airtable de l'enfant qui vise erpTable
+    //    (ex. purchases.nom_de_la_piece → products).
+    for (const c of linkListsToHere.get(t) || []) {
+      if (seen.has(c) || !cols.includes(c)) continue
+      seen.add(c)
+      rollupSources.push({ table: t, fk_column: c })
     }
   }
   // Ordre du choix « Table liée » : les lignes PROPRES à la fiche d'abord
@@ -441,6 +545,8 @@ export function getLookupMeta(erpTable) {
   if (allCols.includes('created_at')) supportedAutoTypes.push('created_time')
   if (allCols.includes('updated_at')) supportedAutoTypes.push('last_modified_time')
   if (ACTIVITY_ENTITY_MAP[erpTable]) supportedAutoTypes.push('created_by', 'last_modified_by')
+  // Numéro automatique : toute table a un rowid, donc toujours disponible.
+  supportedAutoTypes.push('autonumber')
 
   // Champs link : tables cibles autorisées (avec un libellé lisible), hors la
   // table source elle-même (auto-lien non géré pour l'instant).
@@ -469,7 +575,7 @@ export function getLookupMeta(erpTable) {
   const virtualColumns = db.prepare(
     `SELECT column_name FROM custom_fields
      WHERE erp_table=? AND deleted_at IS NULL
-       AND kind IN ('formula','lookup','rollup','link','created_time','last_modified_time','created_by','last_modified_by')`
+       AND kind IN ('formula','lookup','rollup','link','created_time','last_modified_time','created_by','last_modified_by','autonumber')`
   ).all(erpTable).map(r => r.column_name)
   const sourceColumns = [...new Set([...allCols.filter(isSafeColumn), ...virtualColumns])]
     .filter(notDeleted(erpTable))
@@ -736,6 +842,14 @@ function attachmentCopyExpr(valueRef, recordIdRef, srcFieldId) {
 // donc typée comme la colonne récupérée (date, nombre…) ; au-delà, les valeurs
 // sont listées « , » comme un rollup ARRAY.
 function limitedLookupExpr(cf, erpTable, n, dir) {
+  return `${linkedLookupValueExpr(cf, erpTable, n, dir)} AS ${cf.column_name}`
+}
+
+// Même découpe, sans alias. n=null → tous les liés (plafonnés à LOOKUP_LIMIT_MAX) :
+// un seul reste scalaire (typé), plusieurs se listent « , ».
+function linkedLookupValueExpr(cf, erpTable, n, dir) {
+  const all = n == null
+  if (all) n = LOOKUP_LIMIT_MAX
   const tgt = cf.lookup_target_table
   const tgtCols = childColumns(tgt)
   // Les listes d'Airtable portent des recXXX ; la sync traduit parfois en id ERP.
@@ -753,17 +867,21 @@ function limitedLookupExpr(cf, erpTable, n, dir) {
   const attachFieldId = attachmentSourceFieldId(tgt, cf.lookup_target_column)
   if (attachFieldId) {
     if (n === 1) {
-      return `(${cte} SELECT ${attachmentCopyExpr('_t.' + cf.lookup_target_column, '_t.id', attachFieldId)} ${rows}) AS ${cf.column_name}`
+      return `(${cte} SELECT ${attachmentCopyExpr('_t.' + cf.lookup_target_column, '_t.id', attachFieldId)} ${rows})`
     }
     return `(${cte} SELECT nullif(json_group_array(json_patch(_af.value, ` +
       `json_object('field_id', ${sqlQuote(attachFieldId)}, 'record_id', _s._id))), '[]') ` +
       `FROM (SELECT _t.${cf.lookup_target_column} AS _v, _t.id AS _id ${rows}) AS _s, ` +
       `json_each(${jsonArrayOrEmpty('_s._v')}) AS _af ` +
-      `WHERE json_type(_af.value)='object') AS ${cf.column_name}`
+      `WHERE json_type(_af.value)='object')`
   }
-  if (n === 1) return `(${cte} SELECT _t.${cf.lookup_target_column} ${rows}) AS ${cf.column_name}`
+  if (n === 1) return `(${cte} SELECT _t.${cf.lookup_target_column} ${rows})`
+  if (all) {
+    return `(${cte} SELECT CASE WHEN count(*) = 1 THEN max(_v) ELSE group_concat(_v, ', ') END FROM ` +
+      `(SELECT _t.${cf.lookup_target_column} AS _v ${rows}))`
+  }
   return `(${cte} SELECT group_concat(_v, ', ') FROM ` +
-    `(SELECT _t.${cf.lookup_target_column} AS _v ${rows})) AS ${cf.column_name}`
+    `(SELECT _t.${cf.lookup_target_column} AS _v ${rows}))`
 }
 
 // Construit l'expression SELECT (et les éventuels JOIN) d'une colonne virtuelle.
@@ -782,9 +900,16 @@ function buildVirtualColumn(cf, erpTable, alias) {
     if (n) return { selectExpr: limitedLookupExpr(cf, erpTable, n, dir), joins: [] }
     const a = `_j${++alias.n}`
     const attachFieldId = attachmentSourceFieldId(cf.lookup_target_table, cf.lookup_target_column)
-    const value = attachFieldId
+    const direct = attachFieldId
       ? attachmentCopyExpr(`${a}.${cf.lookup_target_column}`, `${a}.id`, attachFieldId)
       : `${a}.${cf.lookup_target_column}`
+    // La clé ne matche aucun id ERP : champ lien Airtable (« recX », '["recA","recB"]').
+    // On retombe sur la découpe en liste, résolue aussi par airtable_id.
+    const fk = `${erpTable}.${cf.lookup_fk}`
+    const value = childColumns(cf.lookup_target_table).includes('airtable_id')
+      ? `CASE WHEN ${a}.id IS NOT NULL THEN ${direct} WHEN ${fk} IS NULL OR ${fk} = '' THEN NULL ` +
+        `ELSE ${linkedLookupValueExpr(cf, erpTable, null, 'first')} END`
+      : direct
     return {
       selectExpr: `${value} AS ${cf.column_name}`,
       joins: [`LEFT JOIN ${cf.lookup_target_table} AS ${a} ON ${a}.id = ${erpTable}.${cf.lookup_fk}`],
@@ -795,6 +920,10 @@ function buildVirtualColumn(cf, erpTable, alias) {
     const agg = String(cf.rollup_agg).toUpperCase()
     const ralias = `_r${++alias.n}`
     const childCols = childColumns(cf.rollup_target_table)
+    // Condition AVANT l'appariement : elle écarte l'essentiel des lignes à peu
+    // de frais, l'appariement d'un champ lien (instr) ne voit que le reste.
+    const where = `${rollupFilterClause(normalizeRollupFilter(cf.rollup_filter, cf.rollup_target_table), ralias).replace(/^ AND /, '')}`
+    const match = where ? `${where} AND ${rollupMatchExpr(cf, erpTable, ralias)}` : rollupMatchExpr(cf, erpTable, ralias)
     const softFilter = childCols.includes('deleted_at') ? ` AND ${ralias}.deleted_at IS NULL` : ''
     // ARRAY / ARRAYUNIQUE : liste texte des valeurs liées (« , » comme séparateur).
     // SQLite n'accepte pas group_concat(DISTINCT x, sep) → on passe par une
@@ -807,7 +936,7 @@ function buildVirtualColumn(cf, erpTable, alias) {
           `(SELECT group_concat(_v, ', ') FROM (` +
           `SELECT ${distinct}${ralias}.${cf.rollup_target_column} AS _v ` +
           `FROM ${cf.rollup_target_table} AS ${ralias} ` +
-          `WHERE ${ralias}.${cf.rollup_target_fk} = ${erpTable}.id${softFilter} ` +
+          `WHERE ${match}${softFilter} ` +
           `AND ${ralias}.${cf.rollup_target_column} IS NOT NULL)) AS ${cf.column_name}`,
         joins: [],
       }
@@ -817,7 +946,7 @@ function buildVirtualColumn(cf, erpTable, alias) {
     return {
       selectExpr:
         `(SELECT ${wrapped} FROM ${cf.rollup_target_table} AS ${ralias} ` +
-        `WHERE ${ralias}.${cf.rollup_target_fk} = ${erpTable}.id${softFilter}) AS ${cf.column_name}`,
+        `WHERE ${match}${softFilter}) AS ${cf.column_name}`,
       joins: [],
     }
   }
@@ -850,6 +979,12 @@ function buildVirtualColumn(cf, erpTable, alias) {
   }
   if (cf.kind === 'last_modified_time') {
     return { selectExpr: `${erpTable}.updated_at AS ${cf.column_name}`, joins: [] }
+  }
+  // Numéro automatique (Autonumber d'Airtable) : le rowid, attribué à
+  // l'insertion dans l'ordre de création. Égal à l'id sur une table à id entier ;
+  // aucune écriture, aucun trigger.
+  if (cf.kind === 'autonumber') {
+    return { selectExpr: `${erpTable}.rowid AS ${cf.column_name}`, joins: [] }
   }
   if (cf.kind === 'created_by' || cf.kind === 'last_modified_by') {
     const entity = ACTIVITY_ENTITY_MAP[erpTable]
@@ -899,7 +1034,7 @@ export function validateLookup(
   }
 }
 
-export function validateRollup({ rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg }, erpTable) {
+export function validateRollup({ rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, rollup_filter }, erpTable) {
   if (!SAFE_IDENT.test(rollup_target_table || '')) throw new Error('Table source du rollup invalide')
   if (!SAFE_IDENT.test(rollup_target_fk || '')) throw new Error('Colonne FK inverse invalide')
   if (!LOOKUP_TARGET_WHITELIST.has(rollup_target_table)) {
@@ -929,6 +1064,7 @@ export function validateRollup({ rollup_target_table, rollup_target_fk, rollup_t
       throw new Error(`Colonne "${rollup_target_column}" non exposable (sensible)`)
     }
   }
+  normalizeRollupFilter(rollup_filter, rollup_target_table)
 }
 
 // Valide la config d'un champ link. `link_target_table` doit être une table
@@ -1330,11 +1466,11 @@ export function regenerateView(erpTable) {
     SELECT id, name, column_name, kind, formula_expr,
            lookup_fk, lookup_target_table, lookup_target_column,
            lookup_limit_n, lookup_limit_dir, result_type,
-           rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
+           rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, rollup_filter,
            link_target_table, link_group_id, link_role, link_single
     FROM custom_fields
     WHERE erp_table = ? AND deleted_at IS NULL
-      AND kind IN ('formula', 'lookup', 'rollup', 'link', 'created_time', 'last_modified_time', 'created_by', 'last_modified_by')
+      AND kind IN ('formula', 'lookup', 'rollup', 'link', 'created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber')
     ORDER BY sort_order, created_at
   `).all(erpTable)
 
@@ -1475,10 +1611,29 @@ export function regenerateView(erpTable) {
   })
   tx()
   // Rollup : une ligne enfant modifiée doit renvoyer ce parent au navigateur.
-  syncRollupTriggers(erpTable, virtualCols.filter(cf => cf.kind === 'rollup' && !errorsById.get(cf.id)))
+  syncRollupTriggers(erpTable, virtualCols.filter(cf => cf.kind === 'rollup' && !errorsById.get(cf.id))
+    .map(cf => ({ ...cf, link_list: isLinkListColumn(cf.rollup_target_table, cf.rollup_target_fk) })))
+  ensureRollupFilterIndexes(virtualCols.filter(cf => cf.kind === 'rollup' && cf.rollup_filter && !errorsById.get(cf.id)))
   invalidateColumnsCache()
   const errors = [...errorsById].filter(([, m]) => m).map(([id, message]) => ({ id, message }))
   return { view: viewName, columns: virtualCols.length, sql, errors }
+}
+
+// Rollup avec condition : la sous-requête tourne une fois par ligne parente.
+// Sans index, chacune relit toute la table enfant (≈ 0,3 s pour 676 produits ×
+// 2 000 achats) ; un index couvrant (colonne de condition, clé) la ramène à une
+// recherche par plage. Préfixe `idx_rollupf_` : fieldPurge les retire avant un
+// DROP COLUMN (SQLite refuse de dropper une colonne indexée).
+export const ROLLUP_FILTER_INDEX_PREFIX = 'idx_rollupf_'
+function ensureRollupFilterIndexes(rollups) {
+  for (const cf of rollups) {
+    try {
+      const f = normalizeRollupFilter(cf.rollup_filter, cf.rollup_target_table)
+      if (!f || !SAFE_IDENT.test(cf.rollup_target_fk || '')) continue
+      const name = `${ROLLUP_FILTER_INDEX_PREFIX}${cf.rollup_target_table}__${f.column}__${cf.rollup_target_fk}`
+      db.exec(`CREATE INDEX IF NOT EXISTS ${name} ON ${cf.rollup_target_table}(${f.column}, ${cf.rollup_target_fk})`)
+    } catch { /* index facultatif : le rollup reste juste, seulement plus lent */ }
+  }
 }
 
 // Régénère toutes les vues actives. À appeler au démarrage du serveur pour
@@ -1488,7 +1643,7 @@ export function regenerateAllViews() {
   const tables = db.prepare(`
     SELECT DISTINCT erp_table FROM custom_fields
     WHERE deleted_at IS NULL
-      AND kind IN ('formula', 'lookup', 'rollup', 'link', 'created_time', 'last_modified_time', 'created_by', 'last_modified_by')
+      AND kind IN ('formula', 'lookup', 'rollup', 'link', 'created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber')
   `).all().map(r => r.erp_table)
   const results = []
   for (const t of tables) {

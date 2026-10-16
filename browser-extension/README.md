@@ -30,7 +30,7 @@ interface d'extension.
 Télécharger à nouveau « Module de navigateur » depuis l'ERP, décompresser
 l'archive et remplacer les fichiers du dossier déjà chargé. Dans
 `chrome://extensions` ou `edge://extensions`, cliquer sur le bouton de
-rechargement de la carte « Extension Boréal ». Vérifier la version 1.13.0 et accepter
+rechargement de la carte « Extension Boréal ». Vérifier la version 1.18.0 et accepter
 l'accès au site ERP si le navigateur le demande. Les réglages restent
 enregistrés lorsque le même dossier est utilisé.
 

@@ -7,6 +7,7 @@ import Spinner from '../components/Spinner.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
 import { fmtMoney } from '../utils/formatters.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
+import { AddressAutocompleteInput } from '../components/AdresseModal.jsx'
 import { buildForm, controllerDistanceValue, customAnswered, sideVentOther, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
 import GreenhouseIllustration from '../components/GreenhouseIllustration.jsx'
 import SideVentCountChoice from '../components/SideVentCountChoice.jsx'
@@ -667,7 +668,7 @@ const SIDE_PIPE_IMAGES = { aluminum_C: 'pipe-c.svg', steel_O: 'pipe-o.svg' }
 const DIAMETER_PRESET_IMAGES = { '2"': 'diameter-2in.svg', '1 5/16"': 'diameter-1-5-16.svg' }
 // Le choix reste stocké à la mesure maximale ; le libellé et la variante
 // d’illustration montrent la plage acceptée.
-const DIAMETER_PRESET_LABELS = { '1 5/16"': 'Entre 3/4 po et 1 14/4 po' }
+const DIAMETER_PRESET_LABELS = { '1 5/16"': 'Entre 3/4 po et 1 1/4 po' }
 const DIAMETER_IMAGE_IDS = { standard: 'greenhouse.image_diameter_standard', other: 'greenhouse.image_diameter_other', unknown: 'greenhouse.image_diameter_unknown' }
 
 // Les deux longueurs possibles sont proposées en scène cliquable.
@@ -1263,7 +1264,7 @@ function AddressConfirm({ value, baseUrl, onChange }) {
   const s = verdict?.suggestion
   return (
     <div onBlur={onBlur}>
-      <AddressFields value={value} onChange={onChange} />
+      <AddressFields value={value} onChange={onChange} baseUrl={baseUrl} />
       {busy && <p className="mt-2 text-xs text-slate-400">{tr('Vérification…')}</p>}
       {!busy && verdict?.status === 'confirmed' && (
         <p className="mt-2 text-xs text-green-700">{tr('Adresse confirmée')}</p>
@@ -1301,12 +1302,29 @@ function AddressForm({ value, onChange, baseUrl }) {
   return <AddressFields value={value} onChange={onChange} />
 }
 
-function AddressFields({ value, onChange }) {
+// Pays rendu par Google en code ; le formulaire l'écrit en toutes lettres.
+const COUNTRY_NAMES = { CA: 'Canada', US: 'USA' }
+
+function AddressFields({ value, onChange, baseUrl }) {
   const { tr } = useFormSchema()
+  // Suggestions Google sur le champ Adresse, via la route publique du formulaire.
+  const places = useMemo(() => baseUrl && ({
+    autocomplete: (input, session_token) => fetch(`${baseUrl}/places/autocomplete?${new URLSearchParams({ input, session_token })}`).then(r => r.json()),
+    details: (place_id, session_token) => fetch(`${baseUrl}/places/details?${new URLSearchParams({ place_id, session_token })}`).then(r => { if (!r.ok) throw new Error(); return r.json() }),
+  }), [baseUrl])
   return (
     <div className="grid grid-cols-2 gap-3">
       <Field label={tr('Adresse')} required colSpan={2}>
-        <input className={inputCls} value={value.line1 || ''} onChange={e => onChange({ line1: e.target.value })} />
+        {places
+          ? <AddressAutocompleteInput
+              places={places}
+              className={inputCls}
+              ariaLabel={tr('Adresse')}
+              value={value.line1 || ''}
+              onChange={v => onChange({ line1: v })}
+              onPick={a => onChange(Object.fromEntries(Object.entries({ ...a, country: COUNTRY_NAMES[a.country] }).filter(([, v]) => v)))}
+            />
+          : <input className={inputCls} value={value.line1 || ''} onChange={e => onChange({ line1: e.target.value })} />}
       </Field>
       <Field label={tr('Ville')}>
         <input className={inputCls} value={value.city || ''} onChange={e => onChange({ city: e.target.value })} />

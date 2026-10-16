@@ -8,6 +8,7 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useAutosave } from '../lib/useAutosave.js'
 import { TEMPLATE_VARS, VAR_LABELS, usedVars, templateFallbacks } from '../lib/emailTemplateVars.js'
 import TemplateBodyEditor from '../components/TemplateBodyEditor.jsx'
+import { TEMPLATE_KINDS } from './EmailTemplates.jsx'
 
 // Fiche d'un modèle de courriel : nom, langue, objet, texte (autosave).
 // Variables [Email]… insérées au curseur, remplacées à l'insertion dans un
@@ -40,18 +41,19 @@ export default function EmailTemplateDetail({ recordId: id, onClose }) {
 
   const pending = detailPending({ loading, loadError, onRetry: reload, record: t, notFound: 'Modèle introuvable.' })
   if (pending) return pending
+  const basePath = (TEMPLATE_KINDS[t.kind] || TEMPLATE_KINDS.vente).path
 
   async function handleDelete() {
     const ok = await confirm({ title: 'Supprimer le modèle', message: t.name, confirmLabel: 'Supprimer', danger: true })
     if (!ok) return
     await api.emailTemplates.remove(id)
     if (onClose) onClose()
-    else navigate('/modeles-courriel')
+    else navigate(basePath)
   }
 
   async function handleDuplicate() {
     const copy = await api.emailTemplates.duplicate(id)
-    navigate(`/modeles-courriel/${copy.id}`)
+    navigate(`${basePath}/${copy.id}`)
   }
 
   const subjectOnlyVars = usedVars(t.subject).filter(k => !usedVars(t.body).includes(k))

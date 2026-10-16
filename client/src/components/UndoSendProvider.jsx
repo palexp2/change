@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react'
+import { holdReload } from '../lib/serverStatus.js'
 
 // Délai d'annulation avant l'exécution réelle d'un envoi (email client-facing).
 // Pendant ce délai, un toast avec barre de progression laisse l'utilisateur annuler.
@@ -28,7 +29,18 @@ export function UndoSendProvider({ children }) {
       const prev = pendingRef.current
       prev?.onRun?.()
     }
-    const entry = { id: ++seqRef.current, message, onRun, onCancel, durationMs }
+    // Tant que l'envoi attend ou part, l'onglet ne se recharge pas pour une
+    // nouvelle version (sinon le courriel est perdu sans trace : envoi puis
+    // passage à Gmail pendant le délai, Guillaume 2026-10-15).
+    const release = holdReload()
+    let ran = false
+    const run = async () => {
+      if (ran) return
+      ran = true
+      try { await onRun?.() } finally { release() }
+    }
+    const cancelled = () => { ran = true; release(); onCancel?.() }
+    const entry = { id: ++seqRef.current, message, onRun: run, onCancel: cancelled, durationMs }
     pendingRef.current = entry
     setPending(entry)
     timerRef.current = setTimeout(() => {
@@ -45,6 +57,14 @@ export function UndoSendProvider({ children }) {
   }, [finish])
 
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+
+  // Fermeture de l'onglet pendant le délai : le navigateur demande confirmation.
+  useEffect(() => {
+    if (!pending) return
+    const warn = e => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [pending])
 
   return (
     <UndoSendContext.Provider value={scheduleSend}>

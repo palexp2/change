@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Saisie des heures</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+:root{--bg:#eef0f3;--s:#fff;--soft:#f6f7f9;--line:#e6e8eb;--line2:#d0d4d9;--ink:#24262a;--ink2:#4a4d53;--ink3:#6f7279;--ink4:#a0a3a9;--g:#22b04a;--gd:#1a7d36;--gs:#e8f7ec;--b:#0077c5;--sl:#4a154b;--sh:0 1px 2px rgb(0 0 0/.06),0 14px 40px rgb(0 0 0/.12)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#3fc463;--gd:#6fdc8b;--gs:#16291c;--b:#5cb0ef;--sl:#9b4f9c}}
+:root[data-theme="dark"]{--bg:#0f1113;--s:#1a1d20;--soft:#212428;--line:#2b2f34;--line2:#3b4148;--ink:#eceef0;--ink2:#c8ccd1;--ink3:#959ba2;--ink4:#6a7178;--g:#3fc463;--gd:#6fdc8b;--gs:#16291c;--b:#5cb0ef;--sl:#9b4f9c}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 Inter,system-ui,sans-serif;padding:24px 16px 60px}
+.wrap{max-width:980px;margin:0 auto}
+.head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:20px;margin:0}.sp{flex:1}
+.steps{display:flex;gap:6px;flex-wrap:wrap}
+.steps button{font:inherit;font-size:12px;font-weight:600;border:1px solid var(--line2);background:var(--s);color:var(--ink3);border-radius:999px;padding:4px 11px;cursor:pointer}
+.steps button.on{background:var(--ink);color:var(--s);border-color:var(--ink)}
+.play{font:inherit;font-weight:600;border:0;border-radius:8px;padding:7px 14px;cursor:pointer;background:var(--g);color:#fff}
+.stage{position:relative;display:grid;grid-template-columns:52px 1fr 300px;gap:16px;align-items:start}
+.app{background:var(--s);border-radius:12px;box-shadow:var(--sh);overflow:hidden}
+.top{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.top b{font-size:15px}.mute{color:var(--ink3)}
+.bar{display:flex;align-items:center;gap:10px;padding:0 16px;height:0;overflow:hidden;background:var(--gs);border-bottom:1px solid transparent;transition:height .25s}
+.bar.show{height:46px;border-bottom-color:var(--line)}
+.bar b{color:var(--gd)}
+.btn{font:inherit;font-size:12px;font-weight:600;border:0;border-radius:7px;padding:6px 12px;background:var(--g);color:#fff;transition:transform .1s}
+.btn.ghost{background:var(--s);color:var(--ink2);border:1px solid var(--line2)}
+.btn.press{transform:scale(.94)}
+table{width:100%;border-collapse:collapse}
+th{font-size:11px;font-weight:600;color:var(--ink3);text-align:left;padding:7px 12px;border-bottom:1px solid var(--line)}
+td{padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap;transition:background .2s}
+tr.we td{color:var(--ink4)}
+tr.sel td{background:var(--gs)}
+.cb{width:14px;height:14px;border:1.5px solid var(--line2);border-radius:4px;display:inline-block;vertical-align:middle;transition:all .15s}
+tr.sel .cb{background:var(--g);border-color:var(--g);box-shadow:inset 0 0 0 2px var(--s)}
+.d{color:var(--ink4);display:inline-block;width:30px}
+.tag{display:inline-block;margin-left:6px;height:18px;line-height:18px;padding:0 7px;border-radius:999px;font-size:10.5px;font-weight:600;background:var(--gs);color:var(--gd);opacity:0;transform:scale(.6);transition:all .3s}
+.tag.show{opacity:1;transform:none}
+.side{display:grid;gap:12px}
+.slack{background:var(--s);border-radius:12px;box-shadow:var(--sh);overflow:hidden}
+.slack .ch{padding:10px 14px;font-weight:700;border-bottom:1px solid var(--line)}
+.msg{display:flex;gap:10px;padding:10px 14px;opacity:.35;transition:opacity .3s}
+.msg.new{opacity:0;max-height:0;padding:0 14px;overflow:hidden;transition:all .4s}
+.msg.new.show{opacity:1;max-height:120px;padding:10px 14px;background:color-mix(in srgb,var(--gs) 60%,transparent)}
+.av{width:30px;height:30px;border-radius:6px;background:var(--sl);color:#fff;display:grid;place-items:center;font-weight:700;flex:none;font-size:12px}
+.msg small{color:var(--ink4)}
+.paie{background:var(--s);border-radius:12px;box-shadow:var(--sh);padding:12px 14px;opacity:.35;transition:opacity .3s}
+.paie.show{opacity:1}
+.paie .r{display:flex;justify-content:space-between;padding:3px 0}
+.paie .v{font-weight:700;color:var(--gd);font-variant-numeric:tabular-nums}
+.cur{position:absolute;width:20px;height:20px;pointer-events:none;transition:left .6s ease,top .6s ease;z-index:5;left:40px;top:40px}
+.cur svg{filter:drop-shadow(0 1px 2px rgb(0 0 0/.4))}
+tr.done td{animation:fl .8s}
+@keyframes fl{0%{background:var(--gs)}100%{background:transparent}}
+.tag.half{background:linear-gradient(90deg,var(--gs) 50%,var(--soft) 50%)}
+.tag.note{background:var(--soft);color:var(--ink3)}
+.btn.hl{box-shadow:0 0 0 3px color-mix(in srgb,var(--g) 35%,transparent)}
+.btn.red{background:#d52b1e}
+.msgs{max-height:330px;overflow:auto}
+.msg.x b.who{color:#d52b1e}
+.pr{display:flex;justify-content:space-between;padding:3px 0;opacity:0;max-height:0;overflow:hidden;transition:all .35s}
+.pr.show{opacity:1;max-height:30px}
+.pr.gone{text-decoration:line-through;color:var(--ink4)}
+.paie .tot{border-top:1px solid var(--line);margin-top:6px;padding-top:6px;display:flex;justify-content:space-between;font-weight:700}
+.nav{background:var(--s);border-radius:12px;box-shadow:var(--sh);padding:8px 0;display:grid;gap:4px;justify-items:center;position:relative;align-self:stretch;align-content:start}
+.nav i{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-style:normal;font-size:16px;color:var(--ink3)}
+.nav i.on{background:#9b3b6a;color:#fff}
+.fly{position:absolute;left:46px;top:0;width:190px;background:var(--s);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--sh);padding:6px;display:none;z-index:4}
+.fly.show{display:block}
+.fly b{display:block;font-size:11px;color:var(--ink3);padding:4px 8px}
+.fly div{padding:6px 8px;border-radius:6px}
+.fly div.hl{background:var(--soft);font-weight:600}
+.app{transition:opacity .3s}.app.off{opacity:.15}
+.key{display:inline-block;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-weight:700;font-size:12px}
+.real{color:var(--b);font-weight:600;text-decoration:none;font-size:12px}
+@media (max-width:760px){.nav{display:none}}
+.cap{margin-top:14px;font-size:15px;font-weight:600;min-height:24px}
+@media (max-width:760px){.stage{grid-template-columns:1fr}.cur{display:none}}
+
+td.c{font-variant-numeric:tabular-nums;min-width:70px;transition:background .2s}
+td.ed{box-shadow:inset 0 0 0 2px var(--b);background:var(--s)}
+td.ok{animation:fl 1s}
+.typed{color:var(--b);font-weight:600}
+.caret{display:inline-block;width:1px;height:14px;background:var(--b);vertical-align:middle;animation:bl .8s infinite}
+@keyframes bl{50%{opacity:0}}
+.big{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:6px;background:var(--gs);color:var(--gd);font-weight:700}
+.stage{grid-template-columns:52px 1fr}
+th.hl{color:var(--ink)}
+</style></head><body><div class="wrap">
+<div class="head"><h1>Feuille de temps : « 5 » = 5 h</h1><span class="sp"></span>
+  <div class="steps" id="steps"></div><a class="real" href="https://customer.orisha.io/erp/feuille-de-temps" target="_blank">Ouvrir la vraie page ↗</a><button class="play" id="play">▶ Rejouer</button></div>
+<div class="stage" id="stage">
+  <div class="nav" id="nav"><i>🔖</i><i>🔍</i><i>📇</i><i>📣</i><i>🚚</i><i>🏛</i><i>🔨</i><i id="rh">👥</i><i>🔧</i>
+    <div class="fly" id="fly"><b>RH</b><div>Employés</div><div id="ft">🕒 Feuille de temps</div><div>Heures RSDE</div><div>Paies</div></div></div>
+  <div class="app" id="app">
+    <div class="top"><b>Feuille de temps</b><span class="mute">— Martin Audesse</span><span class="sp"></span><span class="mute">11 → 24 oct.</span></div>
+    <table><tr><th>Date</th><th>Début</th><th>Fin</th><th>Pause</th><th>Total</th><th>% RSDE</th><th>RSDE</th></tr>
+    <tr><td><span class="d">mer</span>2026-10-14</td><td class="c">8:30</td><td class="c">16:30</td><td class="c">0:30</td><td class="c">7:30</td><td class="c"></td><td class="c"></td></tr>
+    <tr id="row"><td><span class="d">jeu</span>2026-10-15</td><td class="c" id="c-start"></td><td class="c" id="c-end"></td><td class="c" id="c-break"></td><td class="c" id="c-total"></td><td class="c" id="c-pct"></td><td class="c" id="c-rsde"></td></tr>
+    </table>
+  </div>
+  <div class="cur" id="cur"><svg width="20" height="20" viewBox="0 0 20 20"><path d="M3 2l13 7-6 1.5L7.5 17z" fill="#fff" stroke="#111" stroke-width="1.3"/></svg></div>
+</div>
+<div class="cap" id="cap"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id), stage=$('stage'), cur=$('cur')
+function moveTo(el,dx=0.5){const s=stage.getBoundingClientRect(),r=el.getBoundingClientRect();cur.style.left=(r.left-s.left+(dx<1?r.width*dx:dx))+'px';cur.style.top=(r.top-s.top+r.height/2)+'px'}
+let SPEED=1, token=0
+const wait=ms=>{const id=token;return new Promise((r,j)=>setTimeout(()=>id===token?r():j('stop'),ms*SPEED))}
+const st={start:null,end:null,brk:null,rsde:null}
+const hm=m=>m==null?'':Math.floor(m/60)+':'+String(m%60).padStart(2,'0')
+const hm2=m=>m==null?'':String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0')
+function render(){$('c-start').textContent=hm(st.start);$('c-end').textContent=hm(st.end);$('c-break').textContent=hm(st.brk)
+  const tot=st.start!=null&&st.end!=null?st.end-st.start-(st.brk||0):null;$('c-total').textContent=hm(tot)
+  $('c-rsde').textContent=st.rsde?hm2(st.rsde):'';$('c-pct').textContent=st.rsde&&tot?Math.round(st.rsde/tot*100)+' %':''}
+const SC=[
+ {k:'Y aller',cap:'Menu de gauche → RH → Feuille de temps. Raccourci : touche T.',go:true},
+ {k:'Début « 8 »',cap:'Début : « 8 » = 8:00.',cell:'c-start',type:'8',set:()=>st.start=480,res:'8:00'},
+ {k:'Fin',cap:'Fin : « 16:30 ».',cell:'c-end',type:'16:30',set:()=>st.end=990,res:'16:30'},
+ {k:'Pause « 1 »',cap:'Pause : « 1 » = 1 h, comme Début.',cell:'c-break',type:'1',set:()=>st.brk=60,res:'1:00'},
+ {k:'Pause en minutes',cap:'Pour des minutes : « 0:30 » ou « 30m ».',cell:'c-break',type:'0:30',set:()=>st.brk=30,res:'0:30'},
+ {k:'RSDE « 5 »',cap:'RSDE : « 5 » = 5 h (avant : 5 minutes).',cell:'c-rsde',type:'5',set:()=>st.rsde=300,res:'05:00'},
+ {k:'RSDE en minutes',cap:'RSDE : « 0:45 » = 45 min.',cell:'c-rsde',type:'0:45',set:()=>st.rsde=45,res:'00:45'},
+]
+async function play(sc){
+  if(sc.go){const rh=$('rh'),fly=$('fly'),ft=$('ft');fly.style.top=(rh.offsetTop-6)+'px'
+    moveTo(rh);await wait(800);rh.classList.add('on');fly.classList.add('show');await wait(500);moveTo(ft,30);await wait(700);ft.classList.add('hl');await wait(250)
+    fly.classList.remove('show');ft.classList.remove('hl');$('app').classList.remove('off');return}
+  const c=$(sc.cell);moveTo(c);await wait(700);c.classList.add('ed');c.innerHTML='<span class="typed"></span><span class="caret"></span>'
+  for(const ch of sc.type){await wait(220);c.querySelector('.typed').textContent+=ch}
+  await wait(400);c.innerHTML+=' <span class="key">↵</span>';await wait(500)
+  c.classList.remove('ed');sc.set();render();c.classList.remove('ok');void c.offsetWidth;c.classList.add('ok')
+}
+const sb=$('steps');SC.forEach((s,i)=>{const b=document.createElement('button');b.textContent=`${i+1}. ${s.k}`;b.onclick=()=>run(i,false);sb.appendChild(b)})
+function reset(){$('app').classList.add('off');$('rh').classList.remove('on');Object.keys(st).forEach(k=>st[k]=null);document.querySelectorAll('td.c').forEach(c=>c.classList.remove('ed','ok'));render()}
+async function run(upto,auto=true){++token;reset();try{for(let i=0;i<=upto;i++){[...sb.children].forEach((b,j)=>b.classList.toggle('on',j===i));$('cap').textContent=SC[i].cap
+  SPEED=!auto&&i<upto?0.02:1;await play(SC[i]);SPEED=1;if(auto)await wait(1500)}}catch(e){}SPEED=1}
+$('play').onclick=()=>run(SC.length-1)
+setTimeout(()=>run(SC.length-1),600)
+</script>
+</body></html>

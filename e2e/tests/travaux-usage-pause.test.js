@@ -14,7 +14,7 @@ const EMAIL = process.env.ERP_EMAIL || 'pap@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-describe('Travaux — utilisation Claude, pause de la file, arrêt après une tâche', () => {
+describe('Travaux — utilisation Claude, pause de la file', () => {
   let browser, ctx, page
   let promptId = null
   let initialPaused = null
@@ -166,85 +166,5 @@ describe('Travaux — utilisation Claude, pause de la file, arrêt après une t�
     assert.equal(resumed, false, 'la reprise doit être persistée côté serveur')
     assert.equal(await page.locator('[data-testid="travaux-queue-paused-banner"]').count(), 0,
       'le bandeau de pause doit disparaître à la reprise')
-  })
-
-  test('« arrêter après celle-ci » se coche sur un item et se persiste', async () => {
-    // Item « de côté » : jamais ramassé par l'ordonnanceur, aucune exécution réelle.
-    const created = await page.evaluate(async () => {
-      const token = localStorage.getItem('erp_token')
-      const r = await fetch('/erp/api/travaux/prompts', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: `E2E arrêt après ${Date.now()}`,
-          prompt: 'Prompt jetable E2E — ne pas exécuter.',
-          status: 'paused',
-        }),
-      })
-      return r.json()
-    })
-    promptId = created.id
-    assert.ok(promptId, 'création du prompt jetable')
-
-    // Le drapeau ne s'offre que sur un item qui peut encore partir : on le remet en
-    // file (statut 'queued'), le temps du test — la file, elle, est en pause… non :
-    // elle vient d'être reprise. On repasse donc l'item « de côté » aussitôt après.
-    await page.evaluate(async (id) => {
-      const token = localStorage.getItem('erp_token')
-      // Pause de la file d'abord : garantit qu'aucune exécution ne démarre pendant
-      // que l'item est brièvement « en file ».
-      const h = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-      await fetch('/erp/api/travaux/queue/pause', { method: 'POST', headers: h, body: JSON.stringify({ paused: true }) })
-      await fetch(`/erp/api/travaux/prompts/${id}`, { method: 'PATCH', headers: h, body: JSON.stringify({ status: 'queued' }) })
-    }, promptId)
-
-    await page.goto(URL + '/travaux?onglet=file', { waitUntil: 'domcontentloaded' })
-    const card = page.locator(`[data-prompt-id="${promptId}"]`)
-    await card.waitFor({ timeout: 15000 })
-
-    const stop = card.locator('[data-testid="travaux-stop-after"]')
-    await stop.waitFor({ timeout: 10000 })
-    assert.equal(await stop.getAttribute('data-active'), '0', 'drapeau inactif au départ')
-    await stop.click()
-
-    // Autosave : l'état DOM immédiat n'est pas une preuve — on valide par API.
-    const flagged = await page.evaluate(async (id) => {
-      const token = localStorage.getItem('erp_token')
-      for (let i = 0; i < 20; i++) {
-        const r = await fetch('/erp/api/travaux/prompts', { headers: { Authorization: `Bearer ${token}` } })
-        const d = await r.json()
-        const p = d.prompts.find(x => x.id === id)
-        if (p?.stop_after) return true
-        await new Promise(res => setTimeout(res, 400))
-      }
-      return false
-    }, promptId)
-    assert.equal(flagged, true, 'le drapeau « arrêter après celle-ci » doit être persisté')
-
-    // Décochage : le drapeau se retire aussi bien qu'il se pose.
-    await stop.click()
-    const cleared = await page.evaluate(async (id) => {
-      const token = localStorage.getItem('erp_token')
-      for (let i = 0; i < 20; i++) {
-        const r = await fetch('/erp/api/travaux/prompts', { headers: { Authorization: `Bearer ${token}` } })
-        const d = await r.json()
-        const p = d.prompts.find(x => x.id === id)
-        if (p && !p.stop_after) return true
-        await new Promise(res => setTimeout(res, 400))
-      }
-      return false
-    }, promptId)
-    assert.equal(cleared, true, 'le drapeau doit pouvoir être retiré')
-
-    // La file a été mise en pause pour sécuriser ce test : on la rend tout de suite,
-    // sans attendre le hook de nettoyage (qui vérifie de toute façon derrière).
-    await page.evaluate(async () => {
-      const token = localStorage.getItem('erp_token')
-      await fetch('/erp/api/travaux/queue/pause', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paused: false }),
-      })
-    })
   })
 })

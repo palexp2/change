@@ -937,6 +937,9 @@ export function initSchema() {
     'ALTER TABLE subscriptions ADD COLUMN trial_end_date TEXT',
     'ALTER TABLE subscriptions ADD COLUMN stripe_url TEXT',
     'ALTER TABLE subscriptions ADD COLUMN amount_after_discount REAL',
+    // Code promo Stripe (colonne « Code promo » de /abonnements) — collant :
+    // gardé après l'expiration du rabais.
+    'ALTER TABLE subscriptions ADD COLUMN promo_code TEXT',
     'ALTER TABLE sale_receipts ADD COLUMN quickbooks_id TEXT',
     'ALTER TABLE sale_receipts ADD COLUMN source TEXT DEFAULT \'upload\'',
     'ALTER TABLE sale_receipts ADD COLUMN gmail_message_id TEXT',
@@ -1807,6 +1810,11 @@ export function initSchema() {
   try { db.exec("ALTER TABLE subscription_events ADD COLUMN rachat_order_id TEXT REFERENCES orders(id)") } catch {}
   try { db.exec("ALTER TABLE subscription_events ADD COLUMN rachat_checked_at TEXT") } catch {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_subscription_events_rachat_status ON subscription_events(rachat_status) WHERE rachat_status IS NOT NULL") } catch {}
+  // Colonne « Rachat » des abonnements : rachat_auto = 1 quand la valeur vient
+  // de la détection (services/subscriptionRachat.js) et reste réévaluable ;
+  // 0 = posée à la main, jamais réécrite. rachat_reason = indice retenu.
+  try { db.exec("ALTER TABLE subscriptions ADD COLUMN rachat_auto INTEGER DEFAULT 0") } catch {}
+  try { db.exec("ALTER TABLE subscriptions ADD COLUMN rachat_reason TEXT") } catch {}
 
   // Snapshots des items d'abonnement avant / après l'événement. JSON arrays
   // de { stripe_item_id, stripe_price_id, stripe_product_id, name, quantity,
@@ -1826,6 +1834,9 @@ export function initSchema() {
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
   `)
+  // Signature contractuelle (items + rabais + essai) du dernier mouvement
+  // suivi : garde contre les faux upgrade/downgrade (subscriptionItemsSnapshot.js).
+  try { db.exec('ALTER TABLE subscription_current_items ADD COLUMN signature_json TEXT') } catch {}
 
   // Fichiers publics — uploadés par n'importe quel utilisateur authentifié,
   // accessibles ensuite via une URL opaque /erp/p/<token>/<original_name> sans auth.
@@ -2146,6 +2157,35 @@ db.exec(`
       computed_at TEXT
     )
   `)
+  // Inventaire des pièces recalculé par Boréal (services/partStock.js) : ce
+  // que les miroirs perdent, gardé à côté d'eux par leur finalize
+  // (services/partStockMirror.js), sans toucher aux tables miroir.
+  //  • articles de commande Airtable SANS commande (anciens envois) : ils ne
+  //    peuvent pas entrer dans order_items (order_id NOT NULL) ;
+  //  • « Changement » exact d'un mouvement (stock_movements.qty est arrondi,
+  //    sans signe pour les ajustements) ;
+  //  • TOUS les produits d'un assemblage (assemblages.product_id n'en garde qu'un).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS part_stock_orderless_items (
+      airtable_id TEXT PRIMARY KEY,
+      product_id TEXT,
+      qty REAL NOT NULL DEFAULT 0,
+      dans_la_boite INTEGER NOT NULL DEFAULT 0,
+      date_de_l_envoi TEXT,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS part_stock_movement_changes (
+      airtable_id TEXT PRIMARY KEY,
+      qty_change REAL
+    );
+    CREATE TABLE IF NOT EXISTS part_stock_assemblage_products (
+      airtable_id TEXT NOT NULL,
+      product_id TEXT NOT NULL,
+      PRIMARY KEY (airtable_id, product_id)
+    );
+  `)
+  // Un mouvement peut viser plusieurs pièces : stock_movements n'en garde qu'une.
+  try { db.exec('ALTER TABLE part_stock_movement_changes ADD COLUMN product_ids TEXT') } catch {}
   // Dernier coût confirmé dans Airtable ; NULL = envoi en attente (refusé,
   // limite de débit…) — repris à la passe suivante.
   try { db.exec('ALTER TABLE product_fifo ADD COLUMN pushed_cost REAL') } catch {}
@@ -2167,6 +2207,18 @@ db.exec(`
       unit_price REAL NOT NULL,
       approved_by TEXT,
       approved_at TEXT
+    )
+  `)
+  // Composant accepté sans coût dans la nomenclature d'un produit (SIM
+  // fournie, pièce donnée…) : compté à 0 $ sans alerte (services/bomCost.js).
+  // Demande P.-A. Papillon, 2026-10-15.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bom_free_components (
+      product_id TEXT NOT NULL,
+      component_id TEXT NOT NULL,
+      set_by TEXT,
+      set_at TEXT,
+      PRIMARY KEY (product_id, component_id)
     )
   `)
   // Prix unitaire de chaque achat, relu dans Airtable (« Prix unitaire ($ CAD) » :
@@ -2598,6 +2650,12 @@ db.exec(`
     rebuild()
     console.log('✅ custom_fields: contrainte CHECK(type) élargie (rebuild)')
   }
+
+  // rollup_filter : condition d'un rollup (JSON { column, op, value }) — seuls les
+  // enregistrements liés qui la remplissent sont agrégés, comme les « conditions »
+  // d'un rollup Airtable (ex. achats des 365 derniers jours). NULL = tous.
+  // Posé APRÈS le rebuild ci-dessus : sa liste de colonnes est figée.
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN rollup_filter TEXT') } catch {}
 
   // Fusion custom_fields / airtable_field_defs — un champ qui adopte une
   // colonne native pré-existante (alimentée par le sync Airtable) plutôt que
@@ -3124,6 +3182,9 @@ db.exec(`
   // Projet RS&DE choisi sur la ligne elle-même (colonne « Projet » du tableau
   // Détaillé) ; vide = celui du code d'activité.
   try { db.exec('ALTER TABLE timesheet_entries ADD COLUMN rsde_project TEXT') } catch {}
+  // Plage horaire du temps RSDE (« 9:00 » → « 12:00 ») : la durée en découle.
+  try { db.exec('ALTER TABLE timesheet_entries ADD COLUMN rsde_start TEXT') } catch {}
+  try { db.exec('ALTER TABLE timesheet_entries ADD COLUMN rsde_end TEXT') } catch {}
 
   // Projet RS&DE d'un code d'activité (« Fiabilité », « Intelligence de contrôle »…).
   // Un code avec un projet EST un code R&D : choisir le code suffit, plus de case
@@ -3684,6 +3745,32 @@ db.exec(`
     'ALTER TABLE orders ADD COLUMN farm_address_id TEXT REFERENCES adresses(id) ON DELETE SET NULL',
     'ALTER TABLE customer_onboarding_responses ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL',
   ]) { try { db.exec(sql) } catch {} }
+
+  // Courriel au client d'une commande (services/orderWelcomeEmail.js) : un
+  // seul envoi par commande ; ouvertures et clics via emails / email_opens.
+  db.exec(`CREATE TABLE IF NOT EXISTS order_welcome_emails (
+    order_id TEXT PRIMARY KEY,
+    email_id TEXT NOT NULL,
+    lang TEXT,
+    sent_at TEXT NOT NULL
+  )`)
+
+  // Courriel de suivi d'installation (services/installationFollowup.js) : un
+  // par entreprise, sur sa première commande expédiée ; la réponse du client
+  // (boutons du courriel) et sa note s'y consignent.
+  db.exec(`CREATE TABLE IF NOT EXISTS installation_followups (
+    company_id TEXT PRIMARY KEY,
+    order_id TEXT,
+    shipment_id TEXT,
+    email_id TEXT NOT NULL UNIQUE,
+    lang TEXT,
+    sent_at TEXT NOT NULL,
+    answer TEXT,
+    answered_at TEXT,
+    note TEXT,
+    task_id TEXT
+  )`)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_installation_followups_order ON installation_followups(order_id)')
 
   // Les formulaires déjà soumis doivent aussi présenter leurs liens avant
   // la création d'une commande. Ne pas retoucher les commandes existantes.
@@ -5004,6 +5091,9 @@ db.exec(`
   `)
   // Automatisation à l'origine d'une révision « Système » (services/writeOrigin.js).
   try { db.exec(`ALTER TABLE record_revisions ADD COLUMN source TEXT`) } catch {}
+  // Ctrl+Z (services/undoLastEdit.js) : révision annulée / révision produite par une annulation.
+  try { db.exec(`ALTER TABLE record_revisions ADD COLUMN undone_at TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE record_revisions ADD COLUMN undo_of INTEGER`) } catch {}
 
   // ── Contrôles comptables (page /comptabilite, carte « Contrôles ») ─────────
   //
@@ -6398,6 +6488,7 @@ db.exec(`
   )
 `)
 try { db.exec(`CREATE INDEX IF NOT EXISTS idx_hubspot_record_id_contacts ON contacts(hubspot_record_id)`) } catch {}
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_hubspot_record_id_companies ON companies(hubspot_record_id)`) } catch {}
 
 // Historique HubSpot importé (notes, réunions, appels, courriels depuis 2018) —
 // services/hubspotHistoryImport.js. hubspot_id rend l'import rejouable sans
@@ -6640,6 +6731,8 @@ db.exec(`
 try { db.exec(`ALTER TABLE email_templates ADD COLUMN contract_id TEXT REFERENCES contracts(id) ON DELETE SET NULL`) } catch {}
 // Texte de remplacement par variable quand la valeur manque ({ "company": "your farm" }).
 try { db.exec(`ALTER TABLE email_templates ADD COLUMN fallbacks TEXT`) } catch {}
+// Famille : 'vente' (Clients → Modèles de courriel) ou 'marketing' (Marketing → Courriels marketing).
+try { db.exec(`ALTER TABLE email_templates ADD COLUMN kind TEXT NOT NULL DEFAULT 'vente'`) } catch {}
 
 export function seedPaymentCards() {
   const insert = db.prepare(`
@@ -6676,3 +6769,64 @@ db.exec(`
 `)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_claude_acct ON bank_claude_messages(account_id, created_at)`)
 db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_claude_key ON bank_claude_messages(finding_key)`)
+
+// Grand livre « miroir » de QuickBooks (Charles, 2026-10-15) : plan comptable et
+// toutes les lignes débit/crédit de QBO, lus — jamais écrits — mois par mois
+// depuis le rapport JournalReport (services/glMirror.js). Montants en CAD.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gl_accounts (
+    qb_id TEXT PRIMARY KEY,
+    acct_num TEXT,
+    name TEXT,
+    fully_qualified_name TEXT,
+    account_type TEXT,
+    account_sub_type TEXT,
+    classification TEXT,
+    currency TEXT,
+    parent_qb_id TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gl_entries (
+    id TEXT PRIMARY KEY,
+    txn_type TEXT NOT NULL,
+    txn_label TEXT,
+    qb_txn_id TEXT NOT NULL,
+    txn_date TEXT NOT NULL,
+    doc_number TEXT,
+    name TEXT,
+    memo TEXT,
+    source TEXT NOT NULL DEFAULT 'qbo',
+    imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_gl_entries_date ON gl_entries(txn_date)`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gl_lines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id TEXT NOT NULL REFERENCES gl_entries(id) ON DELETE CASCADE,
+    line_no INTEGER NOT NULL,
+    account_qb_id TEXT,
+    debit REAL NOT NULL DEFAULT 0,
+    credit REAL NOT NULL DEFAULT 0,
+    memo TEXT,
+    name TEXT
+  )
+`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_gl_lines_entry ON gl_lines(entry_id)`)
+db.exec(`CREATE INDEX IF NOT EXISTS idx_gl_lines_account ON gl_lines(account_qb_id)`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gl_import_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    period_start TEXT,
+    period_end TEXT,
+    entries INTEGER,
+    lines INTEGER,
+    status TEXT NOT NULL DEFAULT 'running',
+    error TEXT
+  )
+`)

@@ -19,7 +19,9 @@ import { startFieldRuleWatcher } from './services/fieldRuleWatcher.js'
 import { startRevenueRecognitionWatcher } from './services/revenueRecognitionWatcher.js'
 import { startReturnItemCreatedWatcher } from './services/returnItemCreatedWatcher.js'
 import { startShippedCostWatcher } from './services/shippedCostWatcher.js'
+import { startOrderStatusWatcher } from './services/orderStatusWatcher.js'
 import { startFifoCostWatcher } from './services/fifoCostWatcher.js'
+import { startDynamicThresholdWatcher } from './services/dynamicThresholdWatcher.js'
 import { startReturnItemReceivedWatcher } from './services/returnItemReceivedWatcher.js'
 import { startFacturePaidSlackWatcher } from './services/facturePaidSlackWatcher.js'
 import { startSubscriptionProductWatcher } from './services/subscriptionProductTrigger.js'
@@ -100,6 +102,7 @@ import paiesRouter from './routes/paies.js'
 import timesheetsRouter from './routes/timesheets.js'
 import activityCodesRouter from './routes/activity-codes.js'
 import opsIssuesRouter from './routes/ops-issues.js'
+import importantDocumentsRouter from './routes/important-documents.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
 import anomaliesRouter from './routes/anomalies.js'
 import auditRouter from './routes/audit.js'
@@ -107,6 +110,7 @@ import changelogRouter from './routes/changelog.js'
 import { runAnomalyScan, runQbLinkVerification } from './services/transactionAnomalies.js'
 import attachmentsRouter from './routes/attachments.js'
 import journalEntriesRouter from './routes/journal-entries.js'
+import glRouter from './routes/gl.js'
 import stockMovementsRouter from './routes/stock-movements.js'
 import fournituresRouter from './routes/fournitures.js'
 import stripeWebhooksRouter from './routes/stripe-webhooks.js'
@@ -162,16 +166,14 @@ import { getAccessToken as getAirtableToken } from './connectors/airtable.js'
 import { logSync, purgeSyncLogs } from './services/syncLog.js'
 import { pullDelta as hsPullDelta, retryFailedPushes as hsRetryFailedPushes } from './services/hubspotSync.js'
 import { drainRachatRetryQueue } from './services/subscriptionEvents.js'
+import { scheduledSubscriptionRachat } from './services/subscriptionRachat.js'
 import { isHubSpotConfigured } from './connectors/hubspot.js'
 import { pullHubSpotContacts, isHubSpotContactsSyncActive } from './services/hubspotContactsSync.js'
 import { syncHubSpotForms, syncScriptedForms } from './services/hubspotForms.js'
 import { importHubSpotHistory, pendingHistoryTypes as hsPendingHistoryTypes, HISTORY_SYNC_KEY as HS_HISTORY_SYNC_KEY } from './services/hubspotHistoryImport.js'
 import db from './db/database.js'
-import { installAiFetchMeter } from './services/aiCostMeter.js'
 
 loadEnv()
-// Chaque appel texte à OpenAI / Gemini laisse ses jetons (Paramètres → Coûts IA).
-installAiFetchMeter()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -229,6 +231,7 @@ app.use((req, res, next) => {
       // avec « Origin: null » (Referrer-Policy no-referrer de helmet). Ces
       // routes sont gardées par leur jeton, pas par l'origine.
       if (o === 'null' && req.url.startsWith('/erp/pay/')) return cb(null, true)
+      if (o === 'null' && req.url.includes('/api/public/installation-feedback/')) return cb(null, true)
       // Same-host (origin host matches request Host header) — accept.
       try {
         const u = new URL(o)
@@ -525,6 +528,7 @@ app.use('/api/changelog', changelogRouter)
 // (ligne ~189) sert les fichiers bruts ; ce router gère list/upload/download/delete.
 app.use('/api/attachments', attachmentsRouter)
 app.use('/api/journal-entries', journalEntriesRouter)
+app.use('/api/gl', glRouter)
 app.use('/api/stock-movements', stockMovementsRouter)
 app.use('/api/fournitures', fournituresRouter)
 app.use('/api/stripe-queue', stripeQueueRouter)
@@ -549,6 +553,7 @@ app.use('/api/paies', paiesRouter)
 app.use('/api/timesheets', timesheetsRouter)
 app.use('/api/activity-codes', activityCodesRouter)
 app.use('/api/ops-issues', opsIssuesRouter)
+app.use('/api/important-documents', importantDocumentsRouter)
 // API de mutation générique (phase 1) — pilotée par db/recordRegistry.js
 app.use('/api/records', recordsRouter)
 app.use('/api/activity', activityRouter)
@@ -689,9 +694,17 @@ const server = app.listen(PORT, () => {
   // le seul point commun est l'écriture sur la ligne (cf. shippedCostWatcher).
   startShippedCostWatcher()
 
+  // Statut des commandes, calculé par Boréal (la formule Airtable est
+  // débranchée) — tail change_log(commandes, lignes, envois, pièces, séries).
+  startOrderStatusWatcher()
+
   // Coût unitaire FIFO des pièces — tail change_log(purchases, products) +
   // passe complète horaire (prix d'achat relus dans Airtable).
   startFifoCostWatcher()
+
+  // Seuil dynamique des pièces (colonnes gelées à l'import Airtable) — tail
+  // change_log des entrées + passe toutes les 5 min.
+  startDynamicThresholdWatcher()
 
   // « Une facture a été payée » sur Slack — tail change_log(factures), toutes
   // origines confondues (Stripe, paiement saisi, sync QB/Airtable).
@@ -1046,6 +1059,11 @@ const server = app.listen(PORT, () => {
   }
   setTimeout(scheduleRachatRetry, 90_000)
   setInterval(scheduleRachatRetry, 5 * 60 * 1000)
+
+  // Colonne « Rachat » des abonnements annulés — passe horaire (interrupteur et
+  // journal : automation sys_subscription_rachat).
+  setTimeout(scheduledSubscriptionRachat, 120_000)
+  setInterval(scheduledSubscriptionRachat, 60 * 60 * 1000)
 
   // Installation follow-up — runs daily at 09:00 local. System automation is
   // shipped disabled (default_active: 0); no emails go out until an operator
@@ -1532,6 +1550,15 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('instagram comment scrape cron:', e.message))
   })
 
+  // Courriel au client d'une commande : part seul à 17 h, heure de l'Est
+  // (le bouton « Envoyer » de la fiche reste pour un envoi plus tôt).
+  cron.schedule('0 17 * * *', () => {
+    Promise.all([import('./services/orderWelcomeEmail.js'), import('./routes/orders.js')])
+      .then(([{ sendDueWelcomeEmails }, { resolveInstallationDocsLang }]) =>
+        sendDueWelcomeEmails({ langOf: o => resolveInstallationDocsLang(o).lang }))
+      .catch(e => console.error('order welcome email cron:', e.message))
+  }, { timezone: 'America/Toronto' })
+
   // ManyChat : contacts et conversations, tous les matins. Deux heures UTC
   // pour couvrir l'été et l'hiver ; le service ne retient qu'un passage.
   cron.schedule('0 9,10 * * *', () => {
@@ -1565,6 +1592,13 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('instagram draft queue cron:', e.message))
   })
 
+  // Instagram / ManyChat : plus rien de lu depuis 12 h → message privé (1×/jour).
+  cron.schedule('15 * * * *', () => {
+    import('./services/sessionHealth.js')
+      .then(({ checkStaleSessions }) => checkStaleSessions())
+      .catch(e => console.error('session stale check:', e.message))
+  })
+
   // Santé des sessions de connecteurs (Instagram aujourd'hui, ManyChat demain) :
   // un passage quotidien, indépendant des tournées. C'est ce qui fait qu'une
   // session morte se voit le lendemain et non trois semaines plus tard.
@@ -1572,6 +1606,24 @@ const server = app.listen(PORT, () => {
     import('./services/sessionHealth.js')
       .then(({ runSessionHealthCheck }) => runSessionHealthCheck({ trigger: 'cron quotidien' }))
       .catch(e => console.error('session health cron:', e.message))
+  })
+
+  // Le module refuse tout contact avec Instagram tant que l'ERP ne connaît pas
+  // le compte d'Orisha : on l'apprend ici, une lecture courte toutes les 30 min
+  // jusqu'à ce qu'elle réussisse (Instagram freine souvent le serveur).
+  cron.schedule('*/30 * * * *', () => {
+    import('./services/instagramCommentScrape.js')
+      .then(({ ownPk, runCommentScrape }) => ownPk() ? null : runCommentScrape({ force: true, days: 2, trigger: "apprendre le compte d'Orisha" }))
+      .catch(e => console.error('instagram own pk:', e.message))
+  })
+
+  // Prospects Instagram : liste à Philippe chaque matin à 7 h (Montréal). 11 h
+  // ET 12 h UTC (heure d'été / d'hiver) ; la garde d'heure locale et « déjà
+  // envoyé aujourd'hui » ne laissent partir qu'un seul message.
+  cron.schedule('0 11,12 * * *', () => {
+    import('./services/instagramProspects.js')
+      .then(({ runWeeklyProspectDigest }) => runWeeklyProspectDigest({ daily: true, trigger: 'cron 7 h' }))
+      .catch(e => console.error('instagram daily digest cron:', e.message))
   })
 
   // Prospects Instagram : la liste hebdo à Philippe n'a plus d'horaire. Elle

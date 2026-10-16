@@ -17,11 +17,11 @@ const RENDERS = {
   arrival_date: row => <span className="text-slate-500">{fmtDate(row.arrival_date)}</span>,
   stripe_id:    row => <span className="font-mono text-xs text-slate-500">{row.stripe_id}</span>,
   amount:       row => <span className="font-medium text-slate-800 tabular-nums">{fmtMoney(row.amount, row.currency)}</span>,
-  currency:     row => <span className="font-mono text-xs text-slate-600">{row.currency}</span>,
+  currency:     row => row.currency || '—',
   status:       row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
     : <span className="text-slate-400">—</span>,
-  method:       row => <span className="text-slate-600">{row.method || '—'}</span>,
+  method:       row => row.method || '—',
   type:         row => <span className="text-slate-600">{row.type || '—'}</span>,
   bank:         row => row.bank_name
     ? <span className="text-slate-600 text-sm">{row.bank_name}{row.bank_last4 ? ` …${row.bank_last4}` : ''}</span>

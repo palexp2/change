@@ -177,10 +177,11 @@ function AirtableFieldOption({ option: o }) {
 //                 avant l'enregistrement (defaultTargetFor la pré-remplit)
 //   onRefresh     () => Promise — relit la liste des champs de la table Airtable
 //                 (« Rafraîchir » au bas du menu). Absent = pas de bouton.
+//   unmappedLabel libellé de la position vide (défaut « — Non mappé — »)
 export function AirtableFieldCell({
   mapped, targetTable, options, suggestion, saving, mappedIssue,
   requireTarget, targetOptions, defaultTargetFor, canUnmap = true, unmapTitle,
-  onPick, onUnmap, onRefresh, testId,
+  onPick, onUnmap, onRefresh, testId, unmappedLabel = '— Non mappé —',
 }) {
   const [pending, setPending] = useState(null)        // nom choisi, en attente de la table cible
   const [target, setTarget] = useState(targetTable || '')
@@ -286,8 +287,8 @@ export function AirtableFieldCell({
               || airtableTypeLabel(o.type).toLowerCase().includes(q)}
             getOptionKey={o => o.name}
             onChange={pick}
-            emptyOption={canUnmap ? '— Non mappé —' : undefined}
-            placeholder={noCandidates ? 'Aucun champ compatible' : '— Non mappé —'}
+            emptyOption={canUnmap ? unmappedLabel : undefined}
+            placeholder={noCandidates ? 'Aucun champ compatible' : unmappedLabel}
             searchPlaceholder="Rechercher un champ…"
             footer={onRefresh ? (
               <RefreshFieldsButton
@@ -373,7 +374,7 @@ export function AirtableFieldCell({
 // Mapping dynamique (airtable_field_mappings) d'une colonne ERP : prépare les
 // options et l'enregistrement, le rendu est celui d'AirtableFieldCell — commun
 // aux champs « cœur ».
-export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, savingId, onRefresh }) {
+export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, savingId, onRefresh, unmappedLabel }) {
   const isLink = erpColumn.field_type === 'link'
 
   // Champs Airtable candidats : ceux dont le type est compatible avec la
@@ -436,6 +437,7 @@ export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, sav
   return (
     <AirtableFieldCell
       testId="mapping-airtable-field"
+      unmappedLabel={unmappedLabel}
       mapped={erpColumn.mapped_airtable_field || null}
       targetTable={erpColumn.target_table || null}
       options={options}

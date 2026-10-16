@@ -1,4 +1,5 @@
 import db from '../db/database.js'
+import { workdays } from './conges.js'
 import { computePeriodBounds, userForEmployee, hasTimesheetData, computePayableMinutes } from './paieTimesheetImport.js'
 
 // Vérification d'une paie : chaque montant saisi (Airtable) à côté de sa
@@ -62,6 +63,28 @@ function holidayCheck(item, paie) {
   return out
 }
 
+// Congés inscrits (feuille de temps) qui touchent la période : jours comptés
+// dans la période seulement. Un congé sans montant « Vacances » = à regarder.
+function vacationCheck(item, bounds) {
+  const value = num(item.vacation)
+  const conges = bounds && item.employee_id ? db.prepare(`
+    SELECT id, start_date, end_date, days FROM vacations
+    WHERE employee_id = ? AND end_date >= ? AND start_date <= ? ORDER BY start_date
+  `).all(item.employee_id, bounds.start, bounds.end).map(v => {
+    const a = v.start_date < bounds.start ? bounds.start : v.start_date
+    const b = v.end_date > bounds.end ? bounds.end : v.end_date
+    const half = Number(v.days) === 0.5
+    return { id: v.id, start_date: v.start_date, end_date: v.end_date, half,
+      label: a === b ? a : `${a} → ${b}`,
+      days: half ? 0.5 : workdays(a, b) }
+  }) : []
+  if (!value && !conges.length) return null
+  const days = conges.reduce((s, c) => s + c.days, 0)
+  const out = { value, source: 'releve', conges, days }
+  if (days > 0 && !value) out.flag = 'conge_unpaid'
+  return out
+}
+
 export function buildPaieVerification(paieId) {
   const paie = db.prepare('SELECT * FROM paies WHERE id = ?').get(paieId)
   if (!paie) return null
@@ -79,7 +102,7 @@ export function buildPaieVerification(paieId) {
     const cells = {
       hours: bounds ? hoursCheck(item, employee, bounds) : { value: num(item.regular_hours), source: 'none', weeks: [] },
       holiday: holidayCheck(item, paie),
-      vacation: num(item.vacation) ? { value: num(item.vacation), source: 'releve' } : null,
+      vacation: vacationCheck(item, bounds),
       reimb: num(item.expense_reimb) ? { value: num(item.expense_reimb), source: 'qb' } : null,
       commission: c ? { value: c, source: 'vendeurs', ...(c < COMMISSION_MIN ? { flag: 'under_min', min: COMMISSION_MIN } : {}) } : null,
     }

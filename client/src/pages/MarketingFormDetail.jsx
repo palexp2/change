@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { RefreshCw, ExternalLink, Copy, Check, RotateCcw } from 'lucide-react'
 import api from '../lib/api.js'
 import { Badge } from '../components/Badge.jsx'
+import { FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
@@ -103,7 +104,7 @@ export default function MarketingFormDetail({ recordId: id }) {
   return (
     <DetailShell
       header={{
-        badge: form.language && <Badge color="slate">{form.language.toUpperCase()}</Badge>,
+        badge: form.language && <FieldChoiceBadge table="marketing_forms" field="language" value={form.language} color="slate" label={form.language.toUpperCase()} />,
         status: form.archived ? <Badge color="gray">Archivé</Badge> : null,
         meta: <span>Modifié {fmtDate(form.hs_updated_at)}</span>,
         actions: (<>

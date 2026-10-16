@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
-import { X, FileText, SlidersHorizontal, RefreshCw, ExternalLink } from 'lucide-react'
+import { X, FileText, RefreshCw, ExternalLink } from 'lucide-react'
 import { stripeFactureUrl } from '../lib/stripeLinks.js'
 import api from '../lib/api.js'
 import { ListPage } from '../components/ListPage.jsx'
@@ -10,7 +10,6 @@ import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Bad
 import { DataTable } from '../components/DataTable.jsx'
 import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
 import { FieldAirtableMapping } from '../components/FieldAirtableMapping.jsx'
-import { StripeFieldMapModal } from '../components/StripeFieldMapModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -57,6 +56,9 @@ const RENDERS = {
   contact_name:    row => row.contact_id
     ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.contact_name}</Link>
     : <span className="text-slate-400">—</span>,
+  products_list:   row => row.products_list
+    ? <span className="text-slate-600 line-clamp-2" title={row.products_list}>{row.products_list}</span>
+    : <span className="text-slate-300">—</span>,
   project_name:    row => <span className="text-slate-600">{row.project_name || '—'}</span>,
   order_number:    row => row.order_id && row.order_number
     ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="link-record">#{row.order_number}</Link>
@@ -73,9 +75,7 @@ const RENDERS = {
   payment_reference: row => row.payment_reference
     ? <span className="font-mono text-xs text-slate-500 break-all" title={row.payment_reference}>{row.payment_reference}</span>
     : <span className="text-slate-400">—</span>,
-  currency:        row => row.currency
-    ? <span className="font-mono text-xs text-slate-600">{row.currency}</span>
-    : <span className="text-slate-400">—</span>,
+  currency:        row => row.currency || <span className="text-slate-400">—</span>,
   amount_before_tax_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_before_tax_cad)}</span>,
   total_amount:    row => <span className="font-medium text-slate-700">{fmtCad(row.total_amount)}</span>,
   balance_due:     row => {
@@ -229,7 +229,6 @@ export default function Factures() {
   })
   const { fields: customFields, loaded: customFieldsLoaded, reload: reloadCustomFields } = useCustomFields('factures')
   const [customFieldModal, setCustomFieldModal] = useState(null) // { editing: field|null }
-  const [stripeMapOpen, setStripeMapOpen] = useState(false)
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [companyPeek, setCompanyPeek] = useState(null) // { id, name } — side-peek entreprise
 
@@ -248,7 +247,7 @@ export default function Factures() {
     load()
     addToast({ message: 'Ré-import des factures terminé', type: 'success' })
   }, [load, addToast])
-  const { stripeBatch, airtableSync, kick: kickReimportPoll } = useReimportStatus(onReimportFinished)
+  const { stripeBatch, airtableSync } = useReimportStatus(onReimportFinished)
 
   async function handleDeleteCustomField(field) {
     // Rapport d'usage : liste les dépendances (champs calculés, automations,
@@ -348,16 +347,6 @@ export default function Factures() {
     <ListPage
       title="Factures clients"
       titleExtra={<ReimportIndicator stripeBatch={stripeBatch} airtableSync={airtableSync} />}
-      actions={(
-        <button
-          onClick={() => setStripeMapOpen(true)}
-          className="btn-secondary btn-sm flex items-center gap-1.5"
-          title="Choisir quels champs Stripe alimentent les colonnes des factures"
-          data-testid="factures-stripe-map-open"
-        >
-          <SlidersHorizontal size={13} /> Sync Stripe
-        </button>
-      )}
       banner={filterLabel && (
         <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg w-fit">
           <span className="text-sm text-brand-700 font-medium">Ventes &amp; abonnements — {filterLabel}</span>
@@ -401,11 +390,6 @@ export default function Factures() {
         emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise. Les factures apparaissent ici une fois créées ou synchronisées." }}
       />
 
-      <StripeFieldMapModal
-        isOpen={stripeMapOpen}
-        onClose={() => setStripeMapOpen(false)}
-        onSaved={() => { load(); kickReimportPoll() }}
-      />
 
 
       {/* Side-peek abonnement (clic sur la colonne « Abonnement ») */}

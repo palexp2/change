@@ -663,12 +663,14 @@ router.get('/company-candidates/:companyId', (req, res) => {
 const linkKey = row => row?.airtable_id || row?.id || null
 
 // POST /api/retours/create — retour complet saisi dans le formulaire :
-//   { company_id, ticket_id?,
+//   { company_id, ticket_id?, issue_github?,
 //     items: [{ serial_id | order_item_id, qty?, reason, notes?, substitute_product_id? }],
-//     exchange?: { order_id? (sinon nouvelle commande), address_id?, is_subscription? } }
+//     exchange?: { order_id? (sinon nouvelle commande), address_id? } }
 //
-// `is_subscription` (article en abonnement ou acheté) marque la commande de
-// remplacement quand elle est créée ici ; une commande existante garde le sien.
+// Type d'une nouvelle commande de remplacement déduit des articles : n° de série
+// « Opérationnel - Loué » → abonnement, « Opérationnel - Vendu » → achat ;
+// article sans n° de série → type de sa commande d'origine. Articles mêlés →
+// une commande par type. Une commande existante garde le sien.
 //
 // Un article de retour = une unité : un article sans n° de série retourné en
 // quantité N donne N articles. Avec échange immédiat, chaque article substitué
@@ -680,7 +682,8 @@ const linkKey = row => row?.airtable_id || row?.id || null
 // « Création d'un item de retour » créerait sinon une seconde commande de
 // remplacement pour la raison « échange immédiat ».
 router.post('/create', (req, res) => {
-  const { company_id, contact_id, ticket_id, items, exchange } = req.body || {}
+  const { company_id, contact_id, ticket_id, items, exchange, issue_github } = req.body || {}
+  const issueUrl = String(issue_github || '').trim() || null
   const company = company_id && db.prepare('SELECT id, airtable_id FROM companies WHERE id = ?').get(company_id)
   if (!company) return res.status(400).json({ error: 'Entreprise introuvable' })
   const contact = contact_id && db.prepare('SELECT id, airtable_id FROM contacts WHERE id = ?').get(contact_id)
@@ -690,9 +693,9 @@ router.post('/create', (req, res) => {
   const ticket = ticket_id ? db.prepare('SELECT id, airtable_id FROM tickets WHERE id = ?').get(ticket_id) : null
   if (ticket_id && !ticket) return res.status(400).json({ error: 'Billet introuvable' })
 
-  const getSerial = db.prepare('SELECT id, airtable_id, serial, product_id, company_id FROM serial_numbers WHERE id = ?')
+  const getSerial = db.prepare('SELECT id, airtable_id, serial, product_id, company_id, status FROM serial_numbers WHERE id = ?')
   const getOrderItem = db.prepare(`
-    SELECT oi.id, oi.airtable_id, oi.product_id, oi.qty FROM order_items oi
+    SELECT oi.id, oi.airtable_id, oi.product_id, oi.qty, o.is_subscription FROM order_items oi
     JOIN orders o ON o.id = oi.order_id WHERE oi.id = ? AND o.company_id = ?`)
   const getProduct = db.prepare('SELECT id FROM products WHERE id = ?')
 
@@ -705,13 +708,13 @@ router.post('/create', (req, res) => {
     if (it.serial_id) {
       const sn = getSerial.get(it.serial_id)
       if (!sn || sn.company_id !== company.id) return res.status(400).json({ error: 'Numéro de série introuvable pour cette entreprise' })
-      lines.push({ serial: sn, qty: 1, reason, notes: it.notes || null, sub })
+      lines.push({ serial: sn, qty: 1, reason, notes: it.notes || null, sub, rental: sn.status === 'Opérationnel - Loué' })
     } else if (it.order_item_id) {
       const oi = getOrderItem.get(it.order_item_id, company.id)
       if (!oi) return res.status(400).json({ error: 'Article introuvable pour cette entreprise' })
       const qty = parsePositiveQty(it.qty)
       if (!qty || qty > (oi.qty || 1)) return res.status(400).json({ error: 'Quantité invalide' })
-      lines.push({ orderItem: oi, qty, reason, notes: it.notes || null, sub })
+      lines.push({ orderItem: oi, qty, reason, notes: it.notes || null, sub, rental: Number(oi.is_subscription) === 1 })
     } else {
       return res.status(400).json({ error: 'Article sans référence' })
     }
@@ -735,7 +738,8 @@ router.post('/create', (req, res) => {
     const returnId = newRecordId()
     const itemIds = []
     const orderItemIds = []
-    let createdOrder = false
+    const orders = [] // { id, airtable_id, order_number, created, rental }
+    const orderFor = l => orders.find(o => o.rental == null || o.rental === l.rental) || null
     const now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
     db.transaction(() => {
       // Champ « Entreprise » du retour (lien miroité) quand il existe : la liste
@@ -750,23 +754,28 @@ router.post('/create', (req, res) => {
       }
 
       if (exchange && substituted.length) {
-        if (!order) {
-          const orderId = newRecordId()
-          const orderNumber = (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
-          db.prepare(`INSERT INTO orders (id, order_number, company_id, status, notes, date_commande, is_subscription)
-                      VALUES (?, ?, ?, 'Commande vide', ?, ?, ?)`)
-            .run(orderId, orderNumber, company.id, 'Remplacement — échange immédiat', localDay(), exchange.is_subscription ? 1 : 0)
-          stampOrderDate(orderId)
-          order = { id: orderId, airtable_id: null, order_number: orderNumber }
-          createdOrder = true
+        if (order) orders.push({ ...order, created: false, rental: null })
+        else {
+          // Abonnement d'abord : c'est le cas courant des appareils loués.
+          for (const rental of [true, false].filter(r => substituted.some(l => l.rental === r))) {
+            const orderId = newRecordId()
+            const orderNumber = (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
+            db.prepare(`INSERT INTO orders (id, order_number, company_id, status, notes, date_commande, is_subscription)
+                        VALUES (?, ?, ?, 'Commande vide', ?, ?, ?)`)
+              .run(orderId, orderNumber, company.id, 'Remplacement — échange immédiat', localDay(), rental ? 1 : 0)
+            stampOrderDate(orderId)
+            orders.push({ id: orderId, airtable_id: null, order_number: orderNumber, created: true, rental })
+          }
         }
         if (address) {
           const body = { address_id: address.id }
           alignAddressColumns(body)
-          db.prepare(`UPDATE orders SET address_id = ?, adresse_de_livraison = ?, updated_at = ${now} WHERE id = ?`)
-            .run(body.address_id, body.adresse_de_livraison, order.id)
+          for (const o of orders) {
+            db.prepare(`UPDATE orders SET address_id = ?, adresse_de_livraison = ?, updated_at = ${now} WHERE id = ?`)
+              .run(body.address_id, body.adresse_de_livraison, o.id)
+          }
         }
-        db.prepare('UPDATE returns SET order_id = ? WHERE id = ?').run(order.id, returnId)
+        db.prepare('UPDATE returns SET order_id = ? WHERE id = ?').run(orders[0].id, returnId)
       }
 
       const insertItem = db.prepare(`
@@ -780,7 +789,8 @@ router.post('/create', (req, res) => {
       const ticketLink = ticket ? JSON.stringify([linkKey(ticket)]) : null
 
       for (const l of lines) {
-        const orderLink = order && l.sub ? JSON.stringify([linkKey(order)]) : null
+        const lineOrder = l.sub ? orderFor(l) : null
+        const orderLink = lineOrder ? JSON.stringify([linkKey(lineOrder)]) : null
         for (let i = 0; i < l.qty; i++) {
           const itemId = newRecordId()
           itemIds.push(itemId)
@@ -791,26 +801,33 @@ router.post('/create', (req, res) => {
           )
         }
         if (l.serial) serialEnRetour.run(l.serial.id)
-        if (order && l.sub) {
+        if (lineOrder) {
           const oiId = newRecordId()
-          orderItemIds.push(oiId)
-          insertOrderItem.run(oiId, order.id, l.sub, l.qty, returnId,
+          orderItemIds.push({ id: oiId, orderId: lineOrder.id })
+          insertOrderItem.run(oiId, lineOrder.id, l.sub, l.qty, returnId,
             l.serial?.id || null, l.serial ? linkKey(l.serial) : null)
           applyOrderItemDefaults(oiId)
         }
       }
+      // Lien de l'issue GitHub : champ de l'article (migration 141).
+      if (issueUrl) {
+        const setIssue = db.prepare('UPDATE return_items SET cf_issue_github = ? WHERE id = ?')
+        for (const itemId of itemIds) setIssue.run(issueUrl, itemId)
+      }
     })()
 
     mirrorNewReturn(returnId, itemIds)
-    if (order) {
-      if (createdOrder) { emitOrder('created', order.id, req.user?.id); exportErpOrder(order.id) }
-      else { emitOrder('updated', order.id, req.user?.id); exportErpOrderItems(order.id) }
-      for (const oiId of orderItemIds) emitOrderItem('created', order.id, { id: oiId }, req.user?.id)
+    for (const o of orders) {
+      if (o.created) { emitOrder('created', o.id, req.user?.id); exportErpOrder(o.id) }
+      else { emitOrder('updated', o.id, req.user?.id); exportErpOrderItems(o.id) }
     }
+    for (const oi of orderItemIds) emitOrderItem('created', oi.orderId, { id: oi.id }, req.user?.id)
+    const out = orders.map(o => ({ id: o.id, order_number: o.order_number, created: o.created, is_subscription: o.rental }))
     res.status(201).json({
       return_id: returnId,
       count: itemIds.length,
-      order: order ? { id: order.id, order_number: order.order_number, created: createdOrder } : null,
+      order: out[0] || null,
+      orders: out,
     })
   } catch (e) {
     console.error('Retours create error:', e.message)

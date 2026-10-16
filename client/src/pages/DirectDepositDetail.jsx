@@ -7,6 +7,7 @@ import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { METHOD_LABELS, MANUAL_METHODS, PaymentConfirmModal } from '../components/FacturePaymentsSection.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 
@@ -325,9 +326,8 @@ export default function DirectDepositDetail({ recordId: id }) {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-slate-100">
                 <div>
                   <label className="label">Mode</label>
-                  <select value={method} onChange={e => invalidating(setMethod)(e.target.value)} className="input input-sm">
-                    {MANUAL_METHODS.map(m => <option key={m} value={m}>{METHOD_LABELS[m]}</option>)}
-                  </select>
+                  <ChoiceSelect value={method} choices={MANUAL_METHODS.map(m => ({ value: m, label: METHOD_LABELS[m] }))} table="payments" field="method" colorsOnly
+                    onChange={v => invalidating(setMethod)(v)} className="input input-sm w-full" emptyOption={null} />
                 </div>
                 <div>
                   <label className="label">Date de réception</label>
@@ -344,10 +344,8 @@ export default function DirectDepositDetail({ recordId: id }) {
                 </div>
                 <div>
                   <label className="label">Devise</label>
-                  <select value={currency} onChange={e => invalidating(setCurrency)(e.target.value)} className="input input-sm">
-                    <option value="CAD">CAD</option>
-                    <option value="USD">USD</option>
-                  </select>
+                  <ChoiceSelect value={currency} choices={['CAD', 'USD']} table="payments" field="currency" colorsOnly
+                    onChange={v => invalidating(setCurrency)(v)} className="input input-sm w-full" emptyOption={null} />
                 </div>
               </div>
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 items-end">

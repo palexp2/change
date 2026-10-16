@@ -119,6 +119,34 @@ export function saveSessionCookie({ sessionid, dsUserId = '' }) {
   return !!sessionid && sessionid !== before
 }
 
+// ── Compte d'Orisha ─────────────────────────────────────────────────────────
+// Le module tourne aussi dans le profil perso de Charles (compte Instagram
+// perso). Seule une session du compte d'Orisha est acceptée : l'identifiant
+// du compte est appris de l'auteur de nos propres publications.
+
+export function ownPk() {
+  return String(db.prepare("SELECT value FROM connector_config WHERE connector='instagram' AND key='own_pk'").get()?.value || '')
+}
+
+function rememberOwnPk(posts) {
+  const main = splitAccounts(loadConfig().accounts)[0]?.toLowerCase()
+  const u = (posts || []).map(p => p?.user).find(u => (u?.pk || u?.id) && String(u.username || '').toLowerCase() === main)
+  const pk = u?.pk || u?.id
+  if (!pk || String(pk) === ownPk()) return
+  db.prepare(`
+    INSERT INTO connector_config (connector, key, value) VALUES ('instagram', 'own_pk', ?)
+    ON CONFLICT(connector, key) DO UPDATE SET value = excluded.value
+  `).run(String(pk))
+}
+
+/** Vrai si la session vient du compte d'Orisha (ou si on ne le connaît pas encore). */
+export function isOwnViewer(dsUserId) {
+  const own = ownPk()
+  return !own || String(dsUserId || '') === own
+}
+
+export const NOT_OWN_ACCOUNT = "Instagram est ouvert sur un autre compte que celui d'Orisha : lecture ignorée."
+
 export function hasSessionCookie() { return getSessionCookie().sessionid.length >= 20 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -536,6 +564,7 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
       )
     }
 
+    if (!isOwnViewer(session.dsUserId)) throw new Error(NOT_OWN_ACCOUNT)
     const lookback = Math.min(365, Math.max(1, Number(days ?? cfg.lookback_days) || 10))
     const untilTs = Math.floor(Date.now() / 1000)
     const sinceTs = untilTs - lookback * 86400
@@ -557,6 +586,7 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
         if (!byMedia.has(String(post.pk))) byMedia.set(String(post.pk), post)
       }
     }
+    rememberOwnPk([...byMedia.values()])
     const ours = new Set(
       String(cfg.our_accounts || '').split(',').map(s => normalizeUsername(s)?.toLowerCase()).filter(Boolean)
     )
@@ -668,6 +698,10 @@ export function previewCommentScrape() {
 // les publications et leurs commentaires, puis les dépose ici.
 
 const BROWSER_SCRAPE_EVERY_MS = 3 * 3600_000
+// « Relire » dans la page : le module lit à son prochain passage (≤ 20 min),
+// sans attendre les 3 h.
+let browserReadAsked = false
+export function askBrowserRead() { browserReadAsked = true }
 
 /** Ce que le module doit lire, et s'il est temps de le faire. */
 export function browserScrapePlan() {
@@ -675,7 +709,7 @@ export function browserScrapePlan() {
   const last = db.prepare(`
     SELECT MAX(created_at) AS at FROM automation_logs WHERE automation_id = ? AND status = 'success'
   `).get(INSTAGRAM_SCRAPE_AUTOMATION_ID)?.at
-  const due = !last || Date.now() - new Date(last).getTime() > BROWSER_SCRAPE_EVERY_MS
+  const due = browserReadAsked || !last || Date.now() - new Date(last).getTime() > BROWSER_SCRAPE_EVERY_MS
   // L'identifiant numérique de chaque compte : le module en a besoin pour lire
   // le fil, et le redemander à Instagram coûte un appel qu'il limite vite.
   const accounts = splitAccounts(cfg.accounts)
@@ -696,7 +730,8 @@ export function browserScrapePlan() {
     accounts,
     ids,
     doc_id: PROFILE_POSTS_DOC_ID,
-    lookback_days: Math.min(60, Math.max(1, Number(cfg.lookback_days) || 7)),
+    own_pk: ownPk() || null,
+    lookback_days: Math.min(120, Math.max(1, Number(cfg.lookback_days) || 7)),
   }
 }
 
@@ -705,11 +740,13 @@ export function browserScrapePlan() {
  * (pk, code, taken_at, comment_count, user, coauthor_producers…), chacune avec
  * ses commentaires bruts dans `comments`.
  */
-export async function ingestBrowserScrape(posts, { trigger = 'navigateur', errors = [] } = {}) {
+export async function ingestBrowserScrape(posts, { trigger = 'navigateur', errors = [], viewer = null } = {}) {
   const t0 = Date.now()
   const cfg = loadConfig()
   try {
-    const lookback = Math.min(60, Math.max(1, Number(cfg.lookback_days) || 7))
+    rememberOwnPk(posts)
+    if (viewer && !isOwnViewer(viewer)) throw new Error(NOT_OWN_ACCOUNT)
+    const lookback = Math.min(120, Math.max(1, Number(cfg.lookback_days) || 7))
     const sinceTs = Math.floor(Date.now() / 1000) - lookback * 86400
     const own = new Set(String(cfg.own_accounts || '').split(',').map(x => normalizeUsername(x)?.toLowerCase()).filter(Boolean))
     const ours = new Set(String(cfg.our_accounts || '').split(',').map(x => normalizeUsername(x)?.toLowerCase()).filter(Boolean))
@@ -722,12 +759,24 @@ export async function ingestBrowserScrape(posts, { trigger = 'navigateur', error
     const kept = all.filter(p => postInvolvesUs(p, ours))
     const withComments = kept.filter(p => p.comment_count)
     const counts = await ingestPostComments(withComments, { cfg, own, commentsOf: p => flattenComments(p.comments, own) })
+    // Publications écartées (Growing for Market seul) : on compte quand même
+    // les « partner » qu'on y laisse, pour décider en connaissance de cause.
+    const left = all.filter(p => !postInvolvesUs(p, ours)).map(p => {
+      const cs = flattenComments(p.comments, own)
+      return { code: p.code, taken_at: p.taken_at, comments: cs.length, partner: cs.filter(c => detectKeyword(c.text, 'partner')).length,
+        coach: cs.filter(c => detectKeyword(c.text, 'coach')).length }
+    })
+    try {
+      db.prepare(`INSERT INTO connector_config (connector, key, value) VALUES ('instagram', 'skipped_posts', ?)
+        ON CONFLICT(connector, key) DO UPDATE SET value = excluded.value`).run(JSON.stringify({ at: new Date().toISOString(), posts: left }))
+    } catch { /* simple constat */ }
     for (const id of counts.toPush) { try { await pushToAirtable(id) } catch {} }
 
     const summary = `navigateur · ${lookback} j · ${kept.length} publication(s) à nous, ${withComments.length} avec commentaires · ` +
       `${counts.scanned} commentaire(s) lus → ${counts.created} nouveau(x), ${counts.updated} mis à jour, ${counts.duplicates} déjà connu(s)` +
       (counts.repliedByUsCount ? ` · ${counts.repliedByUsCount} déjà répondu(s) publiquement` : '')
     if (!kept.length) throw new Throttled(`Le navigateur n’a renvoyé aucune publication${errors.length ? ` (${errors.slice(0, 5).join(' ; ')})` : ''} — lecture à reprendre.`)
+    browserReadAsked = false
     recordSessionStatus('instagram', { status: 'ok', detail: `lu par le navigateur le ${new Date().toISOString().slice(0, 10)}` })
     logSystemRun(INSTAGRAM_SCRAPE_AUTOMATION_ID, { status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger }, result: summary })
     return { ok: true, ...counts, toPush: undefined, posts: kept.length, summary }

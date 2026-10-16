@@ -9,28 +9,65 @@ import { textToHtml } from '../lib/emailHtml.js'
 import ErrorBanner from './ErrorBanner.jsx'
 import TableThumb, { TABLE_THUMB_CLASS } from './TableThumb.jsx'
 import ThinkingOrb from './ThinkingOrb'
+import { fmtAddress } from '../utils/formatters.js'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-function AddressFields({ label, value, onChange }) {
-  const set = (k, v) => onChange({ ...value, [k]: v })
-  // Étiquette au-dessus plutôt qu'en placeholder : sans elle, six champs
-  // d'adresse vides ne se distinguent plus une fois le formulaire rempli.
-  const row = (k, lbl) => (
-    <label className="block">
-      <span className="block text-[11px] text-slate-400 mb-0.5">{lbl}</span>
-      <input className={inp} value={value[k] || ''} onChange={e => set(k, e.target.value)} />
-    </label>
-  )
+// Date en texte AAAA-MM-JJ (le type="date" natif suit la langue du navigateur).
+// Calendrier via data-date-picker ; saisie invalide → revient.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+function IsoDateInput({ value, onCommit }) {
+  const current = value ? String(value).slice(0, 10) : ''
+  const [local, setLocal] = useState(current)
+  useEffect(() => { setLocal(current) }, [current])
+  const commit = raw => {
+    const s = String(raw ?? '').trim()
+    if (s === current) return
+    const valid = ISO_DATE.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s
+    if (s !== '' && !valid) { setLocal(current); return }
+    onCommit(s)
+  }
   return (
-    <div className="space-y-2">
-      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</h3>
-      {row('company', 'Société')}
-      {row('address1', 'Adresse')}
-      {row('address2', 'Adresse (suite)')}
-      {row('contact', 'Contact')}
-      {row('phone', 'Téléphone')}
-      {row('email', 'Courriel')}
+    <input type="text" inputMode="numeric" data-date-picker value={local} aria-label="Date"
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => commit(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      className={`${inp} tabular-nums`} />
+  )
+}
+
+// Bloc compact : lien vers la fiche adresse d'Orisha (nouvel onglet, pour ne
+// pas perdre le PO en cours) + choix parmi ses autres adresses. Le texte du
+// PDF (address1/address2) suit l'adresse choisie.
+function AddressFields({ label, value, onChange, addresses = [] }) {
+  const linked = addresses.find(a => a.id === value.address_id)
+  const text = linked ? fmtAddress(linked) : [value.address1, value.address2].filter(Boolean).join(', ')
+  const pick = id => {
+    const a = addresses.find(x => x.id === id)
+    if (a) onChange({ ...value, address_id: a.id, address1: fmtAddress(a), address2: '' })
+  }
+  const contact = [value.contact, value.phone, value.email].filter(Boolean).join(' · ')
+  return (
+    <div className="min-w-0">
+      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">{label}</h3>
+      <div className="flex items-center gap-1 min-w-0 text-sm">
+        {linked
+          ? <Link to={`/adresses/${linked.id}`} target="_blank" rel="noopener" className="link-record truncate" title={text}>{text}</Link>
+          : <span className="truncate text-slate-700" title={text}>{text || '—'}</span>}
+        {addresses.length > 0 && (
+          <SearchableSelect
+            className="p-1 text-slate-400 hover:text-slate-600 rounded shrink-0"
+            size="sm"
+            value={value.address_id || ''}
+            onChange={pick}
+            options={addresses}
+            getOptionValue={a => a.id}
+            getOptionLabel={a => `${a.address_type || 'Adresse'} · ${fmtAddress(a)}`}
+            renderValue={() => null}
+          />
+        )}
+      </div>
+      {contact && <p className="text-xs text-slate-400 truncate" title={contact}>{contact}</p>}
     </div>
   )
 }
@@ -246,7 +283,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Date</label>
-              <input type="date" className={inp} value={po.date} onChange={e => setField('date', e.target.value)} />
+              <IsoDateInput value={po.date} onCommit={v => setField('date', v)} />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Devise</label>
@@ -275,8 +312,8 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
 
           {/* Addresses */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <AddressFields label="Facturer à" value={po.bill_to} onChange={v => setField('bill_to', v)} />
-            <AddressFields label="Expédier à" value={po.ship_to} onChange={v => setField('ship_to', v)} />
+            <AddressFields label="Facturer à" value={po.bill_to} addresses={po.own_addresses} onChange={v => setField('bill_to', v)} />
+            <AddressFields label="Expédier à" value={po.ship_to} addresses={po.own_addresses} onChange={v => setField('ship_to', v)} />
           </div>
 
           {/* Items */}

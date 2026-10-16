@@ -28,7 +28,6 @@ const PRODUCT_FORM_FIELDS = [
   { field: 'name_en', label: 'Nom (EN)', span: 2 },
   { field: 'unit_cost', label: 'Coût unitaire (CAD)', type: 'currency', min: '0' },
   { field: 'price_cad', label: 'Prix de vente (CAD)', type: 'currency', min: '0' },
-  { field: 'stock_qty', label: 'Qté en stock', type: 'number', min: '0', defaultValue: 0 },
   { field: 'min_stock', label: 'Stock minimum', type: 'number', min: '0', defaultValue: 0 },
   { field: 'order_qty', label: 'Qté à commander', type: 'number', min: '0', defaultValue: 0 },
   { field: 'supplier', label: 'Fournisseur' },
@@ -200,8 +199,10 @@ export default function Products() {
             key={scan ? `scan-${scan.version}` : 'products'}
             table="products"
             forceAllView={!!scan}
+            invertSortArrow
+            groupSums={false}
+            footerAtBottom
             manageViews
-            selectBadges
             columns={COLUMNS}
             data={scan ? scan.rows : products}
             loading={scan ? scan.loading : loading}
@@ -212,6 +213,7 @@ export default function Products() {
               width: 720,
               openId: peekOpenId,
               onOpenConsumed: consumePeekOpen,
+              routeNav: true,
               render: (row, { close }) => <ProductDetail recordId={row.id} embedded onClose={close} /> }}
             searchFields={['name_fr', 'name_en', 'sku', 'supplier']}
             searchAcrossViews={!scan}

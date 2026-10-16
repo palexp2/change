@@ -11,6 +11,7 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
+import { InlineTextarea } from '../components/InlineFields.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { parseSelectChoices, colorForChoice, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 
@@ -42,8 +43,8 @@ export default function SerialDetail({ recordId: id }) {
     if (msg.type === 'serial_number:updated') setSerial(s => (s ? { ...s, ...msg.payload } : s))
   })
 
-  // Le produit et le statut se modifient depuis la fiche (autosave) : ce sont
-  // les seules colonnes que la route PATCH des numéros de série accepte.
+  // Le produit, le statut et les notes se modifient depuis la fiche (autosave) :
+  // ce sont les seules colonnes que la route PATCH des numéros de série accepte.
   const { save, savingKeys } = useAutosave(serial, p => api.serials.update(id, p), {
     onSaved: (updated) => setSerial(s => ({ ...s, ...updated })),
   })
@@ -93,7 +94,6 @@ export default function SerialDetail({ recordId: id }) {
           taken={TAKEN_ELSEWHERE}
           className="card p-5"
           testId="serial-fields"
-          selectPills
         >
           <DetailField id="company_name" label="Entreprise">
             <Val>
@@ -126,11 +126,9 @@ export default function SerialDetail({ recordId: id }) {
           <DetailField id="manufacture_value" label="Valeur fabrication"><Val>{fmtCad(serial.manufacture_value)}</Val></DetailField>
           <DetailField id="manufacture_date" label="Date fabrication"><Val>{fmtDate(serial.manufacture_date)}</Val></DetailField>
           <DetailField id="last_programmed_date" label="Dernière programmation"><Val>{fmtDate(serial.last_programmed_date)}</Val></DetailField>
-          {serial.notes && (
-            <DetailField id="notes" label="Notes" span2>
-              <p className="whitespace-pre-wrap text-sm text-slate-600">{serial.notes}</p>
-            </DetailField>
-          )}
+          <DetailField id="notes" label="Notes" span2 saving={!!savingKeys.notes}>
+            <InlineTextarea value={serial.notes} saving={!!savingKeys.notes} onSave={v => save('notes', v || null)} testId="serial-notes" />
+          </DetailField>
           {serial.permissions && Object.keys(serial.permissions).length > 0 && (
             <DetailField id="permissions" label="Permissions" span2>
               <CentralControllerPermissions permissions={serial.permissions} />

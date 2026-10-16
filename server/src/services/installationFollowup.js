@@ -1,194 +1,169 @@
-// Installation follow-up email — sent 21 days after a NEW customer's first shipment.
-// "New customer" = company with exactly one order AND no prior follow-up sent.
-// Email goes to the contact linked to the shipping address of that first shipment.
-// On 'stuck' or 'painful' feedback we auto-create a task for Marc-Antoine.
+// Courriel de suivi d'installation — part 21 jours après le PREMIER envoi
+// expédié d'une entreprise (sa première commande expédiée), au courriel de
+// l'adresse de livraison de cet envoi. Aucune copie cachée.
+// Les boutons du courriel mènent à une page publique (routes/installation-feedback.js)
+// qui consigne la réponse dans installation_followups et, sur « Je suis bloqué »,
+// crée une tâche pour Philippe. La fiche commande montre la réponse en pastille.
 //
-// Idempotency: companies.installation_followup_sent_at is set to strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-// after a successful send. The eligibility query skips any company where it is
-// already populated, so a second run always returns 0 rows.
+// Un seul envoi par entreprise : la ligne installation_followups (clé company_id)
+// et companies.installation_followup_sent_at sont écrites dans la même transaction
+// que le courriel ; la requête d'éligibilité les exclut.
 //
-// Safety net: INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT caps how far back we look.
-// When the feature is first activated this prevents a retroactive blast to
-// customers whose first shipment happened months or years ago.
+// Garde-fou : INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT borne le passé — sans lui,
+// l'activation enverrait le courriel à des clients expédiés il y a des mois.
 
 import { emitCompany } from './realtimeEmitters.js'
 import { newRecordId } from '../utils/recordId.js'
 import { APP_URL } from '../config/appUrl.js'
 import { getPostmarkClient } from './postmarkConfig.js'
 
-// Only shipments on or after this date are eligible. Bump this if you need to
-// include older customers; the flag + lifecycle_phase + order-count filters are
-// still honoured, so it is safe to relax.
-export const INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT = '2026-04-16'
+export const INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT = '2026-09-23'
 
-const MIN_DAYS_AFTER_SHIPMENT = 21
+export const MIN_DAYS_AFTER_SHIPMENT = 21
 
-// Pure DB query — returns the rows that SHOULD receive the email right now.
-// Takes `db` explicitly so tests can run it against an in-memory database.
+export const ANSWERS = ['great', 'painful', 'nextWeek', 'stuck']
+
+// Premier envoi expédié de chaque entreprise (statut « Envoyé » + date).
+const FIRST_SHIPMENT_CTE = `
+  first_shipment AS (
+    SELECT o.company_id, o.id AS order_id, s.id AS shipment_id, s.shipped_at,
+           COALESCE(s.address_id, o.address_id) AS address_id,
+           ROW_NUMBER() OVER (PARTITION BY o.company_id ORDER BY s.shipped_at ASC, s.id ASC) AS rn
+    FROM shipments s
+    JOIN orders o ON o.id = s.order_id
+    WHERE s.shipped_at IS NOT NULL AND s.status = 'Envoyé'
+      AND s.deleted_at IS NULL AND o.deleted_at IS NULL AND o.company_id IS NOT NULL
+  )`
+
+// Requête pure — `db` passé en paramètre pour les tests en mémoire.
 export function selectEligibleCompanies(db, {
   nowIso = new Date().toISOString(),
   minDays = MIN_DAYS_AFTER_SHIPMENT,
   earliestShipment = INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT,
   includeAlreadySent = false,
 } = {}) {
-  const idempotencyClause = includeAlreadySent ? '' : 'AND c.installation_followup_sent_at IS NULL'
+  const idempotencyClause = includeAlreadySent ? '' : `AND c.installation_followup_sent_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM installation_followups f WHERE f.company_id = c.id)`
   return db.prepare(`
-    WITH first_shipment AS (
-      SELECT o.company_id,
-             s.id   AS shipment_id,
-             s.shipped_at,
-             s.address_id,
-             ROW_NUMBER() OVER (
-               PARTITION BY o.company_id
-               ORDER BY s.shipped_at ASC, s.id ASC
-             ) AS rn
-      FROM shipments s
-      JOIN orders o ON o.id = s.order_id
-      WHERE s.shipped_at IS NOT NULL
-        AND s.deleted_at IS NULL
-        AND o.deleted_at IS NULL
+    WITH ${FIRST_SHIPMENT_CTE},
+    candidates AS (
+      SELECT
+        c.id AS company_id, c.name AS company_name, c.language AS company_language,
+        fs.order_id, fs.shipment_id, fs.shipped_at AS first_shipped_at, fs.address_id,
+        a.contact_id,
+        TRIM(COALESCE(NULLIF(TRIM(ct.email), ''), a.courriel_du_contact)) AS contact_email,
+        COALESCE(ct.first_name, a.nom_complet_du_contact) AS contact_first_name,
+        COALESCE(ct.language, a.langue_du_contact) AS contact_language
+      FROM companies c
+      JOIN first_shipment fs ON fs.company_id = c.id AND fs.rn = 1
+      LEFT JOIN adresses a  ON a.id = fs.address_id
+      LEFT JOIN contacts ct ON ct.id = a.contact_id
+      WHERE c.deleted_at IS NULL
+        ${idempotencyClause}
+        AND fs.shipped_at >= ?
+        AND julianday(?) - julianday(fs.shipped_at) >= ?
     )
-    SELECT
-      c.id              AS company_id,
-      c.name            AS company_name,
-      c.language        AS company_language,
-      fs.shipment_id    AS shipment_id,
-      fs.shipped_at     AS first_shipped_at,
-      fs.address_id     AS address_id,
-      a.contact_id      AS contact_id,
-      ct.email          AS contact_email,
-      ct.first_name     AS contact_first_name,
-      ct.language       AS contact_language
-    FROM companies c
-    JOIN first_shipment fs ON fs.company_id = c.id AND fs.rn = 1
-    LEFT JOIN adresses a   ON a.id = fs.address_id
-    LEFT JOIN contacts ct  ON ct.id = a.contact_id
-    WHERE c.deleted_at IS NULL
-      AND c.lifecycle_phase = 'Customer'
-      ${idempotencyClause}
-      AND (
-        SELECT COUNT(*) FROM orders o2
-        WHERE o2.company_id = c.id AND o2.deleted_at IS NULL
-      ) = 1
-      AND ct.email IS NOT NULL
-      AND ct.email LIKE '%@%'
-      AND fs.shipped_at >= ?
-      AND julianday(?) - julianday(fs.shipped_at) >= ?
-    ORDER BY fs.shipped_at ASC
+    SELECT * FROM candidates
+    WHERE contact_email LIKE '%_@_%'
+    ORDER BY first_shipped_at ASC
   `).all(earliestShipment, nowIso, minDays)
 }
 
 function pickLanguage(row) {
   const lang = (row.contact_language || row.company_language || '').toLowerCase()
-  return lang.startsWith('fr') || lang === 'français' || lang === 'francais' ? 'French' : 'English'
+  return lang.startsWith('fr') ? 'French' : 'English'
 }
 
-// Public — exported so tests can assert on the feedback link format.
-export function buildFeedbackUrl(appUrl, answer, language, companyId) {
+const firstWord = s => String(s || '').trim().split(/\s+/)[0] || ''
+
+// Le jeton d'une réponse = l'id du courriel envoyé (aléatoire, unique).
+export function buildFeedbackUrl(appUrl, answer, token) {
   const u = new URL(`${appUrl}/erp/api/public/installation-feedback`)
-  u.searchParams.set('answer', answer)
-  u.searchParams.set('lang', language)
-  u.searchParams.set('company', companyId)
+  u.searchParams.set('t', token)
+  u.searchParams.set('a', answer)
   return u.toString()
 }
 
-export function buildInstallationEmailHtml({ language, firstName, companyId, emailId, appUrl }) {
-  const isFrench = language === 'French'
-  const strings = isFrench
-    ? {
-        subject: "Comment s'est passé l'installation ?",
-        greeting: 'Salut',
-        prompt: "Comment s'est passé l'installation",
-        great: "Super c'est fait !",
-        painful: "C'était pénible",
-        nextWeek: 'Je compte le faire la semaine prochaine',
-        stuck: 'Je suis bloqué',
-        help: "Besoin d'aide ? <a href=\"tel:18882674742\" style=\"color:#22b14c;\">Appelle-nous</a>",
-      }
-    : {
-        subject: 'How did the installation go?',
-        greeting: 'Hey',
-        prompt: 'How did the installation go',
-        great: "Great, it's done!",
-        painful: 'It was painful',
-        nextWeek: 'I plan to do it next week',
-        stuck: "I'm stuck",
-        help: '<a href="https://www.orisha.io/contact" style="color:#22b14c;">Need help?</a>',
-      }
-
-  const btn = (answer, label) => {
-    const href = buildFeedbackUrl(appUrl, answer, language, companyId)
-    return `<a href="${href}" style="background-color:#22b14c;color:#fff;padding:15px 25px;text-align:center;text-decoration:none;display:inline-block;border-radius:5px;font-size:16px;font-weight:bold;box-shadow:0 4px 8px rgba(0,0,0,0.2);margin:5px;">${label}</a>`
-  }
-
-  const pixelUrl = `${appUrl}/erp/api/track/email/${emailId}.gif`
-
-  return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>Installation follow-up</title></head>
-<body style="margin:0;padding:0;background-color:#f4f4f4;font-family:Arial,sans-serif;">
-  <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color:#f4f4f4;">
-    <tr><td align="center">
-      <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color:#ffffff;border-radius:4px;overflow:hidden;">
-        <tr><td align="center" style="padding:20px;">
-          <img src="https://orisha.us-east-1.linodeobjects.com/logo.png" alt="Orisha" style="max-width:150px;display:block;">
-        </td></tr>
-        <tr><td style="background-color:#22b14c;height:5px;line-height:5px;font-size:0;"></td></tr>
-        <tr><td style="padding:20px;">
-          <p style="margin:0 0 10px 0;font-size:16px;color:#333;">${strings.greeting} ${firstName || ''},</p>
-          <br>
-          <p style="margin:0 0 20px 0;font-size:16px;color:#333;">${strings.prompt}</p>
-          <br><br>
-          <p style="text-align:center;margin:20px 0;">
-            ${btn('great', strings.great)}
-            ${btn('painful', strings.painful)}
-          </p>
-          <p style="text-align:center;margin:20px 0;">
-            ${btn('nextWeek', strings.nextWeek)}
-            ${btn('stuck', strings.stuck)}
-          </p>
-        </td></tr>
-        <tr><td style="padding:20px;text-align:center;">
-          <p style="margin:0;font-size:16px;color:#333;">${strings.help}</p>
-        </td></tr>
-        <tr><td align="center" style="padding:20px;background-color:#f4f4f4;font-size:12px;color:#777;">
-          Automatisation Orisha Inc. 1535 ch. Ste-Foy Bureau 220 Québec, QC G1S 2P1
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-  <img src="${pixelUrl}" width="1" height="1" alt="" style="display:none;border:0;width:1px;height:1px">
-</body>
-</html>`
+export const STRINGS = {
+  French: {
+    subject: "Comment s'est passée l'installation ?",
+    hello: 'Salut',
+    question: "Comment s'est passée l'installation&nbsp;?",
+    sub: 'Un clic suffit.',
+    great: "C'est fait, tout roule",
+    painful: "C'était pénible",
+    nextWeek: 'La semaine prochaine',
+    stuck: 'Je suis bloqué',
+    help: 'Besoin d’un coup de main&nbsp;?',
+    call: 'Appelle-nous au <a href="tel:18882674742" style="color:#167030;font-weight:bold;text-decoration:none">1-888-267-4742</a>',
+  },
+  English: {
+    subject: 'How did the installation go?',
+    hello: 'Hi',
+    question: 'How did the installation go?',
+    sub: 'One click is all it takes.',
+    great: "It's done, all good",
+    painful: 'It was painful',
+    nextWeek: 'Next week',
+    stuck: "I'm stuck",
+    help: 'Need a hand?',
+    call: 'Call us at <a href="tel:18882674742" style="color:#167030;font-weight:bold;text-decoration:none">1-888-267-4742</a>',
+  },
 }
 
-// Marks a company as having received the follow-up, and records the interaction/email
-// + sets companies.installation_followup_sent_at. All writes happen in a single
-// transaction so we never end up with a sent email and no flag (or vice versa).
-function recordSend(db, { row, subject, html, emailId, to, fromAddress }) {
+const ICONS = { great: '✅', painful: '😮‍💨', nextWeek: '📅', stuck: '🆘' }
+
+export function buildInstallationEmailHtml({ language, firstName, token, emailId, appUrl }) {
+  const t = STRINGS[language] || STRINGS.French
+  const choice = answer => `<td width="50%" style="padding:6px">
+      <a href="${buildFeedbackUrl(appUrl, answer, token)}" style="display:block;border:1px solid #d9e7dd;border-radius:10px;background:#f6fbf7;padding:18px 12px;text-align:center;text-decoration:none;color:#1f2937;font-size:15px;font-weight:bold;line-height:1.3">
+        <span style="display:block;font-size:26px;line-height:1;margin-bottom:8px">${ICONS[answer]}</span>${t[answer]}
+      </a></td>`
+  const name = firstWord(firstName)
+  const pixel = emailId ? `<img src="${appUrl}/erp/api/track/email/${emailId}.gif" width="1" height="1" alt="" style="display:none;border:0;width:1px;height:1px">` : ''
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${t.subject}</title></head>
+<body style="margin:0;padding:0;background:#eef2ef;font-family:Arial,Helvetica,sans-serif;color:#1f2937">
+<table width="100%" cellspacing="0" cellpadding="0" style="background:#eef2ef"><tr><td align="center" style="padding:28px 12px">
+  <table width="560" cellspacing="0" cellpadding="0" style="max-width:100%;background:#fff;border-radius:14px;overflow:hidden">
+    <tr><td style="background:#22b14c;height:6px;line-height:6px;font-size:0">&nbsp;</td></tr>
+    <tr><td align="center" style="padding:28px 24px 8px"><img src="https://orisha.us-east-1.linodeobjects.com/logo.png" alt="Orisha" width="120" style="display:block;max-width:120px"></td></tr>
+    <tr><td align="center" style="padding:18px 32px 4px;font-size:16px;color:#4b5563">${t.hello}${name ? ` ${name}` : ''} 👋</td></tr>
+    <tr><td align="center" style="padding:4px 32px 4px;font-size:24px;font-weight:bold;line-height:1.3;color:#111827">${t.question}</td></tr>
+    <tr><td align="center" style="padding:0 32px 18px;font-size:14px;color:#6b7280">${t.sub}</td></tr>
+    <tr><td style="padding:0 22px 22px">
+      <table width="100%" cellspacing="0" cellpadding="0">
+        <tr>${choice('great')}${choice('painful')}</tr>
+        <tr>${choice('nextWeek')}${choice('stuck')}</tr>
+      </table>
+    </td></tr>
+    <tr><td align="center" style="padding:18px 32px 26px;border-top:1px solid #eef0f2;font-size:14px;color:#4b5563;line-height:1.6">${t.help}<br>${t.call}</td></tr>
+  </table>
+  <div style="padding:16px;font-size:11px;color:#8a9490;text-align:center">Automatisation Orisha Inc. · 1535 ch. Ste-Foy, bureau 220 · Québec, QC G1S 2P1</div>
+</td></tr></table>
+${pixel}
+</body></html>`
+}
+
+// Courriel + interaction + ligne de suivi + drapeau entreprise, en une transaction.
+function recordSend(db, { row, subject, html, emailId, to, fromAddress, language }) {
   const interactionId = newRecordId()
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
-      VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `).run(interactionId, row.contact_id, row.company_id)
-    db.prepare(`
-      INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
-      VALUES (?, ?, ?, ?, ?, ?, 1)
-    `).run(emailId, interactionId, subject, html, fromAddress, to)
-    db.prepare(`
-      UPDATE companies SET installation_followup_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
-    `).run(row.company_id)
-  })
-  tx()
-  emitCompany('updated', row.company_id, null)
+  db.transaction(() => {
+    db.prepare(`INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
+      VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`).run(interactionId, row.contact_id, row.company_id)
+    db.prepare(`INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
+      VALUES (?, ?, ?, ?, ?, ?, 1)`).run(emailId, interactionId, subject, html, fromAddress, to)
+    db.prepare(`INSERT INTO installation_followups (company_id, order_id, shipment_id, email_id, lang, sent_at)
+      VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`).run(row.company_id, row.order_id, row.shipment_id, emailId, language)
+    db.prepare(`UPDATE companies SET installation_followup_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(row.company_id)
+  })()
+  try { emitCompany('updated', row.company_id, null) } catch { /* temps réel absent (tests) */ }
   return { interactionId }
 }
 
-// Send ONE test email so an admin can preview the template in their own inbox
-// before enabling the automation. No DB writes, no flag changes, no tasks.
-// The HTML is prepended with a visible TEST banner and the feedback buttons
-// point at a dummy company id (clicks land on the thanks page but create no task).
+// Courriel d'essai pour l'admin : aucune écriture ; les boutons pointent sur un
+// jeton bidon (la page de remerciement s'ouvre, rien n'est consigné).
 export async function sendInstallationTestEmail(db, {
   to,
   language = 'French',
@@ -199,42 +174,20 @@ export async function sendInstallationTestEmail(db, {
 } = {}) {
   if (!to || !/@/.test(to)) throw new Error('Adresse email de test invalide')
   const lang = language === 'French' ? 'French' : 'English'
-  const emailId = newRecordId()
-  const fakeCompanyId = '00000000-0000-0000-0000-000000000000'
-
-  const base = buildInstallationEmailHtml({
-    language: lang,
-    firstName: lang === 'French' ? 'Alex' : 'Alex',
-    companyId: fakeCompanyId,
-    emailId,
-    appUrl,
-  })
-  const banner = lang === 'French'
-    ? '<div style="background:#fef3c7;border:2px solid #f59e0b;padding:12px;text-align:center;font-weight:bold;color:#92400e;">⚠️ COURRIEL DE TEST — ceci est un aperçu, ne pas y répondre. Les boutons ouvrent la page de confirmation mais ne créent aucune tâche.</div>'
-    : '<div style="background:#fef3c7;border:2px solid #f59e0b;padding:12px;text-align:center;font-weight:bold;color:#92400e;">⚠️ TEST EMAIL — preview only, do not reply. Buttons open the confirmation page but do not create any task.</div>'
-  const html = base.replace('<body ', '<body data-test="1" ').replace(/(<body[^>]*>)/, `$1${banner}`)
-  const subject = lang === 'French'
-    ? "[TEST] Comment s'est passé l'installation ?"
-    : '[TEST] How did the installation go?'
-
-  const send = sendFn || (async (emailData) => {
-    const client = getPostmarkClient(postmarkToken)
-    return client.sendEmail(emailData)
-  })
+  const html = buildInstallationEmailHtml({ language: lang, firstName: 'Alex', token: 'test', emailId: null, appUrl })
+  const subject = `[TEST] ${STRINGS[lang].subject}`
+  const send = sendFn || (emailData => getPostmarkClient(postmarkToken).sendEmail(emailData))
   await send({ From: fromAddress, To: to, Subject: subject, HtmlBody: html })
   return { to, language: lang, subject }
 }
 
-// Run one pass: select eligible companies, send each email, record results.
-// `sendFn` is the Postmark sender, injected so tests can stub it.
+// Une passe : sélection, envoi, consignation. `sendFn` injecté pour les tests.
 export async function sendInstallationFollowups(db, {
   appUrl = APP_URL,
   fromAddress = process.env.POSTMARK_FROM,
   postmarkToken = process.env.POSTMARK_API_KEY,
   dryRun = false,
   sendFn = null,
-  // Forwarded to selectEligibleCompanies so tests can pin a deterministic "now"
-  // and relax the shipment-cutoff. Never pass these in production.
   nowIso,
   earliestShipment,
 } = {}) {
@@ -243,73 +196,48 @@ export async function sendInstallationFollowups(db, {
   if (earliestShipment) selectOpts.earliestShipment = earliestShipment
   const eligible = selectEligibleCompanies(db, selectOpts)
   const results = { total: eligible.length, sent: 0, errors: 0, skipped: 0, details: [] }
-
   if (eligible.length === 0) return results
 
-  const send = sendFn || (async (emailData) => {
-    const client = getPostmarkClient(postmarkToken)
-    return client.sendEmail(emailData)
-  })
+  const send = sendFn || (emailData => getPostmarkClient(postmarkToken).sendEmail(emailData))
 
   for (const row of eligible) {
+    const base = { company_id: row.company_id, company_name: row.company_name, to: row.contact_email }
     try {
       const language = pickLanguage(row)
       const emailId = newRecordId()
-      const html = buildInstallationEmailHtml({
-        language,
-        firstName: row.contact_first_name,
-        companyId: row.company_id,
-        emailId,
-        appUrl,
-      })
-      const subject = language === 'French'
-        ? "Comment s'est passé l'installation ?"
-        : 'How did the installation go?'
-
+      const html = buildInstallationEmailHtml({ language, firstName: row.contact_first_name, token: emailId, emailId, appUrl })
+      const subject = STRINGS[language].subject
       if (dryRun) {
         results.skipped++
-        results.details.push({
-          company_id: row.company_id,
-          company_name: row.company_name,
-          to: row.contact_email,
-          language,
-          action: 'dry-run',
-        })
+        results.details.push({ ...base, language, action: 'dry-run' })
         continue
       }
-
-      await send({
-        From: fromAddress,
-        To: row.contact_email,
-        Subject: subject,
-        HtmlBody: html,
-      })
-
-      const { interactionId } = recordSend(db, {
-        row, subject, html, emailId, to: row.contact_email, fromAddress,
-      })
-
+      await send({ From: fromAddress, To: row.contact_email, Subject: subject, HtmlBody: html })
+      const { interactionId } = recordSend(db, { row, subject, html, emailId, to: row.contact_email, fromAddress, language })
       results.sent++
-      results.details.push({
-        company_id: row.company_id,
-        company_name: row.company_name,
-        to: row.contact_email,
-        language,
-        email_id: emailId,
-        interaction_id: interactionId,
-        action: 'sent',
-      })
+      results.details.push({ ...base, language, email_id: emailId, interaction_id: interactionId, action: 'sent' })
     } catch (e) {
       results.errors++
-      results.details.push({
-        company_id: row.company_id,
-        company_name: row.company_name,
-        to: row.contact_email,
-        error: e.message,
-        action: 'error',
-      })
+      results.details.push({ ...base, error: e.message, action: 'error' })
     }
   }
-
   return results
+}
+
+// État du suivi pour la fiche commande : null si la commande ne porte pas le
+// premier envoi de l'entreprise. { state: 'planned', due_at } avant l'envoi,
+// { state: 'sent', sent_at, answer, answered_at, note, task_id } ensuite.
+export function orderFollowupState(db, orderId, { active = true } = {}) {
+  const sent = db.prepare(`SELECT sent_at, answer, answered_at, note, task_id FROM installation_followups WHERE order_id = ?`).get(orderId)
+  if (sent) return { state: 'sent', ...sent }
+  if (!active) return null
+  const first = db.prepare(`WITH ${FIRST_SHIPMENT_CTE}
+    SELECT fs.shipped_at FROM first_shipment fs
+    JOIN orders o ON o.company_id = fs.company_id AND o.id = ?
+    JOIN companies c ON c.id = fs.company_id AND c.installation_followup_sent_at IS NULL
+    WHERE fs.rn = 1 AND fs.order_id = o.id AND fs.shipped_at >= ?`).get(orderId, INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT)
+  if (!first) return null
+  const due = new Date(first.shipped_at)
+  due.setUTCDate(due.getUTCDate() + MIN_DAYS_AFTER_SHIPMENT)
+  return { state: 'planned', due_at: due.toISOString().slice(0, 10) }
 }

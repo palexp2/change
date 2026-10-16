@@ -16,7 +16,7 @@ function getProduct(id) {
   return product
 }
 
-export function productPurchasePrefill(productId) {
+export function productPurchasePrefill(productId, { computedQty = null } = {}) {
   const product = getProduct(productId)
   // Les achats Airtable lient la table Fournisseurs, pas la table Entreprises.
   const suppliers = db.prepare(`SELECT v.airtable_id AS id, v.name, v.qb_vendor_id,
@@ -33,7 +33,7 @@ export function productPurchasePrefill(productId) {
   const previous = last && suppliers.find(s =>
     (last.supplier_qb_vendor_id && s.qb_vendor_id === last.supplier_qb_vendor_id)
     || normalize(s.name) === normalize(last.supplier_vendor_name))
-  return { suppliers, supplier_id: primary?.id || previous?.id || '', quantity: product.order_qty > 0 ? product.order_qty : 1 }
+  return { suppliers, supplier_id: primary?.id || previous?.id || '', quantity: computedQty > 0 ? computedQty : product.order_qty > 0 ? product.order_qty : 1 }
 }
 
 // Relit les mappings de l'interface : aucune colonne historique supprimée

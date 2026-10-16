@@ -11,7 +11,7 @@ import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { TABLE_COLUMN_META, TASK_STATUS_CHOICES, TASK_PRIORITY_CHOICES } from '../lib/tableDefs.js'
 import { useDetailFields } from '../lib/useDetailFields.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -22,9 +22,12 @@ import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
-import { fmtDateTime, localISODate } from '../lib/formatDate.js'
+import { fmtDateTime } from '../lib/formatDate.js'
+import DueShortcuts, { dueFromShortcut } from '../components/DueShortcuts.jsx'
+import { InlineDate } from '../components/InlineFields.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { fmtPhone } from '../utils/formatters.js'
 import ThinkingOrb from '../components/ThinkingOrb'
 
@@ -97,6 +100,25 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
     }
   }
 
+  // Créer l'entreprise puis la lier. Recherche saisie = nom direct ; sinon on
+  // demande le nom dans une petite modale.
+  const [newName, setNewName] = useState(null)
+  async function createAndLink(name) {
+    const n = (name || '').trim()
+    if (!n) { setNewName(''); return }
+    setNewName(null)
+    setSaving(true)
+    try {
+      const company = await api.companies.create({ name: n })
+      const r = await api.contacts.addCompany(contactId, { company_id: company.id })
+      onChange(r)
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // Rendu sans libellé : le composant vit dans une carte « Entreprises » de la
   // colonne des records liés, qui porte déjà le titre.
   return (
@@ -155,10 +177,27 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
             saving={saving}
             onChange={add}
             allowClear={false}
+            onCreate={createAndLink}
+            createLabel="Créer une entreprise"
           />
           <span className="text-xs text-slate-400">Lier une entreprise</span>
         </div>
       </div>
+      <Modal isOpen={newName !== null} onClose={() => setNewName(null)} title="Nouvelle entreprise" size="sm">
+        <form onSubmit={e => { e.preventDefault(); createAndLink(newName) }} className="space-y-3">
+          <input
+            autoFocus
+            value={newName || ''}
+            onChange={e => setNewName(e.target.value)}
+            className="input w-full"
+            aria-label="Nom"
+            data-testid="new-company-name"
+          />
+          <div className="flex justify-end">
+            <button type="submit" className="btn-primary" disabled={!newName?.trim()}>Créer</button>
+          </div>
+        </form>
+      </Modal>
     </div>
   )
 }
@@ -175,26 +214,16 @@ function InlineField({ field, value, saving, onSave }) {
   function commit(val) { if (val === shown) return; onSave(val) }
 
   if (field.type === 'select') {
-    // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
-    if ((field.options || []).length > 10) {
-      return (
-        <SearchableSelect
-          value={local}
-          options={(field.options || []).map(o => ({ value: o, label: o }))}
-          emptyOption="—"
-          onChange={v => { setLocal(v); commit(v) }}
-          className="input text-sm"
-          size="sm"
-          disabled={saving}
-          testId={`contact-field-${field.key}`}
-        />
-      )
-    }
     return (
-      <select value={local} onChange={e => { setLocal(e.target.value); commit(e.target.value) }} className="input text-sm" disabled={saving}>
-        <option value="">—</option>
-        {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-      </select>
+      <ChoiceSelect
+        value={local}
+        choices={field.options}
+        table="contacts"
+        field={field.key}
+        onChange={v => { setLocal(v); commit(v) }}
+        disabled={saving}
+        testId={`contact-field-${field.key}`}
+      />
     )
   }
   if (field.type === 'textarea') {
@@ -212,21 +241,6 @@ function InlineField({ field, value, saving, onSave }) {
   return (
     <input type={fieldTypeInput(field.type)} value={local} onChange={e => setLocal(e.target.value)} onBlur={e => commit(e.target.value)} className="input text-sm" disabled={saving} />
   )
-}
-
-// Raccourcis d'échéance, comptés depuis aujourd'hui.
-const DUE_SHORTCUTS = [
-  { label: '1 j', days: 1 },
-  { label: '3 j', days: 3 },
-  { label: '1 sem', days: 7 },
-  { label: '2 sem', days: 14 },
-  { label: '1 mois', months: 1 },
-]
-function dueFromShortcut({ days = 0, months = 0 }) {
-  const d = new Date()
-  if (months) d.setMonth(d.getMonth() + months)
-  d.setDate(d.getDate() + days)
-  return localISODate(d)
 }
 
 function TaskModalContent({ contactId, contactCompanies = [], editingTask, users, taskForm, setTaskForm, savingTask, setSavingTask, onClose, onRefresh }) {
@@ -301,48 +315,41 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Statut</label>
-          <select
+          <ChoiceSelect
             value={taskForm.status}
-            onChange={e => isEdit ? saveField('status', e.target.value) : setTaskForm(f => ({ ...f, status: e.target.value }))}
-            className="select"
-          >
-            {['À faire','En cours','Terminé','Annulé'].map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+            choices={TASK_STATUS_CHOICES}
+            table="tasks"
+            field="status"
+            onChange={v => isEdit ? saveField('status', v) : setTaskForm(f => ({ ...f, status: v }))}
+            emptyOption={null}
+            className="input w-full"
+          />
         </div>
         <div>
           <label className="label">Priorité</label>
-          <select
+          <ChoiceSelect
             value={taskForm.priority}
-            onChange={e => isEdit ? saveField('priority', e.target.value) : setTaskForm(f => ({ ...f, priority: e.target.value }))}
-            className="select"
-          >
-            {['Basse','Normal','Haute','Urgente'].map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
+            choices={TASK_PRIORITY_CHOICES}
+            table="tasks"
+            field="priority"
+            onChange={v => isEdit ? saveField('priority', v) : setTaskForm(f => ({ ...f, priority: v }))}
+            emptyOption={null}
+            className="input w-full"
+          />
         </div>
       </div>
       <div>
         <label className="label">Échéance</label>
-        <input
-          type="date"
+        <InlineDate
+          iso
           value={taskForm.due_date || ''}
-          onChange={e => isEdit ? saveField('due_date', e.target.value) : setTaskForm(f => ({ ...f, due_date: e.target.value }))}
+          onSave={v => isEdit ? saveField('due_date', v) : setTaskForm(f => ({ ...f, due_date: v }))}
           className="input"
         />
-        <div className="flex flex-wrap gap-1 mt-1.5">
-          {DUE_SHORTCUTS.map(s => {
-            const v = dueFromShortcut(s)
-            return (
-              <button
-                key={s.label}
-                type="button"
-                onClick={() => isEdit ? saveField('due_date', v) : setTaskForm(f => ({ ...f, due_date: v }))}
-                className={`btn-secondary btn-sm${taskForm.due_date === v ? ' ring-1 ring-brand-500' : ''}`}
-              >
-                {s.label}
-              </button>
-            )
-          })}
-        </div>
+        <DueShortcuts
+          value={taskForm.due_date}
+          onPick={v => isEdit ? saveField('due_date', v) : setTaskForm(f => ({ ...f, due_date: v }))}
+        />
       </div>
       <div>
         <label className="label">Responsable</label>
@@ -466,9 +473,6 @@ export default function ContactDetail({ recordId, onClose }) {
   const taskColumns = useMemo(() => {
     const RENDERS = {
       title: row => <span className="font-medium text-slate-900">{row.title}</span>,
-      status: row => (
-        <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full ${row.status === 'Terminé' ? 'bg-green-100 text-green-700' : row.status === 'En cours' ? 'bg-blue-100 text-blue-700' : row.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{row.status}</span>
-      ),
       due_date: row => {
         if (!row.due_date) return <span className="text-slate-400">—</span>
         const overdue = row.status !== 'Terminé' && new Date(row.due_date) < new Date()
@@ -571,9 +575,31 @@ export default function ContactDetail({ recordId, onClose }) {
     }
   }
 
+  // Champs personnalisés (carte de champs) : 0 et « faux » sont des valeurs,
+  // seul le vide devient null — contrairement aux champs natifs ci-dessus.
+  async function saveCustomField(key, value) {
+    const v = value === '' || value === undefined ? null : value
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    try {
+      return await save(async () => {
+        await api.contacts.update(id, { [key]: v })
+        setContact(c => ({ ...c, [key]: v }))
+      })
+    } finally {
+      setFieldSaving(s => ({ ...s, [key]: false }))
+    }
+  }
+
   function openNewTask() {
     setEditingTask(null)
     setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: user?.id || '', notes: '' })
+    setShowTaskModal(true)
+  }
+
+  // « Prochaine étape » d'un appel → tâche pré-remplie, échéance 3 j.
+  function openTaskFromStep(step) {
+    setEditingTask(null)
+    setTaskForm({ title: step, status: 'À faire', priority: 'Normal', due_date: dueFromShortcut({ days: 3 }), assigned_to: user?.id || '', notes: '' })
     setShowTaskModal(true)
   }
 
@@ -612,7 +638,8 @@ export default function ContactDetail({ recordId, onClose }) {
               {/* L'ordre des champs et ceux qu'on garde se règlent dans la fiche
                  elle-même (bouton « Personnaliser les champs » du panneau
                  latéral, ou au survol de la carte ici). */}
-              <DetailFieldGrid entityType="contacts" record={contact} className="card p-4">
+              <DetailFieldGrid entityType="contacts" record={contact} className="card p-4"
+                onSaveCustom={saveCustomField} savingKeys={fieldSaving}>
                 {visibleFields.map(field => (
                   <DetailField
                     key={field.key}
@@ -674,6 +701,7 @@ export default function ContactDetail({ recordId, onClose }) {
                   showContact={false}
                   onLog={() => setShowLogModal(true)}
                   onTogglePin={togglePinInteraction}
+                  onTaskFromStep={(_item, step) => openTaskFromStep(step)}
                 />
               )}
             </>

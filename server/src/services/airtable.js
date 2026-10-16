@@ -471,8 +471,9 @@ export async function syncOrders(changes = null) {
           // Notes en sens 'push' (ERP → Airtable) : conserver la valeur ERP, ne pas
           // l'écraser avec Airtable. Sinon (pull/both) : importer la valeur Airtable.
           const notesToStore = notesDir === 'push' ? existing.notes : notes
-          db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(companyId, projectId, status, priority, notesToStore, addressId, isSubscription, existing.id)
+          // `status` n'est plus réécrit : Boréal le calcule (services/orderStatus.js).
+          db.prepare(`UPDATE orders SET company_id=?, project_id=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(companyId, projectId, priority, notesToStore, addressId, isSubscription, existing.id)
           emitOrder('updated', existing.id, null)
           touchedOrderIds.push(existing.id)
           updated++
@@ -697,6 +698,7 @@ export async function syncPieces(changes = null) {
     // premier sync, et la laisser aurait reconstruit — puis re-persisté — un
     // field_map cœur dans le dos de l'utilisateur au premier passage.
     const fieldMap = fieldMapFromUi('products', PIECES_FIELD_MAP_PLAN)
+    const stockFrozen = getFrozenColumns('products').has('stock_qty')
     let imported = 0, updated = 0
 
     // Pre-compute image URLs (async downloads must happen before the sync transaction)
@@ -774,6 +776,8 @@ export async function syncPieces(changes = null) {
 
         const existing = db.prepare('SELECT id FROM products WHERE airtable_id=?').get(rec.id)
         if (existing) {
+          // Quantité en inventaire gelée (migration 143) : Boréal la calcule.
+          if (stockFrozen) payload.stock_qty = db.prepare('SELECT stock_qty FROM products WHERE id=?').get(existing.id).stock_qty
           db.prepare(`UPDATE products SET name_fr=?, name_en=?, sku=?, type=?, unit_cost=?, price_cad=?, stock_qty=?, min_stock=?, supplier=?, procurement_type=?, weight_lbs=?, image_url=COALESCE(?,image_url), assembly_status=?, finished_min_stock=?, projected_available_qty=?, producible_qty=?, supplier_link=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, payload.assembly_status, payload.finished_min_stock, payload.projected_available_qty, payload.producible_qty, payload.supplier_link, existing.id)
           updated++

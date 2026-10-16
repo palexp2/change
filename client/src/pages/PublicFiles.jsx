@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Upload, Folder, FolderOpen, Copy, ExternalLink, FileText, Image as ImageIcon, File, RefreshCw, X } from 'lucide-react'
+import { Upload, Copy, ExternalLink, FileText, Image as ImageIcon, File, RefreshCw } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
@@ -10,8 +10,6 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
-
-const ROOT_LABEL = '— Racine —'
 
 // La colonne « Téléversé par » existait, cachée. La rendre visible par défaut
 // dans tableDefs ne suffit pas : la sélection de colonnes de la vue « Tous »
@@ -68,7 +66,7 @@ function FileTypeIcon({ mime, size = 16 }) {
   return <File size={size} className="text-slate-400" />
 }
 
-function UploadZone({ onUpload, uploading, defaultFolder }) {
+function UploadZone({ onUpload, uploading }) {
   const { addToast } = useToast()
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef()
@@ -82,7 +80,6 @@ function UploadZone({ onUpload, uploading, defaultFolder }) {
       }
       const fd = new FormData()
       fd.append('file', file)
-      fd.append('folder', defaultFolder || '')
       onUpload(fd, file.name)
     }
   }
@@ -118,56 +115,9 @@ function UploadZone({ onUpload, uploading, defaultFolder }) {
           <div>
             <p className="text-slate-700 font-semibold text-sm">Glissez un ou plusieurs fichiers</p>
             <p className="text-slate-400 text-xs mt-0.5">ou cliquez pour parcourir — max 100 Mo / fichier</p>
-            {defaultFolder
-              ? <p className="text-brand-600 text-xs mt-1">→ dossier <strong>{defaultFolder}</strong></p>
-              : <p className="text-slate-400 text-xs mt-1">→ racine</p>}
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function FolderList({ folders, current, onSelect }) {
-  const [search, setSearch] = useState('')
-  const filtered = search
-    ? folders.filter(f => (f.folder || ROOT_LABEL).toLowerCase().includes(search.toLowerCase()))
-    : folders
-
-  return (
-    <div className="space-y-2">
-      {folders.length > 10 && (
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="input-field text-xs w-full"
-        />
-      )}
-      <button
-        onClick={() => onSelect(null)}
-        className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors
-          ${current === null ? 'bg-brand-600 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
-      >
-        <FolderOpen size={14} className="flex-shrink-0" />
-        <span className="flex-1 text-left truncate">Tous les fichiers</span>
-      </button>
-      {filtered.map(f => {
-        const label = f.folder || ROOT_LABEL
-        const active = current === f.folder
-        return (
-          <button
-            key={f.folder || '__root__'}
-            onClick={() => onSelect(f.folder)}
-            className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors
-              ${active ? 'bg-brand-600 text-white' : 'text-slate-700 hover:bg-slate-100'}`}
-          >
-            <Folder size={14} className="flex-shrink-0" />
-            <span className="flex-1 text-left truncate">{label}</span>
-            <span className={`text-xs ${active ? 'text-brand-100' : 'text-slate-400'}`}>{f.count}</span>
-          </button>
-        )
-      })}
     </div>
   )
 }
@@ -201,7 +151,6 @@ function CopyLinkButton({ token, label, dataTestid }) {
 function EditFileModal({ file, onClose, onChange }) {
   const { addToast } = useToast()
   const confirm = useConfirm()
-  const [folder, setFolder] = useState(file.folder || '')
   const [description, setDescription] = useState(file.description || '')
   const [tagsText, setTagsText] = useState((file.tags || []).join(', '))
   const [originalName, setOriginalName] = useState(file.original_name || '')
@@ -210,7 +159,7 @@ function EditFileModal({ file, onClose, onChange }) {
   const replaceInputRef = useRef(null)
 
   const dirtyRef = useRef(false)
-  useEffect(() => { dirtyRef.current = true }, [folder, description, tagsText, originalName])
+  useEffect(() => { dirtyRef.current = true }, [description, tagsText, originalName])
 
   // Autosave debounced — pas de bouton "Enregistrer" (règle ERP).
   useEffect(() => {
@@ -220,7 +169,6 @@ function EditFileModal({ file, onClose, onChange }) {
       try {
         const tags = tagsText.split(',').map(t => t.trim()).filter(Boolean)
         const updated = await api.publicFiles.update(file.id, {
-          folder: folder.trim(),
           description: description.trim() || null,
           tags,
           original_name: originalName.trim() || file.original_name,
@@ -234,7 +182,7 @@ function EditFileModal({ file, onClose, onChange }) {
     }, 500)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folder, description, tagsText, originalName])
+  }, [description, tagsText, originalName])
 
   async function handleReplaceFile(e) {
     const picked = e.target.files?.[0]
@@ -312,16 +260,6 @@ function EditFileModal({ file, onClose, onChange }) {
                 onChange={e => setOriginalName(e.target.value)}
                 data-testid="edit-original-name"
               />
-            </div>
-            <div>
-              <label className="label">Dossier</label>
-              <input
-                className="input"
-                value={folder}
-                onChange={e => setFolder(e.target.value)}
-                data-testid="edit-folder"
-              />
-              <p className="text-xs text-slate-400 mt-1">Organise les fichiers sans affecter l'URL publique.</p>
             </div>
           </div>
         </div>
@@ -422,8 +360,6 @@ export default function PublicFiles() {
     revealAttachmentColumn()
   }
   const [files, setFiles] = useState([])
-  const [folders, setFolders] = useState([])
-  const [currentFolder, setCurrentFolder] = useState(null) // null = tous
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [editing, setEditing] = useState(null)
@@ -431,17 +367,12 @@ export default function PublicFiles() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const params = currentFolder !== null ? { folder: currentFolder } : {}
-      const [{ data }, foldersResp] = await Promise.all([
-        api.publicFiles.list(params),
-        api.publicFiles.folders(),
-      ])
+      const { data } = await api.publicFiles.list()
       setFiles(data || [])
-      setFolders(foldersResp.data || [])
     } finally {
       setLoading(false)
     }
-  }, [currentFolder])
+  }, [])
 
   useEffect(() => { load() }, [load])
 
@@ -496,9 +427,6 @@ export default function PublicFiles() {
         <span className="text-sm font-medium text-slate-900 truncate">{row.original_name}</span>
       </div>
     ),
-    folder: (row) => row.folder
-      ? <span className="inline-flex items-center gap-1 text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded"><Folder size={11} />{row.folder}</span>
-      : <span className="text-slate-400 text-xs">—</span>,
     description: (row) => row.description
       ? <span className="text-sm text-slate-600 line-clamp-1">{row.description}</span>
       : <span className="text-slate-300 text-xs">—</span>,
@@ -536,46 +464,13 @@ export default function PublicFiles() {
   return (
     <Layout>
       <div className="flex h-full overflow-hidden">
-        {/* Sidebar dossiers */}
-        <div className="w-64 flex-shrink-0 bg-white border-r border-slate-200 flex flex-col overflow-hidden">
-          <div className="px-4 pt-5 pb-3 border-b border-slate-100">
-            <h2 className="text-sm font-bold text-slate-900">Dossiers</h2>
-            <p className="text-xs text-slate-400 mt-0.5">{folders.length} dossier{folders.length !== 1 ? 's' : ''}</p>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2">
-            <FolderList folders={folders} current={currentFolder} onSelect={setCurrentFolder} />
-          </div>
-        </div>
-
-        {/* Main */}
         <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
           <div className="px-6 pt-6 pb-4 border-b border-slate-200 bg-white">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <PageTitle>Fichiers publics</PageTitle>
-                <p className="text-sm text-slate-500 mt-0.5">
-                  {currentFolder !== null
-                    ? <>Dossier : <strong>{currentFolder || ROOT_LABEL}</strong> — {files.length} fichier{files.length !== 1 ? 's' : ''}</>
-                    : <>{files.length} fichier{files.length !== 1 ? 's' : ''} au total</>}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {currentFolder !== null && (
-                  <button
-                    onClick={() => setCurrentFolder(null)}
-                    className="btn-secondary text-xs"
-                    title="Effacer le filtre de dossier"
-                  >
-                    <X size={12} /> Tous
-                  </button>
-                )}
-              </div>
+            <div className="mb-4">
+              <PageTitle>Fichiers publics</PageTitle>
+              <p className="text-sm text-slate-500 mt-0.5">{files.length} fichier{files.length !== 1 ? 's' : ''}</p>
             </div>
-            <UploadZone
-              onUpload={handleUpload}
-              uploading={uploading}
-              defaultFolder={currentFolder || ''}
-            />
+            <UploadZone onUpload={handleUpload} uploading={uploading} />
           </div>
 
           <div className="flex-1 overflow-auto p-6">
@@ -587,7 +482,7 @@ export default function PublicFiles() {
               data={files}
               loading={loading}
               onRowClick={(row) => setEditing(row)}
-              searchFields={['original_name', 'description', 'folder', 'uploaded_by_name']}
+              searchFields={['original_name', 'description', 'uploaded_by_name']}
               onBulkDelete={handleBulkDelete}
             />
           </div>

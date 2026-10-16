@@ -1,0 +1,980 @@
+{
+ "Header": {
+  "Time": "2026-10-15T00:00:00-07:00",
+  "ReportName": "JournalReport",
+  "StartPeriod": "2026-09-01",
+  "EndPeriod": "2026-09-30",
+  "Currency": "CAD",
+  "Option": [
+   {
+    "Name": "NoReportData",
+    "Value": "false"
+   }
+  ]
+ },
+ "Columns": {
+  "Column": [
+   {
+    "ColTitle": "Date",
+    "ColType": "Date",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "tx_date"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Type d’opération",
+    "ColType": "String",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "txn_type"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Nº",
+    "ColType": "String",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "doc_num"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Rajusté",
+    "ColType": "Boolean",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "is_adj"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Nom",
+    "ColType": "String",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "name"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Mémo/description",
+    "ColType": "String",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "memo"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Nº de compte",
+    "ColType": "String",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "acct_num_with_extn"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Compte",
+    "ColType": "String",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "account_name"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Débit",
+    "ColType": "Money",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "debt_home_amt"
+     }
+    ]
+   },
+   {
+    "ColTitle": "Crédit",
+    "ColType": "Money",
+    "MetaData": [
+     {
+      "Name": "ColKey",
+      "Value": "credit_home_amt"
+     }
+    ]
+   }
+  ]
+ },
+ "Rows": {
+  "Row": [
+   {
+    "ColData": [
+     {
+      "value": "2026-09-01"
+     },
+     {
+      "value": "Paiement de factures (chèque)",
+      "id": "17951"
+     },
+     {
+      "value": "DOC-0"
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "Tiers 1",
+      "id": "901"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "10000"
+     },
+     {
+      "value": "10000 Compte chèques Banque Nationale",
+      "id": "61"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "103.48"
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17951"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "21000"
+     },
+     {
+      "value": "21000 Comptes fournisseurs  - CAD",
+      "id": "93"
+     },
+     {
+      "value": "103.48"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "Summary": {
+     "ColData": [
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": "103.48"
+      },
+      {
+       "value": "103.48"
+      }
+     ]
+    },
+    "type": "Section"
+   },
+   {
+    "ColData": [
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "2026-09-01"
+     },
+     {
+      "value": "Dépôt",
+      "id": "17955"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "Tiers 2",
+      "id": "902"
+     },
+     {
+      "value": "Mémo 1"
+     },
+     {
+      "value": "10000"
+     },
+     {
+      "value": "10000 Compte chèques Banque Nationale",
+      "id": "61"
+     },
+     {
+      "value": "8853.10"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17955"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": "Mémo 2"
+     },
+     {
+      "value": "23900"
+     },
+     {
+      "value": "23900 Revenus perçus d'avance",
+      "id": "123"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "7700.00"
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17955"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "25100"
+     },
+     {
+      "value": "25100 TPS/TVH - à payer",
+      "id": "63"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "385.00"
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17955"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "25100"
+     },
+     {
+      "value": "25100 TPS/TVH - à payer",
+      "id": "63"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "768.10"
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "Summary": {
+     "ColData": [
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": "8853.10"
+      },
+      {
+       "value": "8853.10"
+      }
+     ]
+    },
+    "type": "Section"
+   },
+   {
+    "ColData": [
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "2026-09-01"
+     },
+     {
+      "value": "Écriture de journal",
+      "id": "18001"
+     },
+     {
+      "value": "DOC-3"
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": "Mémo 3"
+     },
+     {
+      "value": "13999"
+     },
+     {
+      "value": "13999 Stocks:Pièces en transit",
+      "id": "1150040017"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "286.94"
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "18001"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": "Mémo 4"
+     },
+     {
+      "value": "14000"
+     },
+     {
+      "value": "14000 Stocks:Stock de Pièces",
+      "id": "71"
+     },
+     {
+      "value": "286.94"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "Summary": {
+     "ColData": [
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": "286.94"
+      },
+      {
+       "value": "286.94"
+      }
+     ]
+    },
+    "type": "Section"
+   },
+   {
+    "ColData": [
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "2026-09-02"
+     },
+     {
+      "value": "Facture à payer",
+      "id": "17970"
+     },
+     {
+      "value": "DOC-5"
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "Tiers 3",
+      "id": "903"
+     },
+     {
+      "value": "Mémo 5"
+     },
+     {
+      "value": "21000"
+     },
+     {
+      "value": "21000 Comptes fournisseurs  - CAD",
+      "id": "93"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "163.07"
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17970"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": "Mémo 6"
+     },
+     {
+      "value": "65000"
+     },
+     {
+      "value": "65000 Expédition, livraison et poste",
+      "id": "24"
+     },
+     {
+      "value": "107.04"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17970"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": "Mémo 7"
+     },
+     {
+      "value": "65000"
+     },
+     {
+      "value": "65000 Expédition, livraison et poste",
+      "id": "24"
+     },
+     {
+      "value": "39.99"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17970"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "25100"
+     },
+     {
+      "value": "25100 TPS/TVH - à payer",
+      "id": "63"
+     },
+     {
+      "value": "5.35"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17970"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "25100"
+     },
+     {
+      "value": "25100 TPS/TVH - à payer",
+      "id": "63"
+     },
+     {
+      "value": "10.69"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "ColData": [
+     {
+      "value": "0-00-00"
+     },
+     {
+      "value": "",
+      "id": "17970"
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "Non"
+     },
+     {
+      "value": "",
+      "id": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": "25100"
+     },
+     {
+      "value": "25100 TPS/TVH - à payer",
+      "id": "63"
+     },
+     {
+      "value": ".00"
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "Summary": {
+     "ColData": [
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": "163.07"
+      },
+      {
+       "value": "163.07"
+      }
+     ]
+    },
+    "type": "Section"
+   },
+   {
+    "ColData": [
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     },
+     {
+      "value": ""
+     }
+    ],
+    "type": "Data"
+   },
+   {
+    "Summary": {
+     "ColData": [
+      {
+       "value": "TOTAL"
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": ""
+      },
+      {
+       "value": "9406.59"
+      },
+      {
+       "value": "9406.59"
+      }
+     ]
+    },
+    "type": "Section"
+   }
+  ]
+ }
+}

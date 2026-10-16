@@ -13,10 +13,42 @@ import { detectPayCycle, payPeriodOnOrAfter, payCalendar, parsePayKey, describeP
 export { localDay, daysBetween }
 
 export const CADENCES = ['paie', 'bihebdo', 'hebdo', 'mensuel', 'trimestriel', 'annuel', 'adhoc']
-// Propriétaires possibles d'un travail = les deux sections de la page (AL, ML).
-// Un travail se réassigne d'une section à l'autre ; toute autre valeur le rendrait
-// invisible (aucune section ne l'afficherait).
+// Propriétaire d'un travail = la section (l'« espace ») de la page qui l'affiche.
+// Chaque utilisateur actif a la sienne. Les deux premières sections gardent leur
+// code historique (AL, ML — des centaines de travaux et de cases cochées le
+// portent) ; les autres utilisateurs sont désignés par leur id. Toute autre
+// valeur rendrait le travail invisible (aucune section ne l'afficherait).
 export const OWNERS = ['AL', 'ML']
+const LEGACY_OWNER_EMAILS = { AL: 'antoine.lambert96@gmail.com', ML: 'michel@orisha.io' }
+const LEGACY_OWNER_LABELS = { AL: 'Antoine Lambert', ML: 'Michel Lambert' }
+// Le compte du robot n'a pas de travaux à cocher.
+const NON_HUMAN_EMAILS = ['claude@orisha.io']
+
+/** Les sections possibles : un utilisateur actif = un espace. `{ value, label, user_id }`. */
+export function recurringOwners() {
+  const codeByEmail = Object.fromEntries(Object.entries(LEGACY_OWNER_EMAILS).map(([c, e]) => [e, c]))
+  const users = db.prepare(`
+    SELECT id, email, name FROM users
+    WHERE active=1 AND email NOT LIKE '%.deleted.%'
+    ORDER BY name COLLATE NOCASE
+  `).all().filter(u => !NON_HUMAN_EMAILS.includes(String(u.email).toLowerCase()))
+  const out = users.map(u => ({ value: codeByEmail[String(u.email).toLowerCase()] || u.id, label: u.name, user_id: u.id }))
+  // Compte historique absent (désactivé, courriel changé) : sa section reste
+  // joignable, sinon ses travaux disparaîtraient de la page.
+  for (const code of OWNERS) {
+    if (!out.some(o => o.value === code)) out.push({ value: code, label: LEGACY_OWNER_LABELS[code], user_id: null })
+  }
+  return out
+}
+
+export function isValidOwner(v) {
+  return !!v && recurringOwners().some(o => o.value === v)
+}
+
+/** La section de l'utilisateur connecté (code historique ou son id). */
+export function ownerForUser(userId) {
+  return recurringOwners().find(o => o.user_id === userId)?.value || null
+}
 
 // ─── Deux fois par semaine (cadence « bihebdo ») ──────────────────────────────
 //
@@ -363,7 +395,11 @@ function doneByName(task, completion) {
   // Antoine » attribuerait à quelqu'un un geste qu'il n'a pas posé. La ligne
   // affiche alors ce qui a été constaté (`done_note`).
   if (completion.source === 'auto') return null
-  return OWNER_NAMES[task.owner] || completion.session_user_name || null
+  if (OWNER_NAMES[task.owner]) return OWNER_NAMES[task.owner]
+  // Section d'un autre utilisateur (owner = son id) : son prénom.
+  const name = task.owner && db.prepare('SELECT name FROM users WHERE id=?').get(task.owner)?.name
+  if (name) return String(name).split(/\s+/)[0]
+  return completion.session_user_name || null
 }
 
 /**
@@ -591,7 +627,7 @@ export function updateRecurringTask(id, patch) {
   for (const [k, v] of Object.entries(patch)) {
     if (!EDITABLE.includes(k)) continue
     if (k === 'cadence' && !CADENCES.includes(v)) continue
-    if (k === 'owner' && !OWNERS.includes(v)) continue
+    if (k === 'owner' && !isValidOwner(v)) continue
     sets.push(`${k}=?`)
     vals.push(
       k === 'active' || k === 'priority' ? (v ? 1 : 0) :

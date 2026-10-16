@@ -27,6 +27,9 @@ import { qbGet, qbPost, qbEntityUrl } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
 import { round2Safe as round2 } from '../utils/money.js'
+import { borealRdMonthTotals, RD_TIMESHEET_SOURCE_SINCE } from './rdTimesheetSheetSync.js'
+import { monthEndAutomationConfig } from './monthEndAutomation.js'
+import { DEFAULT_CONTRACTORS } from './rdTimesheetImport.js'
 
 const daysInMonth = (y, m1) => new Date(Date.UTC(y, m1, 0)).getUTCDate()
 const isMonth = v => /^\d{4}-\d{2}$/.test(String(v || ''))
@@ -85,10 +88,11 @@ function materializedMonth(provisionId, month) {
 // ── Heures R&D ──────────────────────────────────────────────────────────────
 
 export function rdHours(month) {
-  const rows = db.prepare(`
+  let rows = db.prepare(`
     SELECT * FROM rd_month_hours WHERE month = ? AND deleted_at IS NULL
     ORDER BY contractor, employee_name
   `).all(month)
+  if (month >= RD_TIMESHEET_SOURCE_SINCE) rows = withBorealRdHours(month, rows)
   const employee = rows.filter(r => !r.contractor)
   const contractor = rows.filter(r => r.contractor)
   return {
@@ -97,6 +101,26 @@ export function rdHours(month) {
     contractor_hours: round2(contractor.reduce((s, r) => s + (Number(r.hours) || 0), 0)),
     employee_count: employee.length,
   }
+}
+
+// Depuis octobre 2026 les heures R&D se saisissent dans les feuilles de temps
+// de Boréal : comme le tableau annuel (/month-end/hours-year), elles priment
+// sur l'import du Drive, sauf correction à la main (« manuel »).
+function withBorealRdHours(month, rows) {
+  const contractors = (monthEndAutomationConfig().contractors || DEFAULT_CONTRACTORS).map(normName)
+  const byName = new Map(rows.map(r => [normName(r.employee_name), r]))
+  for (const cell of borealRdMonthTotals(month, month).values()) {
+    if (!(cell.hours > 0)) continue
+    const key = normName(cell.employee_name)
+    const prev = byName.get(key)
+    if (prev?.source === 'manuel') continue
+    byName.set(key, {
+      ...prev, employee_name: prev?.employee_name || cell.employee_name, hours: cell.hours,
+      contractor: prev ? prev.contractor : (contractors.includes(key) ? 1 : 0),
+      source: 'feuilles', day_hours: null, file_total_hours: null, project_hours: JSON.stringify(cell.projects),
+    })
+  }
+  return [...byName.values()].sort((a, b) => (a.contractor - b.contractor) || a.employee_name.localeCompare(b.employee_name, 'fr'))
 }
 
 // ── Plausibilité des heures ─────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList, LifeBuoy, Mail, Merge } from 'lucide-react'
+import { Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList, LifeBuoy, Mail, Merge } from 'lucide-react'
 import EmptyState from '../components/EmptyState.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import LogInteractionModal from '../components/LogInteractionModal.jsx'
@@ -32,21 +32,24 @@ import TableThumb from '../components/TableThumb.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { FurnaceV1Alert } from '../components/FurnaceV1Alert.jsx'
 import Attachments from '../components/Attachments.jsx'
-import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { TABLE_COLUMN_META, TASK_STATUS_CHOICES, TASK_PRIORITY_CHOICES } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { useAuth } from '../lib/auth.jsx'
+import DueShortcuts, { dueFromShortcut } from '../components/DueShortcuts.jsx'
 import { stripeFactureUrl } from '../lib/stripeLinks.js'
 import { intervalAmount, intervalLabel } from '../lib/subscriptionPricing.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
-import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { AddressCheckBadge, AddressCheckIssues, AddressConfirmBadge, AddressRecheckButton, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
 import { AdresseModalContent } from '../components/AdresseModal.jsx'
 import { CreateRetourModal } from '../components/CreateRetourModal.jsx'
+import { NewProjectModal } from '../components/NewProjectModal.jsx'
 import { CompanyMergeModal } from '../components/CompanyDuplicatesModal.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { parseSelectChoices, colorForChoice, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
@@ -120,24 +123,16 @@ function InlineField({ field, value, saving, onSave }) {
   return (
     <>
       {field.type === 'select' ? (
-        // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
-        (field.options || []).length > 10 ? (
-          <SearchableSelect
-            value={local}
-            options={(field.options || []).map(o => ({ value: o, label: o }))}
-            emptyOption="—"
-            onChange={v => { setLocal(v); commit(v) }}
-            className={selectCls}
-            size="sm"
-            disabled={saving}
-            testId={`company-field-${field.key}`}
-          />
-        ) : (
-          <select value={local} onChange={e => { setLocal(e.target.value); commit(e.target.value) }} className={selectCls} disabled={saving}>
-            <option value="">—</option>
-            {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
-        )
+        <ChoiceSelect
+          value={local}
+          choices={field.options}
+          table="companies"
+          field={field.key}
+          onChange={v => { setLocal(v); commit(v) }}
+          className={selectCls}
+          disabled={saving}
+          testId={`company-field-${field.key}`}
+        />
       ) : field.type === 'textarea' ? (
         <textarea value={local} onChange={e => setLocal(e.target.value)} onBlur={e => commit(e.target.value)} className={`${inputCls} resize-none`} rows={3} />
       ) : field.type === 'phone' ? (
@@ -163,7 +158,11 @@ function InlineField({ field, value, saving, onSave }) {
 // la colonne reste en base et sur les contacts.
 const COMPANY_FIELDS = [
   { key: 'lifecycle_phase', label: 'Phase du cycle de vie', type: 'select', options: PHASES, span2: true },
-  { key: 'currency',        label: 'Devise',    type: 'select', options: ['CAD','USD','EUR'] },
+  { key: 'currency',        label: 'Devise',    type: 'select', span2: true, options: [
+    { value: 'CAD', label: 'Dollar canadien (CAD)' },
+    { value: 'USD', label: 'Dollar américain (USD)' },
+    { value: 'EUR', label: 'Euro (EUR)' },
+  ] },
   { key: 'is_vendeur_orisha', label: 'Vendeur Orisha', type: 'boolean', span2: true },
   { key: 'notes',           label: 'Notes',     type: 'textarea', span2: true, defaultVisible: false },
 ]
@@ -232,23 +231,27 @@ function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, se
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Statut</label>
-          <select
+          <ChoiceSelect
             value={taskForm.status}
-            onChange={e => isEdit ? saveField('status', e.target.value) : setTaskForm(f => ({ ...f, status: e.target.value }))}
-            className="select"
-          >
-            {['À faire','En cours','Terminé','Annulé'].map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+            choices={TASK_STATUS_CHOICES}
+            table="tasks"
+            field="status"
+            onChange={v => isEdit ? saveField('status', v) : setTaskForm(f => ({ ...f, status: v }))}
+            emptyOption={null}
+            className="input w-full"
+          />
         </div>
         <div>
           <label className="label">Priorité</label>
-          <select
+          <ChoiceSelect
             value={taskForm.priority}
-            onChange={e => isEdit ? saveField('priority', e.target.value) : setTaskForm(f => ({ ...f, priority: e.target.value }))}
-            className="select"
-          >
-            {['Basse','Normal','Haute','Urgente'].map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
+            choices={TASK_PRIORITY_CHOICES}
+            table="tasks"
+            field="priority"
+            onChange={v => isEdit ? saveField('priority', v) : setTaskForm(f => ({ ...f, priority: v }))}
+            emptyOption={null}
+            className="input w-full"
+          />
         </div>
       </div>
       <div>
@@ -258,6 +261,10 @@ function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, se
           value={taskForm.due_date || ''}
           onChange={e => isEdit ? saveField('due_date', e.target.value) : setTaskForm(f => ({ ...f, due_date: e.target.value }))}
           className="input"
+        />
+        <DueShortcuts
+          value={taskForm.due_date}
+          onPick={v => isEdit ? saveField('due_date', v) : setTaskForm(f => ({ ...f, due_date: v }))}
         />
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -610,6 +617,8 @@ function demoteSiblings(list, adr) {
 }
 
 const ABO_STATUS = { active: 'Actif', canceled: 'Annulé', past_due: 'En retard', trialing: 'Essai' }
+// Retour groupé de n° de série : seules les raisons sans échange de matériel.
+const BULK_RETURN_REASONS = ["Fin d'abonnement", "Le client à changé d'idée", 'Erreur de commande', "Retour d'équipement de courtoisie"]
 
 // Titre du panneau d'un achat fournisseur (carte de droite et tableau central).
 const achatTitle = (row) => (row.type === 'bill'
@@ -624,12 +633,20 @@ export default function CompanyDetail({ recordId, onClose }) {
   const id = recordId
   const confirm = useConfirm()
   const { addToast } = useToast()
+  const { user } = useAuth()
   // Couleurs du champ « Statut » des numéros de série (mêmes que leur fiche).
   const { fields: serialFields } = useCustomFields('serial_numbers')
   const serialStatusChoices = useMemo(() => parseSelectChoices(serialFields.find(f => f.column_name === 'status')), [serialFields])
   // Bulk « Retourner tous les numéros de série » (import automatisation Airtable #3)
   const [bulkReturnSerialIds, setBulkReturnSerialIds] = useState(null)
   const [bulkReturnReason, setBulkReturnReason] = useState('')
+  // Raisons proposées au retour groupé, en pastilles de la couleur réglée sur
+  // le champ « Raison » des articles de retour (gris sinon).
+  const { fields: returnItemFields } = useCustomFields('return_items')
+  const bulkReturnReasons = useMemo(() => {
+    const colorOf = new Map(parseSelectChoices(returnItemFields.find(f => f.column_name === 'return_reason')).map(c => [c.label, c.color]))
+    return BULK_RETURN_REASONS.map(r => ({ value: r, color: colorOf.get(r) || 'gray' }))
+  }, [returnItemFields])
   const [bulkReturnSubmitting, setBulkReturnSubmitting] = useState(false)
   const [showCreateRetour, setShowCreateRetour] = useState(false)
   const [showMerge, setShowMerge] = useState(false)
@@ -676,6 +693,7 @@ export default function CompanyDetail({ recordId, onClose }) {
   const [showAdresseModal, setShowAdresseModal] = useState(false)
   const [editingAdresse, setEditingAdresse] = useState(null)
   const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', address_rank: '', contact_id: '' })
+  const editAdresse = a => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', address_rank: a.address_rank||'', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }
   const [onboardingResponses, setOnboardingResponses] = useState([])
   const [qualificationCalls, setQualificationCalls] = useState([])
   const [systemBuilders, setSystemBuilders] = useState([])
@@ -684,6 +702,7 @@ export default function CompanyDetail({ recordId, onClose }) {
   const [centerView, setCenterView] = useState('fil')
   const [showLogModal, setShowLogModal] = useState(false)
   const [showEmail, setShowEmail] = useState(false)
+  const [showNewProject, setShowNewProject] = useState(false)
   const { record: company, setRecord: setCompany, loading, loadError, reload: load } =
     useDetailRecord(() => api.companies.get(id), [id])
 
@@ -760,7 +779,6 @@ export default function CompanyDetail({ recordId, onClose }) {
   const projectColumns = useMemo(() => {
     const RENDERS = {
       name: row => <span className="font-medium text-slate-900">{row.name}</span>,
-      type: row => row.type || <span className="text-slate-400">—</span>,
       probability: row => {
         if (row.probability == null) return <span className="text-slate-400">—</span>
         const color = row.probability >= 75 ? 'text-green-600' : row.probability >= 40 ? 'text-amber-500' : 'text-red-500'
@@ -805,7 +823,7 @@ export default function CompanyDetail({ recordId, onClose }) {
         : <span className="text-slate-400">—</span>,
       document_date: row => <span className="text-slate-500">{fmtDate(row.document_date)}</span>,
       amount_before_tax_cad: row => <span className="font-medium text-slate-700">{fmtMoney(row.amount_before_tax_cad, row.currency)}</span>,
-      currency: row => <span className="font-mono text-xs text-slate-600">{(row.currency || 'CAD').toUpperCase()}</span>,
+      currency: row => (row.currency || 'CAD').toUpperCase(),
       stripe: row => {
         const url = stripeFactureUrl(row)
         if (!url) return <span className="text-slate-400">—</span>
@@ -827,9 +845,9 @@ export default function CompanyDetail({ recordId, onClose }) {
         : <span className="text-slate-900">{row.product_name || '—'}</span>,
       type: row => <span className="text-slate-600">{row.type || '—'}</span>,
       status: row => (
-        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${row.status === 'active' ? 'bg-green-100 text-green-700' : row.status === 'canceled' ? 'bg-red-100 text-red-700' : row.status === 'past_due' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+        <Badge color={row.status === 'active' ? 'green' : row.status === 'canceled' ? 'red' : row.status === 'past_due' ? 'yellow' : 'gray'}>
           {row.status === 'active' ? 'Actif' : row.status === 'canceled' ? 'Annulé' : row.status === 'past_due' ? 'En retard' : row.status === 'trialing' ? 'Essai' : row.status}
-        </span>
+        </Badge>
       ),
       amount_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_cad)}</span>,
       start_date: row => <span className="text-slate-500">{fmtDate(row.start_date)}</span>,
@@ -853,10 +871,6 @@ export default function CompanyDetail({ recordId, onClose }) {
   const taskColumns = useMemo(() => {
     const RENDERS = {
       title: row => <span className="font-medium text-slate-900">{row.title}</span>,
-      status: row => (
-        <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${row.status === 'Terminé' ? 'bg-green-100 text-green-700' : row.status === 'En cours' ? 'bg-blue-100 text-blue-700' : row.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{row.status}</span>
-      ),
-      priority: row => <span className="text-slate-500">{row.priority}</span>,
       due_date: row => {
         if (!row.due_date) return <span className="text-slate-400">—</span>
         const overdue = row.status !== 'Terminé' && new Date(row.due_date) < new Date()
@@ -883,11 +897,7 @@ export default function CompanyDetail({ recordId, onClose }) {
       'Annulée': 'gray',
     }
     const RENDERS = {
-      type: row => (
-        <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${row.type === 'bill' ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-600'}`}>
-          {row.type === 'bill' ? 'Facture' : 'Dépense'}
-        </span>
-      ),
+      type: row => <Badge color={row.type === 'bill' ? 'indigo' : 'gray'}>{row.type === 'bill' ? 'Facture' : 'Dépense'}</Badge>,
       reference: row => {
         const ref = row.bill_number || row.vendor_invoice_number || row.reference || row.description || '—'
         return <span className="font-mono text-slate-900 truncate">{ref}</span>
@@ -1068,7 +1078,15 @@ export default function CompanyDetail({ recordId, onClose }) {
   }, [linkQuery, contactMode, id])
 
   function openNewTask() {
-    setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' })
+    setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: user?.id || '', notes: '' })
+    setEditingTask(null)
+    setShowTaskModal(true)
+  }
+
+  // « Prochaine étape » d'un appel → tâche pré-remplie, échéance 3 j.
+  function openTaskFromStep(item, step) {
+    const contactId = (company.contacts || []).some(c => c.id === item.contact_id) ? item.contact_id : ''
+    setTaskForm({ title: step, status: 'À faire', priority: 'Normal', due_date: dueFromShortcut({ days: 3 }), contact_id: contactId, assigned_to: user?.id || '', notes: '' })
     setEditingTask(null)
     setShowTaskModal(true)
   }
@@ -1116,7 +1134,7 @@ export default function CompanyDetail({ recordId, onClose }) {
     },
     {
       key: 'projets', label: 'Projets', rows: company.projects || [],
-      addTo: `/pipeline?company_id=${id}`,
+      add: () => setShowNewProject(true),
       row: r => ({
         to: `/projects/${r.id}`,
         primary: r.name || 'Projet',
@@ -1254,7 +1272,7 @@ export default function CompanyDetail({ recordId, onClose }) {
       add: () => setSubscriptionModalOpen(true),
       row: r => ({
         onClick: () => setSelectedAbonnement(r),
-        primary: r.product_name || '—',
+        primary: r.products_list || r.product_name || '—',
         secondary: ABO_STATUS[r.status] || r.status || null,
         meta: r.amount_cad ? `${fmtCad(intervalAmount(r))}/${intervalLabel(r)}` : fmtCad(r.amount_cad),
       }),
@@ -1617,12 +1635,43 @@ export default function CompanyDetail({ recordId, onClose }) {
               {adresses.length === 0 ? (
                 <div className="px-2 pb-1 text-sm text-slate-400">Aucune</div>
               ) : (
-                <div className="divide-y divide-slate-100">
-                  {adresses.map(a => (
-                    <div key={a.id} className="flex items-start gap-2 px-2 py-2 group" data-testid={`adresse-row-${a.id}`}>
+                // Une section par type (ferme, livraison, facturation) ; un type
+                // hors liste tombe dans « Autre ».
+                <div className="space-y-2">
+                  {(() => {
+                    const known = ['Ferme', 'Livraison', 'Facturation']
+                    const groups = known.map(t => [t, adresses.filter(a => a.address_type === t)])
+                    groups.push(['Autre', adresses.filter(a => !known.includes(a.address_type))])
+                    return groups.filter(([t, list]) => list.length > 0 || t !== 'Autre')
+                  })().map(([type, list]) => (
+                  <div key={type} data-testid={`adresse-section-${type}`}>
+                    <div className="flex items-center justify-between px-2 pt-1 group/sec">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{type}{list.length > 1 ? ` · ${list.length}` : ''}</span>
+                      {type !== 'Autre' && (
+                        <button
+                          onClick={() => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: type, address_rank: '', contact_id: '' }); setShowAdresseModal(true) }}
+                          className="text-slate-400 hover:text-brand-600 p-0.5 opacity-0 group-hover/sec:opacity-100 transition"
+                          title={`Ajouter (${type})`}
+                          aria-label={`Ajouter une adresse ${type}`}
+                        ><Plus size={12} /></button>
+                      )}
+                    </div>
+                    {list.length === 0 ? (
+                      <div className="px-2 pb-1 text-xs text-slate-300">—</div>
+                    ) : (
+                <div className="space-y-1.5 pt-1">
+                  {/* Chaque adresse a l'allure d'un menu déroulant (cadre +
+                      chevron toujours visibles) : modifiable d'un coup d'œil,
+                      sans crayon au survol. Clic → fenêtre de l'adresse. */}
+                  {list.map(a => (
+                    <div key={a.id} role="button" tabIndex={0} title="Modifier"
+                      onClick={e => { if (!e.target.closest('a, button')) editAdresse(a) }}
+                      onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); editAdresse(a) } }}
+                      className="flex items-start gap-1 px-2.5 py-1.5 group rounded-lg border border-slate-200 bg-white hover:border-slate-300 cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400"
+                      data-testid={`adresse-row-${a.id}`}>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
-                          <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{a.address_type || '—'}</span>
+                          {type === 'Autre' && <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{a.address_type || '—'}</span>}
                           {a.address_rank && (
                             <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${a.address_rank === 'Principale' ? 'bg-brand-50 text-brand-700' : 'bg-slate-50 text-slate-500'}`} data-testid={`adresse-rank-${a.id}`}>{a.address_rank}</span>
                           )}
@@ -1647,11 +1696,13 @@ export default function CompanyDetail({ recordId, onClose }) {
                           <Link to={`/contacts/${a.contact_id}`} className="text-xs link-record block">{a.contact_name.trim()}</Link>
                         )}
                       </div>
-                      <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition">
-                        <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', address_rank: a.address_rank||'', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-brand-600 p-1" title="Modifier"><Edit2 size={13} /></button>
-                        <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; try { await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) } catch (err) { addToast({ message: err.message, type: 'error' }) } }} className="text-slate-400 hover:text-red-500 p-1" title="Supprimer"><Trash2 size={13} /></button>
-                      </div>
+                      <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; try { await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) } catch (err) { addToast({ message: err.message, type: 'error' }) } }} className="shrink-0 text-slate-400 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition" title="Supprimer"><Trash2 size={13} /></button>
+                      <ChevronDown size={14} className="shrink-0 mt-1 text-slate-400" aria-hidden="true" />
                     </div>
+                  ))}
+                </div>
+                    )}
+                  </div>
                   ))}
                 </div>
               )}
@@ -1687,6 +1738,7 @@ export default function CompanyDetail({ recordId, onClose }) {
                   loadingMore={loadingMoreInteractions}
                   onLog={() => setShowLogModal(true)}
                   onTogglePin={togglePinInteraction}
+                  onTaskFromStep={openTaskFromStep}
                 />
               )}
           </>
@@ -1822,6 +1874,8 @@ export default function CompanyDetail({ recordId, onClose }) {
           onSaved={updated => setAdresses(prev => demoteSiblings(prev.map(a => a.id === updated.id ? updated : a), updated))}
           onCreated={created => setAdresses(prev => demoteSiblings([...prev, created], created))}
           onClose={() => setShowAdresseModal(false)}
+          suggestFixes
+          autocomplete
         />
       </Modal>
 
@@ -1862,11 +1916,13 @@ export default function CompanyDetail({ recordId, onClose }) {
               </div>
               <div>
                 <label className="label">Langue</label>
-                <select value={contactForm.language} onChange={e => setContactForm(f => ({ ...f, language: e.target.value }))} className="select">
-                  <option value="">—</option>
-                  <option value="French">Français</option>
-                  <option value="English">Anglais</option>
-                </select>
+                <ChoiceSelect
+                  value={contactForm.language}
+                  choices={[{ value: 'French', label: 'Français' }, { value: 'English', label: 'Anglais' }]}
+                  table="contacts" field="language" colorsOnly
+                  onChange={v => setContactForm(f => ({ ...f, language: v }))}
+                  className="input w-full"
+                />
               </div>
               <div className="sm:col-span-2">
                 <DuplicateWarning kind="contact" values={contactForm} />
@@ -1935,6 +1991,13 @@ export default function CompanyDetail({ recordId, onClose }) {
         </form>
       </Modal>
 
+      <NewProjectModal
+        isOpen={showNewProject}
+        onClose={() => setShowNewProject(false)}
+        companyId={id}
+        onCreated={() => api.companies.get(id).then(setCompany).catch(() => {})}
+      />
+
       <CreateRetourModal
         isOpen={showCreateRetour}
         onClose={() => setShowCreateRetour(false)}
@@ -1956,13 +2019,7 @@ export default function CompanyDetail({ recordId, onClose }) {
           </p>
           <div>
             <label className="label">Raison du retour</label>
-            <select className="input" value={bulkReturnReason} onChange={e => setBulkReturnReason(e.target.value)} autoFocus>
-              <option value="">Sélectionner…</option>
-              <option value="Fin d'abonnement">Fin d'abonnement</option>
-              <option value="Le client à changé d'idée">Le client à changé d'idée</option>
-              <option value="Erreur de commande">Erreur de commande</option>
-              <option value="Retour d'équipement de courtoisie">Retour d'équipement de courtoisie</option>
-            </select>
+            <ChoiceSelect value={bulkReturnReason} choices={bulkReturnReasons} onChange={setBulkReturnReason} className="input text-sm" />
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={() => setBulkReturnSerialIds(null)} className="btn-secondary">Annuler</button>

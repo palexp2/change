@@ -3,7 +3,7 @@ import { crudRouter, patchRow } from '../utils/crudRouter.js'
 import { RECORD_REGISTRY } from '../db/recordRegistry.js'
 
 const VALID_OPS = new Set(['AND', 'OR'])
-const VALID_OPERATORS = new Set(['populated', 'empty', 'equals', 'not_equals'])
+const VALID_OPERATORS = new Set(['populated', 'empty', 'equals', 'not_equals', 'any_of', 'none_of'])
 
 // Arbre de conditions : { op: 'AND'|'OR', rules: [ leaf | group ] },
 // leaf = { field, operator, value? }.
@@ -23,6 +23,9 @@ function validateConditions(node, depth = 0) {
   if (!VALID_OPERATORS.has(node.operator)) return `operator invalide: ${node.operator}`
   if ((node.operator === 'equals' || node.operator === 'not_equals') && !('value' in node)) {
     return `operator ${node.operator} requiert une value`
+  }
+  if ((node.operator === 'any_of' || node.operator === 'none_of') && !Array.isArray(node.value)) {
+    return `operator ${node.operator} requiert une liste de valeurs`
   }
   return null
 }

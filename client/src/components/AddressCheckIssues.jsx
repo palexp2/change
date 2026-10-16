@@ -22,8 +22,12 @@ export function AddressCheckBadge({ status, className = '' }) {
   )
 }
 
-/** Liste des problèmes. `issues` = tableau {code, field, severity, message}. */
-export function AddressCheckIssues({ issues, className = '' }) {
+/**
+ * Liste des problèmes. `issues` = tableau {code, field, severity, message, fix?}.
+ * Avec `onApplyFix(patch)`, un problème qui porte une suggestion (`fix`) offre
+ * « → valeur » cliquable qui l'applique.
+ */
+export function AddressCheckIssues({ issues, onApplyFix, busy = false, className = '' }) {
   const list = Array.isArray(issues) ? issues : []
   if (!list.length) return null
   return (
@@ -35,6 +39,18 @@ export function AddressCheckIssues({ issues, className = '' }) {
         >
           <AlertTriangle size={12} className="flex-shrink-0 mt-0.5" />
           <span>{issue.message}</span>
+          {onApplyFix && issue.fix?.patch && (
+            <button
+              type="button"
+              onClick={() => onApplyFix(issue.fix.patch)}
+              disabled={busy}
+              title="Appliquer"
+              className="ml-auto flex-shrink-0 link-record disabled:opacity-50"
+              data-testid="adresse-check-fix"
+            >
+              → {issue.fix.label}
+            </button>
+          )}
         </li>
       ))}
     </ul>
@@ -82,8 +98,9 @@ export function AddressRecheckButton({ adresseId, onChecked, className = '' }) {
  * message dès que la correction passe la vérification.
  *
  * `onChecked(row)` reçoit l'adresse à jour après une revérification manuelle.
+ * `onApplyFix(patch)` (option) : rend les suggestions de correction cliquables.
  */
-export function AddressCheckPanel({ adresseId, status, issues, onChecked, className = '' }) {
+export function AddressCheckPanel({ adresseId, status, issues, onChecked, onApplyFix, busy, className = '' }) {
   const list = parseCheckIssues(issues)
   if (!list.length) return null
 
@@ -97,7 +114,7 @@ export function AddressCheckPanel({ adresseId, status, issues, onChecked, classN
         <span className="text-xs text-slate-600">Ne passe pas la vérification</span>
         <AddressRecheckButton adresseId={adresseId} onChecked={onChecked} className="ml-auto" />
       </div>
-      <AddressCheckIssues issues={list} />
+      <AddressCheckIssues issues={list} onApplyFix={onApplyFix} busy={busy} />
     </div>
   )
 }

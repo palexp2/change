@@ -34,7 +34,7 @@ const RENDERS = {
   direction: row => row.direction === 'out'
     ? <Badge color="purple"><ArrowUpCircle size={12} className="inline -mt-0.5 mr-1" />Remboursement</Badge>
     : <Badge color="green"><ArrowDownCircle size={12} className="inline -mt-0.5 mr-1" />Encaissement</Badge>,
-  method: row => <span className="text-slate-700">{METHOD_LABELS[row.method] || row.method || '—'}</span>,
+  method: row => METHOD_LABELS[row.method] || row.method || '—',
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
@@ -45,7 +45,7 @@ const RENDERS = {
     const val = row.direction === 'out' ? -Math.abs(row.amount) : row.amount
     return <span className={`tabular-nums font-medium ${row.direction === 'out' ? 'text-purple-600' : 'text-slate-800'}`}>{fmtNum(val)}</span>
   },
-  currency: row => <span className="font-mono text-xs text-slate-600">{row.currency || '—'}</span>,
+  currency: row => row.currency || '—',
   // Valeur mémorisée à la publication QB quand elle existe, sinon conversion
   // dérivée par le serveur (identité pour le CAD, taux du jour pour l'USD) —
   // atténuée et infobullée pour rester distinguable d'un montant comptabilisé.

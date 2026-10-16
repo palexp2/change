@@ -60,6 +60,90 @@ export function setCurrentItemsSnapshot(subscriptionId, items) {
   `).run(subscriptionId, json)
 }
 
+// Signature contractuelle d'un abonnement : ce que le client a acheté (prix,
+// quantité, montant unitaire, cadence), ses rabais actifs et l'essai en cours.
+// Un upgrade/downgrade n'est enregistré que si elle change : un montant
+// recalculé seul (taxes incluses → hors taxes, facture au prorata avant
+// l'annulation) n'est pas un mouvement (14 oct. 2026 : 103 faux mouvements).
+// Rabais : l'id du Discount (`di_…`), présent que `discounts` soit expandé
+// (webhook) ou non (sync polling) ; à défaut, le coupon et son montant.
+function discountKey(d) {
+  if (!d) return null
+  if (typeof d === 'string') return d
+  if (d.id) return d.id
+  const c = d.coupon || d.source?.coupon
+  if (!c) return null
+  return `${c.id || ''}:${c.amount_off ?? ''}:${c.percent_off ?? ''}`
+}
+
+export function contractSignature(sub) {
+  const key = o => JSON.stringify(o)
+  const items = extractItemsFromStripeSub(sub)
+    .map(it => ({
+      price: it.stripe_price_id,
+      quantity: Number(it.quantity ?? 1),
+      unit_amount: it.unit_amount ?? null,
+      interval: it.recurring_interval,
+      interval_count: it.recurring_interval_count ?? null,
+    }))
+    .sort((a, b) => key(a).localeCompare(key(b)))
+  const list = Array.isArray(sub?.discounts) && sub.discounts.length > 0
+    ? sub.discounts
+    : (sub?.discount ? [sub.discount] : [])
+  const discounts = list.map(discountKey).filter(Boolean).sort()
+  return { items, discounts, trialing: sub?.status === 'trialing' }
+}
+
+// Code promo saisi par le client (colonne « Code promo » de /abonnements) :
+// le `code` du promotion code si `discounts.promotion_code` est expandé, sinon
+// le nom (ou l'id) du coupon appliqué à la main. null si aucun rabais lisible.
+export function promoCodeOf(sub) {
+  const list = Array.isArray(sub?.discounts) && sub.discounts.length > 0
+    ? sub.discounts
+    : (sub?.discount ? [sub.discount] : [])
+  const codes = list.filter(d => d && typeof d === 'object').map(d => {
+    if (d.promotion_code?.code) return d.promotion_code.code
+    const c = d.coupon || d.source?.coupon
+    return (c && typeof c === 'object') ? (c.name || c.id) : null
+  }).filter(Boolean)
+  return codes.length ? [...new Set(codes)].join(', ') : null
+}
+
+export function sameContract(a, b) {
+  return !!a && !!b && JSON.stringify(a) === JSON.stringify(b)
+}
+
+// Prix catalogue mensuel des items d'une signature (cents) : sert à reconnaître
+// un changement d'items neutre (nouveau prix, même montant).
+export function signatureListAmount(sig) {
+  let total = 0
+  for (const it of sig?.items || []) {
+    const line = (Number(it.unit_amount) || 0) * (Number(it.quantity) || 1)
+    const n = Number(it.interval_count) || 1
+    total += it.interval === 'year' ? line / (12 * n) : it.interval === 'week' ? line * 4.333 / n : line / n
+  }
+  return Math.round(total)
+}
+
+export function getContractSignature(subscriptionId) {
+  if (!subscriptionId) return null
+  const raw = db.prepare(
+    'SELECT signature_json FROM subscription_current_items WHERE subscription_id = ?'
+  ).pluck().get(subscriptionId)
+  if (!raw) return null
+  try { return JSON.parse(raw) } catch { return null }
+}
+
+// `items` ne sert qu'à créer la ligne du miroir si elle n'existe pas encore.
+export function setContractSignature(subscriptionId, signature, items = []) {
+  if (!subscriptionId || !signature) return
+  db.prepare(`
+    INSERT INTO subscription_current_items (subscription_id, items_json, signature_json, updated_at)
+    VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(subscription_id) DO UPDATE SET signature_json = excluded.signature_json
+  `).run(subscriptionId, JSON.stringify(items || []), JSON.stringify(signature))
+}
+
 // Normalise un libellé d'item pour comparer entre une description de facture
 // (ex. "1 × Roll-Up Ventilation (motors not included) (at $105.00 / month)")
 // et un nom de produit Stripe ("Roll-Up Ventilation (motors not included)").
@@ -145,6 +229,7 @@ export function enrichItemsWithErpProductId(items) {
   const stripeIds = [...new Set(items.map(it => it.stripe_product_id).filter(Boolean))]
   const productIdByStripeId = new Map()
   const erpProductNames = new Map()
+  const stripeProductNames = new Map()
   if (stripeIds.length > 0) {
     const placeholders = stripeIds.map(() => '?').join(',')
     // Pour chaque stripe_product_id, on prend le product_id ERP le plus
@@ -160,6 +245,23 @@ export function enrichItemsWithErpProductId(items) {
     for (const r of rows) {
       if (r.product_id) productIdByStripeId.set(r.stripe_product_id, r.product_id)
     }
+    // Produit jamais facturé (abonnement neuf, annulé avant sa 1re facture) :
+    // le lien catalogue de vente ↔ produit Stripe, puis les alias.
+    for (const table of ['product_stripe_products', 'product_stripe_aliases']) {
+      const missing = stripeIds.filter(sid => !productIdByStripeId.has(sid))
+      if (!missing.length) break
+      const links = db.prepare(`
+        SELECT stripe_product_id, product_id FROM ${table}
+        WHERE stripe_product_id IN (${missing.map(() => '?').join(',')}) AND product_id IS NOT NULL
+        GROUP BY stripe_product_id
+      `).all(...missing)
+      for (const r of links) productIdByStripeId.set(r.stripe_product_id, r.product_id)
+    }
+    // Nom Stripe du produit (le snapshot n'a pas de nom quand Stripe n'a pas
+    // développé `price.product`).
+    for (const r of db.prepare(`SELECT id, name FROM stripe_products WHERE id IN (${placeholders})`).all(...stripeIds)) {
+      if (r.name) stripeProductNames.set(r.id, r.name)
+    }
     const erpIds = [...productIdByStripeId.values()]
     if (erpIds.length > 0) {
       const ph = erpIds.map(() => '?').join(',')
@@ -172,7 +274,7 @@ export function enrichItemsWithErpProductId(items) {
     return {
       ...it,
       product_id: productId || null,
-      name: it.name || (productId ? erpProductNames.get(productId) : null) || null,
+      name: it.name || stripeProductNames.get(it.stripe_product_id) || (productId ? erpProductNames.get(productId) : null) || null,
     }
   })
 }

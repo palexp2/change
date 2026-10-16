@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
+import { ChoiceSelect } from './ChoiceSelect.jsx'
 import Spinner from './Spinner.jsx'
 import api from '../lib/api.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
@@ -13,9 +14,10 @@ import { useToast } from '../contexts/ToastContext.jsx'
 
 // « Créer un retour » depuis la fiche entreprise. Candidats : n° de série
 // opérationnels de l'entreprise + articles sans n° de série qui lui ont été
-// envoyés. Avec échange immédiat, chaque article choisi reçoit un produit de
+// envoyés. Raison « … échange immédiat » : chaque article choisi reçoit un produit de
 // substitution qui part dans une commande (nouvelle ou existante) ; le serveur
-// y inscrit le n° de série retourné comme « # de série remplacé ».
+// y inscrit le n° de série retourné comme « # de série remplacé ». Type d'une
+// nouvelle commande : déduit par le serveur (Loué → abonnement, Vendu → achat).
 
 const IMMEDIATE = 'échange immédiat'
 const isSerial = c => c.kind === 'serial'
@@ -27,7 +29,9 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
   const { fields } = useCustomFields('return_items')
   const reasons = useMemo(() => {
     const f = fields.find(x => x.column_name === 'return_reason')
-    return parseSelectChoices(f).map(c => c.label).filter(l => !/DEPRECATED/i.test(l))
+    return parseSelectChoices(f)
+      .filter(c => !/DEPRECATED/i.test(c.label))
+      .map(c => ({ value: c.label, color: c.color || 'gray' }))
   }, [fields])
   const { fields: serialFields } = useCustomFields('serial_numbers')
   const statusChoices = useMemo(() => parseSelectChoices(serialFields.find(f => f.column_name === 'status')), [serialFields])
@@ -36,12 +40,11 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
   const [products, setProducts] = useState([])
   const [ticketId, setTicketId] = useState('')
   const [contactId, setContactId] = useState('')
-  const [kind, setKind] = useState('') // 'achat' | 'abonnement' → commande de remplacement
-  const [picked, setPicked] = useState({}) // key → { qty, reason, notes, sub }
+  const [picked, setPicked] = useState({}) // key → { qty, sub }
   const [search, setSearch] = useState('')
   const [allReason, setAllReason] = useState('')
   const [allNotes, setAllNotes] = useState('')
-  const [exchange, setExchange] = useState(false)
+  const [issueUrl, setIssueUrl] = useState('')
   const [orderMode, setOrderMode] = useState('new')
   const [orderId, setOrderId] = useState('')
   const [addressId, setAddressId] = useState('')
@@ -49,8 +52,8 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
 
   useEffect(() => {
     if (!isOpen) return
-    setCandidates(null); setPicked({}); setTicketId(''); setContactId(contacts.length === 1 ? contacts[0].id : ''); setSearch(''); setAllReason(''); setAllNotes(''); setKind('')
-    setExchange(false); setOrderMode('new'); setOrderId('')
+    setCandidates(null); setPicked({}); setTicketId(''); setContactId(contacts.length === 1 ? contacts[0].id : ''); setSearch(''); setAllReason(''); setAllNotes(''); setIssueUrl('')
+    setOrderMode('new'); setOrderId('')
     const principal = adresses.find(a => a.address_type === 'Livraison' && a.address_rank === 'Principale')
       || adresses.find(a => a.address_type === 'Livraison') || adresses[0]
     setAddressId(principal?.id || '')
@@ -67,7 +70,9 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
     const q = search.trim().toLowerCase()
     if (!candidates) return []
     if (!q) return candidates
-    return candidates.filter(c => [c.serial, c.product_name, c.sku, c.order_number]
+    // Adresse affichée « @12 » : « 12 » ou « @12 » la trouvent.
+    return candidates.filter(c => [c.serial, c.product_name, c.sku, c.order_number,
+      c.address != null && c.address !== '' ? `@${String(c.address).replace(/\.0$/, '')}` : null]
       .some(v => v != null && String(v).toLowerCase().includes(q)))
   }, [candidates, search])
 
@@ -77,7 +82,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
   const toggle = (c) => setPicked(p => {
     const k = keyOf(c)
     if (p[k]) { const n = { ...p }; delete n[k]; return n }
-    return { ...p, [k]: { qty: 1, reason: allReason, notes: allNotes, sub: c.product_id || '' } }
+    return { ...p, [k]: { qty: 1, sub: c.product_id || '' } }
   })
   const shownPicked = shown.filter(c => picked[keyOf(c)]).length
   const allShownPicked = shown.length > 0 && shownPicked === shown.length
@@ -86,24 +91,19 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
     for (const c of shown) {
       const k = keyOf(c)
       if (allShownPicked) delete n[k]
-      else if (!n[k]) n[k] = { qty: 1, reason: allReason, notes: allNotes, sub: c.product_id || '' }
+      else if (!n[k]) n[k] = { qty: 1, sub: c.product_id || '' }
     }
     return n
   })
-  const setLine = (k, patch) => {
-    setPicked(p => ({ ...p, [k]: { ...p[k], ...patch } }))
-    if (patch.reason?.includes(IMMEDIATE)) setExchange(true)
-  }
-  const applyAll = () => {
-    setPicked(p => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, { ...v, reason: allReason, notes: allNotes }])))
-    if (allReason.includes(IMMEDIATE)) setExchange(true)
-  }
+  const setLine = (k, patch) => setPicked(p => ({ ...p, [k]: { ...p[k], ...patch } }))
+  // Une seule raison pour tout le retour, recopiée sur chaque article ;
+  // c'est elle qui décide de l'échange immédiat (plus de case à cocher).
+  const exchange = allReason.toLowerCase().includes(IMMEDIATE)
 
   const openOrders = orders.filter(o => o.status !== 'Envoyé')
   const valid = Boolean(contactId) && pickedKeys.length > 0
-    && pickedKeys.every(k => picked[k].reason)
+    && Boolean(allReason)
     && (!exchange || orderMode === 'new' || orderId)
-    && (!exchange || orderMode !== 'new' || kind)
 
   async function submit() {
     setSubmitting(true)
@@ -113,8 +113,8 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
         const l = picked[k]
         return {
           ...(isSerial(c) ? { serial_id: c.id } : { order_item_id: c.id, qty: Number(l.qty) || 1 }),
-          reason: l.reason,
-          notes: l.notes || null,
+          reason: allReason,
+          notes: allNotes || null,
           substitute_product_id: exchange ? (l.sub || null) : null,
         }
       })
@@ -122,10 +122,12 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
         company_id: companyId,
         contact_id: contactId,
         ticket_id: ticketId || null,
+        issue_github: issueUrl.trim() || null,
         items,
-        exchange: exchange ? { order_id: orderMode === 'existing' ? orderId : null, address_id: addressId || null, is_subscription: kind === 'abonnement' } : null,
+        exchange: exchange ? { order_id: orderMode === 'existing' ? orderId : null, address_id: addressId || null } : null,
       })
-      addToast({ message: r.order ? `Retour créé · commande #${r.order.order_number}` : 'Retour créé', type: 'success' })
+      const nums = (r.orders || []).map(o => `#${o.order_number}`).join(', ')
+      addToast({ message: nums ? `Retour créé · commande ${nums}` : 'Retour créé', type: 'success' })
       onCreated?.(r)
       onClose()
     } catch (e) {
@@ -136,10 +138,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
   }
 
   const reasonSelect = (value, onChange, testId) => (
-    <select className="input text-sm" value={value} onChange={e => onChange(e.target.value)} data-testid={testId}>
-      <option value="">—</option>
-      {reasons.map(r => <option key={r} value={r}>{r}</option>)}
-    </select>
+    <ChoiceSelect value={value} choices={reasons} onChange={onChange} className="input text-sm" testId={testId} />
   )
   const productOptions = useMemo(() => products.map(p => ({ value: p.id, label: [p.name_fr || p.name_en, p.sku].filter(Boolean).join(' · ') })), [products])
 
@@ -173,40 +172,42 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
         </div>
 
         <div>
-          <label className="label">Article{exchange && orderMode === 'new' ? ' *' : ''}</label>
-          <select className="input text-sm" value={kind} onChange={e => setKind(e.target.value)} data-testid="retour-kind">
-            <option value="">—</option>
-            <option value="achat">Acheté</option>
-            <option value="abonnement">En abonnement</option>
-          </select>
+          <label className="label" htmlFor="retour-issue-github">Issue GitHub</label>
+          <input id="retour-issue-github" type="url" className="input text-sm w-full" value={issueUrl} onChange={e => setIssueUrl(e.target.value)} data-testid="retour-issue-github" />
         </div>
 
         <div>
-          <div className="flex items-center gap-2 mb-2">
-            <input
-              type="checkbox"
-              className="ml-3"
-              checked={allShownPicked}
-              ref={el => { if (el) el.indeterminate = shownPicked > 0 && !allShownPicked }}
-              disabled={!shown.length}
-              onChange={toggleAll}
-              title="Tout sélectionner"
-              aria-label="Tout sélectionner"
-              data-testid="retour-select-all"
-            />
-            <label className="label mb-0">Articles</label>
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <label className="label">Raison *</label>
+              {reasonSelect(allReason, setAllReason, 'retour-all-reason')}
+            </div>
+            <div className="flex-1 min-w-[160px]">
+              <label className="label" htmlFor="retour-all-notes">Précision</label>
+              <input id="retour-all-notes" className="input text-sm w-full" value={allNotes} onChange={e => setAllNotes(e.target.value)} data-testid="retour-all-notes" />
+            </div>
           </div>
-          <Hint className="mb-2">Cochez ce qui revient, puis donnez une raison à chaque article. Le bandeau gris applique la même raison et précision à tous les articles cochés.</Hint>
-          <div className="flex flex-wrap items-center gap-2 mb-2 p-2 rounded-lg bg-slate-50">
-            {reasonSelect(allReason, setAllReason, 'retour-all-reason')}
-            <input className="input text-sm flex-1 min-w-[160px]" value={allNotes} onChange={e => setAllNotes(e.target.value)} aria-label="Précision" title="Précision" />
-            <button type="button" className="btn-secondary text-sm" disabled={!pickedKeys.length} onClick={applyAll}>Appliquer à tous</button>
-          </div>
+        </div>
+
+        <div>
+          <label className="label">Articles</label>
           <div className="relative mb-2">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             <input type="search" className="input text-sm w-full pl-8" value={search} onChange={e => setSearch(e.target.value)} aria-label="Rechercher" />
           </div>
           <div className="border border-slate-200 rounded-lg max-h-[40vh] overflow-y-auto divide-y divide-slate-100">
+            <div className="sticky top-0 z-10 px-3 py-1.5 bg-slate-50 flex items-center">
+              <input
+                type="checkbox"
+                checked={allShownPicked}
+                ref={el => { if (el) el.indeterminate = shownPicked > 0 && !allShownPicked }}
+                disabled={!shown.length}
+                onChange={toggleAll}
+                title="Tout sélectionner"
+                aria-label="Tout sélectionner"
+                data-testid="retour-select-all"
+              />
+            </div>
             {candidates === null ? (
               <div className="p-4 flex justify-center"><Spinner /></div>
             ) : shown.length === 0 ? (
@@ -234,17 +235,13 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
                       </span>
                     )}
                   </label>
-                  {l && (
-                    <div className="mt-2 ml-6 grid grid-cols-1 md:grid-cols-[auto_1fr_1fr] gap-2 items-center">
-                      <div className="flex items-center gap-2">
-                        {!isSerial(c) && (
-                          <input type="number" min={1} max={c.qty || 1} className="input text-sm w-16" value={l.qty}
-                            onChange={e => setLine(k, { qty: Math.max(1, Math.min(Number(c.qty) || 1, Number(e.target.value) || 1)) })}
-                            aria-label="Quantité" title="Quantité" />
-                        )}
-                        {reasonSelect(l.reason, v => setLine(k, { reason: v }), `retour-reason-${k}`)}
-                      </div>
-                      <input className="input text-sm" value={l.notes} onChange={e => setLine(k, { notes: e.target.value })} aria-label="Précision" title="Précision" />
+                  {l && (!isSerial(c) || exchange) && (
+                    <div className="mt-2 ml-6 flex flex-wrap items-center gap-2">
+                      {!isSerial(c) && (
+                        <input type="number" min={1} max={c.qty || 1} className="input text-sm w-16" value={l.qty}
+                          onChange={e => setLine(k, { qty: Math.max(1, Math.min(Number(c.qty) || 1, Number(e.target.value) || 1)) })}
+                          aria-label="Quantité" title="Quantité" />
+                      )}
                       {exchange && (
                         <SearchableSelect
                           value={l.sub}
@@ -252,7 +249,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
                           options={productOptions}
                           emptyOption="Aucun remplacement"
                           size="sm"
-                          className="input text-sm w-full"
+                          className="input text-sm flex-1 min-w-[200px]"
                           testId={`retour-sub-${k}`}
                         />
                       )}
@@ -264,14 +261,9 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-          <input type="checkbox" checked={exchange} onChange={e => setExchange(e.target.checked)} data-testid="retour-exchange" />
-          Échange immédiat
-        </label>
-        <Hint className="-mt-3 ml-6">Le remplacement part tout de suite, sans attendre la réception du retour. Choisissez le produit de remplacement sur chaque article.</Hint>
-
         {exchange && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-3 rounded-lg border border-slate-200">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-3 rounded-lg border border-slate-200" data-testid="retour-exchange">
+            <div className="md:col-span-2 text-sm font-medium text-slate-700">Commande de remplacement</div>
             <div>
               <div className="flex gap-4 text-sm mb-2">
                 <label className="flex items-center gap-1.5"><input type="radio" checked={orderMode === 'new'} onChange={() => setOrderMode('new')} />Nouvelle commande</label>
@@ -307,8 +299,7 @@ export function CreateRetourModal({ isOpen, onClose, companyId, contacts = [], t
           {!valid && (
             <Hint className="mr-auto">
               {!pickedKeys.length ? 'Cochez au moins un article.'
-                : pickedKeys.some(k => !picked[k].reason) ? 'Raison manquante sur un article.'
-                : exchange && orderMode === 'new' && !kind ? 'Acheté ou en abonnement ?'
+                : !allReason ? 'Raison manquante.'
                 : 'Choisissez la commande existante.'}
             </Hint>
           )}

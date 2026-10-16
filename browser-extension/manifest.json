@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Extension Boréal",
-  "version": "1.13.0",
+  "version": "1.18.0",
   "description": "Envoie à l'ERP Orisha les sessions ouvertes des portails fournisseurs et d'Instagram, lance la collecte des factures, envoie le document affiché à l'extracteur et des captures à Claude. Fonctionne dans Edge comme dans Chrome.",
   "permissions": [
     "cookies",

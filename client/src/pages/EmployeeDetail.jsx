@@ -13,7 +13,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel, useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
-import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 
@@ -198,23 +198,16 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
       return <textarea className={inp} rows={2} value={val ?? ''} onChange={e => change(field.key, e.target.value)} />
     }
     if (field.type === 'select') {
-      // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
-      return (field.options || []).length > 10 ? (
-        <SearchableSelect
+      return (
+        <ChoiceSelect
           value={val || ''}
-          options={(field.options || []).map(o => ({ value: o, label: o }))}
-          emptyOption="—"
+          choices={field.options}
+          table="employees"
+          field={field.key}
           onChange={v => change(field.key, v)}
           className={inp}
-          size="sm"
           testId={`employee-field-${field.key}`}
         />
-      ) : (
-        <select className={inp} value={val || ''} onChange={e => change(field.key, e.target.value)}
-          data-testid={`employee-field-${field.key}`}>
-          <option value="">—</option>
-          {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
       )
     }
     if (field.type === 'number') {
@@ -489,7 +482,6 @@ function VacationsSection({ employeeId, pct, onPctChange, refDate, refBalance, o
         height="auto"
         onCellEdit={handleCellEdit}
         dateCellPicker
-        selectBadges
         recordOps={vacationOps}
         emptyState={{ icon: Palmtree, title: 'Aucune vacance' }}
       />

@@ -602,6 +602,8 @@ select:not([multiple])[size="1"] {
   .system-builder-detail > :first-child > :last-child { width: 100%; }
 }
 .system-response-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 1rem; }
+/* Fiche formulaire de découverte : familles et sous-groupes vides masqués (lignes sans réponse rendues à null). */
+.response-category:not(:has(section)), .response-subgroup:not(:has(.system-response-grid > *)) { display: none; }
 
 /* Form editor: controls follow the space available in each question block. */
 .form-editor { container-type: inline-size; }
@@ -783,3 +785,25 @@ select:not([multiple])[size="1"] {
 .textLayer br::selection { background: transparent; }
 .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
 .textLayer.selecting .endOfContent { top: 0; }
+
+/* Congés (feuille de temps) : le badge 🌴 apparaît en « pop », la ligne inscrite clignote en vert (démo conges-demo). */
+.conge-pop { animation: conge-pop .3s ease-out both; }
+@keyframes conge-pop { from { opacity: 0; transform: scale(.6); } to { opacity: 1; transform: none; } }
+.row-conge-flash { animation: conge-flash .8s ease-out; }
+@keyframes conge-flash { from { background-color: rgb(var(--c-green-100)); } to { background-color: transparent; } }
+
+/* Champ de fiche réglé « Lecture seule » (clic droit) : les contrôles sont
+   désactivés par le <fieldset disabled> et s'affichent comme du texte. */
+.field-readonly input,
+.field-readonly select,
+.field-readonly textarea,
+.field-readonly button:disabled {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  cursor: default;
+  opacity: 1 !important;
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+  padding-left: 0;
+}

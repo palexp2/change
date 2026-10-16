@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-10-14T18:00:18.241Z",
+  "generatedAt": "2026-10-16T22:28:26.777Z",
   "stats": {
-    "routes": 104,
-    "pages": 90,
+    "routes": 107,
+    "pages": 93,
     "groups": 7,
-    "api": 122,
-    "tables": 210,
+    "api": 124,
+    "tables": 220,
     "connectors": 11
   },
   "groups": [
@@ -120,6 +120,14 @@ export const architectureManifest = {
           "to": "/rendez-vous",
           "label": "Rendez-vous",
           "component": "Meetings",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
+          "to": "/courriels-marketing",
+          "label": "Courriels marketing",
+          "component": "MarketingEmailTemplates",
           "adminOnly": false,
           "hrOnly": false,
           "api": null
@@ -246,6 +254,14 @@ export const architectureManifest = {
       "group": "Autres outils",
       "items": [
         {
+          "to": "/processus",
+          "label": "Processus",
+          "component": "Processus",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
           "to": "/priorite-assemblage",
           "label": "/priorite-assemblage",
           "component": "PrioriteAssemblage",
@@ -300,6 +316,14 @@ export const architectureManifest = {
           "adminOnly": false,
           "hrOnly": false,
           "api": "/api/fournitures"
+        },
+        {
+          "to": "/documents-importants",
+          "label": "Documents importants",
+          "component": "DocumentsImportants",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
         }
       ]
     }
@@ -490,14 +514,6 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/items-vendus",
-      "label": "ItemsVendus",
-      "component": "ItemsVendus",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
       "to": "/abonnements",
       "label": "Abonnements",
       "component": "Abonnements",
@@ -648,6 +664,14 @@ export const architectureManifest = {
       "adminOnly": false,
       "hrOnly": false,
       "api": "/api/journal-entries"
+    },
+    {
+      "to": "/plan-comptable",
+      "label": "PlanComptable",
+      "component": "PlanComptable",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
     },
     {
       "to": "/stock-movement",
@@ -823,10 +847,12 @@ export const architectureManifest = {
     "/api/form-configs",
     "/api/fournitures",
     "/api/fx",
+    "/api/gl",
     "/api/hooks",
     "/api/hooks/telnyx",
     "/api/hub",
     "/api/hubspot",
+    "/api/important-documents",
     "/api/instagram",
     "/api/interaction-files",
     "/api/interactions",
@@ -943,6 +969,7 @@ export const architectureManifest = {
     "base_interaction_attachments",
     "base_interaction_links",
     "base_interactions",
+    "bom_free_components",
     "bom_items",
     "bridge_sessions",
     "calls",
@@ -986,12 +1013,17 @@ export const architectureManifest = {
     "field_visibility_rules",
     "fiscal_anomalies",
     "fx_rates",
+    "gl_accounts",
+    "gl_entries",
+    "gl_import_runs",
+    "gl_lines",
     "gmail_sync_state",
     "greenhouse_leads",
     "hubspot_push_failures",
     "instagram_dm_threads",
     "instagram_prospect_events",
     "instagram_prospects",
+    "installation_followups",
     "interaction_files",
     "interactions",
     "invoice_needs",
@@ -1012,12 +1044,16 @@ export const architectureManifest = {
     "month_end_provisions",
     "notifications",
     "order_items",
+    "order_welcome_emails",
     "orders",
     "page_acceptances",
     "page_events",
     "paie_items",
     "paie_timesheet_sync_state",
     "paies",
+    "part_stock_assemblage_products",
+    "part_stock_movement_changes",
+    "part_stock_orderless_items",
     "password_resets",
     "payment_cards",
     "payment_schedule_deferrals",

@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { db, initTestDb } from '../test-helpers/testApp.js'
 import { seedSystemAutomations } from './systemAutomations.js'
-import { systemFromSoumissionItems, ensureSoumissionSystemBuilder, AUTOMATION_ID } from './soumissionSystemBuilder.js'
+import { systemFromSoumissionItems, ensureSoumissionSystemBuilder, createSystemBuilderFromSoumission, AUTOMATION_ID } from './soumissionSystemBuilder.js'
 import { linkFactureToProject, projectIdFromStripeMetadata } from './stripeProjectLink.js'
 
 initTestDb()
@@ -80,4 +80,20 @@ test('le projet de la soumission suit le System builder et la facture Stripe', (
   db.prepare("UPDATE factures SET project_id='sb-p2' WHERE id='sb-f'").run()
   assert.equal(linkFactureToProject('sb-f', invoice), null)
   assert.equal(db.prepare("SELECT project_id FROM factures WHERE id='sb-f'").get().project_id, 'sb-p2')
+})
+
+test('bouton de la fiche : crée depuis la soumission, puis rouvre le même', () => {
+  db.prepare("INSERT INTO soumissions (id, company_id, project_id, language, quote_number) VALUES ('sb-s3', 'sb-co', 'sb-p', 'English', 43)").run()
+  db.prepare("INSERT INTO document_items (id, document_type, document_id, catalog_product_id, qty, group_name) VALUES ('sb-i3', 'soumission', 'sb-s3', 'sb-chief', 2, 'Serre 1')").run()
+  const first = createSystemBuilderFromSoumission('sb-s3')
+  assert.equal(first.created, true)
+  assert.equal(first.row.project_id, 'sb-p')
+  assert.equal(first.row.num_greenhouses, 2)
+  assert.ok(first.row.public_token)
+  const again = createSystemBuilderFromSoumission('sb-s3')
+  assert.equal(again.created, false)
+  assert.equal(again.row.id, first.row.id)
+  db.prepare("INSERT INTO soumissions (id, language) VALUES ('sb-s4', 'French')").run()
+  assert.ok(createSystemBuilderFromSoumission('sb-s4').error)
+  assert.equal(createSystemBuilderFromSoumission('inexistante').error, 'Soumission introuvable')
 })

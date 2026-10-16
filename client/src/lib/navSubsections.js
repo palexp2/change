@@ -62,7 +62,6 @@ export const NAV_SUBSECTIONS = {
   // ── Groupe Comptabilité ───────────────────────────────────────────────────
   '/factures':        { kind: 'views', param: 'vue', table: 'factures' },
   '/paiements':       { kind: 'views', param: 'vue', table: 'payments' },
-  '/items-vendus':    { kind: 'views', param: 'vue', table: 'stripe_invoice_items' },
   '/abonnements':     { kind: 'views', param: 'vue', table: 'abonnements' },
   '/sale-receipts': {
     kind: 'tabs', param: 'onglet', items: [

@@ -19,11 +19,10 @@ const AIRTABLE_ACHATS_URL =
 const AIRTABLE_RETOUR_CLIENT_URL =
   'https://airtable.com/appB4Fehk9jYd4s4B/pagMJlhZxK69fulf5?MeTpM=sfsUhPqlbLR4ZFobG'
 
-// L'étape « Commande de pièces » ne sait plus quelles pièces ont déjà un achat en
-// cours : le lien achat → pièce et la date de réception ont été droppés sur
-// demande (migration 035). Elle liste donc les pièces sous leur seuil de stock,
-// sans exclure celles déjà commandées, et le report (snooze) reste le seul moyen
-// d'en écarter une.
+// Étapes « Production » et « Commande de pièces » : seuils et quantités calculés
+// par Boréal (GET /products/dynamic-thresholds — services/dynamicThreshold.js),
+// plus les colonnes miroir d'Airtable. Un achat déjà passé compte dans « sera
+// disponible » ; le report (snooze) écarte une pièce à la main.
 
 // Étape 3 — on réutilise telle quelle la vue « À envoyer » de la page Commandes
 // (un pill du DataTable orders) pour que les deux listes soient toujours identiques.
@@ -142,7 +141,7 @@ function statusBadgeClasses(pct) {
 
 // Ligne (lecture seule) de l'étape 5 — Production.
 function ProductionRow({ p }) {
-  const manque = p.finished_min_stock - p.projected_available_qty
+  const manque = p.manque
   const possible = p.producible_qty
   // assembly_status est une fraction 0–1 dans Airtable → afficher en %.
   const pct = p.assembly_status != null ? Math.round(p.assembly_status * 100) : null
@@ -159,7 +158,7 @@ function ProductionRow({ p }) {
       </div>
 
       <div className="text-center shrink-0 w-28">
-        <div className="text-3xl font-extrabold text-red-600 leading-none">{manque}</div>
+        <div className="text-3xl font-extrabold text-red-600 leading-none" title={`Seuil ${p.th.seuil_min_produits_finis} − dispo ${p.th.sera_disponible}`}>{manque}</div>
         <div className="text-xs uppercase tracking-wide text-slate-400 mt-1">à produire</div>
       </div>
 
@@ -243,14 +242,14 @@ function AchatRow({ p, snoozed, busy, snoozeOpen, onToggleSnooze, onSnooze, onCa
         </div>
       </div>
 
-      <div className="text-center shrink-0 w-24">
-        <div className="text-2xl font-extrabold text-red-600 leading-none">{p.stock_qty} / {p.min_stock}</div>
-        <div className="text-xs uppercase tracking-wide text-slate-400 mt-1">stock / seuil</div>
+      <div className="text-center shrink-0 min-w-28 whitespace-nowrap" title="Sera disponible / seuil dynamique">
+        <div className="text-2xl font-extrabold text-red-600 leading-none">{p.th.sera_disponible} / {p.th.seuil_dynamique}</div>
+        <div className="text-xs uppercase tracking-wide text-slate-400 mt-1">dispo / seuil</div>
       </div>
 
-      <div className="text-center shrink-0 w-20">
-        <div className="text-2xl font-bold text-slate-700 leading-none">{p.order_qty || '—'}</div>
-        <div className="text-xs uppercase tracking-wide text-slate-400 mt-1">suggéré</div>
+      <div className="text-center shrink-0 w-28" title={p.th.inventaire_minimum ? `Inventaire minimum : ${p.th.inventaire_minimum}` : undefined}>
+        <div className="text-2xl font-bold text-slate-700 leading-none">{p.th.quantite_a_commander}</div>
+        <div className="text-xs uppercase tracking-wide text-slate-400 mt-1">à commander</div>
       </div>
 
       {/* Actions */}
@@ -292,6 +291,7 @@ function AchatRow({ p, snoozed, busy, snoozeOpen, onToggleSnooze, onSnooze, onCa
 
 export default function PrioriteAssemblage() {
   const [products, setProducts] = useState([])
+  const [thresholds, setThresholds] = useState({})
   const [loading, setLoading] = useState(true)
 
   // Étape 3 — commandes « à envoyer ». Branché sur le MÊME cache que la page
@@ -314,10 +314,15 @@ export default function PrioriteAssemblage() {
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const prodRes = await api.products.list({ limit: 'all' })
+      const [prodRes, thRes] = await Promise.all([
+        api.products.list({ limit: 'all' }),
+        api.products.dynamicThresholds(),
+      ])
       setProducts(prodRes?.data || [])
+      setThresholds(thRes?.data || {})
     } catch {
       setProducts([])
+      setThresholds({})
     } finally {
       setLoading(false)
     }
@@ -360,25 +365,29 @@ export default function PrioriteAssemblage() {
       })
   }, [ordersRaw, companies, envoiFilter])
 
-  // Étape 5 — produits Fabriqué en manque, triés par statut d'assemblage ASC.
+  // Production — produits Fabriqué en manque : seuil min. produits finis
+  // (calculé pour un kanban, saisi sinon) − sera disponible. Tri par statut
+  // d'assemblage croissant.
   const productionList = useMemo(() => products
-    .filter(p =>
-      p.procurement_type === 'Fabriqué' &&
-      p.finished_min_stock != null &&
-      p.projected_available_qty != null &&
-      (p.finished_min_stock - p.projected_available_qty) > 0)
+    .filter(p => p.procurement_type === 'Fabriqué' && thresholds[p.id])
+    .map(p => {
+      const th = thresholds[p.id]
+      return { ...p, th, manque: Math.ceil(th.seuil_min_produits_finis - th.sera_disponible) }
+    })
+    .filter(p => p.manque > 0)
     .sort((a, b) => (a.assembly_status ?? Infinity) - (b.assembly_status ?? Infinity)),
-  [products])
+  [products, thresholds])
 
-  // Étape 4 — pièces Acheté bas-de-stock. Séparées en « actives » (à traiter) et
-  // « reportées » (snooze dans le futur).
+  // Commande de pièces — pièces achetées avec une quantité à commander > 0,
+  // séparées en « actives » et « reportées » (snooze dans le futur).
   const { achatActive, achatSnoozed } = useMemo(() => {
     const now = new Date().toISOString()
-    const base = products.filter(p =>
-      p.procurement_type === 'Acheté' &&
-      p.min_stock > 0 &&
-      p.stock_qty < p.min_stock) // strictement sous le seuil : une pièce pile au seuil (5/5) est correcte, ne pas l'afficher
-    const deficit = p => (p.stock_qty - p.min_stock) // plus négatif = manque le plus
+    const base = products
+      // Même périmètre que la vue « À acheter » des Pièces.
+      .filter(p => ['Acheté', 'Drop ship'].includes(p.procurement_type) && p.type !== 'SYSTEM' && thresholds[p.id]?.quantite_a_commander > 0)
+      .map(p => ({ ...p, th: thresholds[p.id] }))
+    // plus négatif = manque le plus (sous le seuil dynamique ou l'inventaire minimum)
+    const deficit = p => p.th.sera_disponible - Math.max(p.th.seuil_dynamique, p.th.inventaire_minimum || 0)
     const active = base
       .filter(p => !p.purchase_snooze_until || p.purchase_snooze_until <= now)
       .sort((a, b) => deficit(a) - deficit(b))
@@ -386,7 +395,7 @@ export default function PrioriteAssemblage() {
       .filter(p => p.purchase_snooze_until && p.purchase_snooze_until > now)
       .sort((a, b) => (a.purchase_snooze_until < b.purchase_snooze_until ? -1 : 1))
     return { achatActive: active, achatSnoozed: snoozed }
-  }, [products])
+  }, [products, thresholds])
 
   async function setSnooze(p, iso) {
     setBusyId(p.id)

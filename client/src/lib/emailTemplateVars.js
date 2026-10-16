@@ -40,14 +40,17 @@ const key = name => ALIAS[name.trim().toLowerCase()]
 export const varKey = key
 // Jeton connu sans valeur ni texte de remplacement : rien (Charles, 2026-10-09),
 // et l'espace laissé en trop est resserré. Un [texte] inconnu reste tel quel.
+// Le resserrage ne touche que l'endroit d'une variable vidée : « help :) »
+// écrit dans le modèle garde son espace.
+const GAP = '\u0000'
 const fill = (s, values, enc = v => v, tidy = true) => {
   const out = s.replace(VAR_RE, (m, name) => {
     const k = key(name)
     if (!k) return m
     const v = values[k] || values.__fallbacks?.[k]
-    return v ? enc(v) : ''
+    return v ? enc(v) : (tidy ? GAP : '')
   })
-  return tidy ? out.replace(/ {2,}/g, ' ').replace(/ +([,.;:!?)])/g, '$1') : out
+  return tidy ? out.replace(/ *\u0000+ *([,.;:!?)])/g, '$1').replace(/ *\u0000+ */g, m => (/ /.test(m) ? ' ' : '')) : out
 }
 
 // Libellé affiché de chaque variable (clé → [Libellé]).
@@ -82,7 +85,8 @@ const autoLink = s => {
   return out + escapeHtml(s.slice(last))
 }
 
-// Corps du modèle → HTML (un paragraphe par ligne), liens cliquables.
+// Corps du modèle → HTML (une ligne = un bloc sans marge, comme Gmail ; une
+// ligne vide = une seule ligne vide chez le destinataire), liens cliquables.
 export function renderTemplateHtml(text, values) {
   return String(text || '').split('\n').map(line => {
     let out = ''
@@ -93,6 +97,6 @@ export function renderTemplateHtml(text, values) {
       last = m.index + m[0].length
     }
     out += autoLink(fill(line.slice(last), values))
-    return `<p>${out || '&nbsp;'}</p>`
+    return `<div>${out || '<br>'}</div>`
   }).join('')
 }

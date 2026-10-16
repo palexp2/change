@@ -2,7 +2,7 @@ import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useLocation } from 'react-router-dom'
-import { ChevronLeft, ChevronRight, Plus, Search, TreePalm, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Search, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
@@ -11,6 +11,7 @@ import { useAuth } from '../lib/auth.jsx'
 import { parseDurationToMinutes, formatMinutes } from '../lib/duration.js'
 import { localISODate } from '../lib/formatDate.js'
 import { DataTable } from '../components/DataTable.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { formatPercent } from '../lib/percent.js'
 
 // Infobulle des totaux : 22:57 → « 22,95 h »
@@ -280,6 +281,11 @@ function parseClockRange(s) {
   return start_time && end_time ? { start_time, end_time } : undefined
 }
 
+// Un nombre seul ≤ 23 = heures (« 1 » = 1 h), comme Début ; sinon lecture normale.
+function parseHoursFirst(s) {
+  return /^\d+$/.test(s) && Number(s) <= 23 ? Number(s) * 3600 : undefined
+}
+
 export default function FeuilleDeTemps() {
   const { user } = useAuth()
   const isAdmin = hasRole(user, 'rh')
@@ -326,6 +332,14 @@ export default function FeuilleDeTemps() {
   }, [selectedUserId])
   useEffect(() => { loadConges() }, [loadConges])
 
+  // Congés de toute l'équipe : la bande du haut et les 🌴 des collègues sur chaque jour.
+  const [team, setTeam] = useState(null)
+  const loadTeam = useCallback(() => { api.timesheets.congesTeam().then(setTeam).catch(() => setTeam(null)) }, [])
+  useEffect(() => { loadTeam() }, [loadTeam, conges])
+  useRealtimeChannel('vacation:list', loadTeam)
+  // Lignes qui viennent d'être mises en congé : clignotent une fois.
+  const [flash, setFlash] = useState(() => new Set())
+
   // Lignes cochées → « Congé » / « ½ journée » / « Annuler le congé ». Des jours
   // séparés seulement par une fin de semaine forment un seul congé (un seul avis #absences).
   async function addConges(dates, half) {
@@ -333,6 +347,7 @@ export default function FeuilleDeTemps() {
     try {
       for (const [start_date, end_date] of congeRanges(dates)) await api.timesheets.addConge({ user_id: userId, start_date, end_date, half })
       addToast({ message: 'Congé inscrit · #absences avisé', type: 'success' })
+      setFlash(new Set(dates)); setTimeout(() => setFlash(new Set()), 900)
     } finally { loadConges() }
   }
   async function cancelConges(dates) {
@@ -405,6 +420,7 @@ export default function FeuilleDeTemps() {
 
         <div className="flex flex-col lg:flex-row gap-6">
           <main className="flex-1 min-w-0">
+            <TeamConges list={team} mine={conges} onJump={d => setPeriod(payPeriodStartOf(d))} />
             <HoursTable
               period={period}
               onPeriod={setPeriod}
@@ -412,6 +428,8 @@ export default function FeuilleDeTemps() {
               onPatchDay={patchRowDay}
               onSaveRd={saveRowRd}
               conges={conges}
+              team={team}
+              flash={flash}
               congeActions={conges ? congeActions : null}
             />
           </main>
@@ -424,13 +442,18 @@ export default function FeuilleDeTemps() {
 // Heures par jour : toute la saisie se fait ici, une ligne par jour de la
 // période de paie, dans un DataTable en mode tableur. Une journée n'est créée
 // qu'à la première saisie.
-function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, congeActions }) {
+function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, team, flash, congeActions }) {
   const { addToast } = useToast()
   // Description saisie sur une ligne encore sans temps RSDE : gardée ici
   // jusqu'à la saisie des heures, qui l'enregistre.
   const [pendingDesc, setPendingDesc] = useState({})
   const label = useMemo(() => periodLabel(period), [period])
   const shiftPeriod = (delta) => onPeriod(addDaysISO(period, 14 * delta))
+  // Fériés de la période : badge « Férié », ligne grisée, jamais comptés en congé.
+  const [holidays, setHolidays] = useState(() => new Map())
+  useEffect(() => {
+    api.timesheets.congeHolidays(period, addDaysISO(period, 13)).then(d => setHolidays(new Map(d.map(h => [h.date, h.name])))).catch(() => setHolidays(new Map()))
+  }, [period])
 
   // Projet proposé : celui de la dernière journée R&D avant la ligne.
   const projectBefore = useCallback((date) => {
@@ -452,9 +475,14 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
       const rdMinutes = rdEntries.reduce((s, e) => s + (Number(e.duration_minutes) || 0), 0)
       const total = day ? dayTotal(day) : 0
       const wd = new Date(date + 'T00:00:00').getDay()
-      const conge = wd !== 0 && wd !== 6 ? (conges || []).find(c => c.start_date <= date && c.end_date >= date) : null
-      const row = { id: date, date, day, rdMinutes, total, conge: conge ? (conge.days === 0.5 ? '½ congé' : 'Congé') : null }
+      const ferie = holidays.get(date) || null
+      const off = wd === 0 || wd === 6 || ferie
+      const conge = !off ? (conges || []).find(c => c.start_date <= date && c.end_date >= date) : null
+      const mineIds = new Set((conges || []).map(c => c.id))
+      const others = off ? [] : (team || []).filter(c => !mineIds.has(c.id) && c.start_date <= date && c.end_date >= date)
+      const row = { id: date, date, day, rdMinutes, total, off, ferie, others, conge: conge ? (conge.days === 0.5 ? '½ congé' : 'Congé') : null }
       const savedDesc = rdEntries.find(e => e.description)?.description || ''
+      const rdClock = { start: rdEntries[0]?.rsde_start || null, end: rdEntries[0]?.rsde_end || null }
       Object.assign(row, {
         rd: rdMinutes,
         // Début / Fin / Pause / Total : champs Durée (secondes).
@@ -462,6 +490,9 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
         end_s: clockToSec(day?.end_time),
         break_s: day?.break_minutes ? day.break_minutes * 60 : null,
         total_s: total ? total * 60 : null,
+        rsde_start: rdClock.start, rsde_end: rdClock.end,
+        rsde_start_s: clockToSec(rdClock.start),
+        rsde_end_s: clockToSec(rdClock.end),
         rsde_str: rdMinutes ? formatMinutes(rdMinutes) : '',
         // % de la journée = RSDE ÷ Total ; le saisir remplit RSDE.
         rsde_pct: rdMinutes && total ? formatPercent(Math.round(rdMinutes / total * 100)) : '',
@@ -474,7 +505,7 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
       out.push(row)
     }
     return out
-  }, [history, period, pendingDesc, conges])
+  }, [history, period, pendingDesc, conges, team, holidays])
 
   const totalPayable = rows.reduce((s, r) => s + r.total, 0)
   const totalRd = rows.reduce((s, r) => s + r.rd, 0)
@@ -501,14 +532,14 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
         return
       }
       case 'break_str': {
-        // Pause : un nombre seul de 1 à 4 = heures (« 1 » = 1 h), au-delà = minutes (« 30 »).
-        let min = value == null ? 0 : Math.round(Number(value) / 60)
-        if (min >= 1 && min <= 4) min *= 60
+        // Pause : comme Début, un nombre seul ≤ 23 = heures (lu par parseHoursFirst).
+        const min = value == null ? 0 : Math.round(Number(value) / 60)
         if (min !== (row.day?.break_minutes || 0)) return onPatchDay(row.date, { break_minutes: min })
         return
       }
       case 'rsde_str': {
-        const parsed = parseDur(v)
+        // Comme Début : un nombre seul ≤ 23 = heures (« 5 » = 5 h).
+        const parsed = /^\s*\d+\s*$/.test(v) && Number(v) <= 23 ? Number(v) * 60 : parseDur(v)
         if (parsed == null) return refuse('Durée invalide (ex. : 1:30).')
         // Première saisie RSDE : le projet proposé est celui de la dernière journée R&D.
         const project = row.rdMinutes > 0 ? row.project : projectBefore(row.date)
@@ -525,21 +556,21 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
         return
       }
       case 'project':
-        if (row.rdMinutes > 0 && v !== row.project) return onSaveRd(row.date, { minutes: row.rdMinutes, project: v, description: row.description })
+        if (row.rdMinutes > 0 && v !== row.project) return onSaveRd(row.date, { minutes: row.rdMinutes, project: v, description: row.description, start: row.rsde_start, end: row.rsde_end })
         return
       case 'description':
         setPendingDesc(p => ({ ...p, [row.date]: v }))
-        if (row.rdMinutes > 0 && v !== row.description) return onSaveRd(row.date, { minutes: row.rdMinutes, project: row.project, description: v })
+        if (row.rdMinutes > 0 && v !== row.description) return onSaveRd(row.date, { minutes: row.rdMinutes, project: row.project, description: v, start: row.rsde_start, end: row.rsde_end })
         return
       default:
     }
   }
 
   const columns = useMemo(() => [
-    { id: 'date', label: 'Date', field: 'date', width: 150, type: 'date', render: r => <DateLabel date={r.date} conge={r.conge} /> },
+    { id: 'date', label: 'Date', field: 'date', width: 290, minWidth: 290, type: 'date', render: r => <DateLabel date={r.date} conge={r.conge} ferie={r.ferie} others={r.others} /> },
     { id: 'start_time', label: 'Début', field: 'start_s', type: 'duration', width: 90, editable: true, parseInput: parseClockRange },
     { id: 'end_time', label: 'Fin', field: 'end_s', type: 'duration', width: 90, editable: true, parseInput: parseClockRange },
-    { id: 'break_str', label: 'Pause', field: 'break_s', type: 'duration', width: 90, editable: true },
+    { id: 'break_str', label: 'Pause', field: 'break_s', type: 'duration', width: 90, editable: true, parseInput: parseHoursFirst },
     { id: 'total_str', label: 'Total', field: 'total_s', type: 'duration', fieldType: 'formula', description: TOTAL_FORMULA, width: 90, footer: <span data-testid="hours-total" title={decimalHours(totalPayable)}>{formatMinutes(totalPayable)}</span> },
     { id: 'rsde_pct', label: '% RSDE', field: 'rsde_pct', width: 80, editable: true },
     { id: 'rsde_str', label: 'RSDE', field: 'rsde_str', width: 90, editable: true, footer: <span data-testid="hours-total-rsde" title={decimalHours(totalRd)}>{formatMinutes(totalRd)}</span> },
@@ -547,13 +578,12 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
     { id: 'description', label: 'Description', field: 'description', editable: true },
   ], [totalPayable, totalRd])
 
-  const isWorkday = d => { const w = new Date(d + 'T00:00:00').getDay(); return w !== 0 && w !== 6 }
   const bulkActions = useMemo(() => !congeActions ? [] : [
-    { key: 'conge', icon: TreePalm, className: 'btn-primary text-xs inline-flex items-center gap-1.5',
-      label: rows => { const n = rows.filter(r => isWorkday(r.date)).length || rows.length; return `Congé · ${n} jour${n > 1 ? 's' : ''}` },
+    { key: 'conge', className: 'btn-primary text-xs inline-flex items-center gap-1.5',
+      label: rows => { const n = rows.filter(r => !r.off).length || rows.length; return `🌴 Congé · ${n} jour${n > 1 ? 's' : ''}` },
       show: rows => rows.some(r => !r.conge), onClick: ids => congeActions.add(ids, false) },
     { key: 'half', label: '½ journée', show: rows => rows.length === 1 && !rows[0].conge, onClick: ids => congeActions.add(ids, true) },
-    { key: 'cancel', icon: X, label: 'Annuler le congé', show: rows => rows.every(r => r.conge), onClick: ids => congeActions.cancel(ids) },
+    { key: 'cancel', icon: X, label: 'Annuler le congé', className: 'text-xs inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold text-white bg-red-600 hover:bg-red-700', show: rows => rows.every(r => r.conge), onClick: ids => congeActions.cancel(ids) },
   ], [congeActions])
 
   return (
@@ -586,7 +616,7 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
           table="timesheet_hours"
           columns={columns}
           data={rows}
-          rowClassName={r => (r.date === todayStr() ? 'row-today' : '')}
+          rowClassName={r => [r.date === todayStr() && 'row-today', r.off && 'text-slate-400', flash?.has(r.date) && 'row-conge-flash'].filter(Boolean).join(' ')}
           onCellEdit={editCell}
           height="auto"
           selectedSelectChevron
@@ -598,6 +628,50 @@ function HoursTable({ period, onPeriod, history, onPatchDay, onSaveRd, conges, c
           bulkActions={bulkActions}
         />
       </div>
+    </div>
+  )
+}
+
+// Congés à venir de toute l'équipe : qui est absent quand. Clic = la période du congé.
+function congeSpan(a, b) {
+  return a === b ? a : `${a} → ${b}`
+}
+// Congés consécutifs d'un même employé (10-19 déc. + 20 déc.-1er janv.) → une seule pastille ;
+// comme congeRanges, un trou fait seulement de fins de semaine ne coupe pas.
+function mergeConges(list) {
+  const out = []
+  const lastByEmp = new Map()
+  for (const c of [...list].sort((a, b) => a.start_date.localeCompare(b.start_date))) {
+    const g = lastByEmp.get(c.employee_id)
+    let joined = !!g && c.start_date <= addDaysISO(g.end_date, 1)
+    if (g && !joined) {
+      joined = true
+      for (let x = addDaysISO(g.end_date, 1); x < c.start_date; x = addDaysISO(x, 1)) { const w = new Date(x + 'T00:00:00').getDay(); if (w !== 0 && w !== 6) { joined = false; break } }
+    }
+    if (joined) {
+      if (c.end_date > g.end_date) g.end_date = c.end_date
+      g.days = Number(g.days) + Number(c.days)
+      g.ids.push(c.id)
+    } else {
+      const n = { ...c, ids: [c.id] }
+      out.push(n)
+      lastByEmp.set(c.employee_id, n)
+    }
+  }
+  return out
+}
+function TeamConges({ list, mine, onJump }) {
+  if (!list?.length) return null
+  const mineIds = new Set((mine || []).map(c => c.id))
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap mb-3" data-testid="team-conges">
+      <span className="text-sm mr-1" title="Congés à venir">🌴</span>
+      {mergeConges(list).map(c => (
+        <button key={c.id} onClick={() => onJump(c.start_date)}
+          className={`text-xs rounded-full px-2 py-0.5 border whitespace-nowrap ${c.ids.some(id => mineIds.has(id)) ? 'bg-emerald-50 border-emerald-300 text-emerald-800 font-semibold' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+          {c.first_name} {c.last_name?.[0] ? `${c.last_name[0]}.` : ''} · {congeSpan(c.start_date, c.end_date)}{Number(c.days) === 0.5 ? ' · ½' : ''}
+        </button>
+      ))}
     </div>
   )
 }
@@ -616,11 +690,17 @@ function congeRanges(dates) {
   return out
 }
 
-function DateLabel({ date, conge }) {
+function DateLabel({ date, conge, ferie, others }) {
   return (
     <>
       <span className="capitalize text-slate-400 mr-1.5">{weekdayShort(date)}</span>{date}
-      {conge && <span className="ml-1.5 inline-flex items-center gap-0.5 rounded px-1 text-[10px] font-semibold bg-emerald-50 text-emerald-700"><TreePalm size={10} />{conge}</span>}
+      {conge && <span className="conge-pop ml-1.5 inline-flex items-center rounded-full px-1.5 text-[10px] font-semibold text-green-700"
+        style={{ background: conge === 'Congé' ? 'rgb(var(--c-green-50))' : 'linear-gradient(90deg,rgb(var(--c-green-50)) 50%,rgb(var(--c-slate-100)) 50%)' }}>{conge === 'Congé' ? '🌴 Congé' : `🌴 ${conge}`}</span>}
+      {others?.map(c => (
+        <span key={c.id} title={`${c.first_name} ${c.last_name || ''} en congé`.trim()}
+          className="conge-pop ml-1 inline-flex items-center rounded-full px-1 text-[10px] font-medium bg-slate-100 text-slate-600">🌴 {c.first_name}</span>
+      ))}
+      {ferie && <span title={ferie} className="ml-1.5 inline-block max-w-[8rem] truncate align-middle rounded-full px-1.5 text-[10px] font-semibold bg-slate-100 text-slate-500">Férié · {ferie}</span>}
     </>
   )
 }

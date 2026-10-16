@@ -40,7 +40,8 @@ export default function LinkedRecordField({
   // Option : libellé long affiché en entier (retour à la ligne) au lieu d'être tronqué.
   wrap = false,
   // Option : liste déroulante large, libellés en entier sur plusieurs lignes
-  // (adresses longues de la fiche Commande).
+  // (adresses longues de la fiche Commande). Un candidat qui porte `full`
+  // (adresse au complet, cf. recordLinks.js) l'affiche à la place de libellé + contexte.
   widePicker = false,
 }) {
   const fieldTestId = name ? `linked-record-field-${name}` : 'linked-record-field'
@@ -71,6 +72,7 @@ export default function LinkedRecordField({
             id: String((identity === 'airtable' && rec.airtable_id) || rec.id),
             name: rec.label || rec.id,
             sub: rec.sub || null,
+            full: rec.full || null,
           })))
         })
         .catch(() => { if (alive) setRemote(EMPTY_OPTIONS) })
@@ -141,8 +143,8 @@ export default function LinkedRecordField({
             onClick={() => { onChange(o.id); setOpen(false) }}
             className={`flex w-full ${widePicker ? 'items-start' : 'items-center'} gap-2 text-left px-3 py-2 text-sm hover:bg-slate-50 ${String(o.id) === String(value) ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
           >
-            <span className={`flex-1 ${widePicker ? 'min-w-0 break-words' : 'truncate'}`}>{getLabel(o)}</span>
-            {o.sub && <span className={`text-xs text-slate-400 max-w-[40%] ${widePicker ? 'break-words' : 'truncate'}`}>{o.sub}</span>}
+            <span className={`flex-1 ${widePicker ? 'min-w-0 break-words' : 'truncate'}`}>{(widePicker && o.full) || getLabel(o)}</span>
+            {o.sub && !(widePicker && o.full) && <span className={`text-xs text-slate-400 max-w-[40%] ${widePicker ? 'break-words' : 'truncate'}`}>{o.sub}</span>}
           </button>
         ))}
         {!search && !searchTarget && options.length > 60 && (

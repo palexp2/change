@@ -87,7 +87,8 @@ describe('PaieForm — autosave en mode édition', () => {
     await deadline.blur()
 
     // 2) Select statut → persistance immédiate.
-    await dialog.locator('select').first().selectOption('En cours')
+    await dialog.locator('[data-testid="paie-form-status"]').click()
+    await page.locator('[data-testid="paie-form-status-menu"] button', { hasText: 'En cours' }).first().click()
 
     // 3) Checkbox Kilométrage (includes_mileage) → persistance immédiate.
     const mileage = dialog.locator('label', { hasText: 'Kilométrage' }).locator('input[type="checkbox"]')

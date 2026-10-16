@@ -14,13 +14,19 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { getUsdCadRate } from './fx.js'
 import { emit } from './realtime.js'
+import { readRelation } from './customFieldsView.js'
 import { refreshTestFlag } from './subscriptionTestFlag.js'
+import { sameContract, signatureListAmount } from './subscriptionItemsSnapshot.js'
 
 // Builds the exact row shape that GET /api/projets/abonnement-events returns
 // (consumed by AbonnementMouvements + SubscriptionHistory). Single row variant.
+// `e.*` en tête : champs personnalisés (cf_*, et virtuels via la vue
+// subscription_events_v) ; les colonnes nommées ensuite priment (les instantanés
+// JSON, lourds et inutiles à la liste, sont vidés).
 export function buildSubscriptionEventRow(eventId) {
   return db.prepare(`
     SELECT
+      e.*, NULL AS items_before_json, NULL AS items_after_json,
       e.id, e.event_date, e.event_type, e.category,
       e.previous_amount_cad, e.new_amount_cad, e.amount_cad_delta,
       e.currency, e.created_at, e.subscription_id,
@@ -29,7 +35,7 @@ export function buildSubscriptionEventRow(eventId) {
       co.name AS company_name,
       e.rachat_status, e.rachat_order_id, e.rachat_checked_at,
       o.order_number AS rachat_order_number
-    FROM subscription_events e
+    FROM ${readRelation('subscription_events')} e
     LEFT JOIN subscriptions s ON e.subscription_id = s.id
     LEFT JOIN companies co ON co.id = COALESCE(e.company_id, s.company_id)
     LEFT JOIN orders o ON o.id = e.rachat_order_id
@@ -102,6 +108,26 @@ export function classifyChange({ prevStatus, newStatus, prevAmount, newAmount })
   return null
 }
 
+// Garde « contrat inchangé » appliquée après classifyChange (webhook + sync).
+// Renvoie la catégorie à enregistrer (null = aucun mouvement) et s'il faut
+// mémoriser `signature` comme nouvelle référence.
+//  - pas encore de référence : on l'initialise, sans mouvement ;
+//  - même contrat : aucun mouvement, quel que soit l'écart de montant ;
+//  - contrat changé, montant pas encore suivi (facture à venir) : on garde
+//    l'ancienne référence pour que la prochaine facture compte — sauf changement
+//    neutre (autres prix, même prix catalogue, mêmes rabais, même essai).
+export function gateContractChange({ category, storedSignature, signature }) {
+  if (category === 'churn') return { category, storeSignature: false }
+  if (category === 'creation' || category === 'reactivation') return { category, storeSignature: true }
+  if (!storedSignature) return { category: null, storeSignature: true }
+  if (sameContract(storedSignature, signature)) return { category: null, storeSignature: false }
+  if (category === 'upgrade' || category === 'downgrade') return { category, storeSignature: true }
+  const neutral = JSON.stringify(storedSignature.discounts) === JSON.stringify(signature?.discounts)
+    && !!storedSignature.trialing === !!signature?.trialing
+    && signatureListAmount(storedSignature) === signatureListAmount(signature)
+  return { category: null, storeSignature: neutral }
+}
+
 /**
  * Enregistre un événement d'abonnement.
  * @param {object} args
@@ -138,8 +164,26 @@ export async function recordEvent(args) {
   }
 
   const datePart = String(eventDate).slice(0, 10)
-  const previousCad = await toCad(previousAmount, currency, datePart)
+  let previousCad = await toCad(previousAmount, currency, datePart)
   const newCad = await toCad(newAmount, currency, datePart)
+  let eventDateOut = eventDate
+  // Churn : retire le dernier MRR suivi (pas le montant courant, que le webhook
+  // précédent a pu recalculer) et se classe après les mouvements existants —
+  // cancel_date est à minuit, avant un mouvement du même jour.
+  if (category === 'churn') {
+    const tracked = db.prepare(`
+      SELECT new_amount_cad FROM subscription_events
+      WHERE subscription_id = ? AND category IN ('creation','upgrade','downgrade','reactivation')
+        AND new_amount_cad IS NOT NULL
+      ORDER BY event_date DESC, created_at DESC LIMIT 1
+    `).pluck().get(subscriptionId)
+    if (tracked != null) previousCad = tracked
+    const lastDate = db.prepare('SELECT MAX(event_date) FROM subscription_events WHERE subscription_id = ?').pluck().get(subscriptionId)
+    const lastMs = lastDate ? Date.parse(lastDate) : NaN
+    if (Number.isFinite(lastMs) && !(Date.parse(eventDate) > lastMs)) {
+      eventDateOut = new Date(lastMs + 1000).toISOString()
+    }
+  }
   let delta = null
   if (category === 'creation') delta = newCad
   else if (category === 'churn') delta = previousCad != null ? -previousCad : null
@@ -156,7 +200,7 @@ export async function recordEvent(args) {
       stripe_event_id, items_before_json, items_after_json
     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
-    id, subscriptionId, companyId, eventDate, eventType, category,
+    id, subscriptionId, companyId, eventDateOut, eventType, category,
     delta, previousCad, newCad, currency,
     stripeEventId, itemsBeforeJson, itemsAfterJson,
   )

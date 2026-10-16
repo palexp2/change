@@ -439,6 +439,15 @@ export default function QualificationCall() {
         loading={loading}
         onRowClick={openExistingCall}
         searchFields={['company_name', 'company_name_raw', 'assignee', 'contact_full_name', 'motivation_today', 'summary', 'heard_about']}
+        bulkDeleteAlways
+        onBulkDelete={async (ids) => {
+          // Suppression définitive (pas de soft-delete) : pas de toast « Annuler ».
+          const res = await Promise.allSettled(ids.map(id => api.qualificationCalls.delete(id)))
+          await load()
+          const failed = res.filter(r => r.status === 'rejected').length
+          if (failed) throw new Error(`${failed} sur ${ids.length} non supprimé${failed > 1 ? 's' : ''}`)
+          addToast({ message: `${ids.length} appel${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`, type: 'success' })
+        }}
       />
 
       {creating && (

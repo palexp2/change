@@ -27,6 +27,9 @@ import { getSignatureFor, appendSignature, replaceSignature, getRecipientLanguag
 // Gmail) est ajoutée en bas du corps, modifiable comme le reste — française ou
 // anglaise selon la langue du contact destinataire (fiche contact, sinon
 // `lang` du destinataire suggéré ou du brouillon).
+// Signature de l'utilisateur, sauf si la modale est ouverte sans (signature={false}).
+const sigFor = (on, from, lang) => (on.current ? getSignatureFor(from, lang) : Promise.resolve(null))
+
 export default function EmailComposerModal({
   isOpen,
   onClose,
@@ -37,6 +40,7 @@ export default function EmailComposerModal({
   headerExtra = null,   // ex. sélecteur du compte expéditeur
   fromAccount,          // boîte expéditrice choisie : la signature suit ce choix
   allowBcc = false,     // ajoute un champ Cci (copie conforme invisible)
+  signature = true,     // false : pas de signature personnelle (courriel d'une adresse générique)
   attachmentSize = 'compact', // taille des vignettes de pièces jointes (AttachmentPreview)
   bodyClassName = '',   // classes ajoutées à la zone du corps (ex. paragraphes espacés)
   sendLabel = 'Envoyer',
@@ -67,6 +71,8 @@ export default function EmailComposerModal({
   fillTemplate = null,
 }) {
   const scheduleSend = useUndoSend()
+  const signatureRef = useRef(signature)
+  signatureRef.current = signature
   const { addToast } = useToast()
   const [draft, setDraft] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -85,10 +91,10 @@ export default function EmailComposerModal({
   const fromRef = useRef(fromAccount)
   fromRef.current = fromAccount
   const sigFromRef = useRef(undefined) // boîte dont la signature est dans le corps
-  const [lang, setLang] = useState('fr') // langue du destinataire → signature
-  const langRef = useRef('fr')
+  const [lang, setLang] = useState('en') // langue du destinataire → signature
+  const langRef = useRef('en')
   langRef.current = lang
-  const sigLangRef = useRef('fr') // langue de la signature dans le corps
+  const sigLangRef = useRef('en') // langue de la signature dans le corps
 
   useEffect(() => {
     if (!isOpen) { setDraft(null); setError(''); setLoadError(''); return }
@@ -131,7 +137,7 @@ export default function EmailComposerModal({
     const sigFrom = fromRef.current
     sigFromRef.current = sigFrom
     sigLangRef.current = langRef.current
-    getSignatureFor(sigFrom, langRef.current).then(sig => {
+    sigFor(signatureRef, sigFrom, langRef.current).then(sig => {
       const el = bodyRef.current
       if (!alive || !el) return
       const untouched = el.innerHTML === autoRef.current.inner
@@ -141,7 +147,7 @@ export default function EmailComposerModal({
   }, [draft])
 
   // Langue du destinataire « À » (premier courriel) : fiche contact, sinon
-  // langue fournie par la suggestion ou le brouillon, sinon français.
+  // langue fournie par la suggestion ou le brouillon, sinon anglais (Charles, 2026-10-15).
   useEffect(() => {
     if (!draft) return
     const first = String(to || '').split(/[,;]/)[0].trim().toLowerCase()
@@ -152,7 +158,7 @@ export default function EmailComposerModal({
     )
     let alive = true
     const t = setTimeout(() => {
-      getRecipientLanguage(first).then(l => { if (alive) setLang(l || hint || 'fr') })
+      getRecipientLanguage(first).then(l => { if (alive) setLang(l || hint || 'en') })
     }, 300)
     return () => { alive = false; clearTimeout(t) }
   }, [to, draft])
@@ -166,7 +172,7 @@ export default function EmailComposerModal({
     sigFromRef.current = from
     sigLangRef.current = lang
     let alive = true
-    getSignatureFor(from, lang).then(sig => {
+    sigFor(signatureRef, from, lang).then(sig => {
       const el = bodyRef.current
       if (!alive || !el) return
       const untouched = el.innerHTML === autoRef.current.inner
@@ -189,7 +195,7 @@ export default function EmailComposerModal({
       partsRef.current = { prefix: parts.prefix, suffix: parts.suffix }
       bodyRef.current.innerHTML = parts.inner
       auto.inner = bodyRef.current.innerHTML
-      getSignatureFor(fromRef.current, langRef.current).then(sig => {
+      sigFor(signatureRef, fromRef.current, langRef.current).then(sig => {
         const el = bodyRef.current
         if (el && el.innerHTML === auto.inner && appendSignature(el, sig)) auto.inner = el.innerHTML
       })
@@ -211,7 +217,7 @@ export default function EmailComposerModal({
     const auto = autoRef.current
     if (!keepSubject) auto.subject = filled.subject
     auto.inner = el.innerHTML
-    getSignatureFor(fromRef.current, langRef.current).then(sig => {
+    sigFor(signatureRef, fromRef.current, langRef.current).then(sig => {
       if (bodyRef.current === el && el.innerHTML === auto.inner && appendSignature(el, sig)) auto.inner = el.innerHTML
     })
   }

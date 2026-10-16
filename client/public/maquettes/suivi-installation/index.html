@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Suivi d'installation</title>
+<style>
+:root{font-family:Inter,-apple-system,"Segoe UI",sans-serif;color:#1f2937;font-size:14px;--line:#e5e7eb;--muted:#6b7280;--green:#21b14b;--gdark:#167030}
+*{box-sizing:border-box}body{margin:0;background:#eef0f2;padding:24px 16px 60px}
+h1{font-size:20px;margin:0 0 18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px;max-width:1500px}
+.opt{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+.opt>h3{margin:0;font-size:16px}.opt>p{margin:2px 0 16px;color:var(--muted);font-size:13px}
+h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px;font-weight:600}
+.mail{display:flex;gap:14px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line)}
+.mail:first-of-type{border-top:0}
+.th{width:62px;height:80px;border:1px solid var(--line);border-radius:5px;flex:none;background:#f4f4f4;position:relative;overflow:hidden}
+.th:before{content:"";position:absolute;left:0;right:0;top:14px;height:3px;background:var(--green)}
+.th i{position:absolute;left:8px;right:8px;height:3px;background:#d1d5db;border-radius:2px}
+.th b{position:absolute;left:9px;width:20px;height:8px;background:var(--green);border-radius:2px}
+.meta{flex:1;display:flex;flex-direction:column;gap:4px}.subj{font-weight:600}.mut{color:var(--muted);font-size:13px}
+.ok{color:var(--gdark);font-weight:600;font-size:13px}.plan{color:#a35a12;font-weight:600;font-size:13px}
+.row{display:flex;gap:8px;margin-top:4px}
+.btn{border:1px solid var(--line);border-radius:6px;background:#fff;font:inherit;font-size:13px;padding:5px 10px;cursor:pointer}
+.btn.p{background:var(--gdark);color:#fff;border-color:var(--gdark)}
+.pill{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:10px}
+.p-red{background:#fde8e8;color:#b42318}.p-grn{background:#e7f5ec;color:#167030}.p-org{background:#fdf0e3;color:#a35a12}.p-gry{background:#f1f2f4;color:#6b7280}
+.tl{display:flex;align-items:flex-start;margin:6px 0 4px}
+.st{flex:1;text-align:center;font-size:12px;position:relative}
+.st:before{content:"";position:absolute;top:8px;left:-50%;width:100%;height:2px;background:var(--green);z-index:0}
+.st:first-child:before{display:none}.st.f:before{background:repeating-linear-gradient(90deg,#cbd5e1 0 5px,transparent 5px 9px)}
+.dot{width:18px;height:18px;border-radius:50%;background:var(--green);margin:0 auto 6px;position:relative;z-index:1;color:#fff;font-size:11px;line-height:18px}
+.st.f .dot{background:#fff;border:2px dashed #cbd5e1}
+.hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-bottom:12px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.hd b{font-size:17px}
+table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:var(--muted);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:7px 8px;border-bottom:1px solid #f1f2f4}a{color:#2f6e9e;text-decoration:none}
+.tabs{display:flex;gap:14px;margin-bottom:10px;font-size:13px}.tabs span{color:var(--muted)}.tabs .on{color:#1f2937;font-weight:600;border-bottom:2px solid var(--gdark);padding-bottom:3px}
+.sec{margin-top:26px;display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:18px;max-width:1500px}
+.em{background:#f4f4f4;border-radius:10px;padding:16px;display:flex;justify-content:center}
+.ec{background:#fff;width:100%;max-width:520px;font-family:Arial,sans-serif;color:#333}
+.ec .lg{text-align:center;padding:16px;font-weight:700;color:var(--green);font-size:20px}.ec .bar{height:5px;background:#22b14c}
+.ec .bd{padding:20px}.ec .bs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:22px 0}
+.ec .bs span{background:#22b14c;color:#fff;font-weight:700;text-align:center;padding:13px 8px;border-radius:5px;font-size:14px}
+.ec .ft{background:#f4f4f4;color:#777;font-size:11px;text-align:center;padding:14px}
+.ty{background:#fff;border-radius:10px;border:1px solid var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:30px;text-align:center}
+.ty .ck{width:46px;height:46px;border-radius:50%;background:#fde8e8;color:#b42318;font-size:24px;line-height:46px}
+.ty textarea{width:100%;max-width:360px;height:70px;border:1px solid var(--line);border-radius:6px;font:inherit;padding:8px}
+</style>
+</head>
+<body>
+<h1>Suivi d'installation · 3 semaines après l'envoi</h1>
+
+<div class="grid">
+
+<div class="opt"><h3>A · Sous le premier courriel</h3><p>Fiche commande</p>
+  <h2>Courriels au client</h2>
+  <div class="mail"><div class="th"><i style="top:26px"></i><i style="top:34px"></i><i style="top:42px;right:20px"></i></div>
+    <div class="meta"><div class="subj">Rends ton installation facile et rapide</div><div class="ok">✓ Envoyé le 14 oct.</div></div></div>
+  <div class="mail"><div class="th"><i style="top:26px;right:30px"></i><b style="top:42px"></b><b style="top:42px;left:33px"></b><b style="top:54px"></b><b style="top:54px;left:33px"></b></div>
+    <div class="meta"><div class="subj">Comment s'est passée l'installation ?</div><div class="plan">⏱ Part le 4 nov.</div>
+      <div class="row"><button class="btn">Envoyer maintenant</button><button class="btn">Annuler</button></div></div></div>
+  <div class="mail"><div class="th"><i style="top:26px;right:30px"></i><b style="top:42px"></b><b style="top:42px;left:33px"></b><b style="top:54px"></b><b style="top:54px;left:33px"></b></div>
+    <div class="meta"><div class="subj">Comment s'est passée l'installation ?</div><div class="ok">✓ Envoyé le 4 nov.</div><div><span class="pill p-red">Je suis bloqué</span> <span class="mut">5 nov.</span></div></div></div>
+</div>
+
+<div class="opt"><h3>B · Frise</h3><p>Fiche commande</p>
+  <h2>Suivi client</h2>
+  <div class="tl">
+    <div class="st"><div class="dot">✓</div>Bienvenue<div class="mut">14 oct.</div></div>
+    <div class="st"><div class="dot">✓</div>Expédiée<div class="mut">14 oct.</div></div>
+    <div class="st f"><div class="dot"></div>Suivi<div class="mut">4 nov.</div></div>
+    <div class="st f"><div class="dot"></div>Réponse<div class="mut">—</div></div>
+  </div>
+  <div class="row" style="justify-content:center;margin-top:12px"><button class="btn">Aperçu</button><button class="btn">Annuler le suivi</button></div>
+  <div style="margin-top:22px" class="tl">
+    <div class="st"><div class="dot">✓</div>Bienvenue<div class="mut">14 oct.</div></div>
+    <div class="st"><div class="dot">✓</div>Expédiée<div class="mut">14 oct.</div></div>
+    <div class="st"><div class="dot">✓</div>Suivi<div class="mut">4 nov.</div></div>
+    <div class="st"><div class="dot" style="background:#b42318">!</div><span class="pill p-red">Bloqué</span><div class="mut">5 nov.</div></div>
+  </div>
+</div>
+
+<div class="opt"><h3>C · Pastille dans l'en-tête</h3><p>Rien à gérer ; seule la réponse se voit</p>
+  <div class="hd"><b>CMD-2481 · Ferme Lavoie</b><span class="pill p-gry">Expédiée</span><span class="pill p-org">Suivi le 4 nov.</span></div>
+  <div class="mut" style="margin-bottom:24px">…</div>
+  <div class="hd"><b>CMD-2481 · Ferme Lavoie</b><span class="pill p-gry">Expédiée</span><span class="pill p-red">Installation : bloqué</span></div>
+  <div class="hd"><b>CMD-2477 · Serres Tremblay</b><span class="pill p-gry">Expédiée</span><span class="pill p-grn">Installation : fait</span></div>
+</div>
+
+<div class="opt"><h3>D · Page « Suivis d'installation »</h3><p>Ventes › Suivis</p>
+  <div class="tabs"><span class="on">À appeler 3</span><span>Prévus 7</span><span>Faits 41</span></div>
+  <table>
+    <tr><th>Client</th><th>Expédiée</th><th>Suivi</th><th>Réponse</th></tr>
+    <tr><td><a href="#">Ferme Lavoie</a></td><td>14 oct.</td><td>4 nov.</td><td><span class="pill p-red">Bloqué</span></td></tr>
+    <tr><td><a href="#">Les Jardins Roy</a></td><td>2 oct.</td><td>23 oct.</td><td><span class="pill p-org">Pénible</span></td></tr>
+    <tr><td><a href="#">Serre Bouchard</a></td><td>30 sept.</td><td>21 oct.</td><td><span class="pill p-gry">Sans réponse</span></td></tr>
+  </table>
+</div>
+
+</div>
+
+<div class="sec">
+  <div class="em"><div class="ec"><div class="lg">orisha</div><div class="bar"></div>
+    <div class="bd"><p>Salut Marc,</p><p>Comment s'est passée l'installation ?</p>
+      <div class="bs"><span>Super, c'est fait!</span><span>C'était pénible</span><span>Je compte le faire la semaine prochaine</span><span>Je suis bloqué</span></div>
+      <p style="text-align:center">Besoin d'aide ? <a href="#">Appelle-nous</a></p></div>
+    <div class="ft">Automatisation Orisha Inc. 1535 ch. Ste-Foy Bureau 220 Québec, QC G1S 2P1</div></div></div>
+  <div class="ty"><div class="ck">!</div><b>Merci Marc, on te rappelle aujourd'hui.</b><textarea placeholder=""></textarea><button class="btn p">Envoyer</button></div>
+</div>
+</body>
+</html>

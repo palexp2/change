@@ -77,6 +77,7 @@ const VIEW_KEYS_OF_TABLE = {
   tickets: ['company_tickets'],
   purchases: ['company_achats', 'product_purchases'],
   subscriptions: ['abonnements', 'company_abonnements'],
+  subscription_events: ['abonnement_events'],
 }
 export const viewKeysOf = erpTable => [erpTable, ...(VIEW_KEYS_OF_TABLE[erpTable] || [])]
 
@@ -263,6 +264,11 @@ export function purgeFields(ids) {
       // SQLite refuse le DROP COLUMN tant qu'elle existe. On la régénère juste
       // après, à partir des champs virtuels restants.
       db.exec(`DROP VIEW IF EXISTS ${table}_v`)
+      // Index posés pour les rollups à condition (customFieldsView) : ils
+      // bloqueraient le DROP COLUMN ; les rollups encore valides les reposent.
+      for (const { name } of db.prepare(
+        `SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=? AND name LIKE 'idx\\_rollupf\\_%' ESCAPE '\\'`
+      ).all(table)) db.exec(`DROP INDEX IF EXISTS "${name}"`)
       for (const c of cols) {
         db.exec(`ALTER TABLE ${table} DROP COLUMN [${c}]`)
         out.dropped.push(`${table}.${c}`)

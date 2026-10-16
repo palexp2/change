@@ -8,7 +8,6 @@ import { recordSoumissionLinkClick } from '../services/soumissionLinkClick.js'
 import { pagePayPlan, createPageCheckout, applyPageUpgrade } from '../services/pageCheckout.js'
 import { getPageByToken } from '../services/hostedPages.js'
 import { createPaymentFailedTask } from '../services/paymentFailedTask.js'
-import { placeAutocomplete, placeDetails } from '../services/geocode.js'
 import { readFileSync } from 'node:fs'
 
 // Formulaire d'adresse maison de la page de carte (voir assets/pay-address.js).
@@ -96,9 +95,17 @@ function upgradePage(p, action) {
 <h2>${t.cur}</h2><table>${rows(p.current)}<tr class="tot"><td></td><td class="r">${money(now)}</td></tr></table>
 <h2>${t.add}</h2><table>${rows(p.added)}${p.offCents ? `<tr><td>${t.off}</td><td class="r">−${money(p.offCents)}</td></tr>` : ''}</table>
 <table><tr class="tot"><td>${t.total}</td><td class="r">${money(after)}</td></tr></table>
-<form method="post" action="${esc(action)}"><button type="submit">${t.btn}</button></form>
+${busyForm(action, t.btn, fr)}
 <p class="muted">${t.note}</p>`, 200, { brand: true }).html
 }
+// Formulaire « Approuver » (carte au dossier) : roue + « Traitement… » sur le
+// bouton jusqu'à la page de remerciement, comme la page de carte (Charles, 2026-10-15).
+const busyForm = (action, label, fr) => `<style>.spin{display:inline-block;width:14px;height:14px;margin-right:8px;vertical-align:-2px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}button:disabled{opacity:.85;cursor:progress}</style>
+<form method="post" action="${esc(action)}" id="bf"><button type="submit">${label}</button></form>
+<script>(function(){var f=document.getElementById('bf'),b=f.querySelector('button'),l=b.textContent;
+f.addEventListener('submit',function(e){if(b.disabled){e.preventDefault();return}setTimeout(function(){b.disabled=true;b.innerHTML='<span class="spin"></span>';b.appendChild(document.createTextNode(${JSON.stringify(fr ? 'Traitement…' : 'Processing…')}))},0)});
+addEventListener('pageshow',function(){b.disabled=false;b.textContent=l})})()</script>`
+
 // Client déjà abonné à une autre fréquence : abonnement séparé, carte au dossier.
 function separatePage(p, action) {
   const fr = p.isFr
@@ -115,7 +122,7 @@ function separatePage(p, action) {
 <table>${rows}</table>
 <p class="muted">${t.tax}${t.note ? ` · ${t.note}` : ''}</p>
 <p>${t.pay}</p>
-<form method="post" action="${esc(action)}"><button type="submit">${t.btn}</button></form>`, 200, { brand: true }).html
+${busyForm(action, t.btn, fr)}`, 200, { brand: true }).html
 }
 
 // Nouvel abonnement : notre page de carte (Stripe Elements sur la session
@@ -123,26 +130,42 @@ function separatePage(p, action) {
 function stripePublishableKey() {
   return db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='publishable_key'").get()?.value || ''
 }
+// Case « J'accepte les conditions » des paiements de soumission (Charles, 2026-10-15).
+const consentHtml = fr => {
+  const a = (href, txt) => `<a href="${href}" target="_blank" rel="noopener" style="color:inherit">${txt}</a>`
+  return fr
+    ? `<span>J’accepte les ${a('https://www.orisha.io/terms-of-service', 'Conditions d’utilisation du service')} et la ${a('https://www.orisha.io/privacy-policy', 'Politique de confidentialité')} d’Automatisation Orisha inc.</span>`
+    : `<span>I agree to the ${a('https://www.orisha.io/terms-of-service', 'Terms of Service')} and ${a('https://www.orisha.io/privacy-policy', 'Privacy Policy')} of Automatisation Orisha inc.</span>`
+}
 function cardPage(p, { session, needsEmail }, billing = {}) {
   const fr = p.isFr
   const money = cents => new Intl.NumberFormat(fr ? 'fr-CA' : 'en-CA', { style: 'currency', currency: p.currency.toUpperCase() }).format(cents / 100)
-  const per = { month: fr ? 'mois' : 'month', year: fr ? 'an' : 'year', week: fr ? 'semaine' : 'week', day: fr ? 'jour' : 'day' }[p.price.recurring?.interval] || ''
+  // Page hébergée : son produit ; soumission : ses lignes (p.lines), achat unique si p.interval est null.
+  const interval = p.lines ? p.interval : p.price.recurring?.interval
+  const lines = p.lines || [{ name: p.price.product.name, cents: p.price.unit_amount || 0 }]
+  const per = { month: fr ? 'mois' : 'month', year: fr ? 'an' : 'year', week: fr ? 'semaine' : 'week', day: fr ? 'jour' : 'day' }[interval] || ''
+  const perTxt = per ? ` / ${per}` : ''
   const when = p.billingStart?.date || null
   const t = fr
     ? { title: 'Votre abonnement', tax: 'avant taxes', taxes: 'Taxes', total: 'Total, taxes incluses', addr: 'selon l’adresse', first: when ? `Premier paiement le ${when}.` : '', today: 'Aujourd’hui', btn: 'Confirmer', err: 'Le paiement n’a pas pu être confirmé.' }
     : { title: 'Your subscription', tax: 'before taxes', taxes: 'Taxes', total: 'Total, taxes included', addr: 'based on address', first: when ? `First payment on ${when}.` : '', today: 'Due today', btn: 'Confirm', err: 'The payment could not be confirmed.' }
   const cfg = { pk: stripePublishableKey(), secret: session.client_secret, needsEmail, locale: fr ? 'fr-CA' : 'en', currency: p.currency.toUpperCase(), err: t.err, fr,
-    addrUrl: `/erp/pay/page/${encodeURIComponent(p.c.token)}/adresse`, initial: billing.initial || null, defaultCountry: billing.defaultCountry || 'CA' }
-  return htmlPage(t.title, `<style>table{width:100%;border-collapse:collapse;margin:4px 0 6px}td{padding:6px 0;border-bottom:1px solid #f1f5f9;font-weight:600}.r{text-align:right;white-space:nowrap}
-.el{margin:14px 0}button{width:100%;background:#1a5c2a;color:#fff;border:0;padding:13px 28px;border-radius:999px;font-weight:600;font-size:15px;cursor:pointer;margin-top:12px}button:hover{background:#25b14e}button:disabled{opacity:.5;cursor:default}#today{font-weight:400}td.sub{font-weight:400;color:#64748b}#msg{margin-top:10px}</style>
-<h1>${t.title}</h1>
-<table><tr><td>${esc(p.price.product.name)}</td><td class="r">${money(p.price.unit_amount || 0)} / ${per}</td></tr>
+    initial: billing.initial || null, defaultCountry: billing.defaultCountry || 'CA', switchable: !!p.switchable }
+  const terms = interval
+    ? (fr ? 'En confirmant, vous autorisez Automatisation Orisha inc. à vous facturer selon les conditions jusqu’à votre annulation.' : 'By confirming, you authorize Automatisation Orisha inc. to charge you according to the terms until you cancel.')
+    : (fr ? 'En confirmant, vous autorisez Automatisation Orisha inc. à débiter ce montant.' : 'By confirming, you authorize Automatisation Orisha inc. to charge this amount.')
+  return htmlPage(esc(p.title || p.price.product.name || t.title), `<style>table{width:100%;border-collapse:collapse;margin:4px 0 6px}td{padding:6px 0;border-bottom:1px solid #f1f5f9;font-weight:600}.r{text-align:right;white-space:nowrap}
+.el{margin:14px 0}button{width:100%;background:#1a5c2a;color:#fff;border:0;padding:13px 28px;border-radius:999px;font-weight:600;font-size:15px;cursor:pointer;margin-top:12px}button:hover{background:#25b14e}button:disabled{opacity:.5;cursor:default}#today{font-weight:400}td.sub{font-weight:400;color:#64748b}#msg{margin-top:10px}.spin{display:inline-block;width:14px;height:14px;margin-right:8px;vertical-align:-2px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}button.busy:disabled{opacity:.85;cursor:progress}</style>
+<table>${lines.map(l => `<tr><td>${esc(l.name)}</td><td class="r">${money(l.cents)}${perTxt}</td></tr>`).join('')}
+${p.discountCents ? `<tr><td class="sub">${fr ? 'Rabais' : 'Discount'}</td><td class="r sub">−${money(p.discountCents)}${perTxt}</td></tr>` : ''}
 <tbody id="taxes"><tr><td class="sub">${t.taxes}</td><td class="r sub">${t.addr}</td></tr></tbody>
-<tr id="tot" hidden><td>${t.total}</td><td class="r"><span id="totv"></span> / ${per}</td></tr></table>
+<tr id="tot" hidden><td>${t.total}</td><td class="r"><span id="totv"></span>${perTxt}</td></tr></table>
 ${t.first ? `<p class="muted">${t.first}</p>` : ''}
 <form id="f">${needsEmail ? '<div id="contact" class="el"></div>' : ''}<div id="address" class="el"></div><div id="payment" class="el"></div>
+<p class="muted" id="terms">${terms}</p>
+${p.consent ? `<label class="muted" style="display:flex;gap:8px;align-items:flex-start;cursor:pointer"><input type="checkbox" id="consent" style="margin-top:3px">${consentHtml(fr)}</label>` : ''}
 <p class="muted" id="today"></p>
-<button id="go" type="submit" disabled>${t.btn}</button><p id="msg" class="error"></p></form>
+<button id="go" type="submit">${t.btn}</button><p id="msg" class="error"></p></form>
 <script src="https://js.stripe.com/dahlia/stripe.js"></script>
 <script>${PAY_ADDRESS_JS.replace(/<\//g, '<\\/')}</script>
 <script>
@@ -151,28 +174,70 @@ ${t.first ? `<p class="muted">${t.first}</p>` : ''}
   var stripe = Stripe(cfg.pk, { locale: cfg.locale });
   var checkout = stripe.initCheckoutElementsSdk({ clientSecret: cfg.secret, elementsOptions: { appearance: { theme: 'stripe', variables: { colorPrimary: '#1a5c2a', borderRadius: '8px' } } } });
   var go = document.getElementById('go'), msg = document.getElementById('msg');
-  var actionsP = checkout.loadActions(), canConfirm = false;
-  var addr = PayAddress.mount(document.getElementById('address'), { fr: cfg.fr, endpoint: cfg.addrUrl, initial: cfg.initial, defaultCountry: cfg.defaultCountry, onChange: function (a) {
-    refresh(); if (lastSession) render(lastSession);
+  var actionsP = checkout.loadActions(), cardOk = false, emailOk = !cfg.needsEmail;
+  var addr = PayAddress.mount(document.getElementById('address'), { fr: cfg.fr, initial: cfg.initial, defaultCountry: cfg.defaultCountry, onChange: function (a) {
+    // Pays inconnu au dossier : le pays choisi impose la devise → page rechargée dans l'autre devise.
+    if (cfg.switchable && (a.value().address.country === 'US' ? 'USD' : 'CAD') !== cfg.currency) {
+      var u = new URL(location.href); u.searchParams.set('pays', a.value().address.country); location.replace(u.toString()); return;
+    }
+    refresh(); noTaxUS(); if (lastSession) render(lastSession);
     // Adresse complète → Stripe recalcule les taxes.
     if (a.valid()) pushAddress();
   } });
+  var postalIn = document.querySelector('#address input');
+  // Code postal / ZIP inconnu de Stripe : message client + champ en rouge, au lieu
+  // du texte technique de Stripe (« customer's location isn't recognized »).
+  function badLocation(e) { return /location isn.t recognized|tax_location|valid customer address/i.test(((e && e.code) || '') + ' ' + ((e && e.message) || '')) }
+  function locationMsg() {
+    var us = addr.value().address.country === 'US';
+    postalIn.style.borderColor = '#df1b41';
+    return cfg.fr ? (us ? 'Code ZIP introuvable. Vérifiez-le.' : 'Code postal introuvable. Vérifiez-le.')
+      : (us ? 'This ZIP code isn’t recognized. Please check it.' : 'This postal code isn’t recognized. Please check it.');
+  }
+  function errText(e) { return badLocation(e) ? locationMsg() : ((e && e.message) || cfg.err) }
   function pushAddress() {
     actionsP.then(function (r) { if (r.type !== 'error') return r.actions.updateBillingAddress(addr.value()) })
-      .then(function (u) { if (u && u.type === 'error') console.warn('[pay] adresse', u.error && u.error.message) })
+      .then(function (u) {
+        if (u && u.type === 'error') { if (badLocation(u.error)) msg.textContent = locationMsg(); else console.warn('[pay] adresse', u.error && u.error.message) }
+        else if (/introuvable|recognized/.test(msg.textContent)) { msg.textContent = ''; postalIn.style.borderColor = '' }
+      })
       .catch(function (e) { console.warn('[pay] adresse', e && e.message) });
   }
-  function refresh() { go.disabled = !(canConfirm && addr.valid()); }
+  // Bouton toujours cliquable : un champ manquant est signalé au clic plutôt que
+  // par un bouton grisé muet (Charles, 2026-10-15).
+  function refresh() {
+    if (addr.valid()) postalIn.style.borderColor = '';
+    if (!missing().length && /^(Missing|Champs manquants)/.test(msg.textContent)) msg.textContent = '';
+  }
+  var consentBox = document.getElementById('consent');
+  if (consentBox) consentBox.addEventListener('change', function () { refresh() });
+  function missing() {
+    var m = [];
+    if (!emailOk) m.push(cfg.fr ? 'courriel' : 'email');
+    if (!addr.valid()) m.push(cfg.fr ? 'code postal' : (addr.value().address.country === 'US' ? 'ZIP code' : 'postal code'));
+    if (!cardOk) m.push(cfg.fr ? 'carte' : 'card');
+    var ok = document.getElementById('consent');
+    if (ok && !ok.checked) m.push(cfg.fr ? 'conditions' : 'terms');
+    return m;
+  }
+  // Aucune taxe aux États-Unis : ni ligne Taxes ni total (Charles, 2026-10-15).
+  function noTaxUS() {
+    var us = addr.value().address.country === 'US'
+    if (us) { document.getElementById('taxes').hidden = true; document.getElementById('tot').hidden = true }
+    return us
+  }
+  noTaxUS();
   if (addr.valid()) pushAddress();
   var lastSession = null;
   checkout.on('change', function (s) {
-    lastSession = s; canConfirm = s.canConfirm; refresh();
+    lastSession = s; if (cfg.needsEmail) emailOk = !!s.email; refresh();
     try { document.getElementById('today').textContent = ${JSON.stringify(t.today)} + ' : ' + s.total.total.amount; } catch (e) {}
     render(s);
   });
   function render(s) {
     // Mensualité (prochaine échéance — 0 $ aujourd'hui pendant l'essai) ; ventilation
     // TPS/TVQ par les pourcentages connus, sinon une seule ligne « Taxes ».
+    if (noTaxUS()) return;
     try {
       var n = s.recurring && s.recurring.dueNext, tot = n ? n.total : s.total.total
       var tax = n ? n.taxExclusive : s.total.taxExclusive, base = n ? n.subtotal : s.total.subtotal
@@ -189,7 +254,14 @@ ${t.first ? `<p class="muted">${t.first}</p>` : ''}
       document.getElementById('taxes').hidden = ready && !(tax && tax.minorUnitsAmount)
       if (!tax || !tax.minorUnitsAmount) { document.getElementById('tot').hidden = true; return }
       var fmt = function (c) { return new Intl.NumberFormat(cfg.locale === 'en' ? 'en-CA' : 'fr-CA', { style: 'currency', currency: cfg.currency }).format(c / 100) }
-      var pcts = (s.taxAmounts || []).filter(function (x) { return x.percentage && !x.inclusive })
+      // Stripe liste aussi les taxes non perçues (ex. PST de la C.-B., sans inscription) :
+      // on garde les taux dont la somme donne la taxe réellement calculée.
+      var all = (s.taxAmounts || []).filter(function (x) { return x.percentage && !x.inclusive }), pcts = []
+      for (var m = 1; m < (1 << all.length); m++) {
+        var pick = all.filter(function (x, i) { return m & (1 << i) })
+        var sum = pick.reduce(function (t, x) { return t + Math.round(base.minorUnitsAmount * x.percentage / 100) }, 0)
+        if (Math.abs(sum - tax.minorUnitsAmount) <= pick.length) { pcts = pick; break }
+      }
       var rows = pcts.length ? pcts.map(function (x) { return [x.displayName + ' (' + x.percentage + ' %)', fmt(Math.round(base.minorUnitsAmount * x.percentage / 100))] })
         : [[${JSON.stringify(t.taxes)}, tax.amount]]
       document.getElementById('taxes').innerHTML = rows.map(function (r) {
@@ -202,9 +274,29 @@ ${t.first ? `<p class="muted">${t.first}</p>` : ''}
     } catch (e) {}
   }
   if (cfg.needsEmail) checkout.createContactDetailsElement().mount('#contact');
-  checkout.createPaymentElement({ wallets: { googlePay: 'never', link: 'never' }, fields: { billingDetails: { name: 'never', address: 'never' } } }).mount('#payment');
+  // Mention d'autorisation de Stripe (« By subscribing… ») masquée : la nôtre,
+  // sous la carte, parle de « Confirm » (Charles, 2026-10-15).
+  var pe = checkout.createPaymentElement({ wallets: { googlePay: 'never', link: 'never' }, terms: { card: 'never' }, fields: { billingDetails: { name: 'never', address: 'never' } } });
+  pe.on('change', function (e) { cardOk = !!e.complete; refresh(); });
+  pe.mount('#payment');
   document.getElementById('f').addEventListener('submit', async function (e) {
-    e.preventDefault(); if (!addr.valid()) return; go.disabled = true; msg.textContent = '';
+    e.preventDefault(); msg.textContent = '';
+    var m = missing();
+    if (m.length) {
+      if (!addr.valid()) postalIn.style.borderColor = '#df1b41';
+      // Stripe souligne lui-même la carte et le courriel incomplets.
+      actionsP.then(function (r) { if (r.type !== 'error') r.actions.validateElements() }).catch(function () {});
+      msg.textContent = (cfg.fr ? 'Champs manquants : ' : 'Missing: ') + m.join(', ');
+      return;
+    }
+    // Traitement en cours jusqu'à la redirection : bouton avec roue (Charles, 2026-10-15).
+    var label = go.textContent;
+    function busy(on) {
+      go.disabled = on; go.classList.toggle('busy', on);
+      if (on) { go.innerHTML = '<span class="spin"></span>'; go.appendChild(document.createTextNode(cfg.fr ? 'Traitement…' : 'Processing…')); }
+      else go.textContent = label;
+    }
+    busy(true);
     try {
       var r = await actionsP;
       if (r.type === 'error') throw r.error;
@@ -212,8 +304,8 @@ ${t.first ? `<p class="muted">${t.first}</p>` : ''}
       var u = await r.actions.updateBillingAddress(addr.value());
       if (u && u.type === 'error') throw u.error;
       var c = await r.actions.confirm();
-      if (c.type === 'error') { msg.textContent = c.error.message || cfg.err; go.disabled = false; }
-    } catch (err) { msg.textContent = (err && err.message) || cfg.err; go.disabled = false; }
+      if (c.type === 'error') { msg.textContent = errText(c.error); busy(false); }
+    } catch (err) { msg.textContent = errText(err); busy(false); }
   });
 })();
 </script>`, 200, { brand: true }).html
@@ -273,8 +365,8 @@ router.get('/soumission/:id/:kind', async (req, res) => {
       if (p?.alreadyApplied) return res.type('html').send(upgradeDonePage(p.isFr))
       if (p) return res.type('html').send(upgradePage(p, `${appBaseUrl()}/erp/pay/soumission/${encodeURIComponent(id)}/abonnement/approuver${accepted}`))
     }
-    const { url } = await createSoumissionCheckout({ stripe, soumissionId: id, kind, acceptNewPrices })
-    return res.redirect(303, url)
+    const checkout = await createSoumissionCheckout({ stripe, soumissionId: id, kind, acceptNewPrices })
+    return res.type('html').send(cardPage(checkout.plan, checkout, await soumissionPrefill(stripe, checkout.plan)))
   } catch (e) {
     if (e.code === 'price_changed') return res.type('html').send(priceChangedPage(e, `${appBaseUrl()}/erp/pay/soumission/${encodeURIComponent(id)}/${kind}?nouveaux_prix=1`, kind))
     return soumissionErrorPage(res, e, id, kind)
@@ -339,49 +431,20 @@ router.get('/page/:token/merci', (req, res) => {
   return res.type('html').send(upgradeDonePage(fr, 'new'))
 })
 
-// Autocomplétion d'adresse de la page de carte (publique : jeton de page exigé,
-// débit limité par IP pour ne pas offrir la clé Google au premier venu).
-const addrHits = new Map()
-function addrGuard(req, res) {
-  if (!getPageByToken(req.params.token)) { res.status(404).json({ predictions: [] }); return false }
-  const now = Date.now(), h = addrHits.get(req.ip) || { n: 0, t: now }
-  if (now - h.t > 60_000) { h.n = 0; h.t = now }
-  h.n += 1; addrHits.set(req.ip, h)
-  if (addrHits.size > 5000) addrHits.clear()
-  if (h.n > 90) { res.status(429).json({ predictions: [] }); return false }
-  return true
-}
-router.get('/page/:token/adresse', async (req, res) => {
-  if (!addrGuard(req, res)) return
-  try {
-    res.json({ predictions: await placeAutocomplete(String(req.query.q || '').slice(0, 200), { sessionToken: String(req.query.s || ''), country: String(req.query.c || '') }) })
-  } catch (e) {
-    console.error('[pay] autocomplétion adresse', e.message)
-    res.json({ predictions: [] })
-  }
-})
-router.get('/page/:token/adresse/:placeId', async (req, res) => {
-  if (!addrGuard(req, res)) return
-  try {
-    res.json((await placeDetails(req.params.placeId, { sessionToken: String(req.query.s || '') })) || {})
-  } catch (e) {
-    console.error('[pay] détail adresse', e.message)
-    res.json({})
-  }
-})
-
 // Adresse de départ du formulaire : celle du client Stripe, sinon le pays de
 // l'entreprise au dossier.
 const COUNTRY_CODES = { canada: 'CA', 'united states': 'US', usa: 'US', 'états-unis': 'US', 'etats-unis': 'US' }
 async function billingPrefill(stripe, plan, session) {
   const company = plan.contact?.company_id ? db.prepare('SELECT name, country FROM companies WHERE id=?').get(plan.contact.company_id) : null
   const raw = String(company?.country || '').trim()
-  const defaultCountry = /^[A-Z]{2}$/.test(raw) ? raw : (COUNTRY_CODES[raw.toLowerCase()] || 'CA')
+  const planCountry = plan.currency === 'usd' ? 'US' : 'CA'
+  const defaultCountry = plan.switchable ? planCountry : /^[A-Z]{2}$/.test(raw) ? raw : (COUNTRY_CODES[raw.toLowerCase()] || 'CA')
   const id = typeof session.customer === 'string' ? session.customer : session.customer?.id || plan.customer
   const name = plan.a?.name || ''
   if (!id) return { defaultCountry, initial: name ? { name } : null }
   const cus = await stripe.customers.retrieve(id).catch(() => null)
-  const a = cus?.address
+  // Devise selon le pays : le formulaire part du pays de la devise affichée.
+  const a = plan.switchable && cus?.address?.country !== planCountry ? null : cus?.address
   return {
     defaultCountry,
     initial: {
@@ -390,6 +453,22 @@ async function billingPrefill(stripe, plan, session) {
     },
   }
 }
+// Adresse de départ d'une soumission : celle du client Stripe, sinon le pays de l'entreprise.
+async function soumissionPrefill(stripe, plan) {
+  const raw = String(plan.companyCountry || '').trim()
+  const defaultCountry = /^[A-Z]{2}$/.test(raw) ? raw : (COUNTRY_CODES[raw.toLowerCase()] || (plan.currency === 'usd' ? 'US' : 'CA'))
+  const cus = plan.customer ? await stripe.customers.retrieve(plan.customer).catch(() => null) : null
+  const a = cus?.address
+  return {
+    defaultCountry,
+    initial: {
+      name: cus?.name || plan.companyName,
+      address: a?.country ? { country: a.country, line1: a.line1, line2: a.line2, city: a.city, state: a.state, postal_code: a.postal_code } : null,
+    },
+  }
+}
+// Pays choisi sur la page de carte (?pays=US|CA) : change la devise si le pays du client est inconnu.
+const payCountry = req => (['US', 'CA'].includes(String(req.query.pays || '').toUpperCase()) ? String(req.query.pays).toUpperCase() : null)
 async function sendCardPage(res, stripe, plan) {
   const checkout = await createPageCheckout({ stripe, plan })
   return res.type('html').send(cardPage(plan, checkout, await billingPrefill(stripe, plan, checkout.session)))
@@ -401,7 +480,7 @@ router.get('/page/:token/:acceptanceId', async (req, res) => {
   const { token, acceptanceId } = req.params
   try {
     const stripe = getStripeClient()
-    const plan = await pagePayPlan({ stripe, token, acceptanceId })
+    const plan = await pagePayPlan({ stripe, token, acceptanceId, country: payCountry(req) })
     if (plan.mode === 'already') return res.type('html').send(upgradeDonePage(plan.isFr, 'already'))
     if (plan.mode === 'separate') {
       return res.type('html').send(separatePage(plan,
@@ -423,7 +502,7 @@ router.get('/page/:token/:acceptanceId/carte', async (req, res) => {
   const { token, acceptanceId } = req.params
   try {
     const stripe = getStripeClient()
-    const plan = await pagePayPlan({ stripe, token, acceptanceId })
+    const plan = await pagePayPlan({ stripe, token, acceptanceId, country: payCountry(req) })
     if (plan.mode !== 'new' && plan.mode !== 'separate') return res.redirect(303, `${appBaseUrl()}/erp/pay/page/${encodeURIComponent(token)}/${encodeURIComponent(acceptanceId)}`)
     return sendCardPage(res, stripe, plan)
   } catch (e) {

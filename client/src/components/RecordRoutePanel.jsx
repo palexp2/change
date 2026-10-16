@@ -5,6 +5,7 @@ import ErrorBoundary from './ErrorBoundary.jsx'
 import { PEEK_ROUTES } from '../lib/recordPeekRoutes.jsx'
 import { RecordScope } from '../lib/recordLive.jsx'
 import { publishPageTitle } from '../lib/currentPageTitle.js'
+import { usePeekSiblings } from '../lib/peekSiblings.js'
 import Spinner from './Spinner.jsx'
 
 // Panneau d'une fiche atteinte par son URL (/orders/<id>) : navigation depuis
@@ -51,6 +52,15 @@ export default function RecordRoutePanel({ match, canGoBack }) {
     else navigate(def?.list || '/dashboard', { replace: true })
   }, [canGoBack, navigate, def])
 
+  // Chevrons ↑/↓ : voisins dans la liste de fond, si elle les publie
+  // (`peek.routeNav` de sa DataTable). Remplace l'entrée d'historique : fermer
+  // ramène toujours à la page d'où l'on vient.
+  const siblings = usePeekSiblings()
+  const idx = siblings ? siblings.hrefs.indexOf(match.path) : -1
+  const goTo = href => () => navigate(href, { replace: true })
+  const prevHref = idx > 0 ? siblings.hrefs[idx - 1] : null
+  const nextHref = idx >= 0 ? siblings.hrefs[idx + 1] || null : null
+
   if (!def) return null
   const { Component } = def
 
@@ -67,13 +77,17 @@ export default function RecordRoutePanel({ match, canGoBack }) {
       width={def.width}
       minWidth={def.minWidth}
       peekKey={match.resource}
+      onPrev={idx < 0 ? undefined : prevHref && goTo(prevHref)}
+      onNext={idx < 0 ? undefined : nextHref && goTo(nextHref)}
     >
       <ErrorBoundary resetKey={match.path}>
         <Suspense fallback={<div className="p-6 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>}>
           {/* Les champs de la fiche n'ont pas à recevoir l'id un par un : le
               panneau l'annonce, et chaque <Field> y lit sa pastille « mis à
               jour ailleurs ». */}
-          <RecordScope id={match.id}>
+          {/* `key` : passer au voisin repart d'une fiche neuve, sans refaire
+              glisser le panneau. */}
+          <RecordScope key={match.id} id={match.id}>
             <Component recordId={match.id} embedded onClose={close} />
           </RecordScope>
         </Suspense>

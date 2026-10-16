@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, useCallback, Suspense } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback, Suspense, createContext } from 'react'
 import { createPortal } from 'react-dom'
 import { useHref } from 'react-router-dom'
-import { X, SlidersHorizontal, ChevronUp, ChevronDown } from 'lucide-react'
+import { X, Eye, EyeOff, ChevronUp, ChevronDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { hasOpenModal } from './Modal.jsx'
 import { OVERLAY_BASE, registerOverlay } from '../lib/overlayLayers.js'
@@ -152,6 +152,11 @@ function clampWidth(w, min = MIN_WIDTH) {
   return Math.min(Math.max(w, floor), max)
 }
 
+// Tableaux d'une fiche : 10 premières lignes, « N de plus » pour le reste.
+// DataTable lit cette valeur quand la page ne fixe pas `rowLimit` elle-même.
+export const SUBTABLE_ROW_LIMIT = 10
+export const PeekRowLimitContext = createContext(0)
+
 export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, syncUrl = true, width = 560, minWidth = MIN_WIDTH, peekKey, onPrev, onNext, revision, children }) {
   const wKey = widthKey(peekKey, to)
   // `to` est une route du routeur (« /projects/:id ») ; l'app est servie sous
@@ -205,6 +210,8 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
   // que s'il y a une carte de champs personnalisable dessous.
   const [editableFields, setEditableFields] = useState(0)
   const [editingFields, setEditingFields] = useState(false)
+  // Titre / sous-titre du bandeau : réglés par clic droit sur le bandeau (admin).
+  const [editingHeader, setEditingHeader] = useState(false)
   const registerFieldGrid = useCallback(() => {
     setEditableFields(n => n + 1)
     return () => setEditableFields(n => n - 1)
@@ -500,7 +507,10 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
           <div className={`h-full w-px transition-colors ${resizing ? 'bg-brand-500' : 'bg-transparent group-hover:bg-brand-400'}`} />
         </div>
         <div className="flex items-center gap-1.5 px-6 py-4 border-b border-slate-200 bg-white flex-shrink-0">
-          <div className="flex-1 min-w-0">
+          <div
+            className="flex-1 min-w-0"
+            onContextMenu={editableFields > 0 && headerSrc ? e => { e.preventDefault(); setEditingHeader(v => !v) } : undefined}
+          >
             {/* Titre à la Airtable : gros et gras, c'est le nom de l'enregistrement. */}
             {rename && titleDraft !== null ? (
               <input
@@ -524,7 +534,7 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
               >{shownTitle}</div>
             )}
             {shownSubtitle && <div className="text-xs text-slate-400 truncate" data-testid="record-peek-subtitle">{shownSubtitle}</div>}
-            {editingFields && editableFields > 0 && headerSrc && (
+            {editingHeader && editableFields > 0 && headerSrc && (
               <PeekHeaderEditor fields={headerSrc.fields} header={header} onChange={setHeader} />
             )}
           </div>
@@ -533,11 +543,11 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
               onClick={() => setEditingFields(v => !v)}
               data-testid="record-peek-edit-fields"
               aria-pressed={editingFields}
-              title={editingFields ? 'Terminer la personnalisation des champs' : 'Personnaliser les champs de la fiche'}
-              aria-label="Personnaliser les champs"
+              title={editingFields ? 'Masquer les champs cachés' : 'Afficher les champs cachés'}
+              aria-label="Champs cachés"
               className={`p-1.5 rounded-lg transition-colors ${editingFields ? 'text-brand-600 bg-brand-50' : 'text-slate-400 hover:text-brand-600 hover:bg-slate-100'}`}
             >
-              <SlidersHorizontal size={16} />
+              {editingFields ? <EyeOff size={16} /> : <Eye size={16} />}
             </button>
           )}
           {(onPrev !== undefined || onNext !== undefined) && (
@@ -586,7 +596,9 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
         >
           <PeekFieldEditProvider value={fieldEditCtx}>
             <PeekFooterProvider node={footerEl}>
-              {children}
+              <PeekRowLimitContext.Provider value={SUBTABLE_ROW_LIMIT}>
+                {children}
+              </PeekRowLimitContext.Provider>
             </PeekFooterProvider>
           </PeekFieldEditProvider>
         </div>

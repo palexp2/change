@@ -56,6 +56,7 @@ const EXTERNAL_ROUTES = new Set([
   'POST /api/agent/tasks/internal',
   'GET /api/track/email/:emailId.gif',
   'GET /api/public/installation-feedback/',
+  'POST /api/public/installation-feedback/note',
   // Admin routes appelées via curl/scripts d'ops (pas depuis le client UI)
   'POST /api/admin/factures/backfill-paid-at',
   'POST /api/admin/factures/:id/clear-deferred-revenue',

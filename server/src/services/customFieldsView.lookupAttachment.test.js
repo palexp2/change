@@ -22,7 +22,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS custom_fields (
   created_at TEXT, deleted_at TEXT, view_error TEXT,
   formula_expr TEXT, lookup_fk TEXT, lookup_target_table TEXT, lookup_target_column TEXT,
   lookup_limit_n INTEGER, lookup_limit_dir TEXT,
-  rollup_target_table TEXT, rollup_target_fk TEXT, rollup_target_column TEXT, rollup_agg TEXT,
+  rollup_target_table TEXT, rollup_target_fk TEXT, rollup_target_column TEXT, rollup_agg TEXT, rollup_filter TEXT,
   link_target_table TEXT, link_group_id TEXT, link_role TEXT, link_single INTEGER
 )`)
 

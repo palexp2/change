@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, useContext } from 'react'
 import { createPortal } from 'react-dom'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useNavigate, useLocation } from 'react-router-dom'
@@ -19,13 +19,14 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { CustomFieldModal } from './CustomFieldModal.jsx'
 import { FieldAirtableMapping, prefetchFieldConfig } from './FieldAirtableMapping.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue, columnChoiceValues, parseSelectChoices, formatCurrency, currencySymbolOf, NO_COLOR } from '../lib/customFieldDisplay.jsx'
+import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue, columnChoiceValues, parseSelectChoices, formatCurrency, currencySymbolOf, NO_COLOR, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 import LinkCellEditor from './LinkCellEditor.jsx'
 import LinkChipsCell from './LinkChipsCell.jsx'
-import { LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
+import { linkedRecordTypeLabel } from '../lib/linkedRecordType.js'
 import { summarizeDependents } from '../lib/customFieldDeps.js'
 import { useFieldOverrides, applyFieldOverrides, applyFieldOrder } from '../lib/fieldOverrides.jsx'
-import RecordPeekDrawer from './RecordPeekDrawer.jsx'
+import RecordPeekDrawer, { PeekRowLimitContext } from './RecordPeekDrawer.jsx'
+import { publishPeekSiblings, clearPeekSiblings } from '../lib/peekSiblings.js'
 import { ResizeHandle } from './ResizeHandle.jsx'
 import { RecordOps } from '../lib/recordOps.js'
 import { useDecimalPrefs, formatDecimals } from '../lib/decimalPrefs.jsx'
@@ -123,22 +124,31 @@ function parseClipboard(text) {
   return body.split('\n').map(line => line.split('\t'))
 }
 
+// Choix d'une colonne Sélection correspondant à une valeur stockée : choix
+// personnalisés du champ (`selectChoices`) d'abord, sinon choix déclarés en
+// objets dans tableDefs.js (`options: [{ value, label?, color }]`).
+function columnChoiceOf(col, value) {
+  const v = String(value)
+  const own = Array.isArray(col.selectChoices) ? col.selectChoices.find(c => String(choiceValue(c)) === v) : null
+  if (own) return own
+  return Array.isArray(col.options)
+    ? col.options.find(o => o && typeof o === 'object' && String(o.value ?? o.label) === v) || null
+    : null
+}
+
+// Pastille d'une valeur de Sélection : couleur du choix, grise sans couleur ;
+// « Sans couleur » (NO_COLOR, posé par la modale de champ) = texte nu, c'est un
+// réglage explicite, pas une couleur manquante.
+function SelectPill({ col, value, label }) {
+  const c = columnChoiceOf(col, value)
+  return <ChoiceBadge color={c?.color || 'gray'} className="whitespace-nowrap">{label ?? c?.label ?? value}</ChoiceBadge>
+}
+
 function DynamicCell({ value, col, decimals }) {
   if (value === null || value === undefined || value === '') return <span className="text-slate-300">—</span>
   const type = col.type
 
-  if (type === 'single_select') {
-    // Une colonne peut déclarer ses choix avec une couleur (`options: [{ value,
-    // color }]` dans tableDefs.js) : la pastille la porte, sans qu'il faille
-    // enregistrer une personnalisation du champ. Sans couleur déclarée, gris.
-    const declared = Array.isArray(col.options)
-      ? col.options.find(o => o && typeof o === 'object' && o.color && String(o.value ?? o.label) === String(value))
-      : null
-    // « Sans couleur » (NO_COLOR, posé par la modale de champ) = texte nu, pas
-    // une pastille grise : c'est un réglage explicite, pas une couleur manquante.
-    if (declared?.color === NO_COLOR) return <span className="text-slate-700 whitespace-nowrap">{value}</span>
-    return <Badge color={declared ? declared.color : 'gray'} className="whitespace-nowrap">{value}</Badge>
-  }
+  if (type === 'single_select') return <SelectPill col={col} value={value} />
   if (type === 'multi_select') {
     let items = value
     try { items = JSON.parse(value) } catch {}
@@ -205,13 +215,6 @@ function DynamicCell({ value, col, decimals }) {
   // text, long_text, link, etc.
   const str = String(value)
   return <span className="truncate">{str.length > 100 ? str.slice(0, 100) + '…' : str}</span>
-}
-
-// Pastilles de couleur pour l'éditeur inline de select (mêmes fonds que Badge).
-const SELECT_DOT = {
-  gray: 'bg-slate-300', slate: 'bg-slate-400', blue: 'bg-blue-400', indigo: 'bg-brand-400',
-  green: 'bg-green-400', yellow: 'bg-yellow-400', orange: 'bg-orange-400', red: 'bg-red-400',
-  purple: 'bg-purple-400', pink: 'bg-pink-400', teal: 'bg-teal-400',
 }
 
 // Éditeur inline (mode tableur) pour une cellule single_select / multi_select.
@@ -339,10 +342,11 @@ function SelectCellEditor({ col, value, emptyLabel, onCommit, onCancel }) {
             onClick={() => toggle(val)}
             className={`flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-slate-50 ${active ? 'bg-brand-50' : ''}`}
           >
-            {/* Champ réglé « sans couleur » : pas de pastille, la liste reste
-                du texte (cf. NO_COLOR, modale de champ). */}
-            {c.color !== NO_COLOR && <span className={`h-3 w-3 rounded-full ${SELECT_DOT[c.color] || SELECT_DOT.gray}`} />}
-            <span className="flex-1 text-left truncate text-slate-700">{c.label}</span>
+            {/* Chaque choix en pastille de sa couleur (grise sans couleur) ;
+                réglé « sans couleur » : texte nu (cf. NO_COLOR, modale de champ). */}
+            <span className="flex-1 min-w-0 text-left truncate">
+              <ChoiceBadge color={c.color || 'gray'} className="whitespace-nowrap">{c.label}</ChoiceBadge>
+            </span>
             {active && <Check size={14} className="text-brand-600" />}
           </button>
         )
@@ -396,8 +400,8 @@ function RatingCellEditor({ value, onCommit, onCancel }) {
   )
 }
 
-// Éditeur inline d'une cellule « Date » (option `dateCellPicker`) : champ date
-// natif dont le calendrier s'ouvre d'emblée. Un jour choisi au calendrier
+// Éditeur inline d’une cellule « Date » (option `dateCellPicker`) : champ texte AAAA-MM-JJ
+// dont le calendrier de l’app s’ouvre d’emblée. Un jour choisi au calendrier
 // commit tout de suite ; au clavier, la saisie se valide par Entrée/Tab/blur
 // (sinon taper « 2026 » commiterait « 0002 » au premier chiffre).
 function DateCellEditor({ value, onCommit, onCancel }) {
@@ -409,13 +413,19 @@ function DateCellEditor({ value, onCommit, onCancel }) {
   const finish = (v) => {
     if (doneRef.current) return
     doneRef.current = true
-    onCommit(v === initial ? undefined : (v || null))
+    const s = String(v ?? '').trim()
+    // Champ texte AAAA-MM-JJ (le natif suit la langue du navigateur) : saisie invalide = annulée.
+    const d = new Date(`${s}T00:00:00Z`)
+    if (s && (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s)) { onCommit(undefined); return }
+    onCommit(s === initial ? undefined : (s || null))
   }
   useEffect(() => { try { inputRef.current?.showPicker?.() } catch { /* geste utilisateur requis */ } }, [])
   return (
     <input
       ref={inputRef}
-      type="date"
+      type="text"
+      inputMode="numeric"
+      data-date-picker
       autoFocus
       data-testid="datatable-date-input"
       value={val}
@@ -446,14 +456,23 @@ function linkOpensOnClick(col) {
   return col.linkOpenOnClick ?? !!(col.linkTarget || col.linkMulti || col.fieldType === 'link')
 }
 
-function renderCell(col, item, decimals, selectBadges) {
-  if (col.render) return col.render(item)
+function renderCell(col, item, decimals) {
+  if (col.render) {
+    const out = col.render(item)
+    // Sélection dont la page ne rend qu'un texte (valeur brute ou libellé
+    // traduit) : on l'affiche quand même en pastille, à la couleur du choix.
+    if (col.type === 'single_select' && (typeof out === 'string' || typeof out === 'number') && out !== '' && out !== '—') {
+      const raw = item[col.field]
+      return <SelectPill col={col} value={raw == null || raw === '' ? out : raw} label={out} />
+    }
+    return out
+  }
   const value = item[col.field]
-  // Colonne native de type Sélection, sur une table qui a demandé l'option
-  // `selectBadges` : pastille à la couleur du choix (les couleurs viennent du
-  // CHAMP, fusionnées dans col.options — cf. columnsWithOwnCf). Sans ça la
-  // valeur tombait dans le « valeur brute » du bas et s'affichait en texte nu.
-  if (selectBadges && (col.type === 'single_select' || col.type === 'multi_select')) {
+  // Colonne native de type Sélection : pastille à la couleur du choix, grise
+  // sans couleur réglée (les couleurs viennent du CHAMP, fusionnées dans
+  // col.options — cf. columnsWithOwnCf). Sans ça la valeur tombait dans le
+  // « valeur brute » du bas et s'affichait en texte nu.
+  if (col.type === 'single_select' || col.type === 'multi_select') {
     return <DynamicCell value={value} col={col} decimals={decimals} />
   }
   // Colonne date sans render() de page : formatage unifié via DynamicCell
@@ -613,7 +632,9 @@ export function DataTable({
   footerAtBottom = false, // place les totaux au bas de la zone de lignes, même quand le contenu ne la remplit pas.
   initialGroupBy = null,
   initialGroupOrder = null, // 'asc' | 'desc' | 'default' | array (aligné sur initialGroupBy)
+  groupSums = true,         // totaux par colonne sur la ligne de titre d'un groupe ; false = seulement le nombre de lignes.
   forceAllView = false,
+  invertSortArrow = false,  // flèche de tri d'en-tête inversée (↓ = croissant) ; option propre à chaque instance.
   onBulkDelete,
   bulkActions = [],         // actions groupées custom : [{ key, label, icon, className, busyLabel, show?(rows), onClick(ids) }]
   bulkDeleteAlways = false, // affiche les cases de sélection sans dépendre du toggle admin de config
@@ -659,12 +680,16 @@ export function DataTable({
   skin,                   // 'ledger' | undefined — variante d'habillage (classe `dt-skin-<skin>` sur la racine, règles dans index.css). 'ledger' = le classeur papier du rapprochement bancaire.
   pinnedColumns = null,   // string[] | null — ids de colonnes toujours affichées en tête, dans cet ordre, quelle que soit la vue enregistrée (le reste suit la vue). Le clone QuickBooks du rapprochement s'en sert.
   rowHeight = 32,         // px — hauteur d'une ligne (hors table `height="auto"`, mesurée). Le rapprochement (face à face) lit deux lignes de texte par cellule.
-  selectBadges = false,   // bool — variante de cellule : une colonne NATIVE de type single_select/multi_select (déclarée dans tableDefs.js, sans render() de page) s'affiche en pastille à la couleur du choix, comme un champ custom. Sans ça, la valeur sort en texte nu et la couleur réglée sur le champ est ignorée. Opt-in par page (les colonnes custom, elles, sont déjà colorées partout).
+  rowLimit: rowLimitProp, // number — > 0 : seules les N premières lignes s'affichent, sans ascenseur (hauteur auto) ; un bouton sous la table montre le reste. Revient à N au remontage (key). Absent : 10 dans une fiche (PeekRowLimitContext), 0 ailleurs ; 0 explicite = tout.
 }) {
+  const peekRowLimit = useContext(PeekRowLimitContext)
+  const rowLimit = rowLimitProp ?? peekRowLimit
+  const [showAllRows, setShowAllRows] = useState(false)
+  const boxHeight = rowLimit > 0 ? 'auto' : height
   // `height="auto"` : la table s'affiche en entier (pas d'ascenseur propre,
   // c'est le conteneur — fiche, panneau latéral — qui défile). Les lignes sont
   // alors mesurées une à une plutôt que supposées à 32 px.
-  const autoHeight = height === 'auto'
+  const autoHeight = boxHeight === 'auto'
   const [visibleCols, setVisibleCols] = useState([])
   // groupBy : tableau de field names. Hérité du legacy : accepte aussi null /
   // string (single-level) et normalise vers array. Tableau vide = pas de
@@ -830,7 +855,10 @@ export function DataTable({
       // champ, DANS LEUR ORDRE. Sans eux, le groupage et la liste de valeurs du
       // filtre retombaient sur l'alphabétique, alors que le sélecteur du champ
       // propose l'ordre défini sur le champ.
-      if ((f.type === 'single_select' || f.type === 'multi_select') && !next.options) {
+      // Idem quand la colonne déclare ses choix SANS couleur : sinon les couleurs
+      // réglées sur le champ n'apparaissaient jamais dans la cellule.
+      const declaresColors = Array.isArray(next.options) && next.options.some(o => o && typeof o === 'object' && o.color)
+      if ((f.type === 'single_select' || f.type === 'multi_select') && !declaresColors) {
         const choices = parseSelectChoices(f)
         if (choices.length) next.options = choices
       }
@@ -1022,12 +1050,9 @@ export function DataTable({
     // La modale attend la définition D'ORIGINE (pré-override) pour afficher
     // « nom/type d'origine » et détecter un reset.
     const orig = columnsWithOwnCf.find(x => x.id === col.id) || col
-    setFieldOverrideModal({
-      col: orig.render && LINKED_RECORD_TYPE_LABELS[orig.id]
-        ? { ...orig, renderTypeLabel: LINKED_RECORD_TYPE_LABELS[orig.id] }
-        : orig,
-    })
-  }, [editCustomField, columnsWithOwnCf])
+    const renderTypeLabel = linkedRecordTypeLabel(orig, data, table)
+    setFieldOverrideModal({ col: renderTypeLabel ? { ...orig, renderTypeLabel } : orig })
+  }, [editCustomField, columnsWithOwnCf, data, table])
 
   const view = useTableView({ table, columns: columnsWithOverrides, data, searchFields, forceAllView, searchAcrossViews, loading })
   const { filteredData, configReady, allColumns, bulkDeleteEnabled, search, setSearch, filters, setFilters } = view
@@ -1102,11 +1127,10 @@ export function DataTable({
         // rendu sur-mesure nommé (lien vers une fiche). Calculé ici parce que la
         // page de configuration ne reçoit pas les fonctions render() — le state
         // de navigation doit rester sérialisable.
+        const renderTypeLabel = linkedRecordTypeLabel(orig, data, table)
         return {
           id: c.id, field: c.field, label: orig.label, type: orig.type ?? null,
-          ...(orig.render && LINKED_RECORD_TYPE_LABELS[c.id]
-            ? { renderTypeLabel: LINKED_RECORD_TYPE_LABELS[c.id] }
-            : {}),
+          ...(renderTypeLabel ? { renderTypeLabel } : {}),
         }
       })
     // Tableau encastré dans une fiche (fieldKey ≠ table) : on ouvre la page de
@@ -1121,7 +1145,7 @@ export function DataTable({
         fromPath: routeLocation.pathname + routeLocation.search,
       },
     })
-  }, [mergedColumns, columnsWithOwnCf, view.dynamicFields, navigate, table, fieldKey, routeLocation])
+  }, [mergedColumns, columnsWithOwnCf, view.dynamicFields, navigate, table, fieldKey, routeLocation, data])
 
   const parentRef = useRef(null)
   const saveWidthsTimer = useRef(null)
@@ -1497,7 +1521,8 @@ export function DataTable({
     // la colonne déclare (`width`), sinon DEFAULT_COL_WIDTH. Une date ou un
     // montant n'a pas besoin d'occuper autant qu'un libellé.
     const cols = visibleColumns.map(c => {
-      const w = colWidths[c.id] || c.width || DEFAULT_COL_WIDTH
+      // `minWidth` (optionnel) : plancher, même sous une largeur enregistrée plus étroite.
+      const w = Math.max(colWidths[c.id] || c.width || DEFAULT_COL_WIDTH, c.minWidth || 0)
       return `${w}px`
     }).join(' ')
     // Si on a un bouton d'ajout de champ, on réserve une colonne `auto` à la
@@ -1528,13 +1553,8 @@ export function DataTable({
     })
   }, [data, selectionActive])
 
-  function toggleRow(id) {
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }
+  // Dernière ligne cochée/décochée : point de départ d'un Maj + clic.
+  const selectAnchorRef = useRef(null)
 
   const toggleExpand = useCallback((item) => {
     const k = item?.[rowKey]
@@ -1776,10 +1796,16 @@ export function DataTable({
 
   // Insère, après chaque ligne dépliée, un pseudo-item d'expansion dont la
   // hauteur est mesurée dynamiquement par le virtualizer (renderExpanded).
+  // `rowLimit` : seules les N premières lignes (après tri/filtre) sont rendues.
+  const hiddenRowCount = rowLimit > 0 && !showAllRows ? Math.max(0, virtualItems.length - rowLimit) : 0
+  const shownItems = useMemo(
+    () => (hiddenRowCount ? virtualItems.slice(0, rowLimit) : virtualItems),
+    [virtualItems, hiddenRowCount, rowLimit],
+  )
   const displayItems = useMemo(() => {
-    if (!expandable || expandedKeys.size === 0) return virtualItems
+    if (!expandable || expandedKeys.size === 0) return shownItems
     const out = []
-    for (const it of virtualItems) {
+    for (const it of shownItems) {
       out.push(it)
       if (!it.__isGroup) {
         const k = it[rowKey]
@@ -1789,7 +1815,25 @@ export function DataTable({
       }
     }
     return out
-  }, [virtualItems, expandedKeys, expandable, rowKey])
+  }, [shownItems, expandedKeys, expandable, rowKey])
+
+  // Coche/décoche une ligne ; avec Maj, toute la plage depuis la dernière
+  // ligne touchée (dans l'ordre affiché) prend le nouvel état de celle-ci.
+  function toggleRow(id, range = false) {
+    const anchor = selectAnchorRef.current
+    selectAnchorRef.current = id
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      const on = !prev.has(id)
+      const ids = range && anchor != null && anchor !== id
+        ? virtualItems.filter(it => !it.__isGroup && it.id != null).map(it => it.id)
+        : null
+      const a = ids ? ids.indexOf(anchor) : -1, b = ids ? ids.indexOf(id) : -1
+      const span = a !== -1 && b !== -1 ? ids.slice(Math.min(a, b), Math.max(a, b) + 1) : [id]
+      for (const x of span) on ? next.add(x) : next.delete(x)
+      return next
+    })
+  }
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -1850,6 +1894,26 @@ export function DataTable({
     setPeekItem(target.item)
     try { virtualizer.scrollToIndex(target.index, { align: 'auto' }) } catch { /* liste pas encore mesurée */ }
   }, [virtualizer])
+
+  // `peek.routeNav` : la fiche ouverte par son URL (RecordRoutePanel) au-dessus
+  // de cette liste a aussi ses chevrons ↑/↓, dans l'ordre affiché ici.
+  const peekRouteNav = peekEnabled && !!peek.routeNav
+  const siblingsOwnerRef = useRef({})
+  useEffect(() => {
+    if (!peekRouteNav) return
+    const hrefs = []
+    for (const it of displayItems) {
+      if (!it || it.__isGroup || it.__isExpansion) continue
+      const to = resolvePeek('to', it)
+      if (to) hrefs.push(to)
+    }
+    publishPeekSiblings(siblingsOwnerRef.current, hrefs)
+  }, [peekRouteNav, displayItems, resolvePeek])
+  useEffect(() => {
+    if (!peekRouteNav) return
+    const owner = siblingsOwnerRef.current
+    return () => clearPeekSiblings(owner)
+  }, [peekRouteNav])
 
   // ── Mode tableur — géométrie & opérations ────────────────────────────────
   // Les lignes de données (hors groupes/expansions) en ordre d'affichage, plus
@@ -1971,7 +2035,9 @@ export function DataTable({
     addToast({
       type: 'info',
       duration: 6000,
-      message: `Champ « ${col.label} » importé d'Airtable — sens : import seulement. Modifiable via /champs/${table} (sens bidirectionnel) ou en coupant l'import.`,
+      message: col.erpComputed
+        ? `« ${col.label} » est calculé par Boréal — non modifiable.`
+        : `Champ « ${col.label} » importé d'Airtable — sens : import seulement. Modifiable via /champs/${table} (sens bidirectionnel) ou en coupant l'import.`,
     })
   }, [addToast, table])
 
@@ -2445,7 +2511,7 @@ export function DataTable({
         ref={parentRef}
         tabIndex={gridMode ? -1 : undefined}
         className={`overflow-auto outline-none${footerAtBottom ? ' flex flex-col' : ''}`}
-        style={{ height: (!loading && virtualItems.length === 0) ? 'auto' : height, minHeight }}
+        style={{ height: (!loading && virtualItems.length === 0) ? 'auto' : boxHeight, minHeight }}
       >
         <div className={footerAtBottom ? 'flex grow shrink-0 flex-col [&>*]:shrink-0' : undefined} style={{ minWidth: 'max-content' }}>
           <div
@@ -2515,7 +2581,7 @@ export function DataTable({
                     {(() => {
                       const dir = sortDirByField.get(col.field)
                       if (!dir) return null
-                      const Icon = dir === 'desc' ? ArrowDown : ArrowUp
+                      const Icon = (dir === 'desc') !== invertSortArrow ? ArrowDown : ArrowUp
                       return (
                         <Icon
                           size={12}
@@ -2746,7 +2812,7 @@ export function DataTable({
                 />
               )
             })()}
-            onSaved={() => { fieldOverrideModal ? reloadFieldOverrides() : reloadOwnCustomFields() }}
+            onSaved={() => { fieldOverrideModal ? reloadFieldOverrides() : reloadOwnCustomFields(); onFieldsChanged?.() }}
             onDeleted={() => { reloadOwnCustomFields() }}
           />
 
@@ -2852,7 +2918,7 @@ export function DataTable({
                     </div>
                     {visibleColumns.slice(1).map(col => (
                       <div key={col.id} className="px-4 text-xs tabular-nums">
-                        {sums[col.field] != null && (
+                        {groupSums && sums[col.field] != null && (
                           <span className="font-medium text-slate-500">
                             {fmtNumber(sums[col.field], { maximumFractionDigits: 2 })}
                           </span>
@@ -2898,10 +2964,14 @@ export function DataTable({
                     // sélection de cellules) et le clic sur une cellule
                     // éditable (qui coupe la propagation, voir plus bas).
                     if (gridMode && (e.shiftKey || e.metaKey || e.ctrlKey || e.altKey)) return
+                    // Cases à cocher : Maj + clic sur la ligne sélectionne la
+                    // plage au lieu d'ouvrir la fiche.
+                    if (selectionActive && e.shiftKey) { toggleRow(item.id, true); return }
                     if (peekEnabled) setPeekItem(item)
                     else if (onRowClick && onRowClick(item) !== false) { /* géré par la page */ }
                     else if (expandable) toggleExpand(item)
                   }}
+                  onMouseDown={selectionActive && !gridMode ? (e) => { if (e.shiftKey) e.preventDefault() } : undefined}
                   onContextMenu={recordOpsActive ? (e) => {
                     // Table manipulable : le clic droit sur une ligne ouvre le
                     // menu d'enregistrement (dupliquer / supprimer) à la place
@@ -2940,7 +3010,7 @@ export function DataTable({
                         type="checkbox"
                         aria-label="Sélectionner la ligne"
                         checked={selectedIds.has(item.id)}
-                        onChange={() => toggleRow(item.id)}
+                        onChange={e => toggleRow(item.id, e.nativeEvent.shiftKey)}
                         className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
                       />
                     </div>
@@ -3056,7 +3126,7 @@ export function DataTable({
                             // Cellule en lecture seule PARCE QUE le champ est
                             // importé d'Airtable en sens 'pull' : dire pourquoi
                             // plutôt que d'ignorer le double-clic en silence.
-                            else if (col.airtablePullReadonly) { e.stopPropagation(); notifyAirtablePullReadonly(col) }
+                            else if (col.airtablePullReadonly || col.erpComputed) { e.stopPropagation(); notifyAirtablePullReadonly(col) }
                           }}
                           className={`relative pl-4 ${showSelectChevron ? 'pr-8' : 'pr-4'} text-sm select-none${fullHeightCells ? ' self-stretch grid grid-cols-1 items-center' : ''}${selectClickable ? ' cursor-pointer' : editable ? ' cursor-cell' : ''}${flashing ? ' dt-cell-flash' : ''}${inSel ? ' bg-brand-50' : ''}${inFill ? ' bg-brand-50/60 outline-dashed outline-1 -outline-offset-1 outline-brand-400' : ''}${isActive ? ' z-[1] ring-2 ring-inset ring-brand-500' : ''}`}
                         >
@@ -3078,7 +3148,7 @@ export function DataTable({
                             // chercher un enregistrement et renvoyer son id).
                             typeof col.renderEditor === 'function' ? (
                               <>
-                                <span className={`block truncate opacity-50 dt-inert-links${selectValueClass}`}>{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
+                                <span className={`block truncate opacity-50 dt-inert-links${selectValueClass}`}>{renderCell(col, item, getDecimals(table, col.field))}</span>
                                 {col.renderEditor({
                                   row: item,
                                   col,
@@ -3108,7 +3178,7 @@ export function DataTable({
                                     onOpenPicker={() => {}}
                                   />
                                 ) : (
-                                  <span className={`block truncate opacity-50 dt-inert-links${selectValueClass}`}>{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
+                                  <span className={`block truncate opacity-50 dt-inert-links${selectValueClass}`}>{renderCell(col, item, getDecimals(table, col.field))}</span>
                                 )}
                                 <LinkCellEditor
                                   col={col}
@@ -3142,7 +3212,7 @@ export function DataTable({
                               />
                             ) : (col.type === 'single_select' || col.type === 'multi_select') ? (
                               <>
-                                <span className={`block truncate opacity-50 dt-inert-links${selectValueClass}`}>{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
+                                <span className={`block truncate opacity-50 dt-inert-links${selectValueClass}`}>{renderCell(col, item, getDecimals(table, col.field))}</span>
                                 <SelectCellEditor
                                   col={col}
                                   value={item[col.field]}
@@ -3213,7 +3283,7 @@ export function DataTable({
                                 onOpenPicker={() => startEdit(item.id, col.id)}
                               />
                             ) : (
-                            <span className={`block truncate${selectValueClass}${editable && !opensLink ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
+                            <span className={`block truncate${selectValueClass}${editable && !opensLink ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field))}</span>
                             )
                           )}
                         </div>
@@ -3221,7 +3291,7 @@ export function DataTable({
                     }
                     return (
                       <div key={col.id} className={`px-4 truncate text-sm${selectValueClass}${flashing ? ' dt-cell-flash' : ''}`}>
-                        {renderCell(col, item, getDecimals(table, col.field), selectBadges)}
+                        {renderCell(col, item, getDecimals(table, col.field))}
                       </div>
                     )
                   })}
@@ -3241,6 +3311,19 @@ export function DataTable({
               )
             })}
             </div>
+          )}
+
+          {hiddenRowCount > 0 && !loading && (
+            <button
+              type="button"
+              data-testid="datatable-show-all-rows"
+              onClick={() => setShowAllRows(true)}
+              className="w-full flex items-center gap-2 px-3 h-8 border-b border-slate-100 text-xs text-slate-500 hover:text-brand-600 hover:bg-slate-50 transition-colors"
+              style={{ minWidth: '100%' }}
+            >
+              <ChevronDown size={14} className="flex-shrink-0" />
+              {`${hiddenRowCount} de plus`}
+            </button>
           )}
 
           {/* Ligne « + » d'ajout en ligne (table manipulable). Placée sous le
@@ -3313,7 +3396,9 @@ export function DataTable({
                             `dt-caps` et pas `uppercase tracking-wide` : ces deux
                             classes déclenchent le reflow des champs en panneau
                             latéral (voir .peek-panel dans index.css). */}
-                        <span className="dt-caps text-[10px] text-slate-400 truncate shrink-[9999]">{agg?.label}</span>
+                        {/* `col.footerValueFirst` : la valeur passe devant le
+                            libellé, à l'aplomb des chiffres de la colonne. */}
+                        <span className={`dt-caps text-[10px] text-slate-400 truncate shrink-[9999]${col.footerValueFirst ? ' order-last' : ''}`}>{agg?.label}</span>
                         <span className="font-semibold text-slate-700 tabular-nums truncate">{formatted}</span>
                       </>
                     ) : (

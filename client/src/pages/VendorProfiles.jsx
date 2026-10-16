@@ -492,7 +492,7 @@ export default function VendorProfiles() {
     return {
       name: row => <span className="font-medium text-slate-800">{row.name}</span>,
       qb_vendors: row => duo(vendName(row.qb_vendor_id_cad), vendName(row.qb_vendor_id_usd)),
-      default_qb_type: row => <span className="text-slate-600">{QB_TYPE_LABELS[row.default_qb_type] || '—'}</span>,
+      default_qb_type: row => QB_TYPE_LABELS[row.default_qb_type] || '—',
       expense_account: row => <span className="text-slate-600 text-xs">{accName(row.default_expense_account_id) || '—'}</span>,
       payment_accounts: row => duo(accName(row.default_payment_account_id_cad), accName(row.default_payment_account_id_usd)),
       transaction_type: row => <span className="text-slate-600 text-xs">{row.default_transaction_type ? (qb.txTypeByKey.get(row.default_transaction_type)?.label || row.default_transaction_type) : '—'}</span>,

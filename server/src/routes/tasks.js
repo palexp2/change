@@ -81,6 +81,44 @@ router.get('/', (req, res) => {
   res.json({ data: tasks, total, page: parseInt(page), limit: parseInt(limit) });
 });
 
+// GET /api/tasks/last-exchanges — dernier courriel / appel / rencontre passé
+// avec le client de chaque tâche ouverte, et qui l'a fait (in = le client).
+// Le vendeur voit d'un coup d'œil si la balle est dans son camp.
+// { data: { [taskId]: { at, type, direction } } }
+router.get('/last-exchanges', (req, res) => {
+  const tasks = db.prepare(
+    `SELECT id, company_id, contact_id FROM tasks
+     WHERE deleted_at IS NULL AND status != 'Terminé'
+       AND (company_id IS NOT NULL OR contact_id IS NOT NULL)`
+  ).all();
+  const pick = (col) => db.prepare(
+    `SELECT i.timestamp AS at, i.type, i.direction
+     FROM interactions i LEFT JOIN emails e ON e.interaction_id = i.id
+     WHERE i.${col} = ? AND i.deleted_at IS NULL
+       AND i.type IN ('email', 'call', 'meeting')
+       AND COALESCE(e.automated, 0) = 0
+       AND i.timestamp <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     ORDER BY i.timestamp DESC LIMIT 1`
+  );
+  const byContact = pick('contact_id');
+  const byCompany = pick('company_id');
+  const memo = new Map();
+  const last = (stmt, key) => {
+    if (!key) return null;
+    const k = `${stmt === byContact ? 'ct' : 'co'}:${key}`;
+    if (!memo.has(k)) memo.set(k, stmt.get(key) || null);
+    return memo.get(k);
+  };
+  const data = {};
+  for (const t of tasks) {
+    const a = last(byContact, t.contact_id);
+    const b = last(byCompany, t.company_id);
+    const best = !a ? b : !b ? a : (a.at >= b.at ? a : b);
+    if (best) data[t.id] = best;
+  }
+  res.json({ data });
+});
+
 // GET /api/tasks/:id
 router.get('/:id', (req, res) => {
   const task = db.prepare(

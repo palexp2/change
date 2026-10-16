@@ -4,7 +4,7 @@ import { SYNC_SOURCES, MODE_LABELS } from '../lib/syncSources.js'
 const MODE_ICONS = { webhook: Zap, scheduled: Clock, manual: Hand }
 
 // Encadré « Synchronisation des données » affiché en tête des modales de
-// mapping de champs (AirtableCoreMapModal, StripeFieldMapModal…) : détaille,
+// mapping de champs (AirtableCoreMapModal, Source Stripe de /champs…) : détaille,
 // pour la table concernée, chaque source externe et son type de déclenchement
 // (webhook temps réel / planifié / manuel). Rendu nul si la table n'est pas
 // dans le registre SYNC_SOURCES.

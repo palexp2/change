@@ -1,10 +1,14 @@
 // fifoCostWatcher — tient le coût unitaire FIFO des pièces (services/fifoCost.js).
 //
+// Pièces fabriquées (2026-10-14) : coût de leur nomenclature (bomCost.js).
+//
 // Deux déclencheurs, une seule automation système (`sys_fifo_cost`) :
-//   - au fil de l'eau : tail change_log(purchases, products). Un achat touché
-//     (réception, quantité, pièce) recalcule ses pièces ; une pièce touchée
-//     (quantité en inventaire) se recalcule. Notre propre écriture de
-//     unit_cost repasse ici une fois, sans effet (coût inchangé → rien écrit) ;
+//   - au fil de l'eau : tail change_log(purchases, products, bom_items). Un
+//     achat touché (réception, quantité, pièce) recalcule ses pièces ; une
+//     pièce touchée (quantité en inventaire, coût) se recalcule, avec toutes
+//     les fabriquées qui l'utilisent ; une ligne de nomenclature touchée
+//     recalcule sa pièce parente (supprimée : toutes les fabriquées). Notre
+//     propre écriture repasse ici une fois, sans effet (coût inchangé) ;
 //   - passe complète toutes les heures : relit dans Airtable le prix de tous
 //     les achats (il change sans que l'achat bouge : ligne de dépense liée
 //     plus tard), puis recalcule toutes les pièces.
@@ -16,6 +20,7 @@ import db from '../db/database.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
 import { createChangeLogWatcher } from './changeLogWatcher.js'
 import { applyFifo, productIdsForPurchase, allFifoProductIds, refreshPurchasePrices } from './fifoCost.js'
+import { fabricatedAncestors, orderForRecompute } from './bomCost.js'
 import { recordWriteback } from './airtableWriteback.js'
 import { getAccessToken, airtablePatch } from '../connectors/airtable.js'
 
@@ -28,20 +33,27 @@ const PUSH_MS = 60_000
 const PUSH_BATCH = 10
 const PUSH_GAP_MS = 400
 
-const ISSUE_LABELS = { sans_prix: 'lot sans prix', prix_douteux: 'prix douteux', stock_sans_achat: 'stock sans achat' }
+const ISSUE_LABELS = {
+  sans_prix: 'lot sans prix', prix_douteux: 'prix douteux', stock_sans_achat: 'stock sans achat',
+  sans_cout: 'composant sans coût', cycle: 'nomenclature circulaire',
+}
 
 function productLabel(id) {
   const p = db.prepare('SELECT sku, name_fr FROM products WHERE id = ?').get(id)
   return p ? `${p.sku ? `${p.sku} ` : ''}${p.name_fr || id}` : id
 }
 
-// Recalcule des pièces (l'envoi vers Airtable suit, par pushPendingFifoCosts).
+// Recalcule des pièces et les fabriquées qui en dépendent, achetées d'abord
+// (l'envoi vers Airtable suit, par pushPendingFifoCosts).
 function recompute(productIds) {
   const changed = []
   const errors = []
-  for (const id of productIds) {
+  const ids = orderForRecompute([...productIds, ...fabricatedAncestors(productIds)])
+  // Mémo des coûts de nomenclature : rempli une fois les achetées à jour.
+  const memo = new Map()
+  for (const id of ids) {
     try {
-      const r = applyFifo(id)
+      const r = applyFifo(id, memo)
       if (r?.changed) changed.push(r)
     } catch (e) {
       errors.push(`${productLabel(id)} : ${e.message}`)
@@ -140,7 +152,7 @@ export async function runFifoFullPass({ source = 'horaire' } = {}) {
 const watcher = createChangeLogWatcher({
   name: 'fifoCostWatcher',
   intervalMs: POLL_MS,
-  tables: ['purchases', 'products'],
+  tables: ['purchases', 'products', 'bom_items'],
   isEnabled: () => isSystemAutomationActive(AUTOMATION_ID),
   onRows: async (rows, { advance }) => {
     const ids = new Set()
@@ -148,6 +160,14 @@ const watcher = createChangeLogWatcher({
     for (const row of rows) {
       advance(row.id)
       if (row.table_name === 'products') { ids.add(row.record_id); continue }
+      if (row.table_name === 'bom_items') {
+        const parent = db.prepare('SELECT product_id FROM bom_items WHERE id = ?').get(row.record_id)?.product_id
+        if (parent) ids.add(parent)
+        else for (const { id } of db.prepare(
+          "SELECT id FROM products WHERE procurement_type = 'Fabriqué' AND deleted_at IS NULL"
+        ).all()) ids.add(id)
+        continue
+      }
       for (const pid of productIdsForPurchase(row.record_id)) ids.add(pid)
       const at = db.prepare('SELECT airtable_id FROM purchases WHERE id = ?').get(row.record_id)?.airtable_id
       if (at && !db.prepare('SELECT 1 FROM purchase_prices WHERE airtable_id = ?').get(at)) newPurchases.push(at)

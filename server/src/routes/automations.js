@@ -10,7 +10,7 @@ import { groupOf } from '../services/automationGroups.js'
 import { SYSTEM_FLOWS } from '../services/automationFlows.js'
 import { runSubscriptionProductFor, pairsFor } from '../services/subscriptionProductTrigger.js'
 import { MANUAL_RUNNERS, logSystemRun, CONFIGURABLE_SYSTEM_AUTOMATIONS } from '../services/systemAutomations.js'
-import { sendInstallationTestEmail, buildInstallationEmailHtml, selectEligibleCompanies } from '../services/installationFollowup.js'
+import { sendInstallationTestEmail, buildInstallationEmailHtml, selectEligibleCompanies, STRINGS as INSTALL_STRINGS } from '../services/installationFollowup.js'
 import { runRuleActionForRecord, dryRunFieldRule, runDateOffsetRuleNow, previewRuleForRecord, drainDeferredForAutomation, CANDIDATE_CAP } from '../services/fieldRuleEngine.js'
 import { getAutomationFrom, listFromAddresses } from '../services/postmarkConfig.js'
 import { processRetryQueue } from '../services/airtableWebhooks.js'
@@ -18,6 +18,7 @@ import { generateShortToken } from '../utils/shortToken.js'
 import { runWebhook } from '../services/webhookEngine.js'
 import { APP_URL } from '../config/appUrl.js'
 import { parseLimit } from '../utils/pagination.js'
+import { recordPathOf } from '../services/recordLinks.js'
 import { listSlackChannels, listSlackUsers } from '../services/slack.js'
 
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/i
@@ -107,9 +108,9 @@ function validateWebhook({ action_config, script }) {
 const NUMERIC_OPS = new Set(['gt', 'gte', 'lt', 'lte'])
 // `date_offset` is a date-relative trigger (« N jours avant/après un champ date »).
 // It carries offset_days (signed int) + optional secondary filter instead of a value.
-const VALID_OPS = new Set(['eq', 'ne', 'in', 'not_null', 'date_offset', ...NUMERIC_OPS])
+const VALID_OPS = new Set(['eq', 'ne', 'in', 'not_in', 'not_null', 'date_offset', ...NUMERIC_OPS])
 // Operators allowed inside a date_offset secondary filter (everything except date_offset itself).
-const FILTER_OPS = new Set(['eq', 'ne', 'in', 'not_null', ...NUMERIC_OPS])
+const FILTER_OPS = new Set(['eq', 'ne', 'in', 'not_in', 'not_null', ...NUMERIC_OPS])
 
 // Validate a single { column, op, value } condition (used by multi-condition
 // rules and the date_offset secondary filter). `label` prefixes error messages.
@@ -189,6 +190,7 @@ const TEST_EMAIL_SENDERS = {
 const SYSTEM_EMAIL_AUTOMATIONS = new Set([
   'sys_installation_followup',
   'sys_shipment_tracking_email',
+  'sys_order_welcome_email',
 ])
 
 // Clés d'action_config éditables par automation système configurable, et tables
@@ -815,9 +817,11 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     },
   },
   sys_instagram_weekly_slack: {
-    actionKeys: new Set(['send_weekday', 'send_hour', 'slack_webhook_url', 'slack_webhook_env', 'recipient', 'slack_channel']),
+    actionKeys: new Set(['cadence', 'daily_hour', 'send_weekday', 'send_hour', 'slack_webhook_url', 'slack_webhook_env', 'recipient', 'slack_channel']),
     validateKey(key, v) {
       if (!v) return
+      if (key === 'cadence' && !/^(quotidien|hebdo)$/.test(v)) throw new Error('cadence : quotidien ou hebdo')
+      if (key === 'daily_hour' && !/^([0-9]|1\d|2[0-3])$/.test(v)) throw new Error('daily_hour : 0 à 23')
       if (key === 'send_weekday' && !/^[1-7]$/.test(v)) throw new Error('send_weekday : 1 (lundi) à 7 (dimanche)')
       if (key === 'send_hour' && !/^([0-9]|1\d|2[0-3])$/.test(v)) throw new Error('send_hour : 0 à 23')
       if (key === 'slack_webhook_url' && !/^https:\/\/hooks\.slack\.com\//.test(v)) {
@@ -1470,16 +1474,37 @@ router.delete('/:id', (req, res) => {
 })
 
 // GET /api/automations/:id/logs
+// Identifiants du déclencheur (trigger_data) qui ouvrent une fiche dans l'historique.
+const LOG_ID_TABLES = {
+  order_id: 'orders', return_id: 'returns', facture_id: 'factures', shipment_id: 'shipments',
+  ticket_id: 'tickets', soumission_id: 'soumissions', company_id: 'companies', contact_id: 'contacts',
+}
+
 router.get('/:id/logs', (req, res) => {
   const automation = db.prepare(
-    'SELECT id FROM automations WHERE id = ? AND deleted_at IS NULL'
+    'SELECT id, kind, trigger_config FROM automations WHERE id = ? AND deleted_at IS NULL'
   ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
+
+  // record_path : fiche des enregistrements nommés « • libellé (id) » d'une règle de champ.
+  let table = null
+  if (automation.kind === 'field_rule') { try { table = parseTc(automation.trigger_config).erp_table || null } catch { /* config illisible */ } }
+  const recordPath = recordPathOf(table)
+  const pathOf = (k, v) => {
+    const p = k === 'record_id' ? recordPath : recordPathOf(LOG_ID_TABLES[k])
+    return p && v != null && v !== '' && typeof v !== 'object' ? `${p}/${encodeURIComponent(v)}` : null
+  }
 
   const logs = db.prepare(`
     SELECT * FROM automation_logs WHERE automation_id = ? ORDER BY created_at DESC LIMIT 50
   `).all(req.params.id)
-  res.json(logs)
+  res.json(logs.map(l => {
+    let t = null
+    try { t = JSON.parse(l.trigger_data || 'null') } catch { /* texte */ }
+    const links = {}
+    if (t && typeof t === 'object' && !Array.isArray(t)) for (const [k, v] of Object.entries(t)) { const p = pathOf(k, v); if (p) links[k] = p }
+    return { ...l, record_path: recordPath, links }
+  }))
 })
 
 // GET /api/automations/:id/versions
@@ -1711,7 +1736,10 @@ router.post('/:id/test', async (req, res) => {
   if (automation.trigger_type === 'subscription_product') {
     // Les couples déjà traités restent listés : sans nouvelle tentative
     // automatique, « Exécuter » est le seul moyen de relancer un échec.
-    const pairs = pairsFor(automation).sort((x, y) => x.already_fired - y.already_fired)
+    const q = String(req.body?.q || '').trim().toLowerCase()
+    const pairs = pairsFor(automation)
+      .filter(r => !q || [r.contact_name, r.stripe_id, r.subscription_id, r.produits].some(v => String(v || '').toLowerCase().includes(q)))
+      .sort((x, y) => x.already_fired - y.already_fired)
     const fired = pairs.filter(r => r.already_fired).length
     return res.json({ candidates_total: pairs.length, would_fire: pairs.length - fired, already_fired: fired,
       previews: pairs.slice(0, 50).map(r => ({ id: r.id, label: `${r.contact_name} · ${r.stripe_id || r.subscription_id}${r.lost_product ? ` · ${r.produits}` : ''}`, already_fired: r.already_fired })) })
@@ -1727,7 +1755,7 @@ router.post('/:id/test', async (req, res) => {
       action_type: automation.action_type,
       action_config: JSON.parse(automation.action_config || '{}'),
     }
-    const out = dryRunFieldRule(rule)
+    const out = dryRunFieldRule(rule, { previewLimit: 20, q: req.body?.q })
     res.json(out)
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -1831,7 +1859,7 @@ router.get('/:id/email-preview', (req, res) => {
   // System email automations — render template with a real candidate record
   // when one exists, otherwise fall back to hardcoded sample data.
   if (automation.id === 'sys_installation_followup') {
-    const subject = language === 'French' ? "Comment s'est passé l'installation ?" : 'How did the installation go?'
+    const subject = INSTALL_STRINGS[language].subject
     // Relaxed query: ignore the 21-day min and the idempotency flag so that
     // even after a campaign has rolled out, the preview still shows a real row.
     const eligibles = selectEligibleCompanies(db, {
@@ -1855,14 +1883,7 @@ router.get('/:id/email-preview', (req, res) => {
     }
 
     const firstName = candidate?.contact_first_name || 'Alex'
-    const companyId = candidate?.company_id || '00000000-0000-0000-0000-000000000000'
-    const bodyHtml = buildInstallationEmailHtml({
-      language,
-      firstName,
-      companyId,
-      emailId: 'preview-sample',
-      appUrl,
-    })
+    const bodyHtml = buildInstallationEmailHtml({ language, firstName, token: 'test', emailId: null, appUrl })
     return res.json({
       available: true, kind: 'system', automation_id: automation.id,
       subject, bodyHtml, bodyText: null,

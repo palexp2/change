@@ -51,7 +51,7 @@ export const NAV_SHORTCUTS = [
 // Note : les pages qui lisent depuis le cache global (`useTable` hydraté par
 // /api/bootstrap) ne sont pas listées ici — leur prefetch serait gaspillé.
 // Pages cachées actuellement : /contacts, /products, /orders, /tickets,
-// /tasks, /retours, /purchases, /items-vendus.
+// /tasks, /retours, /purchases.
 const NAV_PREFETCH = {
   '/interactions':  () => api.interactions.list({ limit: 'all', offset: 0 }),
   '/companies':     () => api.companies.list({ limit: 'all', page: 1 }),
@@ -1367,9 +1367,6 @@ export function Layout({ children }) {
   // (cf. lib/settingsSections.js).
   const settingsItem = { to: SETTINGS_ROUTE, icon: Settings, label: 'Paramètres' }
 
-  // Nouveautés : section des Paramètres (lib/settingsSections.js), plus
-  // d'entrée dans la barre latérale.
-
   // Raccourcis clavier globaux
   useEffect(() => {
     const NAV_MAP = Object.fromEntries(NAV_SHORTCUTS.map(s => [s.key, s]))
@@ -1502,7 +1499,7 @@ export function Layout({ children }) {
       className="flex flex-col items-center w-14 h-full py-2.5 gap-1"
     >
       <NavLink
-        to="/dashboard/vue-globale"
+        to="/dashboard"
         title="Tableau de bord"
         aria-label="Tableau de bord"
         className="flex items-center justify-center w-9 h-9 mb-0.5 flex-shrink-0"

@@ -24,6 +24,16 @@ import { linkFilterSql } from './linkFilter.js'
 // Forme d'un record ID Airtable — 'rec' + 14 caractères alphanumériques.
 const REC_ID = /^rec[A-Za-z0-9]{14}$/
 
+// « 116 Sterling City Road, Lyme, CT 06371, US ». Une première ligne qui
+// contient déjà le code postal est tenue pour complète (import Airtable) : rien
+// n'y est ajouté, sinon ville et code postal sortiraient en double.
+function fullAddressSql(a, line) {
+  const base = `COALESCE(${line}, '')`
+  const part = (col, sep) => `CASE WHEN COALESCE(${a}.${col},'') != '' THEN '${sep}' || ${a}.${col} ELSE '' END`
+  return `CASE WHEN COALESCE(${a}.postal_code,'') != '' AND instr(LOWER(${base}), LOWER(${a}.postal_code)) > 0 THEN ${base}
+    ELSE TRIM(${base} || ${part('city', ', ')} || ${part('province', ', ')} || ${part('postal_code', ' ')} || ${part('country', ', ')}, ', ') END`
+}
+
 // Une entrée par table ERP miroir d'une table Airtable (cf.
 // buildAirtableTableToErp, routes/connectors.js), plus `users` (cible possible
 // d'un champ lien « responsable »).
@@ -85,6 +95,10 @@ const SPECS = {
     // on ne la recompose pas, la ville va dans le contexte.
     label: "COALESCE(t.line1, t.adresse_ligne_1)",
     sub: "TRIM(COALESCE(t.city,'') || CASE WHEN t.postal_code IS NOT NULL AND t.postal_code != '' THEN ' ' || t.postal_code ELSE '' END)",
+    // Adresse au complet sur une ligne (ville, province, code postal, pays) —
+    // pour les listes larges (`widePicker`, fiche Commande). Une partie déjà
+    // présente dans `line1` n'est pas répétée.
+    full: fullAddressSql('t', 'COALESCE(t.line1, t.adresse_ligne_1)'),
     path: '/adresses',
   },
   factures: { label: 't.document_number', sub: 't.status', path: '/factures' },
@@ -150,7 +164,8 @@ function rowsFor(table, spec, keys) {
     SELECT t.id AS id,
            ${spec.airtable === false ? 'NULL' : 't.airtable_id'} AS airtable_id,
            ${spec.label} AS label,
-           ${spec.sub || 'NULL'} AS sub
+           ${spec.sub || 'NULL'} AS sub,
+           ${spec.full || 'NULL'} AS full
     FROM ${table} t
     ${spec.joins || ''}
     WHERE ${clauses.join(' OR ')}`
@@ -176,7 +191,8 @@ function rowsForLabels(table, spec, labels) {
   const sql = `
     SELECT t.id AS id,
            ${spec.label} AS label,
-           ${spec.sub || 'NULL'} AS sub
+           ${spec.sub || 'NULL'} AS sub,
+           ${spec.full || 'NULL'} AS full
     FROM ${table} t
     ${spec.joins || ''}
     WHERE ${where.join(' AND ')}`
@@ -292,6 +308,7 @@ export function resolveRecordKeys(keys, { hint = null, byLabel = false } = {}) {
         id: r.id,
         label: label || null,
         sub: (r.sub || '') || null,
+        full: (r.full || '') || null,
         url: spec.path ? `${spec.path}/${r.id}` : null,
       }
       // La clé demandée peut être l'un ou l'autre des deux identifiants.
@@ -333,6 +350,7 @@ export function resolveRecordKeys(keys, { hint = null, byLabel = false } = {}) {
         id: r.id,
         label: (r.label || '').trim() || null,
         sub: (r.sub || '') || null,
+        full: (r.full || '') || null,
         url: spec.path ? `${spec.path}/${r.id}` : null,
       }
     }
@@ -378,7 +396,8 @@ export function searchRecords(table, q, limit = 40, filter = null) {
     SELECT t.id AS id,
            ${spec.airtable === false ? 'NULL' : 't.airtable_id'} AS airtable_id,
            ${spec.label} AS label,
-           ${spec.sub || 'NULL'} AS sub
+           ${spec.sub || 'NULL'} AS sub,
+           ${spec.full || 'NULL'} AS full
     FROM ${table} t
     ${spec.joins || ''}
     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
@@ -390,6 +409,7 @@ export function searchRecords(table, q, limit = 40, filter = null) {
       airtable_id: r.airtable_id || null,
       label: (r.label || '').trim() || null,
       sub: (r.sub || '') || null,
+      full: (r.full || '') || null,
       url: spec.path ? `${spec.path}/${r.id}` : null,
     }))
   } catch {

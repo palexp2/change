@@ -177,11 +177,42 @@ export function parseCommissionIds(commissionsCell) {
 }
 
 /**
+ * Repli quand Airtable ne voit aucune facture payée : son rollup passe par le
+ * lien « Projet » de la facture Airtable, que la synchro Stripe → Airtable ne
+ * pose pas toujours (ex. CMI-876 : facture payée, reliée au projet dans
+ * Boréal, seul « Numéro de projet » rempli côté Airtable → 0 $). On prend
+ * alors le total payé avant taxes (CAD) de Boréal et on recalcule le montant
+ * au taux de la commission, comme le fait la formule Airtable. Un total
+ * Airtable non nul reste la référence.
+ * @param {Array} rows
+ * @param {string|null} projectId
+ */
+function withBorealPaidFallback(rows, projectId) {
+  if (!projectId || !rows.some(r => !r.paid_invoices)) return rows
+  const paid = db.prepare(
+    `SELECT SUM(amount_before_tax_cad) AS total FROM factures WHERE project_id = ? AND status = 'Payé'`
+  ).get(projectId)?.total || 0
+  if (!(paid > 0)) return rows
+  return rows.map(r => (r.paid_invoices ? r : {
+    ...r,
+    paid_invoices: paid,
+    amount: r.rate != null ? Math.round(paid * r.rate * 100) / 100 : r.amount,
+    paid_from_boreal: true,
+  }))
+}
+
+/**
  * @param {string|null} commissionsCell — contenu de `projects.commissions`.
+ * @param {string|null} [projectId] — id Boréal du projet, pour le repli sur
+ *   les factures payées de Boréal (voir withBorealPaidFallback).
  * @returns {Promise<Array>} lignes prêtes à afficher, triées par date de
  *   fermeture décroissante.
  */
-export async function fetchProjectCommissions(commissionsCell) {
+export async function fetchProjectCommissions(commissionsCell, projectId = null) {
+  return withBorealPaidFallback(await fetchAirtableCommissions(commissionsCell), projectId)
+}
+
+async function fetchAirtableCommissions(commissionsCell) {
   const ids = parseCommissionIds(commissionsCell)
   if (!ids.length) return []
 

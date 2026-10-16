@@ -23,7 +23,7 @@ export default function CrmEmailComposer({ isOpen, onClose, contacts = [], compa
   const [templates, setTemplates] = useState(null)
   useEffect(() => {
     if (!isOpen || !withTemplates) return
-    api.emailTemplates.list().then(setTemplates).catch(() => setTemplates(null))
+    api.emailTemplates.list('vente').then(setTemplates).catch(() => setTemplates(null))
   }, [isOpen, withTemplates])
 
   const recipients = contacts.filter(c => c.email).map(c => ({

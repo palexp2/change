@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare, Plus, Pin, ChevronDown } from 'lucide-react'
+import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare, Plus, Pin, ChevronDown, ListPlus } from 'lucide-react'
 import { fmtDateTime, fmtTime, localISODate } from '../lib/formatDate.js'
 import { stripEmailHtml, stripEmailText } from '../lib/emailParser.js'
 import { emailDoc, emailPalette, measureEmailHeight } from '../lib/emailDoc.js'
@@ -74,7 +74,7 @@ function DirectionChip({ direction, type }) {
 
 // ─── Entrée du fil (aperçu compact ; un clic la déplie en place) ───────────
 
-function Entry({ item, showContact, palette, onTogglePin }) {
+function Entry({ item, showContact, palette, onTogglePin, onTaskFromStep }) {
   const isOut = item.direction === 'out'
   const Icon = TYPE_ICONS[item.type] || MessagesSquare
   const [emailClipped, setEmailClipped] = useState(false)
@@ -159,7 +159,7 @@ function Entry({ item, showContact, palette, onTogglePin }) {
 
         {expanded ? (
           <div className="pl-4 pr-3 pb-3 pt-1">
-            <ExpandedBody item={item} palette={palette} />
+            <ExpandedBody item={item} palette={palette} onTaskFromStep={onTaskFromStep} />
           </div>
         ) : (
         <div className={`pl-4 pr-3 ${hasBody ? 'pb-3 pt-1' : 'pb-2.5'}`}>
@@ -267,7 +267,7 @@ function buildPreview(item) {
 const SECTION_LABEL = 'text-[11px] font-medium text-slate-400 mb-1'
 const SECTION_BOX = 'p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap break-words border border-slate-200'
 
-function ExpandedBody({ item, palette }) {
+function ExpandedBody({ item, palette, onTaskFromStep }) {
   const [showFull, setShowFull] = useState(false)
 
   const emailBody = useMemo(() => {
@@ -327,7 +327,11 @@ function ExpandedBody({ item, palette }) {
       {item.type === 'call' && item.call_next_steps && (
         <div>
           <div className={SECTION_LABEL}>Prochaines étapes</div>
-          <div className={SECTION_BOX}>{item.call_next_steps}</div>
+          {onTaskFromStep ? (
+            <NextSteps item={item} onTaskFromStep={onTaskFromStep} />
+          ) : (
+            <div className={SECTION_BOX}>{item.call_next_steps}</div>
+          )}
         </div>
       )}
       {item.type === 'call' && item.transcript_formatted && (
@@ -345,12 +349,37 @@ function ExpandedBody({ item, palette }) {
   )
 }
 
+// Une ligne par étape (le résumé d'appel les donne en « - … ») ; chacune se
+// transforme en tâche de suivi d'un clic.
+function NextSteps({ item, onTaskFromStep }) {
+  const steps = item.call_next_steps.split('\n').map(l => l.replace(/^\s*[-•*]\s*/, '').trim()).filter(Boolean)
+  return (
+    <ul className="rounded-lg border border-slate-200 bg-slate-50 divide-y divide-slate-200">
+      {steps.map((step, i) => (
+        <li key={i} className="group/step flex items-start gap-2 px-3 py-1.5 text-sm text-slate-700">
+          <span className="flex-1 min-w-0 break-words">{step}</span>
+          <button
+            type="button"
+            onClick={() => onTaskFromStep(item, step)}
+            className="flex-shrink-0 rounded p-0.5 text-slate-300 opacity-0 group-hover/step:opacity-100 focus:opacity-100 hover:text-brand-600"
+            title="Créer une tâche"
+          >
+            <ListPlus size={14} />
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 // ─── Timeline (the list) ───────────────────────────────
 
+// `onTaskFromStep(item, étape)` (optionnel) : chaque prochaine étape d'un appel
+// devient une tâche ; la page ouvre son formulaire pré-rempli.
 // `onLog` (optionnel) : quand la page sait consigner une interaction à la main,
 // l'état vide propose l'action au lieu de rester un cul-de-sac. Les appelants
 // qui ne le passent pas gardent l'état vide sans bouton.
-export default function InteractionTimeline({ interactions, loading, total, onLoadMore, loadingMore, showContact = true, onLog, onTogglePin }) {
+export default function InteractionTimeline({ interactions, loading, total, onLoadMore, loadingMore, showContact = true, onLog, onTogglePin, onTaskFromStep }) {
   // Le document d'une iframe ne suit ni `.dark` ni les variables CSS du thème :
   // on relit la palette à chaque bascule et on la passe aux aperçus.
   const dark = useIsDark()
@@ -399,7 +428,7 @@ export default function InteractionTimeline({ interactions, loading, total, onLo
       elements.push(<DaySeparator key={`date-${day}`} date={item.timestamp} />)
       lastDate = day
     }
-    elements.push(<Entry key={item.id} item={item} showContact={showContact} palette={palette} onTogglePin={onTogglePin} />)
+    elements.push(<Entry key={item.id} item={item} showContact={showContact} palette={palette} onTogglePin={onTogglePin} onTaskFromStep={onTaskFromStep} />)
   }
 
   return (
@@ -411,7 +440,7 @@ export default function InteractionTimeline({ interactions, loading, total, onLo
           </div>
           <div className="space-y-2.5">
             {pinnedItems.map(item => (
-              <Entry key={item.id} item={item} showContact={showContact} palette={palette} onTogglePin={onTogglePin} />
+              <Entry key={item.id} item={item} showContact={showContact} palette={palette} onTogglePin={onTogglePin} onTaskFromStep={onTaskFromStep} />
             ))}
           </div>
         </div>

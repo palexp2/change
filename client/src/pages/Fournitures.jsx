@@ -6,6 +6,7 @@ import { useListData } from '../lib/useListData.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
+import TableThumb from '../components/TableThumb.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { RecordForm } from '../components/RecordForm.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -19,15 +20,9 @@ const DASH = <span className="text-slate-300">—</span>
 const money = n => fmtMoney(n, 'CAD', { fallback: DASH })
 
 const RENDERS = {
-  name: row => (
-    <span className="inline-flex items-center gap-2 min-w-0">
-      {row.image_url
-        ? <img src={row.image_url} alt="" className="w-7 h-7 object-contain rounded shrink-0 bg-white" loading="lazy" />
-        : <span className="w-7 h-7 shrink-0" />}
-      {/* Le clic ouvre la fiche, qui porte le lien d'achat. */}
-      <span className="truncate">{row.name || '—'}</span>
-    </span>
-  ),
+  image_url: row => row.image_url ? <TableThumb src={row.image_url} className="border border-slate-200" /> : DASH,
+  // Le clic ouvre la fiche, qui porte le lien d'achat.
+  name: row => <span className="truncate">{row.name || '—'}</span>,
   reference_price:   row => money(row.reference_price),
   last_purchased_at: row => row.last_purchased_at ? <span className="text-slate-500">{fmtDate(row.last_purchased_at)}</span> : DASH,
   achats_count:      row => row.achats_count ? fmtNumber(row.achats_count) : DASH,
@@ -63,6 +58,14 @@ export default function Fournitures() {
     if (f) setRows(prev => prev.map(r => r.id === f.id ? { ...r, ...f } : r))
   }, [setRows])
 
+  // Cellules éditables : les champs personnalisés (la route refuse le reste).
+  async function editCell(row, col, value) {
+    try {
+      const f = await api.fournitures.update(row.id, { [col.field]: value })
+      setRows(prev => prev.map(r => r.id === row.id ? { ...r, ...f } : r))
+    } catch (e) { setError(e.message); throw e }
+  }
+
   async function sync() {
     setSyncing(true); setError(null)
     try { await api.fournitures.sync(); await reload() }
@@ -97,6 +100,7 @@ export default function Fournitures() {
         manageViews
         columns={COLUMNS}
         data={rows}
+        onCellEdit={editCell}
         loading={loading}
         searchFields={['name', 'supplier', 'unit', 'notes']}
         peek={{

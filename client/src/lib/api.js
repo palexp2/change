@@ -2,6 +2,7 @@ import { cacheGet, cacheSet, invalidate } from './prefetch.js'
 import { invalidateStale } from './swr.js'
 import { markOffline, markOnline, noteBootId } from './serverStatus.js'
 import { onFetchStart, onFetchEnd } from './pageLoadTracker.js'
+import { syncAfterWrite, isDataSyncStarted } from './dataSync.js'
 
 const BASE = '/erp/api'
 
@@ -89,6 +90,9 @@ function invalidateForPath(path) {
   // expiration du cache (TTL 30 s) ou rechargement de la page — impossible de le
   // mapper tout de suite.
   if (resource === 'custom-fields') invalidate('/connectors')
+  // Et l'inverse : changer le mapping Airtable d'un champ change son
+  // éditabilité (`writable` servi par /custom-fields).
+  if (resource === 'connectors') { invalidate('/custom-fields'); invalidateStale('custom-fields') }
   // API générique /records/<table>/... : invalider la ressource sous-jacente
   // (sinon les GET /<resource> servent le cache obsolète). Le nom de table SQL
   // utilise des underscores (activity_codes) alors que la route REST utilise
@@ -138,7 +142,19 @@ function request(method, path, body, { retryOnNetworkError = false } = {}) {
   }
   invalidateForPath(path)
   const retry = retryOnNetworkError || IDEMPOTENT.has(method)
-  return retry ? withNetworkRetry(method, path, body) : rawRequest(method, path, body)
+  const p = retry ? withNetworkRetry(method, path, body) : rawRequest(method, path, body)
+  p.then(scheduleStoreSync, () => {})
+  return p
+}
+
+// Après une écriture réussie, les tableaux (cache global) se rattrapent tout de
+// suite au lieu d'attendre le prochain tour de synchro (10 s, ou plus si un
+// tour est en cours). Regroupé : une rafale d'écritures = une seule synchro.
+let storeSyncTimer = null
+function scheduleStoreSync() {
+  if (!isDataSyncStarted()) return
+  clearTimeout(storeSyncTimer)
+  storeSyncTimer = setTimeout(() => { syncAfterWrite() }, 300)
 }
 
 // Upload multipart : `fetch` direct (pas de Content-Type JSON, le navigateur
@@ -154,6 +170,7 @@ async function uploadRequest(path, formData, method = 'POST') {
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  scheduleStoreSync()
   return data
 }
 
@@ -215,11 +232,6 @@ export const api = {
   },
   // Jauges IA de la barre de gauche (tous les utilisateurs) : caches serveur seulement.
   aiUsage: () => getFresh('/ai-usage'),
-  // Coûts des API d'IA payées à l'usage, par jour (Paramètres → Coûts IA, admin).
-  aiCosts: {
-    get: () => getFresh('/ai-usage/costs'),
-    setOpenAiAdminKey: (api_key) => put('/ai-usage/openai-admin-key', { api_key }),
-  },
   // Auth
   auth: {
     login: (email, password) => post('/auth/login', { email, password }),
@@ -287,9 +299,15 @@ export const api = {
   products: {
     list: (params = {}) => get('/products?' + new URLSearchParams(params)),
     fifoAlerts: () => get('/products/fifo/alerts'),
+    // Seuil dynamique / quantité à commander calculés par Boréal (toutes les pièces, ou une).
+    dynamicThresholds: (id) => get('/products/dynamic-thresholds' + (id ? `?id=${encodeURIComponent(id)}` : '')),
+    // Module « État du stock » de la fiche : détail du calcul + # de série disponibles.
+    stockState: (id) => get(`/products/${id}/stock-state`),
     setOpeningCost: (id, unitCost) => put(`/products/${id}/opening-cost`, { unit_cost: unitCost }),
     purchasePriceApproval: (id, purchaseId, approve) =>
       (approve ? post : del)(`/products/${id}/purchases/${purchaseId}/price-approval`, ...(approve ? [{}] : [])),
+    bomFreeComponent: (id, componentId, accept) =>
+      (accept ? post : del)(`/products/${id}/bom-free/${componentId}`, ...(accept ? [{}] : [])),
     get: (id) => get(`/products/${id}`),
     create: (data) => post('/products', data),
     update: (id, data) => put(`/products/${id}`, data),
@@ -332,6 +350,8 @@ export const api = {
     list: (params = {}) => get('/orders?' + new URLSearchParams(params)),
     lookup: () => get('/orders/lookup'),
     get: (id) => get(`/orders/${id}`),
+    welcomeEmail: (id, lang) => get(`/orders/${id}/welcome-email${lang ? `?lang=${lang}` : ''}`),
+    sendWelcomeEmail: (id, data) => post(`/orders/${id}/send-welcome-email`, data),
     create: (data) => post('/orders', data),
     update: (id, data) => put(`/orders/${id}`, data),
     updateStatus: (id, status) => patch(`/orders/${id}/status`, { status }),
@@ -378,6 +398,7 @@ export const api = {
       ? getAbortable('/tasks?' + new URLSearchParams(params), signal)
       : get('/tasks?' + new URLSearchParams(params)),
     get: (id) => get(`/tasks/${id}`),
+    lastExchanges: () => get('/tasks/last-exchanges'),
     create: (data) => post('/tasks', data),
     update: (id, data) => put(`/tasks/${id}`, data),
     updateStatus: (id, status) => patch(`/tasks/${id}/status`, { status }),
@@ -421,6 +442,7 @@ export const api = {
     inventoryHistory: (params = {}) => get('/dashboard/inventory/history?' + new URLSearchParams(params)),
     incomeStatement: (params = {}) => get('/dashboard/income-statement?' + new URLSearchParams(params)),
     balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
+    balanceSheetHistory: (params = {}) => get('/dashboard/balance-sheet/history?' + new URLSearchParams(params)),
     cashFlow: (params = {}) => get('/dashboard/cash-flow?' + new URLSearchParams(params)),
     dormantStock: (params = {}) => get('/dashboard/dormant-stock?' + new URLSearchParams(params)),
     productivity: (params = {}) => get('/dashboard/productivity?' + new URLSearchParams(params)),
@@ -637,6 +659,8 @@ export const api = {
   // QuickBooks
   quickbooks: {
     accounts: (params = {}) => get('/connectors/quickbooks/accounts?' + new URLSearchParams(params)),
+    glRuns: () => getFresh('/gl/import-runs?limit=1'),
+    accountLedger: (id, since) => getFresh(`/connectors/quickbooks/accounts/${encodeURIComponent(id)}/ledger?since=${since}`),
     vendors: () => get('/connectors/quickbooks/vendors'),
     payees: (currency) => get('/connectors/quickbooks/payees?' + new URLSearchParams(currency ? { currency } : {})),
     taxCodes: () => get('/connectors/quickbooks/tax-codes'),
@@ -806,6 +830,12 @@ export const api = {
   },
 
   // Adresses
+  // Autocomplétion d'adresse (proxy Google Places, clé côté serveur). Sans
+  // cache : chaque frappe est une requête neuve.
+  places: {
+    autocomplete: (input, sessionToken) => getFresh('/places/autocomplete?' + new URLSearchParams({ input, session_token: sessionToken || '' })),
+    details: (placeId, sessionToken) => getFresh('/places/details?' + new URLSearchParams({ place_id: placeId, session_token: sessionToken || '' })),
+  },
   adresses: {
     list: (params = {}) => get('/projets/adresses?' + new URLSearchParams(params)),
     lookup: () => get('/projets/adresses/lookup'),
@@ -828,6 +858,7 @@ export const api = {
   bom: {
     list: (params = {}) => get('/projets/bom?' + new URLSearchParams(params)),
     get: (id) => get(`/projets/bom/${id}`),
+    delete: (id) => del(`/projets/bom/${id}`),
   },
 
   // Serial state changes
@@ -845,6 +876,11 @@ export const api = {
   // Undo (restore soft-deleted records)
   undo: {
     restore: (table, id) => post(`/undo/${table}/${id}`, {}),
+    // Ctrl+Z : dernière modification de l'utilisateur (lib/globalUndo.js).
+    last: (localAgeMs) => post('/undo/last', { localAgeMs }).then(r => {
+      if (r?.table) invalidateForPath(`/records/${r.table}`)
+      return r
+    }),
   },
 
   // Factures
@@ -917,10 +953,12 @@ export const api = {
     get: (id) => get(`/projets/abonnements/${id}`),
     stripeDetails: (id) => get(`/projets/abonnements/${id}/stripe-details`),
     patch: (id, body) => patch(`/projets/abonnements/${id}`, body),
+    cancel: (id, when) => post(`/projets/abonnements/${id}/cancel`, { when }),
     eventCreate: (id, body) => post(`/projets/abonnements/${id}/events`, body),
     eventPatch: (id, eventId, body) => patch(`/projets/abonnements/${id}/events/${eventId}`, body),
     eventDelete: (id, eventId) => del(`/projets/abonnements/${id}/events/${eventId}`),
     events: (params = {}) => get('/projets/abonnement-events?' + new URLSearchParams(params)),
+    eventUpdate: (eventId, body) => patch(`/projets/abonnement-events/${eventId}`, body),
     eventRachatPatch: (eventId, body) => patch(`/projets/abonnement-events/${eventId}/rachat`, body),
     eventRachatCandidates: (eventId) => get(`/projets/abonnement-events/${eventId}/rachat-candidates`),
     eventDetectRachat: (eventId) => post(`/projets/abonnement-events/${eventId}/detect-rachat`),
@@ -963,10 +1001,24 @@ export const api = {
     delete: (id) => del(`/ops-issues/${id}`),
   },
 
+  // Documents importants (/documents-importants).
+  importantDocuments: {
+    list: () => get('/important-documents'),
+    update: (id, data) => patch(`/important-documents/${id}`, data),
+    delete: (id) => del(`/important-documents/${id}`),
+    upload: (files) => {
+      const fd = new FormData()
+      for (const f of files) fd.append('files', f)
+      return uploadRequest('/important-documents/upload', fd)
+    },
+    fileUrl: (id) => `/erp/api/important-documents/${id}/file?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`,
+  },
+
   discoveryForms: {
     list: (params = {}) => get('/discovery-forms?' + new URLSearchParams(params)),
     get: (id) => get(`/discovery-forms/${id}`),
     create: (data) => post('/discovery-forms', data),
+    fromSoumission: (soumissionId) => post(`/discovery-forms/from-soumission/${soumissionId}`, {}),
     delete: (id) => del(`/discovery-forms/${id}`),
     equipmentPreview: (id) => get(`/discovery-forms/${id}/equipment-preview`),
     saveAddresses: (id, data) => patch(`/discovery-forms/${id}/addresses`, data),
@@ -1028,6 +1080,8 @@ export const api = {
     list: (params = {}) => get('/timesheets?' + new URLSearchParams(params)),
     users: () => get('/timesheets/users'),
     conges: (params = {}) => get('/timesheets/conges?' + new URLSearchParams(params)),
+    congesTeam: () => get('/timesheets/conges/team'),
+    congeHolidays: (start, end) => get('/timesheets/conges/holidays?' + new URLSearchParams({ start, end })),
     congeWorkdays: (start, end) => get('/timesheets/conges/workdays?' + new URLSearchParams({ start, end })),
     addConge: (data) => post('/timesheets/conges', data),
     deleteConge: (id, userId) => del(`/timesheets/conges/${id}?` + new URLSearchParams({ user_id: userId })),
@@ -1752,7 +1806,7 @@ export const api = {
     update: (id, data) => patch(`/automations/${id}`, data),
     setGroup: (id, group_name) => patch(`/automations/${id}/group`, { group_name }),
     delete: (id) => del(`/automations/${id}`),
-    logs: (id) => get(`/automations/${id}/logs`),
+    logs: (id) => getFresh(`/automations/${id}/logs`),
     run: (id, body = {}) => post(`/automations/${id}/run`, body),
     testEmail: (id, body) => post(`/automations/${id}/test-email`, body),
     emailPreview: (id, language, recordId) => {
@@ -2027,7 +2081,7 @@ export const api = {
     setPriceActive: (priceId, active) => patch(`/stripe-catalog/prices/${priceId}`, { active }),
   },
   emailTemplates: {
-    list: () => getFresh('/email-templates'),
+    list: (kind) => getFresh(kind ? `/email-templates?kind=${kind}` : '/email-templates'),
     get: (id) => getFresh(`/email-templates/${id}`),
     create: (data) => post('/email-templates', data),
     update: (id, data) => patch(`/email-templates/${id}`, data),

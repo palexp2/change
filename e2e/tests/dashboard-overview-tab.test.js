@@ -8,8 +8,8 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
 // Test lecture seule — aucun record créé, aucune préférence utilisateur écrite
-// (l'onglet « Vue globale » ne persiste rien : ni prefs de sections, ni thème).
-describe('Dashboard — onglet « Vue globale » (planche façon Power BI)', () => {
+// (la vue globale ne persiste rien).
+describe('Dashboard — vue globale seule (planche façon Power BI)', () => {
   let browser, ctx, page
 
   before(async () => {
@@ -25,29 +25,17 @@ describe('Dashboard — onglet « Vue globale » (planche façon Power BI)', () 
 
   after(async () => { await browser?.close() })
 
-  test('Les deux onglets sont offerts et « Sections » est celui par défaut', async () => {
+  test('/dashboard n\'affiche que la vue globale, sans onglets ni sections', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'domcontentloaded' })
-
-    const sectionsTab = page.locator('[data-testid="dashboard-tab-sections"]')
-    const overviewTab = page.locator('[data-testid="dashboard-tab-overview"]')
-    await sectionsTab.waitFor({ timeout: 30000 })
-    await overviewTab.waitFor({ timeout: 5000 })
-
-    assert.equal(await sectionsTab.getAttribute('aria-selected'), 'true')
-    assert.equal(await overviewTab.getAttribute('aria-selected'), 'false')
-
-    // La vue classique (table des matières + sections) est bien celle affichée.
-    await page.locator('[data-testid="dashboard-toc"]').waitFor({ timeout: 10000 })
-    assert.equal(await page.locator('[data-testid="dashboard-overview"]').count(), 0)
+    await page.locator('[data-testid="dashboard-overview"]').waitFor({ timeout: 30000 })
+    assert.equal(await page.locator('[data-testid="dashboard-tabs"]').count(), 0)
+    assert.equal(await page.locator('[data-testid="dashboard-toc"]').count(), 0)
+    assert.equal(await page.locator('[data-section-id]').count(), 0)
   })
 
-  test('L\'onglet « Vue globale » montre le héros, les tuiles et les graphiques', async () => {
-    await page.locator('[data-testid="dashboard-tab-overview"]').click()
-    await page.waitForURL(u => u.toString().includes('/dashboard/vue-globale'), { timeout: 10000 })
-
+  test('La vue globale montre le héros, les tuiles et les graphiques', async () => {
     const board = page.locator('[data-testid="dashboard-overview"]')
     await board.waitFor({ timeout: 20000 })
-    assert.equal(await page.locator('[data-testid="dashboard-tab-overview"]').getAttribute('aria-selected'), 'true')
 
     // Bande héros : soit la trésorerie, soit un message d'erreur QuickBooks
     // explicite (QB peut être indisponible — on ne veut pas de page blanche).
@@ -69,39 +57,17 @@ describe('Dashboard — onglet « Vue globale » (planche façon Power BI)', () 
     // Les tableaux de synthèse sont là aussi.
     await page.locator('[data-testid="overview-bank-accounts"]').waitFor({ timeout: 10000 })
     await page.locator('[data-testid="overview-aging"]').waitFor({ timeout: 10000 })
-
-    // La table des matières des sections n'a plus lieu d'être dans cette vue.
-    assert.equal(await page.locator('[data-testid="dashboard-toc"]').count(), 0)
   })
 
-  test('Chaque graphique se lit aussi en tableau', async () => {
-    const toggle = page.locator('[data-testid="overview-chart-toggle-projects"]')
-    const table = page.locator('[data-testid="overview-chart-table-projects"]')
-
-    await toggle.scrollIntoViewIfNeeded()
-    assert.equal(await table.count(), 0, 'le tableau devrait être masqué au départ')
-
-    await toggle.click()
-    await table.waitFor({ timeout: 5000 })
-    assert.equal(await toggle.getAttribute('aria-pressed'), 'true')
-    const rows = await table.locator('tbody tr').count()
-    assert.ok(rows >= 6, `le tableau devrait lister les mois (lignes: ${rows})`)
-
-    await toggle.click()
-    await table.waitFor({ state: 'detached', timeout: 5000 })
-    assert.equal(await toggle.getAttribute('aria-pressed'), 'false')
+  test('Les cartes graphiques n\'offrent plus de bascule en tableau', async () => {
+    await page.locator('[data-testid="overview-chart-projects"]').waitFor({ timeout: 10000 })
+    assert.equal(await page.locator('[data-testid^="overview-chart-toggle-"]').count(), 0)
   })
 
-  test('L\'URL /dashboard/vue-globale ouvre directement la planche', async () => {
-    await page.goto(URL + '/dashboard/vue-globale', { waitUntil: 'domcontentloaded' })
-    await page.locator('[data-testid="dashboard-overview"]').waitFor({ timeout: 30000 })
-    assert.equal(await page.locator('[data-testid="dashboard-tab-overview"]').getAttribute('aria-selected'), 'true')
-  })
-
-  test('Le retour sur « Sections » rend la vue classique', async () => {
-    await page.locator('[data-testid="dashboard-tab-sections"]').click()
-    await page.locator('[data-testid="dashboard-toc"]').waitFor({ timeout: 15000 })
-    assert.equal(await page.locator('[data-testid="dashboard-overview"]').count(), 0)
-    await page.locator('[data-section-id]').first().waitFor({ timeout: 10000 })
+  test('Les anciens liens /dashboard/<section> ouvrent la vue globale', async () => {
+    for (const slug of ['vue-globale', 'taux-de-remplacement']) {
+      await page.goto(URL + '/dashboard/' + slug, { waitUntil: 'domcontentloaded' })
+      await page.locator('[data-testid="dashboard-overview"]').waitFor({ timeout: 30000 })
+    }
   })
 })

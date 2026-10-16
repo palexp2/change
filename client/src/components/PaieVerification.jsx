@@ -21,9 +21,11 @@ const FLAG_TEXT = {
   decimals: 'décimales cachées',
   includes_reimb: 'remboursement compté dans la base',
   under_min: 'sous 200 $',
+  conge_unpaid: 'congé non payé',
 }
 const LABEL = Object.fromEntries(COLS.map(c => [c.k, c.label]))
 const fmtH = n => (n == null ? '' : fmtNumber(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+const fmtJ = n => `${String(n).replace('.', ',')} j`
 const fmtVal = (k, n) => (k === 'hours' ? fmtH(n) : fmtMoney(n).replace(/\s*\$$/, ''))
 
 function SourceBox({ title, action, children }) {
@@ -86,6 +88,20 @@ function Proof({ row, k, periodStart }) {
         </SourceBox>
         {c.flag === 'includes_reimb' && <p className="text-sm text-amber-700 mt-2">Airtable compte le remboursement : {fmtVal('x', c.value)} au lieu de {fmtVal('x', c.expected)}. Nethris calcule {fmtVal('x', c.expected)}.</p>}
         {c.flag === 'mismatch' && <p className="text-sm text-amber-700 mt-2">Saisi {fmtVal('x', c.value)}, calcul {fmtVal('x', c.expected)}.</p>}
+      </>
+    )
+  }
+  if (k === 'vacation') {
+    if (!c.conges?.length) return <p className="text-sm text-slate-500">Aucun congé inscrit dans la feuille de temps.</p>
+    return (
+      <>
+        <SourceBox title={`🌴 Congés · ${row.name.split(' ')[0]}`}>
+          <Rows rows={[
+            ...c.conges.map(x => [x.half ? `${x.label} · ½` : x.label, fmtJ(x.days)]),
+            ['Total à payer en congé', fmtJ(c.days), 'font-semibold'],
+          ]} />
+        </SourceBox>
+        {c.flag === 'conge_unpaid' && <p className="text-sm text-amber-700 mt-2">{fmtJ(c.days)} de congé, aucun montant « Vacances ».</p>}
       </>
     )
   }
@@ -153,13 +169,14 @@ export default function PaieVerification({ paieId }) {
                   </td>
                   {COLS.map(col => {
                     const c = r.cells[col.k]
-                    if (!c || c.value == null) return <td key={col.k} className="px-3 py-1.5 text-right text-slate-300">—</td>
+                    if (!c || (c.value == null && !c.conges?.length)) return <td key={col.k} className="px-3 py-1.5 text-right text-slate-300">—</td>
                     const flag = !locked && c.flag
                     const on = sel && sel[0] === r.item_id && sel[1] === col.k
                     return (
                       <td key={col.k} onClick={() => setSel([r.item_id, col.k])}
                         className={`px-3 py-1.5 text-right tabular-nums cursor-pointer whitespace-nowrap ${flag ? 'bg-amber-50' : 'hover:bg-blue-50'} ${on ? 'ring-2 ring-inset ' + (flag ? 'ring-amber-500' : 'ring-blue-500') : ''}`}>
-                        {fmtVal(col.k, c.value)}
+                        {c.value == null ? fmtJ(c.days) : fmtVal(col.k, c.value)}
+                        {c.value != null && c.days > 0 && <span className="text-[10px] text-slate-400"> · 🌴 {fmtJ(c.days)}</span>}
                         <span className={`block text-[10px] font-medium ${flag ? 'text-amber-700' : 'text-slate-400'}`}>
                           {flag ? FLAG_TEXT[c.flag] || 'à regarder' : `${locked ? '✓ ' : ''}${col.src[c.source] || ''}`}
                         </span>
@@ -183,7 +200,7 @@ export default function PaieVerification({ paieId }) {
           <div className="grid sm:grid-cols-[200px_1fr] border-t border-slate-200">
             <div className="p-3 bg-slate-50 sm:border-r border-slate-200">
               <div className="text-xs text-slate-500">{selRow.name}</div>
-              <div className="text-base font-semibold tabular-nums">{fmtVal(sel[1], selRow.cells[sel[1]].value)} {sel[1] === 'hours' ? 'h' : '$'}</div>
+              <div className="text-base font-semibold tabular-nums">{selRow.cells[sel[1]].value == null ? fmtJ(selRow.cells[sel[1]].days) : `${fmtVal(sel[1], selRow.cells[sel[1]].value)} ${sel[1] === 'hours' ? 'h' : '$'}`}</div>
               <div className="text-xs text-slate-500">{LABEL[sel[1]]}</div>
             </div>
             <div className="p-3"><Proof row={selRow} k={sel[1]} periodStart={v.period_start} /></div>

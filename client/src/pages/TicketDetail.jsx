@@ -4,7 +4,7 @@ import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 import Attachments from '../components/Attachments.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { MultiSelectField } from '../components/MultiSelectField.jsx'
@@ -191,7 +191,6 @@ export default function TicketDetail({ recordId, onClose }) {
           record={ticket}
           onSaveCustom={saveField}
           savingKeys={fieldSaving}
-          selectPills
         >
             {/* Entreprise / contact : pastille cliquable vers la fiche + picker
                 recherchable (règle « champs référence » du CLAUDE.md). Le lien
@@ -279,7 +278,7 @@ export default function TicketDetail({ recordId, onClose }) {
                       {t.due_date && <span>Échéance {fmtDate(t.due_date)}</span>}
                     </div>
                   </div>
-                  <Badge color={taskStatusColor(t.status)} size="sm">{t.status}</Badge>
+                  <FieldChoiceBadge table="tasks" field="status" value={t.status} color={taskStatusColor(t.status)} />
                 </button>
               ))}
             </div>

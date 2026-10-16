@@ -6,12 +6,9 @@ import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
-import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
-import ProjectDetail, { VendeurPicker } from './ProjectDetail.jsx'
-import { useAuth } from '../lib/auth.jsx'
-import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { NewProjectModal } from '../components/NewProjectModal.jsx'
+import ProjectDetail from './ProjectDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -26,76 +23,14 @@ import { useToast } from '../contexts/ToastContext.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 
-// Champs proposés par le formulaire « Nouveau projet » — liste calquée sur ce
-// que POST /api/projects persiste (voir RecordForm.jsx pour la configuration).
-// « Raison du refus » n'y figure pas : la route de création ne l'accepte pas, un
-// champ qui ne sauvegarde pas n'a rien à faire dans un formulaire d'ajout.
-function projectFormFields(companies, vendeurOptions, defaultVendeur) {
-  return [
-    // Pas de « Nom du projet » : les projets n'ont pas de nom (demande de
-    // P.-A. Papillon) — le serveur en dérive un de l'entreprise et du type.
-    {
-      field: 'company_id', label: 'Entreprise',
-      input: ({ value, onChange }) => (
-        <LinkedRecordField
-          name="pipeline_company_id"
-          value={value}
-          options={companies}
-          labelFn={c => c.name}
-          getHref={c => `/companies/${c.id}`}
-          onChange={onChange}
-        />
-      ),
-    },
-    // Vendeur : présélectionné sur l'utilisateur connecté (s'il est vendeur).
-    {
-      field: 'vendeur_ref', label: 'Vendeur', defaultValue: defaultVendeur,
-      input: ({ value, onChange }) => (
-        <VendeurPicker value={value || ''} options={vendeurOptions} onChange={v => onChange(v || '')} />
-      ),
-    },
-    // Pas de « Type » : déduit par le serveur (Expansion si l'entreprise a déjà
-    // un projet gagné, sinon Nouveau client) — demande de P.-A. Papillon.
-    {
-      field: 'probability', label: 'Probabilité (%)', defaultValue: 50,
-      input: ({ value, onChange, id }) => (
-        <>
-          <input
-            id={id}
-            type="range" min="0" max="100" step="5" value={value}
-            onChange={e => onChange(parseInt(e.target.value))}
-            className="w-full mt-1"
-          />
-          <div className="text-center text-sm font-medium text-brand-600">{value}%</div>
-        </>
-      ),
-    },
-    // Pas de « Date de clôture prévue » : retirée du formulaire d'ajout (demande
-    // de P.-A. Papillon) — la colonne reste dans la liste et sur la fiche.
-    { field: 'notes', label: 'Notes', type: 'textarea', span: 2 },
-    // Masqués par défaut — disponibles via « Modifier le formulaire ».
-    { field: 'value_cad', label: 'Valeur (CAD)', type: 'currency', min: '0', visible: false },
-    { field: 'monthly_cad', label: 'Récurrent mensuel (CAD)', type: 'currency', min: '0', visible: false },
-    { field: 'nb_greenhouses', label: 'Nombre de serres', type: 'number', min: '0', visible: false },
-    // Pas de champ « Statut » : il a été retiré des projets (voir /champs/projects
-    // et e2e/tests/projects-no-status-field.test.js) — l'offrir ici le ferait
-    // revenir par la porte de derrière.
-  ]
-}
-
 export default function Pipeline() {
   const [searchParams, setSearchParams] = useSearchParams()
   const monthFilter = searchParams.get('month') // e.g. "2026-03" — filters by close_date/creation
   const createdMonthFilter = searchParams.get('createdMonth') // e.g. "2026-03" — filters by created_at
+  // Point du graphique « Taux de closing » (vue globale) : projets tranchés
+  // (Vendu = Oui/Non) du mois, même bucketing que `month`.
+  const closingMonthFilter = searchParams.get('closingMonth')
   const [projects, setProjects] = useState([])
-  const [companies, setCompanies] = useState([])
-  const { user } = useAuth()
-  const [vendeurOptions, setVendeurOptions] = useState([])
-  useEffect(() => {
-    api.projects.vendeurOptions().then(r => setVendeurOptions(r?.data || r || [])).catch(() => {})
-  }, [])
-  const myVendeurRef = user?.employee_id ? `employee:${user.employee_id}` : ''
-  const defaultVendeur = vendeurOptions.some(o => o.ref === myVendeurRef) ? myVendeurRef : ''
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const disabledCols = useDisabledColumns('projects') // Map<column_name, { airtable_field_name }>
@@ -160,9 +95,6 @@ export default function Pipeline() {
     })
     return () => { cancelled = true }
   }, [load])
-  useEffect(() => {
-    api.companies.lookup().then(setCompanies).catch(() => {})
-  }, [])
 
   useEntityListRealtime('project', setProjects)
 
@@ -174,6 +106,11 @@ export default function Pipeline() {
       // Airtable midnight-UTC.
       return projects.filter(p => (p.creation || '').slice(0, 7) === createdMonthFilter)
     }
+    if (closingMonthFilter) {
+      // `cf_vendu` absent du premier chargement (lite) : on l'ignore jusqu'à la version complète.
+      return projects.filter(p => (p.cf_vendu === undefined || p.cf_vendu === 'Oui' || p.cf_vendu === 'Non')
+        && (p.close_date || p.creation || '').startsWith(closingMonthFilter))
+    }
     if (!monthFilter) return projects
     return projects.filter(p => {
       // Même bucketing que le graphique « Taux de closing » du dashboard :
@@ -182,7 +119,7 @@ export default function Pipeline() {
       const d = p.close_date || p.creation || ''
       return d.startsWith(monthFilter)
     })
-  }, [projects, monthFilter, createdMonthFilter])
+  }, [projects, monthFilter, createdMonthFilter, closingMonthFilter])
 
   const COLUMNS = useMemo(() => TABLE_COLUMN_META.projects.map(meta => ({
     ...meta,
@@ -252,8 +189,6 @@ export default function Pipeline() {
     ]
   }, [COLUMNS, customFields, customFieldsByColumn])
 
-  async function handleCreate(form) { await api.projects.create(form); load() }
-
   return (
     <Layout>
       <div className="p-6">
@@ -285,6 +220,14 @@ export default function Pipeline() {
             </button>
           </div>
         )}
+        {closingMonthFilter && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700">
+            <span>Tranchés en {new Date(closingMonthFilter + '-15').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })}</span>
+            <button onClick={() => setSearchParams({})} className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700">
+              <X size={13} /> Effacer
+            </button>
+          </div>
+        )}
         <DataTable
           table="projects"
           manageViews
@@ -302,7 +245,7 @@ export default function Pipeline() {
           }}
           onCellEdit={(row, col, value) => updateProjectField(row.id, col.field, value)}
           searchFields={['name', 'company_name', 'type', 'vendeur_label', 'nom_du_vendeur', 'value_cad', 'monthly_cad']}
-          forceAllView={!!monthFilter || !!createdMonthFilter}
+          forceAllView={!!monthFilter || !!createdMonthFilter || !!closingMonthFilter}
           disabledColumns={disabledCols}
           onAddCustomField={() => setCustomFieldModal({ editing: null })}
           customFieldsByColumn={customFieldsByColumn}
@@ -316,15 +259,11 @@ export default function Pipeline() {
         />
       </div>
 
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau projet" size="lg">
-        <RecordForm
-          table="projects"
-          fields={projectFormFields(companies, vendeurOptions, defaultVendeur)}
-          columns={2}
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-        />
-      </Modal>
+      <NewProjectModal
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        onCreated={() => load()}
+      />
 
       <CustomFieldModal
         isOpen={!!customFieldModal}

@@ -177,9 +177,144 @@ export function validateAddress(addr, { requirePostalCode = true } = {}) {
     add('error', 'postal_format', 'postal_code', `Code ZIP invalide : « ${postalRaw} » (attendu 12345 ou 12345-6789)`)
   }
 
+  attachFixes(issues, addr, { country, province, postal })
+
   const status = issues.some(i => i.severity === 'error') ? 'error'
     : issues.length ? 'warning' : 'ok'
   return { status, issues }
+}
+
+// ── Suggestions de correction ────────────────────────────────────────────────
+// Quand l'erreur trahit la bonne valeur (Alberta saisie aux États-Unis, code
+// postal en H… avec la province ON, « H2X 1O1 » tapé avec un O), l'issue porte
+// `fix: { patch, label }` : le bandeau propose « → label » et applique `patch`
+// d'un clic. Jamais appliqué tout seul — l'utilisateur tranche.
+
+/** 'H2X1Y4' → 'H2X 1Y4'. */
+const formatCaPostal = p => `${p.slice(0, 3)} ${p.slice(3)}`
+
+/** Province déduite d'un code postal canadien valide, si sa lettre n'en désigne qu'une. */
+function provinceFromPostal(postal) {
+  if (!CA_POSTAL_RE.test(postal)) return ''
+  const allowed = FSA_LETTER_PROVINCES[postal[0]] || []
+  return allowed.length === 1 ? allowed[0] : ''
+}
+
+/** Code postal canadien aux chiffres mal tapés (O→0, I/L→1), réparé ; '' sinon. */
+function repairCaPostal(postal) {
+  if (postal.length !== 6) return ''
+  const fixed = [...postal].map((c, i) => (i % 2 === 1 ? ({ O: '0', I: '1', L: '1' })[c] || c : c)).join('')
+  return CA_POSTAL_RE.test(fixed) ? fixed : ''
+}
+
+// Préfixe (3 chiffres) du ZIP → État, par plages USPS. Les exceptions isolées
+// (055 MA, 201 VA, 733 TX…) suivent leur plage : une suggestion, pas un verdict.
+const ZIP_PREFIX_STATES = [
+  [5, 5, 'NY'], [10, 27, 'MA'], [28, 29, 'RI'], [30, 38, 'NH'], [39, 49, 'ME'], [50, 59, 'VT'],
+  [60, 69, 'CT'], [70, 89, 'NJ'], [100, 149, 'NY'], [150, 196, 'PA'], [197, 199, 'DE'],
+  [200, 200, 'DC'], [201, 201, 'VA'], [202, 205, 'DC'], [206, 219, 'MD'], [220, 246, 'VA'],
+  [247, 268, 'WV'], [270, 289, 'NC'], [290, 299, 'SC'], [300, 319, 'GA'], [320, 349, 'FL'],
+  [350, 369, 'AL'], [370, 385, 'TN'], [386, 397, 'MS'], [398, 399, 'GA'], [400, 427, 'KY'],
+  [430, 459, 'OH'], [460, 479, 'IN'], [480, 499, 'MI'], [500, 528, 'IA'], [530, 549, 'WI'],
+  [550, 567, 'MN'], [569, 569, 'DC'], [570, 577, 'SD'], [580, 588, 'ND'], [590, 599, 'MT'],
+  [600, 629, 'IL'], [630, 658, 'MO'], [660, 679, 'KS'], [680, 693, 'NE'], [700, 714, 'LA'],
+  [716, 729, 'AR'], [730, 749, 'OK'], [750, 799, 'TX'], [800, 816, 'CO'], [820, 831, 'WY'],
+  [832, 838, 'ID'], [840, 847, 'UT'], [850, 865, 'AZ'], [870, 884, 'NM'], [885, 885, 'TX'],
+  [889, 898, 'NV'], [900, 961, 'CA'], [967, 968, 'HI'], [970, 979, 'OR'], [980, 994, 'WA'],
+  [995, 999, 'AK'],
+]
+
+const US_STATE_NAMES = { AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California',
+  CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', DC: 'District of Columbia', FL: 'Florida',
+  GA: 'Georgia', HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas',
+  KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland', MA: 'Massachusetts', MI: 'Michigan',
+  MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NV: 'Nevada',
+  NH: 'New Hampshire', NJ: 'New Jersey', NM: 'New Mexico', NY: 'New York', NC: 'North Carolina',
+  ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island',
+  SC: 'South Carolina', SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont',
+  VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming' }
+
+const stateLabel = code => `${code} — ${US_STATE_NAMES[code] || code}`
+
+/** État déduit d'un ZIP valide ; '' sinon. */
+function stateFromZip(postal) {
+  if (!US_ZIP_RE.test(postal)) return ''
+  const n = Number(postal.slice(0, 3))
+  return ZIP_PREFIX_STATES.find(([lo, hi]) => n >= lo && n <= hi)?.[2] || ''
+}
+
+/**
+ * Pays trahi par la province ou le code postal, quand il contredit celui saisi.
+ * Un code postal valide pour le pays saisi l'emporte sur la province : « AB »
+ * avec le ZIP 95519 est une Californie mal saisie, pas l'Alberta.
+ */
+function guessCountry(addr, country, postal) {
+  const up = norm(addr?.province).toUpperCase()
+  const caProvince = normalizeProvince(addr?.province, 'CA')
+  const usZip = US_ZIP_RE.test(postal)
+  const caPostal = CA_POSTAL_RE.test(postal)
+  if (country !== 'CA' && !(country === 'US' && usZip) && (caProvince || caPostal)) {
+    const prov = caProvince || provinceFromPostal(postal)
+    if (prov || !up) return { country: 'CA', province: prov }
+  }
+  if (country !== 'US' && !(country === 'CA' && caPostal) && (US_STATES.has(up) || usZip) && !caProvince && !caPostal) {
+    return { country: 'US', province: US_STATES.has(up) ? up : stateFromZip(postal) }
+  }
+  return null
+}
+
+function attachFixes(issues, addr, { country, province, postal }) {
+  const seen = new Set()
+  const give = (issue, patch, label) => {
+    const key = JSON.stringify(patch)
+    if (seen.has(key)) return
+    seen.add(key)
+    issue.fix = { patch, label }
+  }
+  for (const issue of issues) {
+    switch (issue.code) {
+      case 'country_missing':
+      case 'country_unknown':
+      case 'province_invalid':
+      case 'postal_format': {
+        const g = guessCountry(addr, country, postal)
+        if (g) {
+          const patch = { country: g.country }
+          if (g.province && g.province !== norm(addr?.province)) patch.province = g.province
+          if (g.country === 'CA' && CA_POSTAL_RE.test(postal)) {
+            const p = formatCaPostal(postal)
+            if (p !== norm(addr?.postal_code)) patch.postal_code = p
+          }
+          give(issue, patch, g.country === 'CA' ? 'Canada' : 'États-Unis')
+          break
+        }
+        if (country === 'CA' && issue.code === 'province_invalid') {
+          const p = provinceFromPostal(postal)
+          if (p) give(issue, { province: p }, CA_PROVINCES[p])
+        }
+        if (country === 'US' && issue.code === 'province_invalid') {
+          const st = stateFromZip(postal)
+          if (st) give(issue, { province: st }, stateLabel(st))
+        }
+        if (country === 'CA' && issue.code === 'postal_format') {
+          const p = repairCaPostal(postal)
+          if (p) give(issue, { postal_code: formatCaPostal(p) }, formatCaPostal(p))
+        }
+        break
+      }
+      case 'province_missing':
+      case 'postal_province_mismatch': {
+        if (country === 'US') {
+          const st = stateFromZip(postal)
+          if (st) give(issue, { province: st }, stateLabel(st))
+          break
+        }
+        const p = country === 'CA' ? provinceFromPostal(postal) : ''
+        if (p && p !== province) give(issue, { province: p }, CA_PROVINCES[p])
+        break
+      }
+    }
+  }
 }
 
 /** Fiche où l'adresse se corrige : son entreprise, sinon son contact. */

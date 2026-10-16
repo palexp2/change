@@ -18,6 +18,7 @@ import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { CustomFieldEditor, isEditableCustomField } from '../components/CustomDetailFields.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
+import { useBarcodeScanner } from '../lib/useBarcodeScanner.js'
 
 
 
@@ -39,7 +40,6 @@ function ItemField({ label, children, mono = false, full = false, col, edit }) {
       saving={!!edit.saving[col]}
       onSave={edit.save}
       recordId={edit.item.id}
-      isoDate
     />
   )
   return (
@@ -145,23 +145,25 @@ function RetourItemPanel({ item, onClose, onSave }) {
           </dl>
         </section>
 
-        {(item.billets || item.commande || issueNum) && (
-          <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Liés</h3>
-            <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-              {item.billets && <ItemField label="Billet"><LinkedRecordsValue field={{ record_link_target: 'tickets' }} value={item.billets} /></ItemField>}
-              {/* Suit l'issue du billet lié (résolue par le serveur). */}
-              {issueNum && (
-                <ItemField label="Issue GitHub">
-                  <a href={item.lien_issue_github} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 link-record" data-testid="retour-item-issue">
-                    #{issueNum} <ExternalLink size={13} />
-                  </a>
-                </ItemField>
-              )}
-              {item.commande && <ItemField label="Commande de remplacement"><LinkedRecordsValue field={{ record_link_target: 'orders' }} value={item.commande} /></ItemField>}
-            </dl>
-          </section>
-        )}
+        <section>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Liés</h3>
+          <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+            {item.billets && <ItemField label="Billet"><LinkedRecordsValue field={{ record_link_target: 'tickets' }} value={item.billets} /></ItemField>}
+            {/* Lien saisi sur l'article (champ perso URL, éditable). */}
+            <ItemField label="Issue GitHub" col="cf_issue_github" edit={edit}>
+              {item.cf_issue_github && <a href={item.cf_issue_github} target="_blank" rel="noopener noreferrer" className="link-record">{item.cf_issue_github}</a>}
+            </ItemField>
+            {/* Suit l'issue du billet lié (résolue par le serveur). */}
+            {issueNum && item.lien_issue_github !== item.cf_issue_github && (
+              <ItemField label="Issue du billet">
+                <a href={item.lien_issue_github} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 link-record" data-testid="retour-item-issue">
+                  #{issueNum} <ExternalLink size={13} />
+                </a>
+              </ItemField>
+            )}
+            {item.commande && <ItemField label="Commande de remplacement"><LinkedRecordsValue field={{ record_link_target: 'orders' }} value={item.commande} /></ItemField>}
+          </dl>
+        </section>
 
         {item.image_from_numero_de_serie && (
           <section>
@@ -309,6 +311,25 @@ export default function RetourDetail({ recordId: id }) {
     // Consigne d'étagère (analyse / reconditionnement), article par article.
     setShelfNotes(r.instructions || [])
   }, [id, user?.name, patchItem, refreshRetourFields])
+
+  // Pistolet code-barre : le n° de série scanné est réceptionné aujourd'hui.
+  // Le hook coupe aussi les raccourcis à lettre unique de Layout (le « T » de
+  // TI4488 menait à la feuille de temps).
+  const items = retour?.items
+  const handleScan = useCallback(async (value) => {
+    const code = value.trim().toUpperCase()
+    const item = (items || []).find(it => [it.serial_number, it.lora_address]
+      .some(v => v && String(v).trim().toUpperCase() === code))
+    if (!item) { addToast({ message: `${value} : absent de ce retour`, type: 'warning' }); return }
+    if (item.received_at) { addToast({ message: `${value} : déjà reçu le ${fmtDate(item.received_at)}`, type: 'info' }); return }
+    try {
+      await receiveItems([item.id])
+      addToast({ message: `${item.serial_number || value} reçu`, type: 'success' })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }, [items, receiveItems, addToast])
+  useBarcodeScanner(handleScan)
 
   // « Remplacement différé » : commande neuve (client, adresses de livraison et
   // de ferme, produit et # de série remplacé des articles cochés), puis ouverte.

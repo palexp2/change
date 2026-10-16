@@ -94,8 +94,9 @@ export default function Contacts() {
   }, [])
 
   async function handleCreate(form) {
-    await api.contacts.create(form)
+    const created = await api.contacts.create(form)
     await reload()
+    if (created?.id) navigate(`/contacts/${created.id}`)
   }
 
   return (

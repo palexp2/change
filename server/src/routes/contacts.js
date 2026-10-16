@@ -8,6 +8,7 @@ import { emitEntity, emitCompanyContactsChanged } from '../services/realtimeEmit
 import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermissions.js';
 import { findContactDuplicates } from '../utils/duplicateMatch.js';
 import { readRelation } from '../services/customFieldsView.js'
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { parsePage } from '../utils/pagination.js'
 import { mergeContacts } from '../services/contactMerge.js'
 import { requireAdmin } from '../middleware/auth.js'
@@ -319,8 +320,16 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id, company_id FROM contacts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Contact not found' });
 
+  // Champs personnalisés : seuls ceux que l'ERP a le droit d'écrire (règle
+  // unique de customFieldWritability). Sans eux, un champ créé par « + » sur
+  // les contacts ne pouvait jamais recevoir de valeur. Les colonnes natives
+  // gardent leur comportement (pas de refus Airtable sur elles).
+  const NATIVE = ['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_id', 'language', 'notes'];
+  const refused = refusedAirtablePullKeys('contacts', req.body).filter(col => !NATIVE.includes(col));
+  if (refused.length > 0) return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  const customCols = getWritableCustomColumns('contacts').map(c => c.column_name).filter(c => !NATIVE.includes(c));
   const { setClause, values, cols, error } = buildPartialUpdate(req.body, {
-    allowed: ['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_id', 'language', 'notes'],
+    allowed: [...NATIVE, ...customCols],
     nonNullable: new Set(['first_name', 'last_name']),
   });
   if (error) return res.status(400).json({ error });

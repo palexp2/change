@@ -35,7 +35,7 @@ const COMPANY_FORM_FIELDS = [
   { field: 'name', label: 'Nom', span: 2, locked: true, required: true },
   {
     field: 'lifecycle_phase', label: 'Phase', type: 'select', options: PHASES,
-    searchable: true, testId: 'company-form-phase',
+    testId: 'company-form-phase',
   },
   { field: 'email', label: 'Courriel', type: 'email' },
   { field: 'address', label: 'Adresse', span: 2 },
@@ -69,8 +69,9 @@ export default function Companies() {
   })
 
   async function handleCreate(form) {
-    await api.companies.create(form)
+    const created = await api.companies.create(form)
     load()
+    if (created?.id) navigate(`/companies/${created.id}`)
   }
 
   const provinceChip = (label) => (

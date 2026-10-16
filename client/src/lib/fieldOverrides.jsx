@@ -79,6 +79,8 @@ export function typeLabel(type) {
     single_select: 'Sélection',
     multi_select:  'Sélection multiple',
     duration:      'Durée',
+    email:         'Courriel',
+    barcode:       'Code-barres',
     user:          'Utilisateur',
     button:        'Bouton',
     attachment:    'Attachement',
@@ -101,6 +103,7 @@ export function kindLabel(kind) {
     last_modified_time: 'Modifié le',
     created_by:         'Créé par',
     last_modified_by:   'Modifié par',
+    autonumber:         'Numéro auto',
   }[kind] || null
 }
 
@@ -111,7 +114,7 @@ export function kindLabel(kind) {
 // (routes/connectors.js, airtableFieldMappingHandler).
 const COMPUTED_KINDS = new Set([
   'formula', 'lookup', 'rollup', 'button',
-  'created_time', 'last_modified_time', 'created_by', 'last_modified_by',
+  'created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber',
 ])
 export function isComputedKind(kind) {
   return COMPUTED_KINDS.has(kind)
@@ -321,7 +324,10 @@ export function applyFieldOverrides(columns, overrides) {
     // fragile (homonymes, majuscules accentuées) et rendu en pastille plutôt
     // qu'en lien. On garde donc le lien de la page, et on note quand même le
     // type choisi pour l'icône et la fiche du champ.
-    if (col.render && col.linkTarget && linkTargetOfType(ov.type) === col.linkTarget) {
+    // Idem `linksTo` (cible déclarée pour le seul nom du type) : la colonne porte
+    // souvent l'id de la fiche, que le rendu générique par libellé ne résout pas.
+    const declaredTarget = col.linkTarget || col.linksTo
+    if (col.render && declaredTarget && linkTargetOfType(ov.type) === declaredTarget) {
       next.fieldType = ov.type
       next.renderTypeLabel = typeLabel(ov.type)
       return next

@@ -6,6 +6,8 @@ import { newRecordId } from '../utils/recordId.js'
 // Clients → Modèles de courriel : objets et textes réutilisables. Variables
 // [First name], [Email]… et liens [texte](url) rendus à l'insertion dans un
 // courriel (client/src/lib/emailTemplateVars.js).
+// `kind` : 'vente' (défaut) ou 'marketing' (Marketing → Courriels marketing) ;
+// GET /?kind=… ne liste qu'une famille.
 
 const router = Router()
 router.use(requireAuth)
@@ -21,6 +23,7 @@ const WRITABLE = {
   subject: v => String(v ?? '').slice(0, 500),
   body: v => String(v ?? '').slice(0, 100000),
   language: v => (String(v || '').toLowerCase().startsWith('en') ? 'en' : 'fr'),
+  kind: v => (v === 'marketing' ? 'marketing' : 'vente'),
   // { variable: texte } utilisé quand la valeur du destinataire manque.
   fallbacks: v => {
     const o = v && typeof v === 'object' ? v : {}
@@ -28,11 +31,14 @@ const WRITABLE = {
     return Object.keys(clean).length ? JSON.stringify(clean) : null
   },
 }
-const CREATE_KEYS = ['name', 'subject', 'body', 'language']
+const CREATE_KEYS = ['name', 'subject', 'body', 'language', 'kind']
 
 // GET /api/email-templates
 router.get('/', (req, res) => {
-  res.json(db.prepare(`${SELECT} ORDER BY t.name COLLATE NOCASE`).all())
+  const kind = req.query.kind ? WRITABLE.kind(req.query.kind) : null
+  res.json(kind
+    ? db.prepare(`${SELECT} WHERE t.kind=? ORDER BY t.name COLLATE NOCASE`).all(kind)
+    : db.prepare(`${SELECT} ORDER BY t.name COLLATE NOCASE`).all())
 })
 
 // POST /api/email-templates
@@ -42,8 +48,8 @@ router.post('/', (req, res) => {
     row = Object.fromEntries(CREATE_KEYS.map(k => [k, WRITABLE[k](req.body?.[k])]))
   } catch (e) { return res.status(400).json({ error: e.message }) }
   const id = newRecordId()
-  db.prepare(`INSERT INTO email_templates (id, name, subject, body, language, created_by)
-    VALUES (@id, @name, @subject, @body, @language, @created_by)`)
+  db.prepare(`INSERT INTO email_templates (id, name, subject, body, language, kind, created_by)
+    VALUES (@id, @name, @subject, @body, @language, @kind, @created_by)`)
     .run({ ...row, id, created_by: req.user.id })
   res.status(201).json(getOne(id))
 })
@@ -77,8 +83,8 @@ router.post('/:id/duplicate', (req, res) => {
   const src = getOne(req.params.id)
   if (!src) return res.status(404).json({ error: 'Modèle introuvable' })
   const id = newRecordId()
-  db.prepare(`INSERT INTO email_templates (id, name, subject, body, language, fallbacks, created_by) VALUES (?,?,?,?,?,?,?)`)
-    .run(id, `${src.name} (copie)`.slice(0, 200), src.subject, src.body, src.language, src.fallbacks || null, req.user.id)
+  db.prepare(`INSERT INTO email_templates (id, name, subject, body, language, kind, fallbacks, created_by) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(id, `${src.name} (copie)`.slice(0, 200), src.subject, src.body, src.language, src.kind || 'vente', src.fallbacks || null, req.user.id)
   res.status(201).json(getOne(id))
 })
 

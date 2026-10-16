@@ -11,6 +11,7 @@ import {
 } from '../services/instagramProspects.js'
 import {
   runCommentScrape,
+  askBrowserRead,
   getSessionCookie,
   saveSessionCookie,
   getScrapeConfig,
@@ -417,6 +418,7 @@ router.patch('/prospects/:id', requireAuth, (req, res) => {
  */
 router.post('/scrape', requireAdmin, async (req, res) => {
   const days = req.body?.days != null ? Number(req.body.days) : null
+  askBrowserRead()
   const result = await runCommentScrape({ force: true, trigger: 'manuel (page Prospects Instagram)', days })
   if (result.error) return res.status(502).json(result)
   res.json(result)

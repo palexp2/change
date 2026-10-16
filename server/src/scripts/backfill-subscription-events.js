@@ -130,6 +130,11 @@ async function main() {
         newAmountForEvent = amountMonthly
       } else {
         category = classifyChange({ prevStatus, newStatus: status, prevAmount, newAmount: amountMonthly })
+        // Garde « contrat inchangé » : sans items, rabais ni fin d'essai dans
+        // previous_attributes, un écart de montant n'est qu'un recalcul.
+        const contractTouched = ['items', 'plan', 'quantity', 'discount', 'discounts'].some(k => k in previous)
+          || ('status' in previous && (previous.status === 'trialing' || sub.status === 'trialing'))
+        if ((category === 'upgrade' || category === 'downgrade') && !contractTouched) category = null
         if (!category) {
           stats.skippedNoChange++
           continue

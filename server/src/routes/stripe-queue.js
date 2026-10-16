@@ -80,19 +80,19 @@ router.delete('/tax-mappings/:id', (req, res) => {
   res.json({ ok: true })
 })
 
-// ── Mapping configurable Stripe → factures (modale « Mapping Stripe » sur /factures)
+// ── Mapping configurable Stripe → factures (colonne « Champ Stripe » de /champs/factures)
 
 // GET /api/stripe-queue/facture-field-map — specs + mapping effectif + champs fixes
 router.get('/facture-field-map', (req, res) => {
   res.json({
     fields: [
-      ...STRIPE_FACTURE_FIELDS.map(({ key, label, hint, type, default: def, candidates }) => ({
-        key, label, hint: hint || null, type, default: def, candidates,
+      ...STRIPE_FACTURE_FIELDS.map(({ key, label, column, hint, type, default: def, candidates }) => ({
+        key, label, column, hint: hint || null, type, default: def, candidates,
       })),
       // Champs personnalisés (kind='data') de factures — mappables sur tout le
       // catalogue Stripe, non synchronisés par défaut.
-      ...getCustomFieldSpecs().map(({ key, label, fieldType, default: def, candidates }) => ({
-        key, label, hint: `Champ personnalisé (${fieldType})`, custom: true, default: def, candidates,
+      ...getCustomFieldSpecs().map(({ key, label, column, fieldType, default: def, candidates }) => ({
+        key, label, column, hint: `Champ personnalisé (${fieldType})`, custom: true, default: def, candidates,
       })),
     ],
     field_map: getFactureFieldMap(),
@@ -110,13 +110,13 @@ router.put('/facture-field-map', requireAdmin, (req, res) => {
   }
 })
 
-// ── Mapping configurable Stripe → subscriptions (modale « Sync Stripe » sur /abonnements)
+// ── Mapping configurable Stripe → subscriptions (colonne « Champ Stripe » de /champs/abonnements)
 
 // GET /api/stripe-queue/subscription-field-map — specs + mapping effectif + champs fixes
 router.get('/subscription-field-map', (req, res) => {
   res.json({
-    fields: STRIPE_SUBSCRIPTION_FIELDS.map(({ key, label, hint, type, default: def, candidates }) => ({
-      key, label, hint: hint || null, type, default: def, candidates,
+    fields: STRIPE_SUBSCRIPTION_FIELDS.map(({ key, label, column, hint, type, default: def, candidates }) => ({
+      key, label, column, hint: hint || null, type, default: def, candidates,
     })),
     field_map: getSubscriptionFieldMap(),
     fixed: STRIPE_SUBSCRIPTION_FIXED,

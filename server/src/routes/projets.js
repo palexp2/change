@@ -13,7 +13,7 @@ import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { logSync } from '../services/syncLog.js'
-import { CATEGORIES as SUBSCRIPTION_EVENT_CATEGORIES, emitSubscriptionEvent, emitSubscriptionEventsOf, safeDetectRachatForChurn, backfillRachatDetection, getRachatFailureStatus } from '../services/subscriptionEvents.js'
+import { CATEGORIES as SUBSCRIPTION_EVENT_CATEGORIES, buildSubscriptionEventRow, emitSubscriptionEvent, emitSubscriptionEventsOf, safeDetectRachatForChurn, backfillRachatDetection, getRachatFailureStatus } from '../services/subscriptionEvents.js'
 import { requireAdmin } from '../middleware/auth.js'
 import { emitEntity, emitSubscription } from '../services/realtimeEmitters.js'
 import { getCurrentItemsSnapshot, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js'
@@ -23,13 +23,16 @@ import { checkAddress, runAddressCheck, getAddressCheckSummary } from '../servic
 // fond) : ces imports ne servent qu'aux deux routes explicites ci-dessous.
 import { confirmAddressInput, confirmAddressRecord, needsConfirmation } from '../services/addressConfirm.js'
 import { getStripeKey } from '../services/stripe.js'
+import { resolveStripeSubscriptionFields } from '../services/stripeSubscriptionFieldMap.js'
 import { APP_URL } from '../config/appUrl.js'
 import { pendingInvoiceTotals } from '../services/invoiceDiscount.js'
 import { uploadsPath } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
+import { usdCadRateLookup } from '../services/fx.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { getWritableCustomColumns, refusedAirtablePullKeys, isColumnWritable, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { writeBackRecord } from '../services/airtableWriteback.js'
+import { getAccessToken, airtableDelete } from '../connectors/airtable.js'
 
 // Filet pour un write-back ERP → Airtable lancé en fire-and-forget : writeBackRecord
 // trace déjà ses échecs internes dans sync_log, ce wrapper garantit qu'une rejection
@@ -47,10 +50,11 @@ function traceRetourPush(promise, recordId) {
 // Stratégie :
 //   1. Si on a des `stripe_balance_transactions` agrégeant invoice_tax_gst/qst
 //      → on retourne TPS + TVQ (Stripe split QC).
-//   2. Sinon, fallback : on calcule via la province d'expédition (ou de la
-//      ferme) du client + `amount_before_tax_cad` → split TPS/TVQ ou HST.
+//   2. Sinon, et seulement hors Stripe (pas d'invoice_id) : estimation via la
+//      province d'expédition (ou de la ferme) du client + `amount_before_tax_cad`
+//      → split TPS/TVQ ou HST.
 //   3. Si rien ne matche, on dérive `total_amount - amount_before_tax_cad`
-//      en une seule ligne "Taxes" générique.
+//      en une seule ligne "Taxes" générique (0 → aucune ligne).
 function computeFactureTaxes(facture) {
   // 1. Stripe balance transactions
   if (facture.invoice_id) {
@@ -70,10 +74,12 @@ function computeFactureTaxes(facture) {
     }
   }
 
-  // 2. Province d'expédition du client (Livraison > Ferme)
+  // 2. Province d'expédition du client (Livraison > Ferme). Jamais pour une
+  // facture Stripe : on montre ce que Stripe a réellement facturé, pas une
+  // estimation (une facture Stripe sans taxe afficherait une TPS/TVQ inventée).
   let province = null
   let country = 'Canada'
-  if (facture.company_id) {
+  if (facture.company_id && !facture.invoice_id) {
     const ship = db.prepare(`
       SELECT province, country FROM adresses
       WHERE company_id = ? AND address_type = 'Livraison' AND province IS NOT NULL AND province != ''
@@ -348,6 +354,7 @@ router.get('/bom', (req, res) => {
   const rows = db.prepare(`
     SELECT b.*,
       p.name_fr as product_name, p.sku as product_sku, p.image_url as product_image_url,
+      p.stock_qty as product_stock_qty,
       c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url,
       c.stock_qty as component_stock_qty, c.min_stock as component_min_stock,
       c.procurement_type as component_procurement_type
@@ -366,6 +373,7 @@ router.get('/bom/:id', (req, res) => {
   const row = db.prepare(`
     SELECT b.*,
       p.name_fr as product_name, p.sku as product_sku, p.image_url as product_image_url,
+      p.stock_qty as product_stock_qty,
       c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url,
       c.stock_qty as component_stock_qty, c.min_stock as component_min_stock,
       c.procurement_type as component_procurement_type
@@ -376,6 +384,28 @@ router.get('/bom/:id', (req, res) => {
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
+})
+
+// Suppression d'une ligne de nomenclature : d'abord dans Airtable (sinon le
+// sync suivant la ramènerait), puis ici.
+router.delete('/bom/:id', async (req, res) => {
+  const row = db.prepare('SELECT id, airtable_id FROM bom_items WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Ligne introuvable' })
+  const t0 = Date.now()
+  try {
+    if (row.airtable_id) {
+      const cfg = db.prepare("SELECT base_id, table_id FROM airtable_module_config WHERE module='bom'").get()
+      if (!cfg?.base_id || !cfg?.table_id) throw new Error('Configuration Airtable de la BOM absente')
+      const token = await getAccessToken()
+      await airtableDelete(`/${cfg.base_id}/${cfg.table_id}`, token, [row.airtable_id])
+    }
+    db.prepare('DELETE FROM bom_items WHERE id = ?').run(row.id)
+    logSync('bom', 'erp-delete', { status: 'success', modified: 1, durationMs: Date.now() - t0 })
+    res.json({ ok: true })
+  } catch (e) {
+    logSync('bom', 'erp-delete', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+    res.status(502).json({ error: e.message })
+  }
 })
 
 // ── Serial State Changes ─────────────────────────────────────────────────────
@@ -459,6 +489,13 @@ router.post('/assemblages', (req, res) => {
 
 // ── Factures ─────────────────────────────────────────────────────────────────
 
+function productsListText(items) {
+  return items
+    .filter(it => it.name && String(it.name).trim())
+    .map(it => (Number(it.qty) > 1 ? `${String(it.name).trim()} ×${Number(it.qty)}` : String(it.name).trim()))
+    .join(', ') || null
+}
+
 router.get('/factures', (req, res) => {
   const { company_id, contact_id, project_id, status } = req.query
   const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 50)
@@ -522,6 +559,20 @@ router.get('/factures', (req, res) => {
     ${where}
   `).all(...params)
 
+  // Colonne « Produits » : lignes de la facture concaténées (« ×n » si qté > 1).
+  const itemsByFacture = new Map()
+  for (const it of db.prepare(`
+    SELECT sii.facture_id, COALESCE(p.name_fr, sii.description) AS name, sii.quantity AS qty
+    FROM stripe_invoice_items sii
+    LEFT JOIN products p ON p.id = sii.product_id
+    WHERE sii.facture_id IS NOT NULL
+    ORDER BY sii.created_at ASC, sii.id ASC
+  `).all()) {
+    if (!itemsByFacture.has(it.facture_id)) itemsByFacture.set(it.facture_id, [])
+    itemsByFacture.get(it.facture_id).push(it)
+  }
+  for (const r of facturesRows) r.products_list = productsListText(itemsByFacture.get(r.id) || [])
+
   // Pending invoices (drafts + sent but not yet paid, + annulées → « Void »
   // comme celles de Stripe). Use the same filters where applicable.
   let pwhere = "WHERE pi.status IN ('draft','sent','cancelled')"
@@ -565,7 +616,8 @@ router.get('/factures', (req, res) => {
   `).all(...pparams)
   // Montants d'une facture en attente : lignes moins rabais, avant taxes.
   for (const r of pendingRows) {
-    const { net } = pendingInvoiceTotals(r)
+    const { net, items } = pendingInvoiceTotals(r)
+    r.products_list = productsListText(items.map(it => ({ name: it.description, qty: it.qty })))
     r.amount_before_tax_cad = r.total_amount = r.balance_due = net
     if (r.pending_status === 'cancelled') r.balance_due = 0
     delete r.items_json
@@ -585,8 +637,22 @@ router.get('/factures', (req, res) => {
   // toujours faux.
   // deferred_revenue_state : "Constaté" si revenue_recognized_at posé,
   // "En attente" si deferred_revenue_at posé sans constat, sinon "—".
+  // amount_ht : avant taxes, après rabais, en devise de la facture
+  // (`montant_avant_taxes` ; `amount_before_tax_cad` est mixte selon la source).
+  // amount_ht_cad : converti au taux BoC du paiement (à défaut, de la facture) —
+  // taux en cache seulement, affichage indicatif.
+  const usdCad = usdCadRateLookup()
   for (const r of merged) {
-    const isOrphan = r.kind !== 'subscription' && !r.order_id && !r.project_id && r.source !== 'pending'
+    const native = r.montant_avant_taxes != null && r.montant_avant_taxes !== ''
+      ? parseFloat(r.montant_avant_taxes)
+      : r.amount_before_tax_cad
+    r.amount_ht = native == null || Number.isNaN(Number(native)) ? null : Number(native)
+    const cur = (r.currency || 'CAD').toUpperCase()
+    const rate = cur === 'CAD' ? 1 : cur === 'USD' ? usdCad(r.payment_date || r.document_date || r.created_at) : null
+    r.amount_ht_cad = r.amount_ht != null && rate ? Math.round(r.amount_ht * rate * 100) / 100 : null
+  }
+  for (const r of merged) {
+    const isOrphan =r.kind !== 'subscription' && !r.order_id && !r.project_id && r.source !== 'pending'
     r.is_sent = r.has_linked_shipment === 1 || r.is_sent_manual === 1 || isOrphan
     if (r.revenue_recognized_at) r.deferred_revenue_state = 'Constaté'
     else if (r.deferred_revenue_at) r.deferred_revenue_state = 'En attente'
@@ -967,10 +1033,32 @@ router.patch('/factures/:id', (req, res) => {
     updates.push('notes=?')
     params.push(notes && notes.trim() !== '' ? notes : null)
   }
+  // Champs personnalisés éditables (règle unique, customFieldWritability) : un
+  // champ Airtable resté en « Airtable → Boréal » est refusé en 400 — le passer
+  // en bidirectionnel dans /champs/factures le rend éditable ici ET le renvoie
+  // vers Airtable.
+  if (refusedAirtablePullKeys('factures', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+  }
+  const handled = new Set(['project_id', 'order_id', 'company_id', 'contact_id', 'is_sent_manual', 'notes'])
+  const customCols = getWritableCustomColumns('factures').map(c => c.column_name).filter(c => !handled.has(c))
+  const custom = buildPartialUpdate(req.body, { allowed: customCols })
+  if (custom.error) return res.status(400).json({ error: custom.error })
+  if (custom.setClause) {
+    updates.push(custom.setClause)
+    params.push(...custom.values)
+  }
   if (updates.length) {
     params.push(req.params.id)
     db.prepare(`UPDATE factures SET ${updates.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...params)
+    // Write-back vers Airtable : ne part que pour les champs réglés en
+    // « Boréal → Airtable » ou « Bidirectionnel » (défaut : rien).
+    const changed = updates.flatMap(u => u.split(',').map(s => s.trim().split(/\s*=/)[0]))
+    writeBackRecord('factures', req.params.id, changed).catch(e => {
+      console.error(`erp-writeback factures ${req.params.id} (async):`, e.message)
+      logSync('factures', 'erp-writeback', { status: 'error', error: `${req.params.id}: ${e.message}` })
+    })
   }
 
   // Si le rattachement (order/project/company) a changé, la condition « produits
@@ -1346,8 +1434,10 @@ router.get('/abonnement-events', (req, res) => {
     ${where}
   `).get(...params).c
 
+  // `e.*` : champs personnalisés (même forme que buildSubscriptionEventRow).
   const rows = db.prepare(`
     SELECT
+      e.*, NULL AS items_before_json, NULL AS items_after_json,
       e.id, e.event_date, e.event_type, e.category,
       e.previous_amount_cad, e.new_amount_cad, e.amount_cad_delta,
       e.currency, e.created_at, e.subscription_id,
@@ -1356,7 +1446,7 @@ router.get('/abonnement-events', (req, res) => {
       co.name AS company_name,
       e.rachat_status, e.rachat_order_id, e.rachat_checked_at,
       o.order_number AS rachat_order_number
-    FROM subscription_events e
+    FROM ${readRelation('subscription_events')} e
     LEFT JOIN subscriptions s ON e.subscription_id = s.id
     LEFT JOIN companies co ON co.id = COALESCE(e.company_id, s.company_id)
     LEFT JOIN orders o ON o.id = e.rachat_order_id
@@ -1366,6 +1456,25 @@ router.get('/abonnement-events', (req, res) => {
   `).all(...params, limitVal, offset)
 
   res.json({ data: rows, total, page: parseInt(page), limit: limitAll ? 'all' : parseInt(limit) })
+})
+
+// PATCH /api/projets/abonnement-events/:id
+// Saisie des champs personnalisés d'un mouvement (cellules du tableau
+// /abonnements/mouvements). Colonnes natives : routes dédiées ci-dessous.
+router.patch('/abonnement-events/:id', (req, res) => {
+  const ev = db.prepare('SELECT id, subscription_id FROM subscription_events WHERE id=?').get(req.params.id)
+  if (!ev) return res.status(404).json({ error: 'Événement introuvable' })
+  if (refusedAirtablePullKeys('subscription_events', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+  }
+  const customCols = getWritableCustomColumns('subscription_events').map(c => c.column_name)
+  const { setClause, values, error } = buildPartialUpdate(req.body, { allowed: customCols })
+  if (error) return res.status(400).json({ error })
+  if (setClause) {
+    db.prepare(`UPDATE subscription_events SET ${setClause} WHERE id = ?`).run(...values, ev.id)
+    emitSubscriptionEvent('updated', ev.id, ev.subscription_id, req.user?.id)
+  }
+  res.json(buildSubscriptionEventRow(ev.id))
 })
 
 // PATCH /api/projets/abonnement-events/:id/rachat
@@ -1512,9 +1621,14 @@ router.get('/abonnements', (req, res) => {
       const primary = enriched.find(it => it.product_id) || enriched[0]
       row.product_id = primary?.product_id || null
       row.product_name = primary?.name || null
+      // Colonne « Produits » : tous les items, « ×n » si quantité > 1.
+      row.products = enriched.filter(it => it.name).map(it => ({ id: it.product_id || null, name: it.name, qty: Number(it.quantity) || 1 }))
+      row.products_list = row.products.map(p => p.qty > 1 ? `${p.name} ×${p.qty}` : p.name).join(', ') || null
     } else {
       row.product_id = null
       row.product_name = null
+      row.products = []
+      row.products_list = null
     }
   }
 
@@ -1683,7 +1797,81 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
     }
   })
 
-  res.json({ items, history, invoices: invoiceHistory, discount })
+  // État d'annulation côté Stripe (bouton « Annuler » de la fiche).
+  const cancel = {
+    status: sub.status,
+    cancel_at: sub.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null,
+    current_period_end: (sub.items.data[0]?.current_period_end || sub.current_period_end)
+      ? new Date((sub.items.data[0]?.current_period_end || sub.current_period_end) * 1000).toISOString() : null,
+  }
+
+  // Phases à venir du calendrier Stripe (« Upcoming phases ») : celles qui
+  // commencent après maintenant. Prix HT repris de la ligne courante au même
+  // prix quand elle existe (prix TTC des tax_behavior inclusive).
+  let phases = []
+  const scheduleId = typeof sub.schedule === 'string' ? sub.schedule : sub.schedule?.id
+  if (scheduleId) {
+    try {
+      const sched = await stripe.subscriptionSchedules.retrieve(scheduleId, {
+        expand: ['phases.items.price.product', 'phases.discounts.coupon'],
+      })
+      const htByPrice = new Map(sub.items.data.map(si => [si.price.id, htUnitBySubItem.get(si.id) ?? si.price.unit_amount ?? null]))
+      const iso = s => s ? new Date(s * 1000).toISOString() : null
+      const now = Date.now() / 1000
+      phases = (sched.phases || []).filter(p => p.start_date > now).map(p => {
+        const coupon = p.discounts?.[0]?.coupon
+        return {
+          start: iso(p.start_date),
+          end: iso(p.end_date),
+          discount: coupon && typeof coupon === 'object' ? (coupon.name || coupon.id) : (typeof coupon === 'string' ? coupon : null),
+          items: (p.items || []).map(it => {
+            const price = typeof it.price === 'object' ? it.price : null
+            const htCents = price ? (htByPrice.get(price.id) ?? price.unit_amount ?? null) : null
+            const qty = it.quantity ?? 1
+            return {
+              product_name: price?.product?.name || price?.nickname || price?.id || String(it.price),
+              unit_amount: htCents != null ? htCents / 100 : null,
+              quantity: qty,
+              currency: price?.currency?.toUpperCase() || null,
+              interval: price?.recurring?.interval || null,
+              interval_count: price?.recurring?.interval_count || null,
+              total: htCents != null ? (htCents / 100) * qty : null,
+            }
+          }),
+        }
+      })
+    } catch (e) {
+      console.error('[abonnements] calendrier Stripe', e.message)
+    }
+  }
+
+  res.json({ items, history, invoices: invoiceHistory, discount, cancel, phases })
+})
+
+// POST /abonnements/:id/cancel { when: 'period_end' | 'now' | 'undo' }
+// Annule l'abonnement dans Stripe : à la fin de la période payée, tout de
+// suite, ou retire une annulation programmée. Le webhook Stripe enregistre le
+// mouvement (churn) ; la ligne locale est mise à jour ici pour l'affichage.
+router.post('/abonnements/:id/cancel', async (req, res) => {
+  const row = db.prepare('SELECT id, stripe_id FROM subscriptions WHERE id=?').get(req.params.id)
+  if (!row?.stripe_id) return res.status(404).json({ error: 'Abonnement Stripe introuvable' })
+  const when = req.body?.when
+  if (!['period_end', 'now', 'undo'].includes(when)) return res.status(400).json({ error: 'when invalide' })
+  const key = getStripeKey()
+  if (!key) return res.status(503).json({ error: 'Stripe non configuré' })
+  const stripe = new Stripe(key)
+  try {
+    const sub = when === 'now'
+      ? await stripe.subscriptions.cancel(row.stripe_id)
+      : await stripe.subscriptions.update(row.stripe_id, when === 'undo' ? { cancel_at: '' } : { cancel_at_period_end: true })
+    const { cancel_date: cancelDate } = resolveStripeSubscriptionFields(sub)
+    db.prepare(`UPDATE subscriptions SET cancel_date=?${sub.status === 'canceled' ? ", status='canceled'" : ''} WHERE id=?`)
+      .run(cancelDate ?? null, row.id)
+    emitSubscription('updated', row.id, req.user?.id)
+    res.json({ ok: true, status: sub.status, cancel_at: sub.cancel_at ? new Date(sub.cancel_at * 1000).toISOString() : null })
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Stripe a refusé l\'annulation' })
+  }
 })
 
 // GET /abonnements/:id/invoices/:invoiceId/pdf
@@ -1720,7 +1908,8 @@ router.patch('/abonnements/:id', (req, res) => {
   if (Object.prototype.hasOwnProperty.call(req.body, 'rachat')) {
     const VALID = ['rachat complet', 'rachat partiel', 'fusion', 'non', null]
     if (!VALID.includes(req.body.rachat)) return res.status(400).json({ error: 'Valeur invalide' })
-    updates.push('rachat=?')
+    // Choix manuel : la détection automatique ne le réécrit plus.
+    updates.push('rachat=?', 'rachat_auto=0', 'rachat_reason=NULL')
     params.push(req.body.rachat)
   }
   if (Object.prototype.hasOwnProperty.call(req.body, 'is_test')) {

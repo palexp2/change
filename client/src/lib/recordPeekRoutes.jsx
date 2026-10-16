@@ -248,6 +248,15 @@ export const PEEK_ROUTES = {
     title: r => r.name || 'Modèle de courriel',
     subtitle: r => r.subject || '',
   },
+  'courriels-marketing': {
+    label: 'Courriel marketing',
+    width: 720,
+    list: '/courriels-marketing',
+    Component: lazy(() => import('../pages/EmailTemplateDetail.jsx')),
+    load: id => api.emailTemplates.get(id),
+    title: r => r.name || 'Courriel marketing',
+    subtitle: r => r.subject || '',
+  },
   employees: {
     label: 'Employé',
     width: 720,

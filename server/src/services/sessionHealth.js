@@ -59,6 +59,13 @@ const STATUSES = new Set(['ok', 'expired', 'error'])
 export function recordSessionStatus(connector, { status, detail = null } = {}) {
   if (!STATUSES.has(status)) throw new Error(`statut de session inconnu : ${status}`)
   const now = new Date().toISOString()
+  const before = db.prepare('SELECT status FROM connector_sessions WHERE connector=?').get(connector)?.status
+  // Session qui tombe / qui revient : message privé tout de suite (Charles, 2026-10-14).
+  if (status === 'expired' && before !== 'expired') {
+    alertSession(connector, `:rotating_light: *${LABELS[connector] || connector} déconnecté de Boréal*${detail ? `\n${detail}` : ''}`).catch(() => {})
+  } else if (status === 'ok' && before === 'expired') {
+    alertSession(connector, `:white_check_mark: ${LABELS[connector] || connector} reconnecté à Boréal.`, { force: true }).catch(() => {})
+  }
   db.prepare(`
     INSERT INTO connector_sessions (connector, status, detail, checked_at, last_ok_at)
     VALUES (?, ?, ?, ?, CASE WHEN ? = 'ok' THEN ? ELSE NULL END)
@@ -69,6 +76,44 @@ export function recordSessionStatus(connector, { status, detail = null } = {}) {
       last_ok_at = CASE WHEN excluded.status = 'ok' THEN excluded.checked_at ELSE connector_sessions.last_ok_at END
   `).run(connector, status, detail, now, status, now)
   return { connector, status, detail, checked_at: now }
+}
+
+const LABELS = { instagram: 'Instagram', manychat: 'ManyChat' }
+
+/** Message privé Slack au destinataire de l'automation (Antoine Lambert). */
+async function alertSession(connector, text, { force = false } = {}) {
+  // Instagram : la session vue du serveur meurt vite, mais le navigateur lit
+  // quand même. Tant qu'une lecture a réussi récemment, ce n'est pas une panne.
+  const row = getSessionStatus(connector)
+  if (!force && connector === 'instagram' && row?.last_ok_at
+    && Date.now() - new Date(row.last_ok_at).getTime() < STALE_HOURS * 3600_000) return
+  const cfg = loadHealthConfig()
+  const { sendSlack } = await import('./slack.js')
+  await sendSlack({ channel: cfg.slack_channel, url: cfg.slack_webhook_url, envName: cfg.slack_webhook_env, text })
+  db.prepare('UPDATE connector_sessions SET notified_at=? WHERE connector=?').run(new Date().toISOString(), connector)
+}
+
+/**
+ * Lecture arrêtée sans session expirée (Mac fermé, navigateur coupé, Instagram
+ * qui refuse) : alerte si aucun succès depuis `STALE_HOURS`, une fois par jour.
+ */
+export const STALE_HOURS = 12
+export async function checkStaleSessions() {
+  const cfg = loadHealthConfig()
+  const names = cfg.connectors.split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
+  const today = new Date().toISOString().slice(0, 10)
+  const out = []
+  for (const name of names) {
+    const row = getSessionStatus(name)
+    if (!row?.last_ok_at) continue
+    const hours = (Date.now() - new Date(row.last_ok_at).getTime()) / 3600_000
+    if (hours < STALE_HOURS || String(row.notified_at || '').slice(0, 10) === today) continue
+    await alertSession(name, `:warning: *${LABELS[name] || name} : rien de lu depuis ${Math.round(hours)} h*` +
+      (name === 'instagram' ? '\nVérifie que le Mac est allumé et Instagram ouvert dans le profil Edge Orisha.' : '') +
+      (row.detail ? `\n${row.detail}` : ''))
+    out.push(name)
+  }
+  return out
 }
 
 export function getSessionStatus(connector = null) {
@@ -214,11 +259,11 @@ export async function runSessionHealthCheck({ force = false, trigger = 'schedule
     return String(row?.notified_at || '').slice(0, 10) !== today
   })
 
-  // Plus aucune alerte Slack (demande de Guillaume, 2026-10-01) : l'état reste
-  // visible dans Connecteurs et dans l'historique de l'automation.
-  if (toNotify.length) {
-    const mark = db.prepare('UPDATE connector_sessions SET notified_at=? WHERE connector=?')
-    for (const r of toNotify) mark.run(new Date().toISOString(), r.connector)
+  // Alerte en privé à Antoine Lambert (Charles, 2026-10-14 ; coupée le
+  // 2026-10-01 à la demande de Guillaume) — seulement une session expirée :
+  // un refus passager d'Instagram n'en est pas une.
+  for (const r of toNotify.filter(r => r.status === 'expired')) {
+    await alertSession(r.connector, `:rotating_light: *${LABELS[r.connector] || r.connector} déconnecté de Boréal*${r.detail ? `\n${r.detail}` : ''}`).catch(() => {})
   }
 
   const summary = results.map(r => `${r.connector} : ${r.status}${r.detail ? ` (${r.detail})` : ''}`).join(' · ')
@@ -238,7 +283,7 @@ export function previewSessionHealth() {
   const rows = getSessionStatus()
   return {
     connecteurs_verifies: cfg.connectors,
-    alerte: 'aucune (Slack coupé) — état visible dans Connecteurs',
+    alerte: `message privé Slack à ${cfg.recipient} : session expirée (tout de suite) ou rien de lu depuis ${STALE_HOURS} h`,
     etat: rows.length
       ? rows.map(r => `${r.connector} : ${r.status}${r.last_ok_at ? ` · dernier succès ${r.last_ok_at.slice(0, 16).replace('T', ' ')}` : ' · jamais vérifiée avec succès'}`)
       : 'aucune vérification encore faite',

@@ -46,3 +46,13 @@ test('migration : totaux, identifiants et suppressions conservés, sans second d
     assert.equal(shiftWeeks(memory).shifted, 0)
   } finally { memory.close() }
 })
+
+test('RSDE jamais plus long que la journée : refusé à la saisie, raboté si la pause s’allonge', async () => {
+  const { token } = createTestUser()
+  const day = (await apiFetch(base, token, 'POST', '/api/timesheets/day', { date: '2026-10-14', mode: 'simple' })).body
+  await apiFetch(base, token, 'PATCH', `/api/timesheets/day/${day.id}`, { start_time: '14:15', end_time: '19:29', break_minutes: 30 })
+  assert.equal((await apiFetch(base, token, 'PUT', `/api/timesheets/day/${day.id}/rd`, { minutes: 300, project: 'Fiabilité' })).status, 400)
+  assert.equal((await apiFetch(base, token, 'PUT', `/api/timesheets/day/${day.id}/rd`, { minutes: 284, project: 'Fiabilité' })).status, 200)
+  const after = (await apiFetch(base, token, 'PATCH', `/api/timesheets/day/${day.id}`, { break_minutes: 90 })).body
+  assert.equal(after.entries.filter(e => e.rsde).reduce((s, e) => s + e.duration_minutes, 0), 224)
+})

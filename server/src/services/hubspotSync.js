@@ -3,7 +3,7 @@ import { newRecordId } from '../utils/recordId.js'
 import {
   isHubSpotConfigured,
   createTask, updateTask, deleteTask, getTask,
-  listOwners, searchTasksModifiedSince,
+  listOwners, searchTasksModifiedSince, readTaskAssociations, readAssociations,
 } from '../connectors/hubspot.js'
 
 // ── Field mapping (hardcoded) ────────────────────────────────────────────────
@@ -277,6 +277,80 @@ function setLastPullCursor(iso) {
   `).run(iso)
 }
 
+// ── Liens client (HubSpot → ERP) ─────────────────────────────────────────────
+//
+// Les suivis créés dans HubSpot arrivaient sans entreprise ni contact : ils
+// n'apparaissaient pas dans la fiche du client. On recopie les associations
+// HubSpot, sans jamais écraser un lien déjà posé dans l'ERP.
+
+// hubspot_record_id est parfois stocké « 123.0 » (import numérique).
+function findByHubspotId(table, hsId, conn) {
+  if (!hsId) return null
+  return conn.prepare(`SELECT id${table === 'contacts' ? ', company_id' : ''} FROM ${table}
+    WHERE hubspot_record_id IN (?, ?) LIMIT 1`).get(String(hsId), `${hsId}.0`) || null
+}
+
+// Repli « transaction » : un suivi lié seulement à une transaction HubSpot (ex.
+// clic sur un lien de paiement) prend le contact et l'entreprise de celle-ci.
+// Le contact de la transaction n'est retenu que s'il est de la même entreprise.
+export function applyTaskLinks(hsTaskId, { hsContactId, hsCompanyId, hsDealContactId, hsDealCompanyId }, conn = db) {
+  const task = conn.prepare('SELECT id, company_id, contact_id FROM tasks WHERE hubspot_task_id=?').get(String(hsTaskId))
+  if (!task || (task.company_id && task.contact_id)) return false
+  let contact = task.contact_id ? null : findByHubspotId('contacts', hsContactId, conn)
+  let companyId = task.company_id || findByHubspotId('companies', hsCompanyId, conn)?.id || contact?.company_id || null
+  if (!task.contact_id && !contact) {
+    const dealContact = findByHubspotId('contacts', hsDealContactId, conn)
+    if (dealContact && (!companyId || !dealContact.company_id || dealContact.company_id === companyId)) contact = dealContact
+  }
+  companyId = companyId || findByHubspotId('companies', hsDealCompanyId, conn)?.id || contact?.company_id || null
+  const contactId = task.contact_id || contact?.id || null
+  if (contactId === task.contact_id && companyId === task.company_id) return false
+  conn.prepare('UPDATE tasks SET contact_id=?, company_id=? WHERE id=?').run(contactId, companyId, task.id)
+  return true
+}
+
+export async function linkTasksFromHubSpot(hsTaskIds) {
+  const ids = [...new Set(hsTaskIds.map(String))]
+  if (!ids.length) return 0
+  const [contacts, companies, deals] = await Promise.all([
+    readTaskAssociations(ids, 'contacts'),
+    readTaskAssociations(ids, 'companies'),
+    readTaskAssociations(ids, 'deals'),
+  ])
+  const dealIds = [...new Set(deals.values())]
+  const [dealContacts, dealCompanies] = dealIds.length
+    ? await Promise.all([
+      readAssociations('deals', dealIds, 'contacts'),
+      readAssociations('deals', dealIds, 'companies'),
+    ])
+    : [new Map(), new Map()]
+  let linked = 0
+  for (const id of ids) {
+    const deal = deals.get(id)
+    const links = {
+      hsContactId: contacts.get(id), hsCompanyId: companies.get(id),
+      hsDealContactId: deal && dealContacts.get(deal), hsDealCompanyId: deal && dealCompanies.get(deal),
+    }
+    if (Object.values(links).some(Boolean) && applyTaskLinks(id, links)) linked++
+  }
+  return linked
+}
+
+// Rattrapage unique des tâches ouvertes importées avant ce lien
+// (v2 : repli sur la transaction HubSpot).
+async function backfillTaskLinksOnce() {
+  const KEY = 'task_links_backfill_v2'
+  const done = db.prepare("SELECT 1 FROM connector_config WHERE connector='hubspot' AND key=?").get(KEY)
+  if (done) return
+  const ids = db.prepare(`SELECT hubspot_task_id FROM tasks
+    WHERE hubspot_task_id IS NOT NULL AND deleted_at IS NULL
+      AND status IN ('À faire','En cours') AND (company_id IS NULL OR contact_id IS NULL)`).all()
+    .map(r => r.hubspot_task_id)
+  await linkTasksFromHubSpot(ids)
+  db.prepare("INSERT OR REPLACE INTO connector_config (connector, key, value) VALUES ('hubspot', ?, ?)")
+    .run(KEY, new Date().toISOString())
+}
+
 /**
  * Construit un suffixe de message d'erreur décrivant la progression partielle
  * d'un pull avant l'échec. Pur (testable sans DB ni réseau).
@@ -366,8 +440,12 @@ export async function pullDelta({ full = false } = {}) {
   }
 
   try {
-    await searchTasksModifiedSince(since, (results, win) => {
+    await searchTasksModifiedSince(since, async (results, win) => {
       applyResults(results)
+      // Un lien manqué ne doit pas bloquer la synchro des tâches.
+      try { await linkTasksFromHubSpot(results.map(r => r.id)) } catch (e) {
+        console.error('HubSpot liens tâches:', e.message)
+      }
       // Avance le curseur fenêtre par fenêtre (deltas seulement) : sur un échec
       // d'une fenêtre ultérieure, le prochain run reprend ici au lieu de tout
       // recommencer. On ancre sur maxModified (= plus récente modif vue) pour ne
@@ -418,6 +496,7 @@ export async function pullDelta({ full = false } = {}) {
     // on ré-ancre par sécurité sur la modif la plus récente réellement appliquée.
     setLastPullCursor(new Date(maxModified).toISOString())
   }
+  try { await backfillTaskLinksOnce() } catch (e) { console.error('HubSpot rattrapage liens tâches:', e.message) }
   return { modified, destroyed }
 }
 

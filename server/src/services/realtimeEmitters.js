@@ -243,6 +243,7 @@ export function touchBankTxns(ids) {
 export function emitEntity(entity, verb, id, payload, actorUserId = null, { source = null, fields = null } = {}) {
   if (!entity || !verb || !id) return
   if (!payload) return
+  if (verb !== 'deleted') payload = withComputedFields(entity, id, payload)
   emit([`${entity}:list`, `${entity}:${id}`], {
     type: `${entity}:${verb}`,
     payload,
@@ -254,6 +255,23 @@ export function emitEntity(entity, verb, id, payload, actorUserId = null, { sour
   if (actorUserId) logActivity({ userId: actorUserId, entityType: entity, entityId: id, action: verb, detail: deriveActivityLabel(payload) })
 }
 
+
+// Champs calculés (formule, lookup, rollup) relus dans la vue : une route qui
+// émet la ligne brute de la table enverrait sinon leur ancienne valeur — ou 0
+// quand une colonne physique homonyme les masque —, et la fiche resterait
+// figée jusqu'au rechargement. Superposés à la charge utile, rien d'autre.
+function withComputedFields(entity, id, payload) {
+  const table = Object.keys(ENTITY_BY_TABLE).find(t => ENTITY_BY_TABLE[t] === entity)
+  if (!table) return payload
+  try {
+    const cols = db.prepare(`SELECT column_name FROM custom_fields
+      WHERE erp_table = ? AND deleted_at IS NULL AND kind IN ('formula','lookup','rollup')`).all(table)
+      .map(r => r.column_name)
+    if (!cols.length) return payload
+    const row = db.prepare(`SELECT ${cols.map(c => `"${c}"`).join(', ')} FROM ${readRelation(table)} WHERE id = ?`).get(id)
+    return row ? { ...payload, ...row } : payload
+  } catch { return payload }
+}
 
 // ── Écritures venues d'une API externe (miroir Airtable) ────────────────────
 //
@@ -325,15 +343,16 @@ function fullRowPayload(erpTable, id) {
  * @param {string} id  id ERP du record
  * @param {string[]|null} changed  colonnes modifiées (null à la création)
  * @param {string} source  origine affichée par la pastille ('airtable')
+ * @param {string|null} actorUserId  auteur humain (Ctrl+Z) — la pastille le nomme
  */
-export function emitMirrorWrite(erpTable, outcome, id, changed = null, source = 'airtable') {
+export function emitMirrorWrite(erpTable, outcome, id, changed = null, source = 'airtable', actorUserId = null) {
   if (!erpTable || !id) return
   const verb = outcome === 'imported' ? 'created' : 'updated'
 
   // Les deux entités pilotes gardent leur charge utile riche (list-row avec
   // champs joints) : les pages qui les consomment sont écrites pour elle.
-  if (erpTable === 'orders') return emitOrder(verb, id, null, { source, fields: changed })
-  if (erpTable === 'companies') return emitCompany(verb, id, null, { source, fields: changed })
+  if (erpTable === 'orders') return emitOrder(verb, id, actorUserId, { source, fields: changed })
+  if (erpTable === 'companies') return emitCompany(verb, id, actorUserId, { source, fields: changed })
 
   const payload = verb === 'created' ? fullRowPayload(erpTable, id) : changedColumnsPayload(erpTable, id, changed)
   if (!payload) return
@@ -342,7 +361,7 @@ export function emitMirrorWrite(erpTable, outcome, id, changed = null, source = 
   // clé `items`. Son canal est donc celui de la commande parente.
   if (erpTable === 'order_items') {
     const orderId = db.prepare('SELECT order_id FROM order_items WHERE id = ?').get(id)?.order_id
-    if (orderId) emitOrderItem(verb, orderId, payload, null, { source, fields: changed })
+    if (orderId) emitOrderItem(verb, orderId, payload, actorUserId, { source, fields: changed })
     return
   }
 
@@ -351,7 +370,7 @@ export function emitMirrorWrite(erpTable, outcome, id, changed = null, source = 
   emit([`${entity}:list`, `${entity}:${id}`], {
     type: `${entity}:${verb}`,
     payload,
-    actorUserId: null,
+    actorUserId,
     source,
     fields: changed,
     ts: Date.now(),

@@ -20,7 +20,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS custom_fields (
   created_at TEXT, deleted_at TEXT, view_error TEXT,
   formula_expr TEXT, lookup_fk TEXT, lookup_target_table TEXT, lookup_target_column TEXT,
   lookup_limit_n INTEGER, lookup_limit_dir TEXT,
-  rollup_target_table TEXT, rollup_target_fk TEXT, rollup_target_column TEXT, rollup_agg TEXT,
+  rollup_target_table TEXT, rollup_target_fk TEXT, rollup_target_column TEXT, rollup_agg TEXT, rollup_filter TEXT,
   link_target_table TEXT, link_group_id TEXT, link_role TEXT, link_single INTEGER
 )`)
 
@@ -47,11 +47,14 @@ const valuesOf = () => Object.fromEntries(
   db.prepare('SELECT id, cf_envoi FROM orders_v ORDER BY id').all().map(r => [r.id, r.cf_envoi])
 )
 
-test('sans limite : le JOIN direct ne suit qu\'un lien simple', () => {
+test('sans limite : id ERP en JOIN direct, liens Airtable résolus par airtable_id', () => {
   regenerateView('orders')
   const v = valuesOf()
   assert.equal(v.o5, '2026-02-02')   // la valeur EST l'id de la cible
-  assert.equal(v.o1, null)           // une liste ne joint rien
+  assert.equal(v.o2, '2026-02-02')   // un seul record ID : valeur scalaire
+  assert.equal(v.o1, '2026-01-01, 2026-02-02, 2026-03-03')   // liste : tous les liés
+  assert.equal(v.o3, '2026-01-01, 2026-03-03')
+  assert.equal(v.o4, null)
 })
 
 test('1 dernier enregistrement lié : valeur scalaire, ordre de la liste', () => {

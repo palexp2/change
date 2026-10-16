@@ -2,9 +2,8 @@ import {
   Fan, Wind, Flame, Heater, Waves, CloudDrizzle, Tent, Gauge, Blinds, SlidersHorizontal,
   ShieldCheck, Droplets, Sprout, AlignVerticalSpaceAround,
 } from 'lucide-react'
-import { useEffect, useState } from 'react'
 import { fmtNumber } from '../utils/formatters.js'
-import { api } from '../lib/api.js'
+import { useCatalogImages } from '../lib/useCatalogImages.js'
 
 const PERMISSION_LABELS = {
   maxNumberOfCirculationFans: 'Ventilateurs de circulation',
@@ -22,7 +21,7 @@ const PERMISSION_LABELS = {
   maxNumberOfGreenhousesWithHeating: 'Serres — chauffage',
   maxNumberOfGreenhousesWithHumidityConservation: 'Serres — conservation humidité',
   maxNumberOfGreenhousesWithIrrigation: 'Serres — irrigation',
-  maxNumberOfGreenhousesWithRollupVentilation: 'Serres — ventilation par rouleau',
+  maxNumberOfGreenhousesWithRollupVentilation: 'Serres — côtés ouvrants',
 }
 
 // Vue en tuiles : libellé court (le groupe « Serres » porte déjà le préfixe),
@@ -41,24 +40,9 @@ const TILE_META = {
   maxNumberOfGreenhousesWithAdvancedVentilation: ['Ventilation avancée', Wind, 'SVC-009'],
   maxNumberOfGreenhousesWithDiseasePrevention: ['Prévention maladies', ShieldCheck, 'SVC-005'],
   maxNumberOfGreenhousesWithHeating: ['Chauffage', Flame, 'SVC-011'],
-  maxNumberOfGreenhousesWithHumidityConservation: ['Humidité', Droplets, 'SVC-006'],
+  maxNumberOfGreenhousesWithHumidityConservation: ['Conservation de l’humidité', Droplets, 'SVC-006'],
   maxNumberOfGreenhousesWithIrrigation: ['Irrigation', Sprout, 'SVC-008'],
-  maxNumberOfGreenhousesWithRollupVentilation: ['Rouleaux', AlignVerticalSpaceAround, 'SVC-007'],
-}
-
-// Images du catalogue de soumission par SKU, chargées une fois.
-let catalogImages = null
-function useCatalogImages() {
-  const [images, setImages] = useState({})
-  useEffect(() => {
-    catalogImages ||= api.catalog.list()
-      .then(l => Object.fromEntries((l || []).filter(p => p.sku && p.image_url).map(p => [p.sku, p.image_url])))
-      .catch(() => { catalogImages = null; return {} })
-    let live = true
-    catalogImages.then(m => { if (live) setImages(m) })
-    return () => { live = false }
-  }, [])
-  return images
+  maxNumberOfGreenhousesWithRollupVentilation: ['Côtés ouvrants', AlignVerticalSpaceAround, 'SVC-007'],
 }
 
 function formatLabel(key) {

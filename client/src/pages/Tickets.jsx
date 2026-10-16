@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Plus, LifeBuoy } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
@@ -5,6 +6,7 @@ import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { RatingStars } from '../components/RatingStars.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
 import TicketDetail from './TicketDetail.jsx'
 
 // Titre, question, réponse, type, statut, durée, date, entreprise et contact ont
@@ -36,9 +38,37 @@ const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDER
 // colonnes que le write-back nomme déjà (WRITEBACK_MODULES.billets.linkColumns)
 // : un billet ouvert ici arrive ainsi dans Airtable rattaché à la fiche du
 // client. Supprimer l'un des deux le retire du formulaire, sans rien casser.
+//
+// « Temps » est un champ Durée (secondes en base) : saisi et affiché en hh:mm,
+// la valeur envoyée est déjà convertie en secondes — la création ne la parse pas.
+function DurationInput({ value, onChange, id }) {
+  const shown = v => (v == null || v === '' ? '' : formatDurationSeconds(Number(v), 'h:mm'))
+  const [text, setText] = useState(() => shown(value))
+  return (
+    <input
+      id={id}
+      data-form-field="temps"
+      type="text"
+      inputMode="numeric"
+      className="input tabular-nums"
+      value={text}
+      onChange={e => {
+        const raw = e.target.value
+        setText(raw)
+        onChange(raw.trim() === '' ? '' : (parseDurationToSeconds(raw) ?? ''))
+      }}
+      onBlur={() => setText(shown(value))}
+    />
+  )
+}
+
 const FORM_FIELDS = [
   { field: 'cf_entreprise', catalog: true, visible: true },
   { field: 'cf_contact', catalog: true, visible: true },
+  { field: 'temps', catalog: true, input: p => <DurationInput {...p} /> },
+  // Mots-clés : choix en pastilles de leur couleur (réglée dans /champs).
+  { field: 'mots_cles', catalog: true, visible: false },
+  { field: 'escalade_2', catalog: true, visible: false },
 ]
 
 export default function Tickets() {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { Trash2, GripVertical, Plus, X, Clock, Table2, CreditCard, Check, Minus } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Trash2, GripVertical, Plus, X, Clock, Table2, CreditCard, Check, Minus, Search } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SearchableSelect } from './SearchableSelect.jsx'
@@ -90,7 +91,7 @@ export function FlowCanvas({ automation, tc, steps, step, onSelect, onAdd, onMov
             {s.when?.rules?.some(r => r.column) && (
               <div className="text-xs text-slate-600 mb-1 ml-1"><b>Si</b> {rulesSummary(s.when, colLabel)}</div>
             )}
-            <Block icon={<b.Icon size={17} />} bg={b.bg} title={b.label} sub={s.type === 'slack' ? slackLabel(slack, s.config?.channel) : stepSummary(s, users)} selected={step === i + 1}
+            <Block icon={<b.Icon size={17} />} bg={b.bg} title={b.label} sub={s.type === 'slack' ? slackLabel(slack, s.config?.channel) : stepSummary(s, users, !s.config?.table || s.config.table === tc?.erp_table ? colLabel : undefined)} selected={step === i + 1}
               onClick={() => onSelect(i + 1)}
               drag={{
                 draggable: true,
@@ -146,7 +147,7 @@ function ConditionsEditor({ table, rules, onChange, withConj, conj, onConj }) {
           <select className="input input-sm text-xs" value={r.op || 'eq'} onChange={e => set(i, { op: e.target.value })}>
             {OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
-          {r.op === 'not_null' ? <span /> : r.op === 'in' ? (
+          {r.op === 'not_null' ? <span /> : r.op === 'in' || r.op === 'not_in' ? (
             <input className="input input-sm text-xs" title="Valeurs séparées par des virgules"
               value={Array.isArray(r.value) ? r.value.join(', ') : r.value ?? ''}
               onChange={e => set(i, { value: e.target.value.split(/\s*,\s*/) })} />
@@ -289,6 +290,7 @@ export function StepPanel({ step, index, onChange, onType, onDelete, users, trig
           <Row key={key} label={label}>
             {type === 'text' && <input className="input" {...textProps(key)} />}
             {type === 'slack_channel' && <SlackChannelSelect value={c[key] || ''} onChange={v => set({ [key]: v })} />}
+            {type === 'check' && <input type="checkbox" checked={!!c[key]} onChange={e => set({ [key]: e.target.checked })} />}
             {type === 'number' &&<input type="number" className="input" value={c[key] ?? ''} onChange={e => set({ [key]: e.target.value === '' ? '' : Number(e.target.value) })} />}
             {type === 'area' && <textarea rows={4} className="input" {...textProps(key)} />}
             {type === 'code' && <textarea rows={14} spellCheck={false} className="input input-sm text-xs font-mono" {...textProps(key)} />}
@@ -318,6 +320,7 @@ export function StepPanel({ step, index, onChange, onType, onDelete, users, trig
             {type === 'fields' && <FieldsEditor table={c.table || triggerTable} fields={c.fields || []} onChange={f => set({ fields: f })} />}
           </Row>
         ))}
+        {b.note?.(c) && <p className="text-xs text-slate-500 mt-1">{b.note(c)}</p>}
         {step.type !== 'script' && tokens.length > 0 && (
           <div className="mt-1">
             <span className="block text-xs text-slate-500 mb-1">Insérer un champ</span>
@@ -418,8 +421,40 @@ function runSummary(l) {
   return ''
 }
 
-/** Une ligne du journal ; « ✓ Étape 2 (slack) … » devient « Action 2 · Message Slack … ». */
-function RunLine({ text }) {
+// Ce qui a lancé l'exécution (trigger_data) : source nommée, sinon déduite.
+const TRIGGER_SOURCES = { auto: 'Automatique', manuel: 'Manuel', manual: 'Manuel', button: 'Bouton', scheduled: 'Planifié', planifie: 'Planifié', horaire: 'Planifié', cron: 'Planifié' }
+// Compteurs d'un passage de règle de champ : déjà dans le résumé « n tir(s)… ».
+const RULE_COUNTERS = new Set(['candidates', 'fired', 'deferred', 'suppressed'])
+function parseTrigger(s) {
+  try { const j = JSON.parse(s || 'null'); return j && typeof j === 'object' && !Array.isArray(j) ? j : null } catch { return null }
+}
+function runSource(l) {
+  const t = parseTrigger(l.trigger_data)
+  if (!t) return ''
+  if (typeof t.trigger === 'string') {
+    const k = t.trigger.split(':')[0]
+    return TRIGGER_SOURCES[k] || (/^cron/.test(k) ? 'Planifié' : t.trigger)
+  }
+  if ('candidates' in t && 'fired' in t) return 'Automatique'
+  if (t.stripe_event) return `Stripe · ${t.stripe_event}`
+  if (t.webhookId) return 'Airtable'
+  if (t.event) return String(t.event)
+  return ''
+}
+
+/** Une ligne du journal ; « ✓ Étape 2 (slack) … » devient « Action 2 · Message Slack … »,
+ *  « • libellé (id) » d'une règle de champ ouvre la fiche de l'enregistrement. */
+function RunLine({ text, recordPath }) {
+  const rec = text.match(/^(\s*)•\s+(.+?)\s\(([^()\s]+)\)((?:\s—\s.*)?)$/) || (recordPath && text.match(/^(\s*)•\s+()([\w-]+)(\s—\s.*)$/))
+  if (rec) {
+    const [, ind, label, id, rest] = rec
+    // Sans fiche à ouvrir : « libellé (id) », l'id une seule fois s'il sert de libellé.
+    return (
+      <div className="whitespace-pre-wrap">{ind}• {recordPath
+        ? <Link to={`${recordPath}/${encodeURIComponent(id)}`} className="text-brand-700 hover:underline">{label || id}</Link>
+        : label && label !== id ? `${label} (${id})` : id}{rest}</div>
+    )
+  }
   const m = text.match(/^(\s*)([✓✗–])\s*Étape (\d+) \((\w+)\)\s*:?\s*(.*)$/)
   if (!m) return <div className="whitespace-pre-wrap">{text || ' '}</div>
   const [, ind, mark, n, type, rest] = m
@@ -434,16 +469,29 @@ function RunLine({ text }) {
 
 function RunDetail({ l }) {
   const blocks = [...new Set([l.error, l.result].filter(Boolean))]
-  if (!blocks.length) return <div className="mt-1 text-[11px] text-slate-400">—</div>
-  return blocks.map((s, i) => {
+  const t = parseTrigger(l.trigger_data)
+  const counters = t && 'candidates' in t && 'fired' in t
+  const input = t && Object.entries(t).filter(([k, v]) => k !== 'trigger' && !(counters && RULE_COUNTERS.has(k)) && v != null && v !== '' && typeof v !== 'object')
+  return <>
+    {input?.length > 0 && (
+      <div className="mt-1 text-[11px] rounded p-2 bg-[#e0f2e7]/60 text-slate-600">
+        {input.map(([k, v]) => (
+          <div key={k} className="break-words"><span className="text-slate-400">{k}</span> {l.links?.[k]
+            ? <Link to={l.links[k]} className="text-brand-700 hover:underline">{String(v)}</Link> : String(v)}</div>
+        ))}
+      </div>
+    )}
+    {!blocks.length && !input?.length && <div className="mt-1 text-[11px] text-slate-400">—</div>}
+    {blocks.map((s, i) => {
     let pretty = null
     try { const j = JSON.parse(s); if (j && typeof j === 'object') pretty = JSON.stringify(j, null, 2) } catch { /* texte */ }
     return (
       <div key={i} className={`mt-1 text-[11px] rounded p-2 space-y-0.5 ${i === 0 && l.error ? 'bg-red-50 text-red-800' : 'bg-slate-50 text-slate-600'}`}>
-        {pretty ? <pre className="whitespace-pre-wrap">{pretty}</pre> : s.split('\n').map((t, k) => <RunLine key={k} text={t} />)}
+        {pretty ? <pre className="whitespace-pre-wrap">{pretty}</pre> : s.split('\n').map((t, k) => <RunLine key={k} text={t} recordPath={l.record_path} />)}
       </div>
     )
-  })
+  })}
+  </>
 }
 
 export function HistoryPanel({ automationId }) {
@@ -455,11 +503,12 @@ export function HistoryPanel({ automationId }) {
       {!logs ? <div className="text-xs text-slate-400">…</div> : !logs.length ? <div className="text-xs text-slate-400">Aucune exécution</div> : logs.map(l => {
         const [label, cls] = RUN_STATUS[l.status] || RUN_STATUS.success
         const sum = runSummary(l)
+        const src = runSource(l)
         return (
           <div key={l.id} className="border-b border-slate-100 py-1.5 text-xs">
             <button className="w-full text-left" onClick={() => setOpen(open === l.id ? null : l.id)}>
               <span className="flex items-center gap-2">
-                <span className="text-slate-600 flex-1">{fmtDateTime(l.created_at)}</span>
+                <span className="text-slate-600 flex-1 min-w-0 truncate">{fmtDateTime(l.created_at)}{src && <span className="text-slate-400"> · {src}</span>}</span>
                 {l.duration_ms != null && <span className="text-slate-400">{l.duration_ms < 1000 ? `${l.duration_ms} ms` : `${(l.duration_ms / 1000).toFixed(1)} s`}</span>}
                 <span className={`rounded px-1.5 font-medium ${cls}`}>{label}</span>
               </span>
@@ -477,11 +526,19 @@ export function TestPanel({ automation, onDone }) {
   const [data, setData] = useState(null)
   const [busy, setBusy] = useState(null)
   const [msg, setMsg] = useState(null)
+  const [q, setQ] = useState('')
   const flow = automation.trigger_type === 'schedule'
+  // Recherche parmi les enregistrements qui satisfont le déclencheur.
   useEffect(() => {
     if (flow) return
-    api.automations.test(automation.id).then(setData).catch(e => setMsg({ err: true, text: e.message }))
-  }, [automation.id, flow])
+    let live = true
+    const t = setTimeout(() => {
+      api.automations.test(automation.id, q.trim() ? { q: q.trim() } : {})
+        .then(d => { if (live) setData(d) })
+        .catch(e => { if (live) setMsg({ err: true, text: e.message }) })
+    }, q ? 250 : 0)
+    return () => { live = false; clearTimeout(t) }
+  }, [automation.id, flow, q])
   async function run(recordId) {
     setBusy(recordId || 'flow'); setMsg(null)
     try {
@@ -496,12 +553,19 @@ export function TestPanel({ automation, onDone }) {
         <button onClick={() => run(null)} disabled={!!busy} className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg disabled:opacity-50">
           {busy ? '…' : 'Exécuter maintenant'}
         </button>
-      ) : !data ? <div className="text-xs text-slate-400">…</div> : !data.previews?.length ? (
-        <div className="text-xs text-slate-400">Aucun enregistrement ne correspond</div>
       ) : (
         <>
-          <div className="text-xs text-slate-500 mb-2">{data.candidates_total} correspondent</div>
-          {data.previews.map(p => (
+          <div className="relative mb-2">
+            <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input autoFocus type="search" value={q} onChange={e => setQ(e.target.value)} aria-label="Rechercher un enregistrement"
+              className="w-full pl-7 pr-2 py-1 text-sm border border-slate-200 rounded" />
+          </div>
+          {!data ? (!msg?.err && <div className="text-xs text-slate-400">…</div>) : !data.candidates_total ? (
+            <div className="text-xs text-slate-400">Aucun enregistrement ne correspond</div>
+          ) : (
+            <div className="text-xs text-slate-500 mb-1">{data.candidates_total} correspondent</div>
+          )}
+          {q.trim() && data?.previews?.map(p => (
             <div key={p.id} className="flex items-center justify-between gap-2 py-1 border-b border-slate-100 text-xs">
               <span className={`truncate ${p.already_fired ? 'text-slate-400' : ''}`}>{p.label}</span>
               <button onClick={() => run(p.id)} disabled={!!busy} className="shrink-0 px-2 py-0.5 border rounded text-brand-700 hover:bg-brand-50 disabled:opacity-50">

@@ -5,11 +5,15 @@ import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import Stripe from 'stripe'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
-import { recordEvent, classifyChange } from './subscriptionEvents.js'
+import { recordEvent, classifyChange, gateContractChange } from './subscriptionEvents.js'
 import {
   extractItemsFromStripeSub,
   getCurrentItemsSnapshot,
   setCurrentItemsSnapshot,
+  contractSignature,
+  getContractSignature,
+  setContractSignature,
+  promoCodeOf,
 } from './subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from './subscriptionMonthly.js'
 import { refreshAllTestFlags } from './subscriptionTestFlag.js'
@@ -160,14 +164,14 @@ export async function syncStripeSubscriptions() {
   const allSubs = []
   for await (const sub of stripe.subscriptions.list({
     limit: 100,
-    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice'],
+    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice', 'data.discounts.promotion_code', 'data.discounts.source.coupon'],
   })) {
     allSubs.push(sub)
   }
   for await (const sub of stripe.subscriptions.list({
     status: 'canceled',
     limit: 100,
-    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice'],
+    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice', 'data.discounts.promotion_code', 'data.discounts.source.coupon'],
   })) {
     allSubs.push(sub)
   }
@@ -234,14 +238,24 @@ export async function syncStripeSubscriptions() {
       customer_email: customerEmail,
     } = resolveStripeSubscriptionFields(sub)
     const stripeUrl = `https://dashboard.stripe.com/subscriptions/${sub.id}`
+    const promoCode = promoCodeOf(sub)
 
     if (existingRow) {
       const prev = db.prepare('SELECT * FROM subscriptions WHERE id=?').get(existingRow.id)
-      const category = classifyChange({
-        prevStatus: prev.status, newStatus: status,
-        prevAmount: prev.amount_monthly, newAmount: amountMonthly,
-      })
       const newItemsSnap = extractItemsFromStripeSub(sub)
+      // Garde « contrat inchangé » : un montant recalculé sans changement
+      // d'items, de rabais ni d'essai n'est pas un upgrade/downgrade.
+      const signature = contractSignature(sub)
+      const gate = gateContractChange({
+        category: classifyChange({
+          prevStatus: prev.status, newStatus: status,
+          prevAmount: prev.amount_monthly, newAmount: amountMonthly,
+        }),
+        storedSignature: getContractSignature(existingRow.id),
+        signature,
+      })
+      if (gate.storeSignature) setContractSignature(existingRow.id, signature, newItemsSnap)
+      const category = gate.category
       // category=null → changement non significatif (statut active↔past_due
       // sans delta, etc.) : pas d'event mais on persiste quand même l'UPDATE.
       if (category) {
@@ -276,13 +290,13 @@ export async function syncStripeSubscriptions() {
           status=?, amount_monthly=?, currency=?,
           start_date=?, cancel_date=?, trial_end_date=?,
           stripe_url=?, customer_id=?, customer_email=?,
-          interval_count=?, interval_type=?
+          interval_count=?, interval_type=?, promo_code=COALESCE(?, promo_code)
         WHERE id=?
       `).run(
         companyId, status, amountMonthly, currency,
         startDate, cancelDate, trialEndDate,
         stripeUrl, customerId, customerEmail,
-        intervalCount, intervalType,
+        intervalCount, intervalType, promoCode,
         existingRow.id
       )
       linkSubscriptionContact(existingRow.id)
@@ -296,13 +310,13 @@ export async function syncStripeSubscriptions() {
         INSERT INTO subscriptions (
           id, company_id, stripe_id, status, amount_monthly, currency,
           start_date, cancel_date, trial_end_date, stripe_url, customer_id, customer_email,
-          interval_count, interval_type
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          interval_count, interval_type, promo_code
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         newId, companyId, sub.id, status, amountMonthly, currency,
         startDate, cancelDate, trialEndDate,
         stripeUrl, customerId, customerEmail,
-        intervalCount, intervalType
+        intervalCount, intervalType, promoCode
       )
       linkSubscriptionContact(newId)
       emitSubscription('created', newId)
@@ -326,6 +340,7 @@ export async function syncStripeSubscriptions() {
           itemsAfter: newItemsSnap,
         })
         setCurrentItemsSnapshot(newId, newItemsSnap)
+        setContractSignature(newId, contractSignature(sub), newItemsSnap)
       }
       created++
     }

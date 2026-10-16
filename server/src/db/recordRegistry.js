@@ -167,6 +167,24 @@ export const RECORD_REGISTRY = {
     },
   },
 
+  // Documents importants (/documents-importants). Le fichier arrive par
+  // POST /upload (routes/important-documents.js) ; seules les métadonnées
+  // passent par le CRUD. Suppression douce : le fichier reste sur disque.
+  important_documents: {
+    table: 'important_documents',
+    idColumn: 'id',
+    entity: 'important_document',
+    softDelete: true,
+    touchUpdatedAt: true,
+    allowed: ['name', 'category', 'expires_at', 'notes'],
+    nonNullable: new Set(['name']),
+    coerce: { name: trimOrNull, category: trimOrNull, notes: trimOrNull },
+    required: { name: 'Nom requis' },
+    search: ['name', 'category', 'notes', 'original_name'],
+    orderBy: `name COLLATE NOCASE`,
+    messages: { notFound: 'Document introuvable', empty: () => 'Le document doit garder un nom' },
+  },
+
   projects: {
     table: 'projects',
     idColumn: 'id',

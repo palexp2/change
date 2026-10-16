@@ -14,7 +14,7 @@ import TableThumb, { TABLE_THUMB_CLASS } from '../components/TableThumb.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
-import { InlineTextarea } from '../components/InlineFields.jsx'
+import { InlineTextarea, InlineDate } from '../components/InlineFields.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import InstallationDocsAction from '../components/InstallationDocsAction.jsx'
 import NovoxpressPickupModal from '../components/NovoxpressPickupModal.jsx'
@@ -24,7 +24,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
-import { fmtAddress as fmtAdresse } from '../utils/formatters.js'
+import { fmtAddress as fmtAdresse, fmtNumber } from '../utils/formatters.js'
 import { trackingUrl } from '../lib/trackingUrl.js'
 
 
@@ -54,10 +54,10 @@ const ITEM_RENDERS = {
     ? <span className="font-mono text-xs text-slate-500">{item.sku}</span>
     : <span className="text-slate-300">—</span>,
   line_weight_lbs: item => (item.line_weight_lbs
-    ? <span className="tabular-nums">{item.line_weight_lbs.toFixed(2)}</span>
+    ? <span className="tabular-nums">{fmtNumber(item.line_weight_lbs, { maximumFractionDigits: 2 })}</span>
     : <span className="text-slate-300">—</span>),
   weight_lbs: item => (item.weight_lbs
-    ? <span className="tabular-nums">{Number(item.weight_lbs).toFixed(2)}</span>
+    ? <span className="tabular-nums">{fmtNumber(item.weight_lbs, { maximumFractionDigits: 2 })}</span>
     : <span className="text-slate-300">—</span>),
   fulfillment_status: item => (item.fulfillment_status
     ? <Badge color={FULFILLMENT_COLORS[item.fulfillment_status] || 'gray'}>{item.fulfillment_status}</Badge>
@@ -403,13 +403,13 @@ export default function EnvoisDetail({ recordId, onClose }) {
             />
           </DetailField>
           <DetailField id="shipped_at" label="Envoyé le" saving={fieldSaving.shipped_at}>
-            <input
-              type="date"
-              value={envoi.shipped_at ? envoi.shipped_at.slice(0, 10) : ''}
-              onChange={e => saveField('shipped_at', e.target.value)}
+            <InlineDate
+              iso
+              value={envoi.shipped_at ? fmtDate(envoi.shipped_at) : ''}
+              onSave={v => saveField('shipped_at', v)}
               className="input text-sm w-full"
-              disabled={!!fieldSaving.shipped_at}
-              data-testid="envoi-field-shipped_at"
+              saving={!!fieldSaving.shipped_at}
+              testId="envoi-field-shipped_at"
             />
           </DetailField>
           <DetailField id="created_at" label="Créé le">
@@ -586,7 +586,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
             </h2>
             {totalWeight > 0 && (
               <span className="text-sm text-slate-500" data-testid="envoi-items-total-weight">
-                Poids total {totalWeight.toFixed(2)} lbs
+                Poids total {fmtNumber(totalWeight, { maximumFractionDigits: 2 })} lbs
               </span>
             )}
           </div>

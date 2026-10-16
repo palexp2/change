@@ -154,69 +154,6 @@ describe('Dashboard — Mouvements d\'abonnements', () => {
     assert.ok(item, `creation de 100 absent: ${JSON.stringify(monthRow.categories.creation.items)}`)
   })
 
-  test('panel UI affiche le tableau "Mouvements d\'abonnements"', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    // Le titre du panel
-    const title = await page.locator('[data-testid="section-subscription-events"] h2').innerText()
-    assert.match(title, /Mouvements d'abonnements/, `titre inattendu: ${title}`)
-    // DataTable rend les groupes du niveau mois (niveau 0). On doit en avoir
-    // au moins un (le mois en cours, vu qu'on a injecté des events).
-    const monthGroupCount = await page.locator('[data-testid^="datatable-group-"][data-group-level="0"]').count()
-    assert.ok(monthGroupCount > 0, 'aucun en-tête de groupe mois dans le panel')
-  })
-
-  test('le mois courant est rendu comme groupe niveau 0', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    const now = new Date()
-    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
-    const monthHeader = page.locator(`[data-testid="datatable-group-${thisMonth}"]`)
-    await monthHeader.waitFor({ state: 'visible', timeout: 5000 })
-    // L'ordre est desc → mois courant en haut.
-    const level = await monthHeader.getAttribute('data-group-level')
-    assert.equal(level, '0', `niveau attendu 0, vu ${level}`)
-  })
-
-  test('cliquer sur le mois ouvre les sous-groupes catégorie', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    const now = new Date()
-    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
-    const monthHeader = page.locator(`[data-testid="datatable-group-${thisMonth}"]`)
-    await monthHeader.waitFor({ state: 'visible', timeout: 5000 })
-    // Les niveaux 0 sont dépliés par défaut → les groupes catégorie sont déjà
-    // visibles. On vérifie la présence des sous-groupes attendus (creation,
-    // upgrade, downgrade, churn) pour le mois courant.
-    const upgradeSub = page.locator(`[data-testid="datatable-group-${thisMonth}||upgrade"]`)
-    const downgradeSub = page.locator(`[data-testid="datatable-group-${thisMonth}||downgrade"]`)
-    await upgradeSub.waitFor({ state: 'visible', timeout: 5000 })
-    await downgradeSub.waitFor({ state: 'visible', timeout: 5000 })
-    const upgradeLvl = await upgradeSub.getAttribute('data-group-level')
-    assert.equal(upgradeLvl, '1', `sous-groupe upgrade : niveau attendu 1, vu ${upgradeLvl}`)
-  })
-
-  test('replier puis déplier le mois courant cache/montre ses sous-groupes', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    const now = new Date()
-    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
-    const monthHeader = page.locator(`[data-testid="datatable-group-${thisMonth}"]`)
-    const upgradeSub = page.locator(`[data-testid="datatable-group-${thisMonth}||upgrade"]`)
-    await monthHeader.waitFor({ state: 'visible', timeout: 5000 })
-    await upgradeSub.waitFor({ state: 'visible', timeout: 5000 })
-
-    // Replier le mois → les sous-groupes disparaissent
-    await monthHeader.click()
-    await page.waitForTimeout(300)
-    assert.equal(await upgradeSub.count(), 0, 'sous-groupe upgrade encore visible après repli du mois')
-
-    // Déplier le mois → les sous-groupes réapparaissent
-    await monthHeader.click()
-    await page.waitForTimeout(300)
-    await upgradeSub.waitFor({ state: 'visible', timeout: 5000 })
-  })
-
   test('endpoint retourne products[] sur les items quand une facture liée existe', async () => {
     // Cherche n'importe quel mois où un sub a des produits attachés
     const data = await page.evaluate(async () => {
@@ -270,34 +207,6 @@ describe('Dashboard — Mouvements d\'abonnements', () => {
     assert.equal(monthItem.interval_type, 'month', `interval_type attendu month, reçu ${monthItem.interval_type}`)
   })
 
-  test('UI : badge "(X $/an)"/"Mensuel" affiché à côté du montant des items', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    // Les groupes mois sont dépliés par défaut → les items sont déjà visibles.
-    // On laisse le DataTable se rendre puis on attend que les badges d'interval
-    // apparaissent (les rows sont virtualisées : il faut potentiellement
-    // scroller pour exposer tous les events).
-    await page.waitForTimeout(500)
-
-    // Au moins un badge annuel "(… /an)" et un badge "Mensuel" doivent être visibles
-    // (les sub injectés en setup ont l'un et l'autre)
-    const intervalBadges = page.locator('[data-testid^="sub-event-interval-"]')
-    const count = await intervalBadges.count()
-    assert.ok(count > 0, 'aucun badge interval visible — la prop interval_type n\'est pas rendue')
-
-    const allTexts = await intervalBadges.allInnerTexts()
-    // Les abonnements annuels affichent maintenant le montant annuel entre parenthèses
-    // PRÉCÉDÉ d'un signe +/- pour indiquer le sens du mouvement, ex. "(+1 200 $/an)" ou "(-960 $/an)"
-    const annualBadges = allTexts.filter(t => /\/an\)$/.test(t.trim()))
-    assert.ok(annualBadges.length > 0,
-      `aucun badge annuel "(±X $/an)" parmi: ${JSON.stringify(allTexts)}`)
-    for (const b of annualBadges) {
-      assert.ok(/^\(([+-]).+\/an\)$/.test(b.trim()),
-        `badge annuel sans signe +/- : "${b}"`)
-    }
-    assert.ok(allTexts.includes('Mensuel'), `aucun badge "Mensuel" parmi: ${JSON.stringify(allTexts)}`)
-  })
-
   test('upgrade/downgrade : le diff des items vient des snapshots before/after quand disponibles', async () => {
     // Insère un upgrade de test avec items_before/after_json explicite. La
     // route doit renvoyer dans products[] *seulement* le delta (items ajoutés
@@ -336,19 +245,4 @@ describe('Dashboard — Mouvements d\'abonnements', () => {
     assert.equal(item.products[0].product_name, 'Widget C (added)')
   })
 
-  test('cliquer sur un événement ouvre la modale de l\'abonnement', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-
-    // Les groupes mois sont dépliés par défaut → le bouton "abo-event-open-*"
-    // de la colonne Abonnement doit être visible directement.
-    const firstEventBtn = page.locator('[data-testid^="abo-event-open-"]').first()
-    await firstEventBtn.waitFor({ state: 'visible', timeout: 5000 })
-    await firstEventBtn.click()
-
-    // La modale "Détails de l'abonnement" doit s'ouvrir
-    const modalTitle = page.locator('text=Détails de l\'abonnement')
-    await modalTitle.waitFor({ state: 'visible', timeout: 5000 })
-    assert.ok(await modalTitle.isVisible(), 'modale d\'abonnement non visible après clic sur le mouvement')
-  })
 })

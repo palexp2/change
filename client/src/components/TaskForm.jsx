@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, X, Save, Trash2 } from 'lucide-react'
 import { api } from '../lib/api.js'
 import LinkedRecordField from './LinkedRecordField.jsx'
+import { ChoiceSelect } from './ChoiceSelect.jsx'
+import { TASK_STATUS_CHOICES, TASK_PRIORITY_CHOICES } from '../lib/tableDefs.js'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { SaveStatus, useSaveStatus } from './SaveStatus.jsx'
 
-const STATUSES = ['À faire', 'En cours', 'Terminé', 'Annulé']
-const PRIORITIES = ['Basse', 'Normal', 'Haute', 'Urgente']
 const TYPES = ['Problème']
 
 export function parseKeywords(v) {
@@ -158,13 +158,13 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
   // Champs texte : update live au change, autosave au blur (mode édition).
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
   const fBlur = (k) => (e) => { if (isEdit) autosave({ [k]: e.target.value }) }
-  // Selects / date : update + autosave immédiat au change.
+  // Date : update + autosave immédiat au change.
   const fNow = (k) => (e) => {
     const v = e.target.value
     setForm(p => ({ ...p, [k]: v }))
     if (isEdit) autosave({ [k]: v })
   }
-  // Champs structurés (LinkedRecordField, KeywordPicker) : reçoivent la valeur.
+  // Champs structurés (LinkedRecordField, KeywordPicker, Sélections) : reçoivent la valeur.
   const setKey = (k) => (v) => {
     setForm(p => ({ ...p, [k]: v }))
     if (isEdit) autosave({ [k]: v })
@@ -185,22 +185,15 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Statut</label>
-          <select value={form.status} onChange={fNow('status')} className="select">
-            {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <ChoiceSelect value={form.status} choices={TASK_STATUS_CHOICES} table="tasks" field="status" onChange={setKey('status')} emptyOption={null} className="input w-full" testId="task-form-status" />
         </div>
         <div>
           <label className="label">Priorité</label>
-          <select value={form.priority} onChange={fNow('priority')} className="select">
-            {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
+          <ChoiceSelect value={form.priority} choices={TASK_PRIORITY_CHOICES} table="tasks" field="priority" onChange={setKey('priority')} emptyOption={null} className="input w-full" />
         </div>
         <div>
           <label className="label">Type</label>
-          <select value={form.type || ''} onChange={fNow('type')} className="select">
-            <option value="">—</option>
-            {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+          <ChoiceSelect value={form.type || ''} choices={TYPES} table="tasks" field="type" onChange={setKey('type')} className="input w-full" />
         </div>
       </div>
       <div>

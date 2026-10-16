@@ -12,9 +12,10 @@ import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import InstallationDocsAction from '../components/InstallationDocsAction.jsx'
+import OrderWelcomeEmail from '../components/OrderWelcomeEmail.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import { fmtDate } from '../lib/formatDate.js'
-import { fmtMoney, fmtAddress } from '../utils/formatters.js'
+import { fmtMoney, fmtAddress, fmtNumber } from '../utils/formatters.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
@@ -26,6 +27,7 @@ import { ImageValue, parseLinkedKeys, parseSelectChoices } from '../lib/customFi
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
@@ -46,6 +48,14 @@ const ITEM_TYPE_COLORS = { 'Facturable': 'green', 'Remplacement': 'yellow', 'Non
 // miroitée) — la fiche le remplace par le choix d'un utilisateur (`assigned_to`).
 // items_count : redondant avec le tableau « Articles » juste dessous.
 const ORDER_TAKEN_FIELDS = ['company_name', 'responsable_de_la_commande', 'items_count']
+// Champ « Type » (is_subscription) : liste déroulante en pastilles.
+const ORDER_TYPE_OPTIONS = [
+  { value: 0, label: 'Achat', cls: 'bg-slate-100 text-slate-600' },
+  { value: 1, label: 'Abonnement', cls: 'bg-violet-100 text-violet-700' },
+]
+function TypePill({ opt }) {
+  return <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${opt.cls}`}>{opt.label}</span>
+}
 // Adresses longues : la liste s'ouvre large pour qu'on les lise en entier.
 const ORDER_WIDE_LINK_PICKERS = ['adresse_de_livraison']
 
@@ -61,12 +71,15 @@ function orderNotesWithoutBuilderReference(order) {
 
 // Les deux adresses occupent chacune une ligne, même si la disposition
 // enregistrée séparait auparavant le champ natif et le champ personnalisé.
+// Les documents clients puis le courriel au client suivent les adresses.
 function arrangeOrderAddresses(fields) {
   const farm = fields.find(f => f.key === 'farm_address_id')
+  const followers = ['documents_clients', 'courriel_client']
+    .map(k => fields.find(f => f.key === k)).filter(Boolean)
   if (!farm || !fields.some(f => f.key === 'adresse_de_livraison')) return fields
-  return fields.filter(f => f !== farm).flatMap(f => (
+  return fields.filter(f => f !== farm && !followers.includes(f)).flatMap(f => (
     f.key === 'adresse_de_livraison'
-      ? [{ ...f, span2: true }, { ...farm, span2: true }]
+      ? [{ ...f, span2: true }, { ...farm, span2: true }, ...followers.map(x => ({ ...x, span2: true }))]
       : [f]
   ))
 }
@@ -190,9 +203,14 @@ function AddItemModal({ orderId, onSave, onClose }) {
       </div>
       <div>
         <label className="label">Type</label>
-        <select value={form.item_type} onChange={e => setForm(f => ({ ...f, item_type: e.target.value }))} className="select">
-          {ITEM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
+        <ChoiceSelect
+          value={form.item_type}
+          choices={ITEM_TYPES.map(t => ({ value: t, color: ITEM_TYPE_COLORS[t] || 'gray' }))}
+          table="order_items" field="item_type" colorsOnly
+          onChange={v => setForm(f => ({ ...f, item_type: v }))}
+          className="input w-full"
+          emptyOption={null}
+        />
       </div>
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
@@ -1183,6 +1201,24 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
 // `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
 // sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
 // après suppression du record.
+// Courriel de suivi d'installation (J+21 après la première commande expédiée
+// d'une entreprise) : sa date prévue, puis la réponse du client.
+const FOLLOWUP_ANSWERS = {
+  great: ['Installation : fait', 'green'],
+  painful: ['Installation : pénible', 'orange'],
+  nextWeek: ['Installation : semaine prochaine', 'blue'],
+  stuck: ['Installation : bloqué', 'red'],
+}
+function InstallFollowupPill({ f }) {
+  if (!f) return null
+  if (f.state === 'planned') {
+    return <Badge color="yellow">Suivi le {fmtDate(f.due_at)}</Badge>
+  }
+  const [label, color] = FOLLOWUP_ANSWERS[f.answer] || ['Suivi envoyé', 'gray']
+  const pill = <span title={f.note || undefined}><Badge color={color}>{label}{f.note ? ' 💬' : ''}</Badge></span>
+  return f.task_id ? <Link to="/tasks">{pill}</Link> : pill
+}
+
 export default function OrderDetail({ recordId, onClose }) {
   const id = recordId
   const leaveRecord = () => onClose?.()
@@ -1306,9 +1342,9 @@ export default function OrderDetail({ recordId, onClose }) {
   // Choix de « Priorité » : c'est un champ perso (custom_fields), ses options
   // s'éditent dans /champs/orders — on les lit là plutôt que de les figer ici.
   const { fields: orderFields } = useCustomFields('orders')
-  const priorityOptions = useMemo(() => {
+  const priorityChoices = useMemo(() => {
     const row = (orderFields || []).find(f => f.column_name === 'priority')
-    return parseSelectChoices(row).map(c => ({ value: c.label ?? c.id, label: c.label ?? c.id }))
+    return parseSelectChoices(row)
   }, [orderFields])
 
   // ── Notes : édition en ligne ────────────────────────────────────────────────
@@ -1795,6 +1831,8 @@ export default function OrderDetail({ recordId, onClose }) {
     ...meta,
     render: ITEM_RENDERS[meta.id],
     editable: ITEM_EDITABLE.has(meta.id),
+    // Total de la quantité aligné sur les chiffres de la colonne.
+    ...(meta.id === 'qty' ? { footerValueFirst: true } : {}),
     // Cellule « Produit » : champ référence, donc éditeur de lien (dissocier /
     // associer) plutôt qu'une saisie texte — cf. components/LinkCellEditor.jsx.
     // La liste vient de la page et non du serveur : seuls les produits ACTIFS
@@ -1929,14 +1967,14 @@ export default function OrderDetail({ recordId, onClose }) {
   return (
     <DetailShell
       header={{
-        badge: order.status && (
-          <span data-testid="order-header-status">
-            <Badge color={orderStatusColor(order.status)}>{order.status}</Badge>
+        badge: (order.status || order.installation_followup) && (
+          <span data-testid="order-header-status" className="inline-flex items-center gap-1.5">
+            {order.status && <Badge color={orderStatusColor(order.status)}>{order.status}</Badge>}
+            <InstallFollowupPill f={order.installation_followup} />
           </span>
         ),
         actions: (
           <div className="flex flex-wrap items-start gap-2">
-            {order.items?.length > 0 && <InstallationDocsAction orderId={id} docsLang={order.docs_lang} label="Documents clients" />}
             <button
               onClick={() => setExpeditionMode(true)}
               className="btn-secondary btn-sm flex items-center gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
@@ -1971,7 +2009,8 @@ export default function OrderDetail({ recordId, onClose }) {
           taken={ORDER_TAKEN_FIELDS}
           onSaveCustom={saveField}
           savingKeys={fieldSaving}
-          className="card p-5 mb-4"
+          className="card px-4 py-3 mb-3"
+          dense
           testId="order-fields"
           onDeleted={onClose}
           customFieldLinkFilters={orderFieldLinkFilters}
@@ -1981,21 +2020,19 @@ export default function OrderDetail({ recordId, onClose }) {
           <DetailField id="status" label="Statut">
             <div><Badge color={orderStatusColor(order.status)}>{order.status}</Badge></div>
           </DetailField>
-          <DetailField id="is_subscription" label="Type">
-            <button
-              onClick={async () => {
-                const newVal = order.is_subscription ? 0 : 1
-                await api.orders.update(id, { is_subscription: newVal })
-                load()
-              }}
-              className={`px-2.5 py-0.5 rounded-full text-xs font-medium border transition-colors ${
-                order.is_subscription
-                  ? 'bg-violet-100 text-violet-700 border-violet-200 hover:bg-violet-200'
-                  : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
-              }`}
-            >
-              {order.is_subscription ? 'Abonnement' : 'Achat'}
-            </button>
+          {/* Liste déroulante en pastille ; autosave du seul champ, sans relire la fiche. */}
+          <DetailField id="is_subscription" label="Type" saving={!!fieldSaving.is_subscription}>
+            <SearchableSelect
+              value={order.is_subscription ? 1 : 0}
+              options={ORDER_TYPE_OPTIONS}
+              onChange={v => saveField('is_subscription', Number(v) ? 1 : 0)}
+              renderValue={o => <TypePill opt={o} />}
+              renderOption={o => <TypePill opt={o} />}
+              className="input text-sm w-full"
+              size="sm"
+              disabled={!!fieldSaving.is_subscription}
+              testId="order-field-is-subscription"
+            />
           </DetailField>
           <DetailField id="company_id" label="Entreprise" saving={linkSaving}>
             <LinkedRecordField
@@ -2047,6 +2084,26 @@ export default function OrderDetail({ recordId, onClose }) {
               </div>
             </DetailField>
           )}
+          {/* Documents clients en vignette près des adresses ; clic = modale
+              (demande de P.-A. Papillon). */}
+          {order.items?.length > 0 && (
+            <DetailField id="documents_clients" label="Documents clients">
+              <InstallationDocsAction
+                orderId={id}
+                docsLang={order.docs_lang}
+                label="Documents clients"
+                thumbnail
+                refreshKey={(order.items || []).map(i => `${i.product_id}:${i.item_type}`).join('|')}
+              />
+            </DetailField>
+          )}
+          {/* Courriel au client avec les adresses (demande de P.-A. Papillon). */}
+          <DetailField id="courriel_client" label="Courriel au client">
+            <OrderWelcomeEmail
+              orderId={order.id}
+              refreshKey={[order.address_id, ...(order.items || []).map(i => `${i.product_id}:${i.item_type}:${i.cf_type_de_document}`)].join('|')}
+            />
+          </DetailField>
           <DetailField id="project_id" label="Projet" saving={linkSaving}>
             <LinkedRecordField
               name="project_id"
@@ -2106,13 +2163,10 @@ export default function OrderDetail({ recordId, onClose }) {
             <div className="text-sm text-slate-700">{order.date_commande ? fmtDate(order.date_commande) : '—'}</div>
           </DetailField>
           <DetailField id="priority" label="Priorité" saving={!!fieldSaving.priority}>
-            <SearchableSelect
+            <ChoiceSelect
               value={order.priority || ''}
-              options={priorityOptions}
-              emptyOption="—"
+              choices={priorityChoices}
               onChange={v => saveField('priority', v)}
-              className="input text-sm w-full"
-              size="sm"
               disabled={!!fieldSaving.priority}
               testId="order-field-priority"
             />
@@ -2254,10 +2308,11 @@ export default function OrderDetail({ recordId, onClose }) {
                   <div>
                     <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Profit</div>
                     <div className={`text-xl font-bold ${profitColor}`}>{fmtMoney(profit)}</div>
-                    <div className="text-xs text-slate-400 mt-0.5">{margin != null ? `Marge ${margin.toFixed(1)} %` : 'Marge —'}</div>
+                    <div className="text-xs text-slate-400 mt-0.5">{margin != null ? `Marge ${fmtNumber(margin, { decimals: 1 })} %` : 'Marge —'}</div>
                   </div>
                 </div>
-                <div className="border-t border-slate-100 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Même grille que les chiffres au-dessus : chaque override sous son chiffre. */}
+                <div className="border-t border-slate-100 pt-4 grid grid-cols-2 sm:grid-cols-3 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
                       Revenu override (CAD)

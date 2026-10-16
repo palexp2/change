@@ -53,9 +53,9 @@ const CONVERSIONS = [
   // renommables / convertibles / supprimables comme n'importe quel champ.
   // Aucun ALTER, aucune vue : la colonne SQL existe déjà et porte la donnée.
   //
-  // « Statut » et « # Commande » sont des FORMULES côté Airtable : Airtable les
-  // calcule, Boréal les recopie. Ils restent donc en import seul — le rendu de
-  // la page (badge de statut) est inchangé.
+  // « # Commande » est une FORMULE côté Airtable : Airtable la calcule, Boréal
+  // la recopie (import seul). « Statut » l'était aussi ; son import est coupé
+  // (migration 132) et Boréal le calcule lui-même (services/orderStatus.js).
   {
     table: 'orders', column: 'order_number', name: '# Commande',
     kind: 'data', type: 'number', source: 'airtable', config: {},

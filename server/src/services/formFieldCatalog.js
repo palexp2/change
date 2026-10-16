@@ -74,9 +74,12 @@ function parseJson(raw) {
 
 function choicesOf(defOptions, cfOptions) {
   const fromDef = Array.isArray(defOptions?.choices) ? defOptions.choices : []
-  if (fromDef.length) return fromDef
   const fromCf = Array.isArray(cfOptions?.choices) ? cfOptions.choices : []
-  return fromCf
+  if (!fromDef.length) return fromCf
+  // La liste d'Airtable fait foi, mais ses choix arrivent en chaînes nues : on
+  // y rattache la couleur réglée sur le champ (/champs), par libellé.
+  const colorOf = new Map(fromCf.filter(c => c && typeof c === 'object' && c.color).map(c => [String(c.label), c.color]))
+  return fromDef.map(c => (typeof c === 'string' && colorOf.has(c) ? { label: c, color: colorOf.get(c) } : c))
 }
 
 // ── Champs lien proposables : table visée + identité stockée ─────────────────

@@ -9,12 +9,15 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 // et le jour choisi est écrit via le setter natif + événement `input` — React
 // voit un onChange ordinaire. La saisie au clavier dans le champ reste native.
 // Les champs date + heure (datetime-local) gardent le sélecteur du navigateur.
+// Un champ texte AAAA-MM-JJ peut s'y brancher avec `data-date-picker` ; il est
+// quitté (blur) après le choix pour que son commit au blur parte.
 
 const WEEKDAYS = ['Di', 'Lu', 'Ma', 'Me', 'Je', 'Ve', 'Sa']
 const pad = n => String(n).padStart(2, '0')
 const iso = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`
 const todayIso = () => { const t = new Date(); return iso(t.getFullYear(), t.getMonth(), t.getDate()) }
-const isDateInput = el => el instanceof HTMLInputElement && el.type === 'date' && !el.disabled && !el.readOnly
+const isDateInput = el => el instanceof HTMLInputElement && (el.type === 'date' || el.hasAttribute('data-date-picker')) && !el.disabled && !el.readOnly
+const ISO_RE = /^\d{4}-\d{2}-\d{2}$/
 
 function setInputValue(input, value) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
@@ -42,7 +45,7 @@ export default function DatePickerHost() {
   const popRef = useRef(null)
 
   const open = useCallback((el) => {
-    const [y, m] = (el.value || todayIso()).split('-').map(Number)
+    const [y, m] = (ISO_RE.test(el.value) ? el.value : todayIso()).split('-').map(Number)
     setView({ y, m: m - 1 })
     setInput(el)
   }, [])
@@ -110,7 +113,11 @@ export default function DatePickerHost() {
 
   const { y, m } = view
   const shift = (d) => setView(({ y, m }) => { const t = new Date(y, m + d, 1); return { y: t.getFullYear(), m: t.getMonth() } })
-  const pick = (v) => { if (v !== input.value) setInputValue(input, v); close() }
+  const pick = (v) => {
+    if (v !== input.value) setInputValue(input, v)
+    close()
+    if (input.type !== 'date') input.blur()
+  }
   const selected = input.value
   const today = todayIso()
   const min = input.min || null

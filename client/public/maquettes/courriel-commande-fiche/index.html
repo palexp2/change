@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Courriel dans la commande</title>
+<style>
+:root{font-family:Inter,-apple-system,"Segoe UI",sans-serif;color:#1f2937;font-size:14px;--line:#e5e7eb;--muted:#6b7280;--green:#21b14b;--gdark:#167030}
+*{box-sizing:border-box}body{margin:0;background:#eef0f2;min-height:100vh}
+.bg{position:fixed;inset:0;background:repeating-linear-gradient(#f7f8f9 0 38px,#eceef0 38px 39px);opacity:.7}
+.peek{position:relative;margin-left:auto;width:min(620px,100%);min-height:100vh;background:#fff;border-left:1px solid var(--line);box-shadow:-8px 0 24px rgba(0,0,0,.06);padding:20px 24px 60px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+h1{font-size:20px;margin:0}.x{color:var(--muted);font-size:20px}
+.f{display:grid;grid-template-columns:150px 1fr;gap:6px 12px;padding:6px 0;align-items:center}
+.f label{color:var(--muted);font-size:13px}
+a{color:#2f6e9e;text-decoration:none}
+select{font:inherit;border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:#fff;min-width:200px}
+select.empty{color:var(--muted)}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:26px 0 10px;font-weight:600}
+.items{border:1px solid var(--line);border-radius:8px}
+.it{display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--line)}
+.it:first-child{border-top:0}.it button{border:0;background:none;color:#c0392b;cursor:pointer;font-size:12px;visibility:hidden}.it:hover button{visibility:visible}
+.pill{font-size:11px;padding:2px 8px;border-radius:10px;background:#e7f5ec;color:#167030;cursor:pointer;user-select:none}.pill.r{background:#fdf0e3;color:#a35a12}
+.it.add{color:var(--muted);cursor:pointer}
+.mailbox{display:flex;gap:16px;align-items:flex-start}
+.thumb{width:150px;height:190px;border:1px solid var(--line);border-radius:6px;overflow:hidden;cursor:zoom-in;flex:none;position:relative;background:#f4f4f4}
+.thumb iframe{width:600px;height:760px;border:0;transform:scale(.25);transform-origin:0 0;pointer-events:none}
+.meta{flex:1;display:flex;flex-direction:column;gap:8px}
+.subj{font-weight:600}.to{color:var(--muted);font-size:13px}
+.btn{border:0;border-radius:6px;background:var(--gdark);color:#fff;font:inherit;font-weight:600;padding:8px 16px;cursor:pointer;align-self:flex-start}
+.btn:hover{background:#115825}
+.sent{color:var(--gdark);font-weight:600}
+.hist{font-size:13px;color:var(--muted);cursor:pointer;user-select:none}
+.ev{display:grid;grid-template-columns:110px 1fr;font-size:13px;gap:4px 10px;padding-left:14px;border-left:2px solid var(--line)}
+.ev span:nth-child(odd){color:var(--muted)}
+.wait{color:var(--muted);font-size:13px}
+.modal{position:fixed;inset:0;background:rgba(17,24,39,.5);display:none;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 16px;z-index:9}
+.modal.on{display:flex}
+.mcard{background:#fff;border-radius:10px;width:min(680px,100%);overflow:hidden}
+.mhead{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line)}
+.mcard iframe{width:100%;height:75vh;border:0;display:block}
+</style>
+</head>
+<body><div class="bg"></div>
+<div class="peek">
+  <div class="top"><h1>Commande #1074</h1><span class="x">✕</span></div>
+  <div class="f"><label>Entreprise</label><a href="#">Fred Lamontagne</a></div>
+  <div class="f"><label>Adresse de livraison</label><a href="#">356 Chemin du Sommet Est, Rimouski</a></div>
+  <div class="f"><label>Contact</label><a href="#">Mélanie Lamontagne</a></div>
+
+  <h2>Articles</h2>
+  <div class="items" id="items"></div>
+
+  <h2>Courriel au client</h2>
+  <div id="mail"></div>
+</div>
+
+<div class="modal" id="modal" onclick="if(event.target===this)this.classList.remove('on')">
+  <div class="mcard"><div class="mhead"><strong id="msubj"></strong><span class="x" style="cursor:pointer" onclick="modal.classList.remove('on')">✕</span></div><iframe id="mframe"></iframe></div>
+</div>
+
+<script>
+const ALL=[{k:'ctrl',n:'Contrôleur central US ETH 5GHz LTECAN',q:1,core:1,lte:1},{k:'meteo',n:'Boîtier météo',q:1,core:1},{k:'cote',n:'Module de côtés ouvrants',q:2,core:1},{k:'ant',n:'Antenne LoRa externe',q:1,core:0}].map(i=>({...i,t:'Installation'}));
+let items=ALL.map(i=>({...i})),sent=null,histOpen=false;
+const has=k=>items.some(i=>i.k===k&&i.t!=='Remplacement');
+const install=()=>items.some(i=>i.core&&i.t!=='Remplacement');
+function renderItems(){
+  document.getElementById('items').innerHTML=items.map((i,x)=>`<div class="it"><span>${i.q} × ${i.k==='ctrl'?`<a href="#" title="basculer Wi-Fi / LTE" onclick="event.preventDefault();items[${x}].lte=!items[${x}].lte;items[${x}].n=items[${x}].lte?'Contrôleur central US ETH 5GHz LTECAN':'Contrôleur central US ETH 5GHz';render()">${i.n}</a>`:i.n}</span><span style="display:flex;gap:10px;align-items:center"><span class="pill ${i.t==='Remplacement'?'r':''}" onclick="items[${x}].t=items[${x}].t==='Remplacement'?'Installation':'Remplacement';render()">${i.t}</span><button onclick="items.splice(${x},1);render()">retirer</button></span></div>`).join('')
+   +(items.length<ALL.length?`<div class="it add" onclick="items=ALL.map(i=>({...i}));render()">+ remettre tous les articles</div>`:'');
+}
+function email(){
+  const repl=!install();
+  const subj=repl?"Ta commande Orisha : on vérifie l'adresse":"Rends ton installation facile et rapide";
+  const head="Ta commande Orisha est en préparation";
+  let li=[];
+  if(!repl){li.push("Préparer ton <strong>panneau de plywood</strong> d'un minimum de 4'x4'.","Assure-toi d’avoir une <strong>prise électrique</strong>&nbsp;disponible d’au moins <strong>5&nbsp;ampères</strong>.")}
+  if(!repl&&has('ctrl')){li.push("Choisis <strong>l’emplacement</strong> de ton <strong>cerveau Orisha</strong> (le contrôleur central), là où "+(items.find(i=>i.k==='ctrl')?.lte?"la <strong>connexion internet mobile est stable</strong>":"il y a du <strong>Wi-Fi stable</strong>")+". Il doit être à moins de 250 pieds de la serre.")}
+  if(!repl&&has('meteo'))li.push("Achète ta <strong>pôle</strong> d'un minimum (1pouce x 6pieds) pour installer ta <strong>station météo</strong>.");
+  const prep=li.length?`<hr><p style="margin-top:40px"><strong>Quoi faire dès aujourd'hui?</strong></p><p>Sauve-toi du temps et pas mal de trouble en préparant ces points:</p><ul>${li.map(x=>`<li style="margin-left:15px"><p>${x}</p></li>`).join('')}</ul>
+   <p>Ça devrait ressembler à ça une fois l’installation terminée:</p><img src="https://orisha.us-east-1.linodeobjects.com/email_onboarding%2Fgreenhouse-overview.png" width="473" style="max-width:100%;height:auto">
+   <img src="https://orisha.us-east-1.linodeobjects.com/email_onboarding%2Fplywood-overview.jpeg" width="100%">`:'';
+  const tools=repl?'':`<hr style="margin:50px 0"><h3><strong>Prépare aussi ces outils; c’est ce qui risque de te manquer et qui n’est pas dans la boîte.</strong></h3><img src="https://orisha.us-east-1.linodeobjects.com/email_onboarding%2Ffr%2Foutils-side-vent.jpg" width="100%">`;
+  const html=`<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#f4f4f4;font-family:Arial,sans-serif"><table width="100%" cellspacing="0" cellpadding="0" style="background:#f4f4f4"><tr><td align="center">
+<table width="600" cellspacing="0" cellpadding="0" style="background:#fff;max-width:100%">
+<tr><td align="center" style="padding:20px"><img src="https://orisha.us-east-1.linodeobjects.com/logo.png" style="max-width:150px;display:block"></td></tr>
+<tr><td style="background:#22b14c;height:5px;line-height:5px;font-size:0"></td></tr>
+<tr><td style="padding:20px;color:#333"><h1 style="padding-bottom:20px;font-size:1.17em"><strong>${head}</strong></h1><p>Voici l’<strong>adresse prévue pour la livraison</strong>; fais-nous signe si ce n’est pas la bonne.</p>
+<p style="margin:20px 0 40px;font-size:16px"><strong>Fred Lamontagne<br>356 Chemin du Sommet Est<br>Rimouski, QC G5N 1V1</strong></p>${prep}${tools}</td></tr>
+<tr><td style="padding:20px;text-align:center"><p style="margin-bottom:7px;font-size:16px;color:#333">On est toujours là pour t’aider, soit par <a href="#">l'app d’aide Orisha</a>,</p><p style="margin-top:0;font-size:16px;color:#333">soit par téléphone 📞 <a href="#" style="color:#777">1-888-267-4742</a></p></td></tr>
+<tr><td align="center" style="padding:20px;background:#f4f4f4;font-size:12px;color:#777">Automatisation Orisha Inc. 1535 ch. Ste-Foy Bureau 220 Québec, QC G1S 2P1</td></tr></table></td></tr></table></body></html>`;
+  return {subj,html};
+}
+function render(){
+  renderItems();
+  const box=document.getElementById('mail');
+  const e=sent||email();
+  box.innerHTML=`<div class="mailbox"><div class="thumb" onclick="showModal()"><iframe id="tf"></iframe></div>
+   <div class="meta"><div class="subj">${e.subj}</div><div class="to">À Mélanie Lamontagne · info@fredlamontagne.com</div>
+   ${sent?`<div class="sent">✓ Envoyé le 14 oct. à 14 h 32</div>
+     <div class="hist" onclick="toggleHist()">${histOpen?'▾':'▸'} Historique · ouvert 2 fois</div>
+     ${histOpen?`<div class="ev"><span>14 oct. 14 h 32</span><span>Livré</span><span>14 oct. 15 h 10</span><span>Ouvert</span><span>14 oct. 15 h 12</span><span>Clic · app d’aide Orisha</span><span>15 oct. 08 h 03</span><span>Ouvert</span></div>`:''}`
+   :`<button class="btn" onclick="sent=email();render()">Envoyer</button>`}</div></div>`;
+  document.getElementById('tf').srcdoc=e.html;
+}
+function toggleHist(){histOpen=!histOpen;render()}
+function showModal(){const e=sent||email();msubj.textContent=e.subj;mframe.srcdoc=e.html;modal.classList.add('on')}
+render();
+</script>
+</body></html>

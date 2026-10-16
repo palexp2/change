@@ -11,8 +11,8 @@ import {
   updateProvisionMonth, provisionSeries, publishProvisionMonth, rdHours,
   correctProvisionMonth,
 } from '../services/monthEnd.js'
-import { importRdHours, timesheetFileName } from '../services/rdTimesheetImport.js'
-import { rdMonthDays } from '../services/rdTimesheetSheetSync.js'
+import { importRdHours, timesheetFileName, DEFAULT_CONTRACTORS } from '../services/rdTimesheetImport.js'
+import { rdMonthDays, borealRdMonthTotals, RD_TIMESHEET_SOURCE_SINCE, norm } from '../services/rdTimesheetSheetSync.js'
 import { monthEndChecks, setAsfcQuietMonth } from '../services/monthEndChecks.js'
 import { monthEndAutomationConfig } from '../services/monthEndAutomation.js'
 import { buildFpaMonth } from '../services/prepaid.js'
@@ -227,11 +227,25 @@ router.get('/hours-year/:fy', (req, res) => {
   `).all(months[0], months[11])
   const people = new Map()
   for (const r of rows) {
-    const key = `${r.contractor ? 1 : 0}|${r.employee_name}`
+    const key = norm(r.employee_name)
     if (!people.has(key)) people.set(key, { employee_name: r.employee_name, contractor: !!r.contractor, months: {} })
     let projects = null
     try { projects = r.project_hours ? JSON.parse(r.project_hours) : null } catch { projects = null }
     people.get(key).months[r.month] = { id: r.id, hours: Number(r.hours) || 0, source: r.source, projects }
+  }
+  // Heures R&D des feuilles de temps Boréal : elles remplacent l'import du Drive
+  // à partir de RD_TIMESHEET_SOURCE_SINCE, sauf correction à la main (« manuel »).
+  const since = months.find(m => m >= RD_TIMESHEET_SOURCE_SINCE)
+  if (since) {
+    const contractors = (monthEndAutomationConfig().contractors || DEFAULT_CONTRACTORS).map(norm)
+    for (const cell of borealRdMonthTotals(since, months[11]).values()) {
+      if (!(cell.hours > 0)) continue
+      const key = norm(cell.employee_name)
+      if (!people.has(key)) people.set(key, { employee_name: cell.employee_name, contractor: contractors.includes(key), months: {} })
+      const prev = people.get(key).months[cell.month]
+      if (prev?.source === 'manuel') continue
+      people.get(key).months[cell.month] = { id: prev?.id || null, hours: cell.hours, source: 'feuilles', projects: cell.projects }
+    }
   }
   const list = [...people.values()].sort((a, b) =>
     (a.contractor - b.contractor) || a.employee_name.localeCompare(b.employee_name, 'fr'))

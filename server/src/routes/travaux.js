@@ -23,7 +23,7 @@ import {
 } from '../services/workSuggestions.js'
 import {
   listRecurringTasks, listCompletions, createRecurringTask, updateRecurringTask,
-  deleteRecurringTask, setCompletion, CADENCES, OWNERS,
+  deleteRecurringTask, setCompletion, CADENCES, recurringOwners, isValidOwner, ownerForUser,
   weekKeyToDay, describeWeek, weekOptions, localDay,
 } from '../services/recurringWork.js'
 import {
@@ -695,6 +695,10 @@ router.get('/recurring', (req, res) => {
     cadences: CADENCES,
     week,
     weeks: weekOptions({ include: week.key }),
+    // Les sections (un espace par utilisateur) et celle de l'utilisateur
+    // connecté, affichée par défaut.
+    owners: recurringOwners(),
+    me: ownerForUser(req.user?.id),
   })
 })
 
@@ -702,7 +706,7 @@ router.post('/recurring', (req, res) => {
   const { label, cadence, owner, day_hint, notes, due_date, due_day } = req.body || {}
   if (!label || !String(label).trim()) return res.status(400).json({ error: 'label requis' })
   if (cadence && !CADENCES.includes(cadence)) return res.status(400).json({ error: 'cadence invalide' })
-  if (owner && !OWNERS.includes(owner)) return res.status(400).json({ error: 'propriétaire invalide' })
+  if (owner && !isValidOwner(owner)) return res.status(400).json({ error: 'propriétaire invalide' })
   res.status(201).json(createRecurringTask({ label, cadence, owner, day_hint, notes, due_date, due_day }))
 })
 

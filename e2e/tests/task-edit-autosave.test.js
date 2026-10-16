@@ -81,7 +81,8 @@ describe('Tasks — autosave en mode édition', () => {
     }, { id: createdId, newTitle }, { timeout: 5000 })
 
     // Modifie aussi le statut (select → autosave immédiat) et vérifie.
-    await page.selectOption('label:has-text("Statut") + select', 'En cours')
+    await page.click('[data-testid="task-form-status"]')
+    await page.locator('[data-testid="task-form-status-menu"] button', { hasText: 'En cours' }).first().click()
     await page.waitForFunction(async (id) => {
       const token = localStorage.getItem('erp_token')
       const t = await fetch(`/erp/api/tasks/${id}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())

@@ -13,6 +13,7 @@ import DiscoveryExtrasTable, { additionalEquipment, EXTRA_COLUMNS, FLAG_COLUMNS,
 import { DISCOVERY_LANGS } from '../lib/discoveryFormI18n.js'
 import api from '../lib/api.js'
 import { Badge } from '../components/Badge.jsx'
+import { FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 import TableThumb, { TABLE_THUMB_CLASS } from '../components/TableThumb.jsx'
 import Attachments from '../components/Attachments.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
@@ -24,6 +25,7 @@ import { fmtAddress } from '../utils/formatters.js'
 import { buildForm, controllerDistanceValue, CUSTOM_SECTIONS, sideVentOther, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
 import { LOUVER_COMBOS, louverComboValue, louverSummary } from '../components/LouverTypeChoice.jsx'
 import { unknownAnswers } from '../lib/discoveryUnknownAnswers.js'
+import { useCatalogImages } from '../lib/useCatalogImages.js'
 
 // Fiche d'un formulaire de découverte : lecture des réponses telles que
 // remplies par le client (le formulaire lui-même vit sur /d/:token).
@@ -106,7 +108,7 @@ const SIDE_INVERTER_OPTIONS = [
 // Type inconnu : les choix des deux profils.
 const DIAMETER_OTHER = '__other'
 const DIAMETER_ALU = [{ value: '2"', label: '2"' }]
-const DIAMETER_STEEL = [{ value: '1 5/16"', label: 'Entre 3/4 po et 1 14/4 po' }, { value: '1 1/2"', label: 'Entre 1 5/16 po et 1 1/2 po' }]
+const DIAMETER_STEEL = [{ value: '1 5/16"', label: 'Entre 3/4 po et 1 1/4 po' }, { value: '1 1/2"', label: 'Entre 1 5/16 po et 1 1/2 po' }]
 const sideDiameterOptions = pipe => [
   ...(pipe === 'aluminum_C' ? DIAMETER_ALU : pipe === 'steel_O' ? DIAMETER_STEEL : [...DIAMETER_ALU, ...DIAMETER_STEEL]),
   { value: DIAMETER_OTHER, label: pipe === 'steel_O' ? 'Autre, préciser' : 'Autre (préciser)' },
@@ -243,9 +245,30 @@ function ResponseGroup({ title, children, none = false, noneLabel = 'Aucun', non
   const correcting = !!useContext(AnswerEdit)
   return (
     <section aria-label={title} className="min-w-0 rounded-lg border border-slate-200 p-3">
-      <h4 className="flex items-center gap-2 text-xs font-semibold text-slate-700 mb-3">{title}</h4>
+      {title && <h5 className="flex items-center gap-2 text-xs font-semibold text-slate-700 mb-3">{title}</h5>}
       {none ? <div className="text-sm text-slate-900">{correcting && noneEdit ? <EditableValue edit={noneEdit}>{noneLabel}</EditableValue> : noneLabel}</div> : children}
     </section>
+  )
+}
+
+// Section d'un équipement (Côtés, Louvres, Fournaises…) : coiffe ses cartes,
+// avec l'image du service de la soumission.
+function ResponseCategory({ title, icon, children }) {
+  return (
+    <section aria-label={title} className="response-category min-w-0">
+      <h4 className="flex items-center gap-2 text-xs font-semibold text-slate-900 mb-2">{icon && <img src={icon} alt="" className="w-5 h-5 object-contain flex-shrink-0 mix-blend-multiply dark:mix-blend-normal" />}{title}<span aria-hidden="true" className="h-px flex-1 bg-slate-200" /></h4>
+      <div className="space-y-3">{children}</div>
+    </section>
+  )
+}
+
+// Sous-groupe d'une carte (Moteurs, Dimensions…) ; masqué en CSS s'il n'a aucune ligne.
+function ResponseSubGroup({ title, children }) {
+  return (
+    <div className="response-subgroup mt-3 border-t border-slate-100 pt-3">
+      <h6 className="text-xs font-medium text-slate-400 mb-2">{title}</h6>
+      <div className="system-response-grid">{children}</div>
+    </div>
   )
 }
 
@@ -296,6 +319,7 @@ function ManualSideEquipment({ items, names, onSave }) {
 function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, response, onCheck, saving }) {
   const perm = PERMISSION_LABELS[g.permission_level]
   const correcting = !!useContext(AnswerEdit)
+  const icons = useCatalogImages()
   // Serre Helper : côtés ouvrants seulement — les autres automatisations ne lui
   // sont pas demandées, inutile de montrer leurs lignes.
   const helperOnly = sideVentsOnly(g.permission_level || response.permission_level)
@@ -328,8 +352,8 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
   // Toile thermique : mêmes réponses que le toit, rangées dans `thermal_screen`.
   const screen = thermalScreen(g)
   const ventGroups = [
-    { title: 'Toits ouvrants', one: 'Toit ouvrant', key: 'roof', many: 'Nombre de toits ouvrants', rec: g, wrap: v => v },
-    { title: 'Toiles thermiques', one: 'Toile thermique', key: 'screen', many: 'Nombre de toiles thermiques', rec: screen, wrap: v => ({ thermal_screen: { ...screen, ...v } }) },
+    { title: 'Toits ouvrants', key: 'roof', sku: 'SVC-010', many: 'Nombre de toits ouvrants', rec: g, wrap: v => v },
+    { title: 'Toiles thermiques', key: 'screen', sku: 'SVC-013', many: 'Nombre de toiles thermiques', rec: screen, wrap: v => ({ thermal_screen: { ...screen, ...v } }) },
   ]
   // Longueur : plage choisie, puis la longueur exacte au-delà de 200 pi (comme le formulaire client).
   const lengthRange = g.length_range || (Number(g.length) > 0 ? (Number(g.length) > 200 ? 'over_200' : 'up_to_200') : '')
@@ -354,7 +378,10 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
     ? { has_side_vents: false, side_vent_height: '', side_vent_height_range: '', side_pipe_type: '', side_pipe_diameter: '', guide_pipes_state: '', guide_pipe_diameter: '', wants_compatible_guide_pipes: false, num_side_vent_motors: 0, has_existing_side_vent_motors: null }
     : n === '' ? { has_side_vents: null, num_side_vent_motors: '' } : { has_side_vents: true, num_side_vent_motors: n }))
   const fansEdit = ed('select', g.num_fans, n => ({ num_fans: n, fans_combined_hp: n === '2' ? g.fans_combined_hp : '', fans_hp_range: n === '2' ? g.fans_hp_range : '' }), ['0', '1', '2'].map(v => ({ value: v, label: v })))
-  const furnacesEdit = ed('select', g.has_furnaces, set('has_furnaces'), BOOL_OPTIONS)
+  // Fournaises : la liste est redimensionnée comme dans le formulaire public.
+  const furnacesEdit = ed('number', g.has_furnaces === false ? 0 : furnaces.length || '', n => (n === ''
+    ? { has_furnaces: null, num_furnaces: '', furnaces: [] }
+    : { has_furnaces: n > 0, num_furnaces: n, furnaces: Array.from({ length: n }, (_, i) => furnaces[i] || {}) }))
   const zonesEdit = ed('number', g.irrigation_zones, set('irrigation_zones'))
   // Louvres : la liste entière est réécrite (même redimensionnement que le formulaire public).
   const louvers = Array.isArray(g.louvers) ? g.louvers : []
@@ -375,8 +402,9 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
       <div className={equipment ? 'system-greenhouse-grid' : undefined}>
       <div className="min-w-0">
       <h3 className="text-xs font-semibold text-slate-500 mb-3">Réponses du client</h3>
-      <div className="space-y-3">
-        <ResponseGroup title="Côtés" none={g.has_side_vents === false || (g.has_side_vents !== true && isZero(g.num_side_vent_motors))} noneEdit={sideCountEdit}>
+      <div className="space-y-5">
+        <ResponseCategory title="Côtés" icon={icons['SVC-007']}>
+        <ResponseGroup none={g.has_side_vents === false || (g.has_side_vents !== true && isZero(g.num_side_vent_motors))} noneEdit={sideCountEdit}>
         <div className="system-response-grid">
         <Row label="Côtés ouvrants" edit={sideCountEdit}>{g.has_side_vents === true ? (g.num_side_vent_motors || 'Oui') : yesNo(g.has_side_vents)}</Row>
         {g.has_side_vents === true && <Row label="Type" edit={ed('select', g.side_vent_type || 'rollup', set('side_vent_type'), form.opts('greenhouse.side_vent_type_options'))}>{choiceLabel(form, 'greenhouse.side_vent_type_options', g.side_vent_type || 'rollup')}</Row>}
@@ -385,36 +413,41 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
           <Row label="Sorties V2" edit={ed('number', manual.slots, v => ({ side_vent_manual: { ...manual, slots: v } }))}>{manual.slots === '' || manual.slots == null ? null : String(manual.slots)}</Row>
           <Row label="Matériel à envoyer" wide><ManualSideEquipment items={manualItems} names={names || {}} onSave={next => ({ greenhouse: { index: idx, values: { side_vent_manual: { ...manual, items: next } } } })} /></Row>
         </>}
-        {g.has_side_vents === true && !other && (
-          <>
-            <Row label="Moteurs" edit={ed('select', g.has_existing_side_vent_motors, set('has_existing_side_vent_motors'), [{ value: true, label: 'Déjà en place' }, { value: false, label: 'À fournir' }])}>{g.has_existing_side_vent_motors === true ? 'Déjà en place' : g.has_existing_side_vent_motors === false ? 'À fournir' : null}</Row>
+        </div>
+        {!other && <ResponseSubGroup title="Moteurs">
+            {g.has_side_vents === true && <Row label="Moteurs" edit={ed('select', g.has_existing_side_vent_motors, set('has_existing_side_vent_motors'), [{ value: true, label: 'Déjà en place' }, { value: false, label: 'À fournir' }])}>{g.has_existing_side_vent_motors === true ? 'Déjà en place' : g.has_existing_side_vent_motors === false ? 'À fournir' : null}</Row>}
+            {g.has_existing_side_vent_motors && g.side_has_inverters !== true && <Row label="Moteurs déclarés" verify={verify('motors')}>{motorText(g) || null}</Row>}
+            {g.has_existing_side_vent_motors && (typeof g.side_has_inverters === 'boolean' || g.side_has_inverters === 'unknown') && <Row label="Inverseurs" edit={ed('select', g.side_has_inverters, v => ({ side_has_inverters: v, side_inverter_ratio: '', side_inverter_model: '', side_inverter_brand_other: '', side_inverter_model_other: '', ...(v === true ? { length_range: '', length: '', side_vent_motor_choice: '', side_vent_motor_brand: '', side_vent_motor_model: '' } : {}) }), BOOL_UNKNOWN_OPTIONS)}>{g.side_has_inverters === 'unknown' ? 'Je ne sais pas' : g.side_has_inverters
+              ? 'Oui'
+              : 'Aucun'}</Row>}
+            {g.has_existing_side_vent_motors && g.side_has_inverters === true && <>
+              <Row label="Répartition des inverseurs" edit={ed('select', g.side_inverter_ratio, set('side_inverter_ratio'), SIDE_INVERTER_RATIO_OPTIONS)}>{SIDE_INVERTER_RATIO_OPTIONS.find(o => o.value === g.side_inverter_ratio)?.label || DONT_KNOW}</Row>
+              <Row label="Modèle de l’inverseur" verify={verify('inverters')} edit={ed('select', g.side_inverter_model, v => ({ side_inverter_model: v, side_inverter_brand_other: '', side_inverter_model_other: '' }), SIDE_INVERTER_OPTIONS)}>{SIDE_INVERTER_OPTIONS.find(o => o.value === g.side_inverter_model)?.label || g.side_inverter_model}</Row>
+              {g.side_inverter_model === 'other' && <>
+                <Row label="Marque" verify={verify('inverters', false)} edit={ed('text', g.side_inverter_brand_other, set('side_inverter_brand_other'))}>{g.side_inverter_brand_other}</Row>
+                <Row label="Modèle" verify={verify('inverters', false)} edit={ed('text', g.side_inverter_model_other, set('side_inverter_model_other'))}>{g.side_inverter_model_other}</Row>
+              </>}
+            </>}
+        </ResponseSubGroup>}
+        {g.has_side_vents === true && !other && <>
+          <ResponseSubGroup title="Dimensions">
             {!hasInverters && <Row label="Longueur" edit={ed('select', lengthRange, range => ({ length_range: range, length: keepsLength(range) ? g.length : '' }), form.opts('greenhouse.length_range_options'))}>{choiceLabel(form, 'greenhouse.length_range_options', lengthRange)}</Row>}
             {!hasInverters && lengthRange === 'over_200' && <Row label="Longueur (pi)" edit={ed('number', g.length, v => ({ length_range: 'over_200', length: v }))}>{Number(g.length) > 0 ? g.length : null}</Row>}
             {!hasInverters && <Row label="Hauteur côtés" edit={ed('select', heightRange, range => ({ side_vent_height_range: range, side_vent_height: range === 'unknown' ? DONT_KNOW : keepsHeight(range) ? g.side_vent_height : '' }), form.opts('greenhouse.side_vent_height_range_options'))}>{choiceLabel(form, 'greenhouse.side_vent_height_range_options', heightRange)}</Row>}
             {!hasInverters && heightRange === 'over_6' && <Row label="Hauteur côtés (pi)" edit={ed('number', Number(g.side_vent_height) > 0 ? g.side_vent_height : '', v => ({ side_vent_height_range: 'over_6', side_vent_height: v }))}>{Number(g.side_vent_height) > 0 ? g.side_vent_height : null}</Row>}
+          </ResponseSubGroup>
+          <ResponseSubGroup title="Tuyaux">
             {!hasInverters && <Row label="Tuyau de côté" edit={ed('select', g.side_pipe_type, v => ({ side_pipe_type: v, side_pipe_diameter: '' }), form.opts('greenhouse.side_pipe_type_options'))}>{choiceLabel(form, 'greenhouse.side_pipe_type_options', g.side_pipe_type, PIPE_LABELS)}</Row>}
             {!hasInverters && <Row label="Diamètre côté" edit={ed('select', diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter, v => ({ side_pipe_diameter: v === DIAMETER_OTHER ? (diameterOther ? g.side_pipe_diameter : 'Autre: ') : v }), diameterOptions)}>{diameterOptions.find(o => o.value === (diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter))?.label || g.side_pipe_diameter}</Row>}
             {!hasInverters && diameterOther && <Row label="Diamètre précis" edit={ed('text', diameterExact, v => ({ side_pipe_diameter: `Autre: ${v}` }))}>{diameterExact}</Row>}
             {g.has_existing_side_vent_motors !== true && <Row label="Tuyaux guides 1 à 1 5/16 po" edit={ed('select', g.guide_pipes_state, v => ({ guide_pipes_state: v, guide_pipe_diameter: '' }), form.opts('greenhouse.guide_pipes_options'))}>{choiceLabel(form, 'greenhouse.guide_pipes_options', g.guide_pipes_state, GUIDE_LABELS)}</Row>}
             {g.has_existing_side_vent_motors !== true && !weShipGuides && g.guide_pipes_state !== 'unknown' && <Row label="Diamètre guides" edit={ed('text', g.guide_pipe_diameter, set('guide_pipe_diameter'))}>{g.guide_pipe_diameter}</Row>}
             {g.wants_compatible_guide_pipes && <Row label="Guides compatibles">À fournir</Row>}
-          </>
-        )}
-        {!other && g.has_existing_side_vent_motors && g.side_has_inverters !== true && <Row label="Moteurs déclarés" verify={verify('motors')}>{motorText(g) || null}</Row>}
-        {!other && g.has_existing_side_vent_motors && (typeof g.side_has_inverters === 'boolean' || g.side_has_inverters === 'unknown') && <Row label="Inverseurs" edit={ed('select', g.side_has_inverters, v => ({ side_has_inverters: v, side_inverter_ratio: '', side_inverter_model: '', side_inverter_brand_other: '', side_inverter_model_other: '', ...(v === true ? { length_range: '', length: '', side_vent_motor_choice: '', side_vent_motor_brand: '', side_vent_motor_model: '' } : {}) }), BOOL_UNKNOWN_OPTIONS)}>{g.side_has_inverters === 'unknown' ? 'Je ne sais pas' : g.side_has_inverters
-          ? 'Oui'
-          : 'Aucun'}</Row>}
-        {!other && g.has_existing_side_vent_motors && g.side_has_inverters === true && <>
-          <Row label="Répartition des inverseurs" edit={ed('select', g.side_inverter_ratio, set('side_inverter_ratio'), SIDE_INVERTER_RATIO_OPTIONS)}>{SIDE_INVERTER_RATIO_OPTIONS.find(o => o.value === g.side_inverter_ratio)?.label || DONT_KNOW}</Row>
-          <Row label="Modèle de l’inverseur" verify={verify('inverters')} edit={ed('select', g.side_inverter_model, v => ({ side_inverter_model: v, side_inverter_brand_other: '', side_inverter_model_other: '' }), SIDE_INVERTER_OPTIONS)}>{SIDE_INVERTER_OPTIONS.find(o => o.value === g.side_inverter_model)?.label || g.side_inverter_model}</Row>
-          {g.side_inverter_model === 'other' && <>
-            <Row label="Marque" verify={verify('inverters', false)} edit={ed('text', g.side_inverter_brand_other, set('side_inverter_brand_other'))}>{g.side_inverter_brand_other}</Row>
-            <Row label="Modèle" verify={verify('inverters', false)} edit={ed('text', g.side_inverter_model_other, set('side_inverter_model_other'))}>{g.side_inverter_model_other}</Row>
-          </>}
+          </ResponseSubGroup>
         </>}
-        </div>
         </ResponseGroup>
-        {ventGroups.map(({ title, one, key, many, rec: g, wrap }) => {
+        </ResponseCategory>
+        {ventGroups.map(({ title, key, sku, many, rec: g, wrap }) => {
           if (g.has_roof_vents == null && g.num_roof_vents == null && !g.roof_motor_voltage) return null
           // Le nombre porte aussi le Oui / Non : « Oui » sans nombre = 1 (voir roofVentAnswers).
           const count = g.has_roof_vents === true ? Math.max(1, Number(g.num_roof_vents) || 0) : g.num_roof_vents
@@ -437,33 +470,38 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
           })
           // Plusieurs toits : un groupe par toit (comme les fournaises) ; le nombre
           // se lit aux cartes, sa carte ne reste qu'en correction pour le modifier.
-          if (none || fields.length < 2) return <ResponseGroup key={title} title={title} noneEdit={roofEdit} none={none}>
+          if (none || fields.length < 2) return <ResponseCategory key={title} title={title} icon={icons[sku]}><ResponseGroup noneEdit={roofEdit} none={none}>
             <Row label={many} edit={roofEdit}>{count}</Row>
             {fields}
-          </ResponseGroup>
-          return <Fragment key={title}>
-            {correcting && <ResponseGroup title={title}><Row label={many} edit={roofEdit}>{count}</Row></ResponseGroup>}
-            {fields.map((f, i) => <ResponseGroup key={i} title={`${one} #${i + 1}`}><div className="system-response-grid">{f}</div></ResponseGroup>)}
-          </Fragment>
+          </ResponseGroup></ResponseCategory>
+          return <ResponseCategory key={title} title={title} icon={icons[sku]}>
+            {correcting && <ResponseGroup><Row label={many} edit={roofEdit}>{count}</Row></ResponseGroup>}
+            {fields.map((f, i) => <ResponseGroup key={i} title={`#${i + 1}`}><div className="system-response-grid">{f}</div></ResponseGroup>)}
+          </ResponseCategory>
         })}
-        {!helperOnly && <>
-          {!g.has_louvers || !g.louvers?.length ? <ResponseGroup title="Louvres" noneLabel="Aucune" noneEdit={louverCountEdit} none={g.has_louvers === false}>
+        {!helperOnly && <ResponseCategory title="Louvres" icon={icons['SVC-009']}>
+          {!g.has_louvers || !g.louvers?.length ? <ResponseGroup noneLabel="Aucune" noneEdit={louverCountEdit} none={g.has_louvers === false}>
           <Row label="Louvres" edit={louverCountEdit}>{g.louvers?.length || null}</Row>
-          </ResponseGroup> : g.louvers.map((l, i) => <ResponseGroup key={i} title={`Louvre #${i + 1}`}>
+          </ResponseGroup> : <>
+          {correcting && <ResponseGroup><Row label="Louvres" edit={louverCountEdit}>{g.louvers.length}</Row></ResponseGroup>}
+          {g.louvers.map((l, i) => <ResponseGroup key={i} title={`#${i + 1}`}>
             <div className="system-response-grid"><Row label="Type de louvre" edit={ed('select', louverComboValue(l), c => louverTypeValues(i, c), form.opts('louvers.types'))}>{l.control_type === 'other' ? 'Je ne sais pas' : louverSummary(l) || null}</Row><Row label="Ventilateur associé" edit={ed('select', l.has_fan, v => louverValues(i, { has_fan: v }), BOOL_OPTIONS)}>{yesNo(l.has_fan)}</Row>{l.has_fan && l.control_type === 'open_close' && <Row label="Commande">{l.voltage === '24' ? 'Boîtier time delay + boîtier 24 V' : 'Contrôle séparé du ventilateur non proposé — à vérifier'}</Row>}</div>
           </ResponseGroup>)}
-        </>}
-        {!helperOnly && <ResponseGroup title="Ventilateurs" noneEdit={fansEdit} none={isZero(g.num_fans)}>
+          </>}
+        </ResponseCategory>}
+        {!helperOnly && <ResponseCategory title="Ventilateurs" icon={icons['SVC-009']}><ResponseGroup noneEdit={fansEdit} none={isZero(g.num_fans)}>
           <div className="system-response-grid">
             <Row label="Ventilateurs" edit={fansEdit}>{g.num_fans || null}</Row>
             {Number(g.num_fans) === 2 && <Row label="Puissance ventilateurs" edit={ed('select', fansHpRangeValue(g), v => ({ fans_hp_range: v, fans_combined_hp: '' }), FANS_HP_RANGE_OPTIONS)}>{fansHpLabel(g)}</Row>}
           </div>
+        </ResponseGroup></ResponseCategory>}
+        <ResponseCategory title="Fournaises" icon={icons['SVC-011']}>
+        {(g.permission_level === 'chief_grower' || g.has_furnaces != null) && furnaces.length === 0 && <ResponseGroup noneLabel="Aucune" noneEdit={furnacesEdit} none={g.has_furnaces === false}>
+          <Row label="Fournaises" edit={furnacesEdit}>{g.has_furnaces === true ? (g.num_furnaces || 'Oui') : yesNo(g.has_furnaces)}</Row>
         </ResponseGroup>}
-        {(g.permission_level === 'chief_grower' || g.has_furnaces != null) && furnaces.length === 0 && <ResponseGroup title="Fournaises" noneLabel="Aucune" noneEdit={furnacesEdit} none={g.has_furnaces === false}>
-          <Row label="Fournaises" edit={furnacesEdit}>{yesNo(g.has_furnaces)}</Row>
-        </ResponseGroup>}
+        {correcting && furnaces.length > 0 && <ResponseGroup><Row label="Fournaises" edit={furnacesEdit}>{furnaces.length}</Row></ResponseGroup>}
           {furnaces.map((f, i) => (
-            <ResponseGroup key={i} title={`Fournaise #${i + 1}`}>
+            <ResponseGroup key={i} title={`#${i + 1}`}>
             <div className="system-response-grid">
               <Row label="Compatible" edit={ed('select', f.dry_contact_24v, furnaceValues(i, 'dry_contact_24v'), form.opts('furnace.dry_contact_options'))}>{form.opts('furnace.dry_contact_options').find(o => o.value === f.dry_contact_24v)?.label || null}</Row>
               {/* Les réponses d'avant la question du contact sec ne portent que la marque et le modèle. */}
@@ -474,17 +512,18 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
             </div>
             </ResponseGroup>
           ))}
-        {(g.permission_level === 'chief_grower' || (g.irrigation_zones != null && g.irrigation_zones !== '')) && <ResponseGroup title="Irrigation" noneLabel="Aucune" noneEdit={zonesEdit} none={isZero(g.irrigation_zones)}>
+        </ResponseCategory>
+        {(g.permission_level === 'chief_grower' || (g.irrigation_zones != null && g.irrigation_zones !== '')) && <ResponseCategory title="Irrigation" icon={icons['SVC-008']}><ResponseGroup noneLabel="Aucune" noneEdit={zonesEdit} none={isZero(g.irrigation_zones)}>
           <div className="system-response-grid">
             <Row label="Zones" edit={zonesEdit}>{g.irrigation_zones === 0 || g.irrigation_zones === '0' ? 0 : zones || null}</Row>
             {zones > 0 && <Row label="Valves à fournir" edit={ed('number', g.needs_orisha_valves === false ? 0 : g.orisha_valves_count, v => (v === 0 ? { needs_orisha_valves: false, orisha_valves_count: '' } : v === '' ? { orisha_valves_count: '' } : { needs_orisha_valves: true, orisha_valves_count: v, valve_brand: '', valve_model: '' }))}>{g.needs_orisha_valves === true ? (g.orisha_valves_count || null) : g.needs_orisha_valves === false ? 0 : null}</Row>}
             {zones > 0 && <Row label="Fil à fournir (pi)" edit={ed('number', g.valve_control_wire_feet, set('valve_control_wire_feet'))}>{g.valve_control_wire_feet ?? null}</Row>}
             {g.needs_orisha_valves === false && <Row label="Valves en place">{g.valve_brand === 'Autre marque' ? [g.valve_brand_other, g.valve_model].filter(Boolean).join(' ') || g.valve_brand : [g.valve_brand, g.valve_model].filter(Boolean).join(' ') || null}</Row>}
           </div>
-        </ResponseGroup>}
-        {extraRows.length > 0 && <ResponseGroup title="Autres réponses">
+        </ResponseGroup></ResponseCategory>}
+        {extraRows.length > 0 && <ResponseCategory title="Autres réponses"><ResponseGroup>
           <div className="system-response-grid">{extraRows}</div>
-        </ResponseGroup>}
+        </ResponseGroup></ResponseCategory>}
       </div>
       </div>
       {equipment && <EquipmentPreview equipment={equipment} images={images} types={types} ids={ids} names={names} />}
@@ -725,7 +764,7 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
     <DetailShell
       className="system-builder-detail px-4 sm:px-5 py-4"
       header={{
-        badge: <Badge color={submitted ? 'green' : 'blue'} size="sm">{submitted ? 'Soumis' : 'En cours'}</Badge>,
+        badge: <FieldChoiceBadge table="discovery_forms" field="status" value={submitted ? 'submitted' : 'in_progress'} color={submitted ? 'green' : 'blue'} label={submitted ? 'Soumis' : 'En cours'} />,
         // Ce qui reste à régler avant la commande.
         status: (unknownCount > 0 || uncheckedCount > 0) && <>
           {unknownCount > 0 && <Badge color="red" size="sm">{unknownCount} « Je ne sais pas »</Badge>}

@@ -14,7 +14,7 @@ import { fmtDate } from '../lib/formatDate.js'
 
 const RENDERS = {
   name: row => <span className="font-medium text-slate-800">{row.name}</span>,
-  language: row => <span className="uppercase text-xs text-slate-500">{row.language || '—'}</span>,
+  language: row => String(row.language || '').toUpperCase() || '—',
   field_count: row => <span className="tabular-nums text-slate-600">{row.field_count}</span>,
   submission_count: row => <span className="tabular-nums font-medium text-slate-800">{row.submission_count || 0}</span>,
   last_submission_at: row => <span className="text-slate-500">{row.last_submission_at ? fmtDate(row.last_submission_at) : '—'}</span>,

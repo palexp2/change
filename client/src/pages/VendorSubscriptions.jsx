@@ -8,6 +8,7 @@ import { VendorTabs } from '../components/VendorTabs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -27,10 +28,10 @@ function amountDisplay(row) {
 const RENDERS = {
   vendor:         row => <span className="font-medium text-slate-800">{row.vendor}</span>,
   plan:           row => <span className="text-slate-600">{row.plan || '—'}</span>,
-  currency:       row => <span className="font-mono text-xs text-slate-600">{row.currency || 'CAD'}</span>,
-  variable:       row => <span className="text-slate-600">{row.variable ? 'Variable' : 'Fixe'}</span>,
+  currency:       row => row.currency || 'CAD',
+  variable:       row => (row.variable ? 'Variable' : 'Fixe'),
   amount:         row => <span className="tabular-nums text-slate-800">{amountDisplay(row)}</span>,
-  taxes:          row => <span className="text-slate-600">{row.taxes || '—'}</span>,
+  taxes:          row => row.taxes || '—',
   frequency:      row => <Badge color={row.frequency === 'Annuel' ? 'blue' : 'gray'}>{row.frequency}</Badge>,
   billing_label:  row => <span className="text-slate-600">{row.billing_label || '—'}</span>,
   period:         row => <span className="text-slate-600">{row.period || '—'}</span>,
@@ -212,7 +213,10 @@ function UnsubscribeButton({ sub, onToggle, busy, size = 'sm', idPrefix = '' }) 
 
 const CURRENCIES = ['CAD', 'USD', 'Euro']
 const TAXES = ['', 'TPS/TVQ', 'TPS', 'TVQ', 'Hors-champ']
-const FREQUENCIES = ['Mensuel', 'Annuel']
+// Choix en pastilles (fiche et création) : mêmes couleurs que le tableau.
+const FREQUENCY_CHOICES = [{ value: 'Mensuel', color: 'gray' }, { value: 'Annuel', color: 'blue' }]
+const VARIABLE_CHOICES = [{ value: '0', label: 'Fixe' }, { value: '1', label: 'Variable' }]
+const ACTIVE_CHOICES = [{ value: '1', label: 'Actif', color: 'green' }, { value: '0', label: 'Annulé', color: 'red' }]
 const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
@@ -265,24 +269,43 @@ function EditModal({ sub, onClose, onSaved, onDeleted, onToggleActive }) {
     </div>
   )
 
+  // Champ Sélection : menu de pastilles (cf. ChoiceSelect).
+  const choice = (k, label, choices, { asNumber = false, empty = '—' } = {}) => (
+    <div>
+      <label className={labelCls}>{label}</label>
+      <ChoiceSelect
+        value={form[k] == null ? '' : String(form[k])}
+        choices={choices}
+        table="vendor_subscriptions" field={k} colorsOnly
+        emptyOption={empty}
+        onChange={raw => {
+          const v = raw === '' || raw == null ? null : (asNumber ? Number(raw) : raw)
+          set(k, v)
+          save(k, v)
+        }}
+        className={inputCls}
+      />
+    </div>
+  )
+
   return (
     <RecordPeekDrawer open onClose={onClose} title={form.vendor} width={720} peekKey="vendor_subscriptions">
       <div className="px-5 py-4">
       <div className="grid grid-cols-2 gap-3">
         {text('vendor', 'Fournisseur')}
         {text('plan', 'Plan / Forfait', { 'data-testid': 'sub-plan' })}
-        {select('currency', 'Devise', CURRENCIES)}
-        {select('variable', 'Fixe / Variable', [{ value: 0, label: 'Fixe' }, { value: 1, label: 'Variable' }], { asNumber: true })}
+        {choice('currency', 'Devise', CURRENCIES, { empty: null })}
+        {choice('variable', 'Fixe / Variable', VARIABLE_CHOICES, { asNumber: true, empty: null })}
         {text('amount', 'Montant avant taxes', { type: 'number', step: '0.01', min: '0' })}
         {text('amount_label', 'Montant affiché (si variable, ex. « 125 à 150 »)')}
-        {select('taxes', 'Taxes', TAXES)}
-        {select('frequency', 'Fréquence', FREQUENCIES)}
+        {choice('taxes', 'Taxes', TAXES)}
+        {choice('frequency', 'Fréquence', FREQUENCY_CHOICES, { empty: null })}
         {select('billing_day', 'Jour de facturation', ['', ...Array.from({ length: 31 }, (_, i) => i + 1)], { asNumber: true })}
         {select('billing_month', 'Mois (si annuel)', ['', ...MONTHS.map((m, i) => ({ value: i + 1, label: m }))], { asNumber: true })}
         {text('billing_label', 'Date affichée dans le sheet (ex. « 12 du mois », « 20 août »)')}
         {text('period', 'Période (« Mois à venir »… )')}
         {text('payment_method', 'Mode de paiement')}
-        {select('active', 'Statut', [{ value: 1, label: 'Actif' }, { value: 0, label: 'Annulé' }], { asNumber: true })}
+        {choice('active', 'Statut', ACTIVE_CHOICES, { asNumber: true, empty: null })}
         <div className="col-span-2">
           {text('cancel_url', "Page d'annulation chez le fournisseur (ouverte par « Se désabonner »)")}
         </div>
@@ -363,9 +386,7 @@ function CreateModal({ onClose, onCreated }) {
         </div>
         <div>
           <label className={labelCls}>Devise</label>
-          <select className={inputCls} value={form.currency} onChange={e => set('currency', e.target.value)}>
-            {CURRENCIES.map(c => <option key={c}>{c}</option>)}
-          </select>
+          <ChoiceSelect className={inputCls} value={form.currency} choices={CURRENCIES} table="vendor_subscriptions" field="currency" colorsOnly emptyOption={null} onChange={v => set('currency', v)} />
         </div>
         <div>
           <label className={labelCls}>Montant avant taxes</label>
@@ -373,15 +394,11 @@ function CreateModal({ onClose, onCreated }) {
         </div>
         <div>
           <label className={labelCls}>Taxes</label>
-          <select className={inputCls} value={form.taxes ?? ''} onChange={e => set('taxes', e.target.value || null)}>
-            {TAXES.map(t => <option key={t} value={t}>{t === '' ? '—' : t}</option>)}
-          </select>
+          <ChoiceSelect className={inputCls} value={form.taxes ?? ''} choices={TAXES} table="vendor_subscriptions" field="taxes" colorsOnly onChange={v => set('taxes', v || null)} />
         </div>
         <div>
           <label className={labelCls}>Fréquence</label>
-          <select className={inputCls} value={form.frequency} onChange={e => set('frequency', e.target.value)}>
-            {FREQUENCIES.map(f => <option key={f}>{f}</option>)}
-          </select>
+          <ChoiceSelect className={inputCls} value={form.frequency} choices={FREQUENCY_CHOICES} table="vendor_subscriptions" field="frequency" colorsOnly emptyOption={null} onChange={v => set('frequency', v)} />
         </div>
         <div>
           <label className={labelCls}>Jour de facturation</label>

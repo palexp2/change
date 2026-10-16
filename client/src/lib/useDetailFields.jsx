@@ -60,7 +60,7 @@ export function useExtraCustomFields(erpTable, takenKeys = EMPTY, includeSynced 
           label: f.name,
           type,
           decimals: f.decimals,
-          typeLabel: typeLabel(type),
+          typeLabel: f.erp_computed ? 'Calculé par Boréal' : typeLabel(type),
           // De quoi décider si la valeur est ÉDITABLE sur une fiche : un champ
           // calculé (formula/lookup/rollup) n'a pas de valeur à écrire, et
           // `writable` vient de la règle d'éditabilité unique du serveur (un

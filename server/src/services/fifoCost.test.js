@@ -9,18 +9,21 @@ import { join } from 'node:path'
 const dir = mkdtempSync(join(tmpdir(), 'erp-fifo-cost-'))
 process.env.DATABASE_PATH = join(dir, 'test.db')
 const db = (await import('../db/database.js')).default
-const { computeFifo, applyFifo, productIdsForPurchase } = await import('./fifoCost.js')
+const { computeFifo, applyFifo, productIdsForPurchase, allFifoProductIds } = await import('./fifoCost.js')
+const { computeBomCost, fabricatedAncestors, orderForRecompute } = await import('./bomCost.js')
 after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
 
 db.exec(`
-  CREATE TABLE products (id TEXT PRIMARY KEY, airtable_id TEXT, procurement_type TEXT, stock_qty REAL,
+  CREATE TABLE products (id TEXT PRIMARY KEY, airtable_id TEXT, sku TEXT, name_fr TEXT, procurement_type TEXT, stock_qty REAL,
     unit_cost REAL, cout_unitaire TEXT, valeur_inventaire TEXT, deleted_at TEXT, updated_at TEXT);
+  CREATE TABLE bom_items (id TEXT PRIMARY KEY, product_id TEXT, component_id TEXT, qty_required REAL DEFAULT 1);
   CREATE TABLE purchases (id TEXT PRIMARY KEY, airtable_id TEXT, at_id TEXT, nom_de_la_piece TEXT,
     quantite_commande TEXT, date_de_commande TEXT, created_at TEXT, cf_date_de_reception_complete TEXT,
     override_prix_unitaire_paye_cad TEXT, prix_unitaire_facture_cad TEXT, prix_unitaire_cad TEXT);
   CREATE TABLE product_opening_costs (product_id TEXT PRIMARY KEY, unit_cost REAL NOT NULL, set_by TEXT, set_at TEXT);
   CREATE TABLE purchase_price_approvals (purchase_id TEXT PRIMARY KEY, unit_price REAL NOT NULL, approved_by TEXT, approved_at TEXT);
   CREATE TABLE purchase_prices (airtable_id TEXT PRIMARY KEY, unit_price REAL, fetched_at TEXT);
+  CREATE TABLE bom_free_components (product_id TEXT, component_id TEXT, set_by TEXT, set_at TEXT, PRIMARY KEY (product_id, component_id));
   CREATE TABLE product_fifo (product_id TEXT PRIMARY KEY, cost REAL, qty REAL, uncovered REAL,
     layers TEXT, issues TEXT, issue_count INTEGER NOT NULL DEFAULT 0, computed_at TEXT, pushed_cost REAL);
   INSERT INTO products (id, airtable_id, procurement_type, stock_qty, unit_cost) VALUES
@@ -118,4 +121,73 @@ test("applyFifo écrit le coût seulement s'il change ; pièce fabriquée intouc
 
 test('productIdsForPurchase résout le lien Airtable', () => {
   assert.deepEqual(productIdsForPurchase('a1'), ['p1'])
+})
+
+// ── Pièces fabriquées : coût de la nomenclature ─────────────────────────────
+db.exec(`
+  INSERT INTO products (id, airtable_id, procurement_type, stock_qty, unit_cost, cout_unitaire) VALUES
+    ('vis', 'recV', 'Acheté', 100, 0.1, '0.1'), ('pcb', 'recB', 'Acheté', 10, 4, '4'),
+    ('nu', 'recN', 'Acheté', 0, NULL, NULL), ('soft', 'recS', 'Logiciel', 0, NULL, NULL),
+    ('sous', 'recSA', 'Fabriqué', 2, NULL, '1'), ('fini', 'recFI', 'Fabriqué', 3, 99, '99'),
+    ('cy1', 'recC1', 'Fabriqué', 0, NULL, NULL), ('cy2', 'recC2', 'Fabriqué', 0, NULL, NULL);
+  INSERT INTO bom_items VALUES
+    ('l1', 'sous', 'pcb', 1), ('l2', 'sous', 'vis', 4),
+    ('l3', 'fini', 'sous', 2), ('l4', 'fini', 'vis', 10), ('l5', 'fini', 'soft', 1),
+    ('l6', 'cy1', 'cy2', 1), ('l7', 'cy2', 'cy1', 1), ('l8', 'cy2', 'pcb', 1);
+`)
+
+test('nomenclature simple : Σ quantité × coût du composant', () => {
+  const r = computeBomCost('sous')
+  assert.equal(r.cost, 4.4) // 1 × 4 + 4 × 0,10
+  assert.deepEqual(r.issues, [])
+})
+
+test('sous-assemblage fabriqué valorisé récursivement, logiciel à 0 sans alerte', () => {
+  const r = computeBomCost('fini')
+  assert.equal(r.cost, 9.8) // 2 × 4,40 + 10 × 0,10 + 1 × 0
+  assert.deepEqual(r.issues, [])
+  assert.deepEqual(fabricatedAncestors(['pcb']).sort(), ['cy2', 'cy1', 'fini', 'sous'].sort())
+  assert.deepEqual(orderForRecompute(['fini', 'sous', 'pcb']), ['pcb', 'sous', 'fini'])
+})
+
+test('cycle : alerte, pas de boucle', () => {
+  const r = computeBomCost('cy1')
+  assert.ok(r.issues.some(i => i.kind === 'cycle'))
+  assert.ok(Number.isFinite(r.cost))
+})
+
+test('composant sans coût : alerte, exclu de la somme', () => {
+  db.prepare("INSERT INTO bom_items VALUES ('l9', 'sous', 'nu', 3)").run()
+  const r = computeBomCost('sous')
+  assert.equal(r.cost, 4.4)
+  assert.deepEqual(r.issues.map(i => [i.kind, i.component_id]), [['sans_cout', 'nu']])
+  // Accepté sans coût pour ce produit : 0 $, plus d'alerte.
+  db.prepare("INSERT INTO bom_free_components (product_id, component_id) VALUES ('sous', 'nu')").run()
+  const ok = computeBomCost('sous')
+  assert.equal(ok.cost, 4.4)
+  assert.deepEqual(ok.issues, [])
+  assert.equal(ok.lines.find(l => l.component_id === 'nu').free, true)
+  db.prepare("DELETE FROM bom_free_components").run()
+  db.prepare("DELETE FROM bom_items WHERE id = 'l9'").run()
+})
+
+test('applyFifo écrit le coût nomenclature dans unit_cost, cout_unitaire, valeur_inventaire', () => {
+  const r = applyFifo('fini')
+  assert.equal(r.changed, true)
+  assert.equal(r.from, 99) // coût de la fiche
+  assert.equal(r.to, 9.8)
+  const row = db.prepare("SELECT unit_cost, cout_unitaire, valeur_inventaire FROM products WHERE id = 'fini'").get()
+  assert.equal(row.unit_cost, 9.8)
+  assert.equal(Number(row.cout_unitaire), 9.8)
+  assert.equal(Number(row.valeur_inventaire), 29.4)
+  const memo = JSON.parse(db.prepare("SELECT layers FROM product_fifo WHERE product_id = 'fini'").get().layers)
+  assert.deepEqual(memo.map(l => [l.component_id, l.qty, l.unit_cost]), [['sous', 2, 4.4], ['vis', 10, 0.1], ['soft', 1, 0]])
+  assert.equal(applyFifo('fini').changed, false)
+})
+
+test('pièce fabriquée sans nomenclature : coût en place gardé ; logiciels hors passe', () => {
+  assert.equal(computeFifo('fab').eligible, false)
+  assert.equal(applyFifo('fab').changed, false)
+  const ids = allFifoProductIds()
+  assert.ok(ids.includes('fini') && !ids.includes('soft'))
 })

@@ -11,7 +11,8 @@ import { RecordForm } from '../components/RecordForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { Field } from '../components/Field.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 
 // Fiche d'une fourniture (miroir Airtable « Fournitures ») : tous ses champs se
@@ -29,7 +30,7 @@ const HISTORY_COLUMNS = [
 
 // Champs que POST /api/fournitures/achats sait créer ; la fourniture est celle de la fiche.
 const achatFields = f => [
-  { field: 'purchased_at', label: 'Date',       type: 'date', locked: true, required: true, defaultValue: new Date().toISOString().slice(0, 10) },
+  { field: 'purchased_at', label: 'Date',       type: 'date', locked: true, required: true, defaultValue: localISODate() },
   { field: 'qty',          label: 'Quantité',   type: 'number', min: 0, step: 'any', required: true, defaultValue: 1 },
   { field: 'unit_price',   label: 'Prix unit.', type: 'currency', min: 0, step: '0.01', defaultValue: f.reference_price ?? '' },
 ]
@@ -143,6 +144,8 @@ export default function FournitureDetail({ recordId: id, onClose, onChanged }) {
         <Info id="last_purchased_at" label="Dernier achat">{achats[0]?.purchased_at ? fmtDate(achats[0].purchased_at) : null}</Info>
         <Info label="Total dépensé">{achats.length ? money(spent) : null}</Info>
         <Info label="Notes" span2><InlineTextarea {...inline('notes')} /></Info>
+        <CustomDetailFields table="fournitures" record={f} onSave={save} savingKeys={saving ? { [saving]: true } : undefined}
+          labelClassName="text-xs text-slate-500" />
       </div>
 
       <div className="mt-6 mb-2 flex items-center justify-between">

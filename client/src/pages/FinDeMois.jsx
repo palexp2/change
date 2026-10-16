@@ -266,7 +266,7 @@ function HoursCard({ month, hours, fileName, onChanged }) {
         <table className="w-full text-sm">
           <tbody>
             {[...employees, ...contractors].map(r => (
-              <tr key={r.id} className="border-t border-slate-50">
+              <tr key={r.id || r.employee_name} className="border-t border-slate-50">
                 <td className="py-1.5 pr-4">
                   {r.employee_name}
                   {!!r.contractor && <span className="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-slate-100 text-slate-500">sous-traitant</span>}
@@ -274,11 +274,14 @@ function HoursCard({ month, hours, fileName, onChanged }) {
                 </td>
                 <td className="py-1.5 pr-4 text-right w-32">
                   <NumberField value={r.hours} className="w-24"
-                    onSave={v => api.monthEnd.updateHours(r.id, { hours: v ?? 0 }).then(onChanged)} />
+                    onSave={v => (r.id
+                      ? api.monthEnd.updateHours(r.id, { hours: v ?? 0 })
+                      : api.monthEnd.addHours({ month, employee_name: r.employee_name, hours: v ?? 0, contractor: !!r.contractor })
+                    ).then(onChanged)} />
                 </td>
                 <td className="py-1.5 w-8 text-right">
-                  <button onClick={() => api.monthEnd.deleteHours(r.id).then(onChanged)}
-                    className="p-1 text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+                  {r.id && r.source !== 'feuilles' && <button onClick={() => api.monthEnd.deleteHours(r.id).then(onChanged)}
+                    className="p-1 text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>}
                 </td>
               </tr>
             ))}

@@ -392,8 +392,11 @@ router.get('/soumissions/:id', (req, res) => {
   const converted_order = db.prepare(
     'SELECT id, order_number FROM orders WHERE soumission_id = ? AND deleted_at IS NULL ORDER BY created_at LIMIT 1'
   ).get(req.params.id) || null
+  const system_builder = db.prepare(
+    'SELECT id, form_number FROM customer_onboarding_responses WHERE soumission_id = ? ORDER BY created_at LIMIT 1'
+  ).get(req.params.id) || null
 
-  res.json({ ...row, items, converted_order })
+  res.json({ ...row, items, converted_order, system_builder })
 })
 
 const ITEMS_QUERY = `
@@ -597,16 +600,23 @@ router.put('/soumissions/:id', async (req, res) => {
 router.delete('/soumissions/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  if (row.airtable_id) return res.status(400).json({ error: 'Cannot delete Airtable-synced soumission' })
+  // Une soumission synchronisée d'Airtable reviendrait au prochain sync complet :
+  // c'est dans Airtable qu'elle se supprime.
+  if (row.airtable_id) return res.status(400).json({ error: 'Soumission synchronisée d\'Airtable : à supprimer dans Airtable' })
   // Suppression des lignes + du header dans une seule transaction : pas de lignes
-  // orphelines si le DELETE de la soumission échoue.
+  // orphelines si le DELETE de la soumission échoue. La commande issue d'une
+  // soumission convertie survit, détachée (orders.soumission_id n'a pas
+  // d'ON DELETE : sans ce détachement la clé étrangère refusait la suppression).
   const deleteItems = db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'")
+  const detachOrders = db.prepare('UPDATE orders SET soumission_id = NULL WHERE soumission_id = ?')
   const deleteSoumission = db.prepare('DELETE FROM soumissions WHERE id = ?')
   db.transaction(() => {
     deleteItems.run(req.params.id)
+    detachOrders.run(req.params.id)
     deleteSoumission.run(req.params.id)
   })()
   emitEntity('soumission', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
+  if (row.project_id) recomputeProjectValeurCad(row.project_id).catch(e => console.error('[valeur_cad_calc]', row.project_id, e.message))
   // Clean up PDF
   if (row.generated_pdf_path) {
     try {
@@ -855,7 +865,10 @@ router.post('/soumissions/:id/send-email', async (req, res) => {
 })
 
 // GET /api/documents/soumissions/:id/sends — historique complet : chaque envoi
-// (le plus récent d'abord) et toutes les ouvertures de son courriel.
+// (le plus récent d'abord), toutes les ouvertures de son courriel et tous les
+// clics : liens du courriel, et boutons « S'abonner » / « Acheter » du PDF
+// rattachés à l'envoi qui les précède.
+const PDF_CLICK_LABELS = { abonnement: 'S’abonner', achat: 'Acheter' }
 router.get('/soumissions/:id/sends', (req, res) => {
   const sends = db.prepare(`
     SELECT ss.email_id, ss.sent_at, e.to_address, e.from_address
@@ -863,7 +876,20 @@ router.get('/soumissions/:id/sends', (req, res) => {
     WHERE ss.soumission_id = ? ORDER BY ss.sent_at DESC
   `).all(req.params.id)
   const opens = db.prepare('SELECT opened_at FROM email_opens WHERE email_id = ? ORDER BY opened_at DESC')
-  res.json(sends.map(s => ({ ...s, opens: opens.all(s.email_id).map(o => o.opened_at) })))
+  const emailClicks = db.prepare(`
+    SELECT c.clicked_at AS at, COALESCE(l.label, l.url) AS label FROM email_clicks c
+    JOIN email_links l ON l.id = c.link_id WHERE c.email_id = ?
+  `)
+  const out = sends.map(s => ({ ...s, opens: opens.all(s.email_id).map(o => o.opened_at), clicks: emailClicks.all(s.email_id) }))
+  if (out.length) {
+    const pdfClicks = db.prepare('SELECT kind, clicked_at FROM soumission_link_clicks WHERE soumission_id = ?').all(req.params.id)
+    for (const c of pdfClicks) {
+      const send = out.find(s => s.sent_at <= c.clicked_at) || out[out.length - 1]
+      send.clicks.push({ at: c.clicked_at, label: PDF_CLICK_LABELS[c.kind] || c.kind })
+    }
+  }
+  for (const s of out) s.clicks.sort((a, b) => (a.at < b.at ? 1 : -1))
+  res.json(out)
 })
 
 // ── Duplicate ─────────────────────────────────────────────────────────────────

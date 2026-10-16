@@ -516,7 +516,7 @@ router.post('/session-bridge/instagram/comments', async (req, res) => {
   const posts = Array.isArray(req.body?.posts) ? req.body.posts.slice(0, 200) : []
   const { ingestBrowserScrape } = await import('../services/instagramCommentScrape.js')
   const errors = Array.isArray(req.body?.errors) ? req.body.errors.slice(0, 10).map(e => String(e).slice(0, 200)) : []
-  const r = await ingestBrowserScrape(posts, { trigger: 'module navigateur', errors })
+  const r = await ingestBrowserScrape(posts, { trigger: 'module navigateur', errors, viewer: req.body?.viewer || null })
   res.json(r)
   // Lecture réussie : tri, messages, et la liste de la semaine à Phil si elle
   // n'est pas encore partie.
@@ -528,6 +528,8 @@ router.post('/session-bridge/instagram/comments', async (req, res) => {
 })
 
 router.post('/session-bridge/instagram/profiles', async (req, res) => {
+  const { isOwnViewer, NOT_OWN_ACCOUNT } = await import('../services/instagramCommentScrape.js')
+  if (req.body?.viewer && !isOwnViewer(req.body.viewer)) return res.status(409).json({ error: NOT_OWN_ACCOUNT })
   const items = Array.isArray(req.body?.profiles) ? req.body.profiles : []
   res.json({ ok: true, received: items.length })
   // L'analyse (photos comprises) prend du temps : le module n'attend pas.

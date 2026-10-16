@@ -40,6 +40,7 @@ function rowFor(sub, ct, role, items) {
     company_id: sub.company_id, role, produits: items.map(i => i.name).filter(Boolean).join(', '),
     maintenant: now.toISOString(), maintenant_ms: String(now.getTime()), app_url: APP_URL,
     lien_fiche: triggerRecordUrl('contacts', ct.id), lien_abonnement: buildStripeUrl(sub.stripe_id) || '',
+    lien_fiche_abonnement: `${APP_URL}/erp/abonnements?id=${encodeURIComponent(sub.id)}`,
   }
 }
 

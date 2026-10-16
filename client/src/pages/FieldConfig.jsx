@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom'
 import { Pencil, Trash2, Plus, ArrowLeft, Search } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
-import { TABLE_LABELS, TABLE_COLUMN_META, LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
+import { TABLE_LABELS, TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { linkedRecordTypeLabel, isLinkedRecordTypeLabel } from '../lib/linkedRecordType.js'
 import {
   typeLabel, kindLabel, useFieldOverrides, applyFieldOverrides, applyFieldOrder,
   isComputedKind, isPushOnlyKind, noMappingReason, pushOnlyMappingReason,
@@ -23,6 +24,9 @@ import {
   useAirtableDirectSource, FixedMappingCell,
 } from '../components/FieldAirtableMapping.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
+import {
+  useStripeMap, hasStripeMapping, StripeFieldCell, StripeSourceStatus,
+} from '../components/StripeFieldMapping.jsx'
 import {
   customFieldToColumn, CUSTOM_FIELD_TABLES, isAirtableLinkField, linkDisplayTargetOf,
 } from '../lib/customFieldDisplay.jsx'
@@ -105,7 +109,7 @@ function mappingKey(col) {
 // modification ici doit être répercutée là-bas, sinon les colonnes décalent.
 // `mapping` : la table a-t-elle une source Airtable (colonnes « Sens » et
 // « Champ Airtable » affichées) ?
-function FieldsHeader({ mapping }) {
+function FieldsHeader({ mapping, stripe }) {
   return (
     <div
       data-testid="fieldcfg-header"
@@ -120,6 +124,7 @@ function FieldsHeader({ mapping }) {
         <span className="w-5 flex-shrink-0 text-center text-[10px] whitespace-nowrap" title="Sens de synchronisation">Sens</span>
       )}
       {mapping && <span className="w-64 flex-shrink-0 truncate">Champ Airtable</span>}
+      {stripe && <span className="w-56 flex-shrink-0 truncate">Champ Stripe</span>}
       {/* 56 px = les deux boutons d'action de la ligne (22 px) et leur gouttière. */}
       <span className="w-[56px] flex-shrink-0 text-center">Actions</span>
     </div>
@@ -154,11 +159,14 @@ function FieldRow({
   // module Airtable de la table, `dynDirection` = sens courant ('pull' défaut),
   // `onDynDirection` = autosave du choix. Absents → icône statique.
   dynModule, dynDirection, onDynDirection,
+  frozen = false,
   // Libellé du module Airtable de la table — pour l'infobulle du sens verrouillé.
   moduleLabel,
   // Table lue en direct dans Airtable (hors miroir) : le champ qui alimente la
   // colonne est fixé en code — il s'affiche, cadenassé, au lieu du picker.
   fixedField, fixedReason,
+  // Cellule « Champ Stripe » (tables alimentées par Stripe) — null sinon.
+  stripeCell,
 }) {
   const [name, setName] = useState(col.label)
   const [saving, setSaving] = useState(false)
@@ -187,7 +195,8 @@ function FieldRow({
   // …sauf qu'un champ calculé se POUSSE vers Airtable : le serveur marque alors
   // la colonne `push_only` (cf. mapping-data). Le mapping est donc proposé
   // normalement, avec un sens figé à « Boréal → Airtable ».
-  const pushOnly = !!at?.push_only && isPushOnlyKind(computedKind)
+  // « Calculé par Boréal » : physique, mais poussé seulement, comme un calcul.
+  const pushOnly = !!at?.push_only && (isPushOnlyKind(computedKind) || !!cf?.erp_computed)
   // Entrée mapping-data qui pilote les deux cellules Airtable de la ligne.
   const mapAt = mappingAt || at
 
@@ -245,7 +254,7 @@ function FieldRow({
             // Champ perso : sa famille (Formule, Lookup…) ou, pour un champ
             // « donnée », son PROPRE type — celui du champ, pas celui auquel la
             // colonne se ramène (une devise se ramène à un nombre).
-            const own = !col.renderTypeLabel && cf ? (kindLabel(isCountField(cf) ? 'count' : cf.kind) || typeLabel(cf.type)) : null
+            const own = cf?.erp_computed ? 'Calculé par Boréal' : !col.renderTypeLabel && cf ? (kindLabel(isCountField(cf) ? 'count' : cf.kind) || typeLabel(cf.type)) : null
             // Champ lien Airtable : stocké en texte (l'id du record lié), mais
             // c'est un lien — le nommer « Texte » n'apprenait rien à l'utilisateur.
             const atLink = isAirtableLinkField(cf) || !!at?.target_table
@@ -258,7 +267,7 @@ function FieldRow({
             // contredisait le type annoncé juste à côté.
             const linkedRender = !col.fieldType
               && !!col.renderTypeLabel
-              && col.renderTypeLabel === LINKED_RECORD_TYPE_LABELS[col.id]
+              && isLinkedRecordTypeLabel(col.renderTypeLabel)
             return (
               <span
                 className="text-xs text-slate-600 w-28 flex-shrink-0 flex items-center gap-1.5 min-w-0"
@@ -276,7 +285,7 @@ function FieldRow({
                   data-testid={`fieldcfg-typeicon-${col.id}`}
                   className="text-slate-500"
                 />
-                <span className="truncate">{asLink ? kindLabel('link') : (col.renderTypeLabel || own || typeLabel(col.type))}</span>
+                <span className="truncate">{asLink ? kindLabel('link') : cf?.erp_computed ? own : (col.renderTypeLabel || own || typeLabel(col.type))}</span>
               </span>
             )
           })()
@@ -289,7 +298,17 @@ function FieldRow({
           à synchroniser du tout (bouton, table sans écriture vers Airtable) →
           icône grisée avec la raison en infobulle ; soit il est poussable
           (`push_only`) → flèche « Boréal → Airtable » figée, jamais un choix. */}
-      {showMapping && computedKind && !pushOnly && (
+      {showMapping && frozen && !pushOnly && (
+        <span
+          title="Calculé par Boréal — plus importé d’Airtable"
+          data-testid={`fieldcfg-direction-${col.id}`}
+          data-direction="none"
+          className="w-5 flex-shrink-0 inline-flex justify-center cursor-help text-slate-300"
+        >
+          <DirPullIcon size={13} />
+        </span>
+      )}
+      {showMapping && !frozen && computedKind && !pushOnly && (
         <span
           title={noMappingReason(computedKind)}
           data-testid={`fieldcfg-direction-${col.id}`}
@@ -301,7 +320,7 @@ function FieldRow({
       )}
       {showMapping && pushOnly && (
         <span
-          title={pushOnlyMappingReason(computedKind)}
+          title={cf?.erp_computed ? 'Calculé par Boréal : poussé vers Airtable — jamais importé.' : pushOnlyMappingReason(computedKind)}
           data-testid={`fieldcfg-direction-${col.id}`}
           data-direction="push"
           className={`w-5 flex-shrink-0 inline-flex justify-center cursor-help ${at?.mapped ? 'text-slate-600' : 'text-slate-400'}`}
@@ -311,7 +330,7 @@ function FieldRow({
       )}
       {/* Table lue en direct : le sens est forcément Airtable → Boréal, et il
           n'est pas réglable (rien n'est écrit vers Airtable). */}
-      {showMapping && !computedKind && fixedField && (
+      {showMapping && !frozen && !computedKind && fixedField && (
         <span
           title={fixedReason}
           data-testid={`fieldcfg-direction-${col.id}`}
@@ -321,7 +340,7 @@ function FieldRow({
           <DirPullIcon size={13} />
         </span>
       )}
-      {showMapping && !computedKind && !fixedField && (
+      {showMapping && !frozen && !computedKind && !fixedField && (
         core
           ? (
             <span className="w-5 flex-shrink-0 inline-flex justify-center">
@@ -401,6 +420,7 @@ function FieldRow({
                 onPick={core.onPick}
                 onUnmap={core.onUnmap}
                 onRefresh={core.onRefresh}
+                unmappedLabel="— Non lié —"
               />
             )
             : mapAt
@@ -412,9 +432,15 @@ function FieldRow({
                   onSave={onSaveMapping}
                   savingId={savingId}
                   onRefresh={onRefreshFields}
+                  unmappedLabel="— Non lié —"
                 />
               )
               : <span className="text-[11px] text-slate-600">—</span>}
+        </span>
+      )}
+      {stripeCell && (
+        <span className="w-56 flex-shrink-0 min-w-0" data-testid={`fieldcfg-stripe-${col.id}`}>
+          {stripeCell}
         </span>
       )}
       <button
@@ -484,9 +510,19 @@ export default function FieldConfig() {
   // direct par URL (favori, rechargement), on retombe sur les métadonnées
   // partagées de tableDefs.js.
   const baseColumns = useMemo(() => {
-    const declared = TABLE_COLUMN_META[table] || []
+    // Lien déclaré (`linkTarget`) : « Lien vers … » même sans passer par le tableau.
+    // `assumeRendered` : accès direct, sans le tableau pour éprouver les rendus —
+    // les colonnes connues (« Entreprise », « Produit »…) sont tenues pour des
+    // liens, comme sur une fiche (DetailFieldGrid). Sans ça, elles s'annonçaient
+    // « Texte » ici et « Lien vers … » depuis le tableau.
+    const withLinkType = (c, assumeRendered = false) => {
+      const l = !c.renderTypeLabel && linkedRecordTypeLabel(assumeRendered ? { render: true, ...c } : c, [], table)
+      return l ? { ...c, renderTypeLabel: l } : c
+    }
+    const meta = TABLE_COLUMN_META[table] || []
     const fromNav = location.state?.columns
-    if (!Array.isArray(fromNav) || fromNav.length === 0) return declared
+    if (!Array.isArray(fromNav) || fromNav.length === 0) return meta.map(c => withLinkType(c, true))
+    const declared = meta.map(c => withLinkType(c))
     // Le state de navigation ne transporte que du sérialisable
     // (DataTable.openFieldConfig) : `mappingColumn` s'y perdait. Sans lui, la
     // colonne ERP pilotée par la ligne (`product_id` sous « Produit » des
@@ -501,6 +537,7 @@ export default function FieldConfig() {
       // (champ lu, choix d'une Sélection) garderait son ancienne définition.
       return {
         ...c,
+        ...(d.renderTypeLabel && !c.renderTypeLabel ? { renderTypeLabel: d.renderTypeLabel } : {}),
         field: d.field ?? c.field,
         ...(d.options ? { options: d.options } : {}),
         ...(d.mappingColumn && !c.mappingColumn ? { mappingColumn: d.mappingColumn } : {}),
@@ -549,6 +586,9 @@ export default function FieldConfig() {
   // la table concernée, jamais dans celle d'une autre.
   const paneCoreModule = modules.find(m => m.coremap && !m.inline) || null
   const core = useCoreMap(inlineCoreModule?.module || null, () => reloadCustomFields())
+  // Correspondance Stripe (factures, abonnements) : colonne « Champ Stripe ».
+  const showStripe = hasStripeMapping(table)
+  const stripe = useStripeMap(table)
   const coreByColumn = useMemo(() => {
     const m = new Map()
     for (const f of (core.data?.fields || [])) if (f.column) m.set(f.column, f)
@@ -587,6 +627,18 @@ export default function FieldConfig() {
   // (libellés / types) et ordre utilisateur — exactement ce que voit la DataTable.
   // Définitions D'ORIGINE (pré-override) : la modale de champ natif s'en sert
   // pour afficher « nom / type d'origine » et détecter un retour à l'original.
+  // Colonnes gelées à l'import : calculées par Boréal, plus rien ne vient
+  // d'Airtable — la ligne ne doit pas afficher la flèche d'import.
+  const [frozenCols, setFrozenCols] = useState(() => new Set())
+  useEffect(() => {
+    if (!sqlTable) return
+    let off = false
+    api.airtable.frozenColumns(sqlTable)
+      .then(rows => { if (!off) setFrozenCols(new Set((rows || []).map(r => r.column_name))) })
+      .catch(() => {})
+    return () => { off = true }
+  }, [sqlTable])
+
   const atByColumn = useMemo(() => {
     const m = new Map()
     for (const c of (atData?.erp_columns || [])) m.set(c.column_name, c)
@@ -673,15 +725,33 @@ export default function FieldConfig() {
         type: atByColumn.get(f.column)?.field_type || 'text',
         unlisted: true,
       }))
-    return [...live, ...extra, ...fromAirtable, ...fromCore].filter(c => {
+    for (const c of fromCore) known.add(c.id)
+    // Colonnes alimentées par Stripe que la table n'affiche pas : leur
+    // correspondance doit rester atteignable.
+    const fromStripe = [...stripe.byColumn.values()]
+      .filter(f => !known.has(f.column))
+      .map(f => ({ id: f.column, field: f.column, label: f.label, type: 'text', unlisted: true }))
+    for (const c of fromStripe) known.add(c.id)
+    // Champs Stripe fixes hors DataTable (ex. PDF des factures) : leur ligne
+    // porte la provenance, au lieu d'une mention sous l'en-tête « Source Stripe ».
+    const fromStripeFixed = [...new Set(stripe.fixedByColumn.values())]
+      .filter(f => f.ownRow && !known.has(f.columns[0]))
+      .map(f => ({ id: f.columns[0], field: f.columns[0], label: f.label, type: 'text', unlisted: true }))
+    return [...live, ...extra, ...fromAirtable, ...fromCore, ...fromStripe, ...fromStripeFixed].filter(c => {
       if (c.alwaysVisible) return false
       const key = c.field ?? c.id
       if (!removedColumns.has(key)) return true
       const cf = cfByColumn.get(key)
       return !!cf && cf.id !== removedColumns.get(key)
     })
-  }, [baseColumns, customFields, atByColumn, cfByColumn, cfLoaded, ownModule, atData, fromNavState, nativeIds, removedColumns, coreByColumn, overrides])
+  }, [baseColumns, customFields, atByColumn, cfByColumn, cfLoaded, ownModule, atData, fromNavState, nativeIds, removedColumns, coreByColumn, overrides, stripe.byColumn, stripe.fixedByColumn])
   const baseById = useMemo(() => new Map(mergedBase.map(c => [c.id, c])), [mergedBase])
+  // Clé cœur d'une ligne : sa colonne, ou la FK qu'elle affiche (`mappingColumn`,
+  // ex. « Projet » des factures → project_id).
+  const coreFor = useCallback(
+    c => coreByColumn.get(c.field) || (c.mappingColumn && coreByColumn.get(c.mappingColumn)) || null,
+    [coreByColumn]
+  )
 
   // Un champ supprimé sort du tableau : le serveur republie les lignes
   // supprimées sous le drapeau `hidden`, et c'est ici qu'on les retire. Il n'y a
@@ -727,7 +797,7 @@ export default function FieldConfig() {
     const q = filter.trim().toLowerCase()
     if (!q) return columns
     const coreValue = c => {
-      const f = coreByColumn.get(c.field)
+      const f = coreFor(c)
       return f ? (core.draft[f.key] || '') : ''
     }
     return columns.filter(c =>
@@ -736,7 +806,7 @@ export default function FieldConfig() {
       || (atByColumn.get(mappingKey(c))?.mapped_airtable_field || '').toLowerCase().includes(q)
       || coreValue(c).toLowerCase().includes(q)
     )
-  }, [columns, filter, atByColumn, coreByColumn, core.draft])
+  }, [columns, filter, atByColumn, coreFor, core.draft])
 
   async function renameField(col, cf, nextLabel) {
     // Unicité du nom dans la table : le serveur refuse aussi (409), mais lui ne
@@ -834,19 +904,6 @@ export default function FieldConfig() {
     }
   }
 
-  // Champs Airtable « mappés en dur » restant à signaler : ceux du field_map du
-  // module qui ne sont PAS déjà pilotés par une ligne du tableau (mapping cœur
-  // fusionné) — sinon on annoncerait « non modifiable ici » juste au-dessous du
-  // picker qui les modifie.
-  // Un champ converti en champ personnalisé (« Contact », « # de retour ») y
-  // reste listé, et c'est exact : ce que la note décrit est le BRANCHEMENT
-  // Airtable→colonne, qui vit toujours dans le plan cœur du miroir — le champ
-  // ERP, lui, se renomme et se supprime dans le tableau ci-dessus.
-  const hardcodedLeft = useMemo(() => {
-    const shown = new Set([...coreByColumn.values()].map(f => core.draft[f.key]).filter(Boolean))
-    return (atData?.hardcoded || []).filter(n => !shown.has(n))
-  }, [atData, coreByColumn, core.draft])
-
   const showMapping = !!(ownModule || inlineCoreModule || directFields)
 
   // Props de mapping « cœur » d'une colonne — construites une seule fois pour
@@ -867,7 +924,7 @@ export default function FieldConfig() {
     showMapping,
     column: editingColumn,
     cfKind: cfModal?.editing?.kind || null,
-    coreProps: buildCore(editingColumn ? coreByColumn.get(editingColumn) : null),
+    coreProps: buildCore(editingColumn ? coreFor(baseById.get(editingColumn) || { field: editingColumn }) : null),
     at: editingColumn ? atByColumn.get(editingColumn) : null,
     airtableFields: atData?.airtable_fields || [],
     tableMap: atData?.airtable_table_to_erp,
@@ -932,6 +989,12 @@ export default function FieldConfig() {
             </div>
           )}
 
+          {showStripe && (
+            <div className="mb-4">
+              <StripeSourceStatus table={table} stripe={stripe} showSyncDetails={table !== 'factures'} />
+            </div>
+          )}
+
           {/* Table lue en direct : même place que l'en-tête « Source Airtable »
               d'un module, mais rien à synchroniser ni à régler. */}
           {!ownModule && directSource && (
@@ -963,12 +1026,12 @@ export default function FieldConfig() {
           </div>
 
           <div className="card">
-            {visibleRows.length > 0 && <FieldsHeader mapping={showMapping} />}
+            {visibleRows.length > 0 && <FieldsHeader mapping={showMapping} stripe={showStripe} />}
             {visibleRows.length === 0
               ? <p className="text-sm text-slate-600 p-6">Aucun champ{filter ? ' ne correspond à cette recherche' : ' pour cette table'}.</p>
               : visibleRows.map((col, i) => {
                 const cf = cfByColumn.get(col.field) || cfByColumn.get(col.id) || null
-                const coreField = coreByColumn.get(col.field) || null
+                const coreField = coreFor(col)
                 return (
                   <FieldRow
                     key={col.id}
@@ -988,6 +1051,7 @@ export default function FieldConfig() {
                     onSaveMapping={ownModule ? atSaveMapping : null}
                     onRefreshFields={ownModule ? refreshAirtableFields : null}
                     showMapping={showMapping}
+                    frozen={frozenCols.has(mappingKey(col))}
                     dynModule={ownModule?.module || null}
                     dynDirection={dynDirs[mappingKey(col)] ?? atByColumn.get(mappingKey(col))?.direction ?? 'pull'}
                     onDynDirection={ownModule ? (dir => changeDynDirection(mappingKey(col), dir)) : null}
@@ -998,6 +1062,9 @@ export default function FieldConfig() {
                     core={buildCore(coreField)}
                     fixedField={directFields?.[col.field] || null}
                     fixedReason={directSource?.reason}
+                    stripeCell={showStripe
+                      ? (stripe.data ? <StripeFieldCell stripe={stripe} column={col.field} /> : <span />)
+                      : null}
                   />
                 )
               })}
@@ -1013,16 +1080,6 @@ export default function FieldConfig() {
               l'erreur de chargement du mapping reste à dire. */}
           {inlineCoreModule && core.loadError && (
             <p className="mt-3 text-sm text-red-600">{core.loadError}</p>
-          )}
-
-          {hardcodedLeft.length > 0 && (
-            <div className="mt-4 text-xs text-slate-600">
-              <p className="font-medium mb-1">
-                {hardcodedLeft.length} champ{hardcodedLeft.length !== 1 ? 's' : ''} Airtable
-                géré{hardcodedLeft.length !== 1 ? 's' : ''} en code (mappé{hardcodedLeft.length !== 1 ? 's' : ''} en dur, non modifiable{hardcodedLeft.length !== 1 ? 's' : ''} ici) :
-              </p>
-              <p className="text-slate-600">{hardcodedLeft.join(', ')}</p>
-            </div>
           )}
 
           {/* Mapping « cœur » de CETTE table dont les clés n'ont pas de colonne

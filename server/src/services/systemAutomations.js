@@ -4,6 +4,8 @@ import { getAutomationFrom } from './postmarkConfig.js'
 import { syncAndPushStripePayouts } from './quickbooks.js'
 import { migratePartnershipToBlocks, seedPartnershipLostFlow } from './subscriptionProductTrigger.js'
 import { seedReturnSerialStatusFlow } from './returnSerialStatusFlow.js'
+import { seedProjectCompanyPhaseFlow } from './projectCompanyPhaseFlow.js'
+import { seedProjectWonSlackFlow } from './projectWonSlackFlow.js'
 
 // Registry of system automations that can be invoked manually from the UI
 // (dry-run to preview, or run-now to execute). Omit an id here to keep it
@@ -21,6 +23,11 @@ export const MANUAL_RUNNERS = {
   sys_treasury_sheet_mirror: async ({ dryRun }) => {
     const { syncTreasuryMirror } = await import('./treasurySheetMirror.js')
     return syncTreasuryMirror({ dryRun: !!dryRun, trigger: 'manual' })
+  },
+  // dry-run = valeurs « Rachat » qui changeraient ; run-now = les pose.
+  sys_subscription_rachat: async ({ dryRun }) => {
+    const { runSubscriptionRachatDetection } = await import('./subscriptionRachat.js')
+    return runSubscriptionRachatDetection({ dryRun: !!dryRun })
   },
   sys_installation_followup: async ({ dryRun }) => {
     const out = await sendInstallationFollowups(db, { dryRun, fromAddress: getAutomationFrom('sys_installation_followup') })
@@ -500,6 +507,22 @@ export const SYSTEM_AUTOMATIONS = [
     },
   },
   {
+    id: 'sys_order_welcome_email',
+    name: 'Courriel au client d’une commande (Postmark)',
+    description:
+      "Depuis la fiche commande (section « Courriel au client »), envoie au contact de l'adresse de livraison la vérification de l'adresse, " +
+      "plus les instructions d'installation si un produit Core ou un contrôleur LTE est marqué « Installation » (cerveau seulement avec un contrôleur, " +
+      "poteau seulement avec un boîtier météo). FR/EN selon le contact. Un seul envoi par commande, sans copie cachée ; ouvertures et clics suivis. " +
+      "Part seul chaque jour à 17 h (heure de l'Est) pour les commandes non vides créées depuis le 15 octobre 2026 (14 derniers jours) ; " +
+      "le bouton « Envoyer » de la fiche permet de l'envoyer plus tôt.",
+    trigger_config: {
+      kind: 'schedule',
+      cron: '0 17 * * *',
+      source: 'cron 17 h America/Toronto (index.js) + POST /api/orders/:id/send-welcome-email',
+      summary: "Chaque jour à 17 h (heure de l'Est), ou plus tôt depuis la fiche commande (bouton « Envoyer »)",
+    },
+  },
+  {
     id: 'sys_revenue_recognition',
     name: 'Constat de vente à l\'expédition (Dr 23900|AR / Cr 40000)',
     description:
@@ -670,11 +693,10 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_installation_followup',
     name: "Email de suivi d'installation (J+21)",
     description:
-      "Envoie un email bilingue aux nouveaux clients 21 jours après le premier envoi de leur commande. " +
-      "Nouveau client = une seule commande + pas d'email déjà envoyé. Le courriel va au contact lié à l'adresse de livraison du premier envoi. " +
-      "Le clic sur « Je suis bloqué » ou « C'était pénible » crée une tâche automatique assignée à Marc-Antoine (liée au contact). " +
-      "Le flag companies.installation_followup_sent_at empêche tout double envoi. " +
-      "⚠️ Désactivé par défaut au premier déploiement — activer manuellement depuis cette page après vérification.",
+      "21 jours après le premier envoi expédié d'une entreprise (sa première commande), envoie le courriel « Comment s'est passée l'installation ? » " +
+      "au courriel de l'adresse de livraison de cet envoi, sans copie cachée. Un seul envoi par entreprise. " +
+      "Les quatre boutons consignent la réponse sur la commande (pastille dans l'en-tête de la fiche) ; le client peut ajouter une note. " +
+      "« Je suis bloqué » crée une tâche pour Philippe. Seuls les envois depuis le 23 septembre 2026 comptent.",
     trigger_config: {
       kind: 'schedule',
       source: 'index.js:scheduleInstallationFollowup',
@@ -1790,8 +1812,9 @@ export const SYSTEM_AUTOMATIONS = [
   },
   {
     id: 'sys_instagram_weekly_slack',
-    name: 'Prospects Instagram : liste hebdomadaire à Philippe (Slack)',
+    name: 'Prospects Instagram : liste à Philippe (Slack)',
     description:
+      "CADENCE (« cadence ») : « quotidien » (défaut, Charles 2026-10-14) = chaque matin à « daily_hour » h, tout ce qui a été capté depuis l'envoi précédent ; « hebdo » = l'ancien fonctionnement décrit ci-dessous. " +
       "Juste après la reconnexion d'Instagram (le samedi), et seulement si la lecture des commentaires a réussi, envoie à Philippe la liste des prospects Instagram captés depuis le dernier envoi : nom d'usager cliquable, mot-clé, date, DM envoyé ou non, réponse reçue ou non, et le lien vers la table Airtable où il édite le suivi. " +
       "Le message est DÉLIBÉRÉMENT COURT : la semaine en clair (« du 17 au 23 août »), le nombre de prospects, combien avec le mot-clé, combien de DM envoyés, combien ont répondu — puis deux liens, vers la page ERP et vers Airtable. " +
       "Le détail n'est pas recopié dans Slack : il vit là où Philippe travaille et coche « contacté », et un pavé serait périmé dès la première case cochée. Un message part même s'il n'y a aucun prospect — un silence serait indistinguable d'une panne. " +
@@ -1802,10 +1825,12 @@ export const SYSTEM_AUTOMATIONS = [
     trigger_config: {
       kind: 'schedule',
       source: 'reconnexion Instagram (services/instagramRefresh.js) → services/instagramProspects.js',
-      cron: 'aucun — déclenché par la reconnexion Instagram',
-      summary: 'Le samedi, après la lecture Instagram',
+      cron: '0 11,12 * * * UTC (7 h Montréal) — ou reconnexion du samedi si cadence = hebdo',
+      summary: 'Chaque matin à 7 h',
     },
     action_config: {
+      cadence: 'quotidien',
+      daily_hour: '7',
       send_weekday: '6',
       send_hour: '20',
       slack_webhook_url: '',
@@ -2073,22 +2098,63 @@ export const SYSTEM_AUTOMATIONS = [
     configurable: true,
   },
   {
+    id: 'sys_order_status',
+    name: 'Statut des commandes',
+    description:
+      "Calcule le « Statut » de chaque commande (remplace la formule Airtable, débranchée). Dans l'ordre : aucune ligne → " +
+      "Commande vide ; toutes les lignes rattachées à un envoi (ou marquées Envoyé), quel que soit le statut ou la date " +
+      "de l'envoi → Envoyé (aujourd'hui) ; raison de mise en attente → En attente ; produit restant en gel " +
+      "d'envois → Gel d'envois ; ne restent que des logiciels → JWT-config ; que du drop ship → Drop ship seulement ; une " +
+      "ligne restante non disponible (stock, ou séries « Disponible - Vente » — plus « Location » pour un abonnement ou un " +
+      "remplacement — inférieurs à la quantité) → Items à fabriquer ou à acheter ; tout le restant prélevé ou dans l'envoi → " +
+      "Tout est dans la boite ; une partie des lignes rattachées à un envoi → Partiellement envoyé ; sinon → Tous les items sont disponibles. " +
+      "Recalcul à chaque écriture d'une commande, d'une ligne, d'un envoi, d'une pièce ou d'un numéro de série (toute " +
+      "origine), et passe complète toutes les heures. Seuls les statuts qui changent sont écrits et journalisés.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(orders, order_items, shipments, products, serial_numbers) → orderStatusWatcher (poll 5s) + passe complète horaire',
+      summary: "Écriture d'une commande, ligne, envoi, pièce ou numéro de série, et toutes les heures",
+    },
+    default_active: 1,
+  },
+  {
     id: 'sys_fifo_cost',
-    name: 'Coût unitaire FIFO des pièces',
+    name: 'Coût unitaire des pièces (FIFO + nomenclature)',
     description:
       "Tient le « Coût unitaire (FIFO) » des pièces achetées (remplace l'automatisation Airtable). Chaque achat reçu est un lot " +
       "(quantité × prix unitaire : override payé, sinon facturé) ; le stock restant est fait des lots les plus récents, jusqu'à " +
       "couvrir la quantité en inventaire ; le coût est la moyenne pondérée de ces lots. Stock nul : prix du dernier lot. " +
-      "Les pièces fabriquées (coût du BOM) et les logiciels sont exclus. " +
-      "Recalcul à chaque écriture d'un achat ou d'une pièce (change_log), et passe complète toutes les heures qui relit d'abord " +
-      "le prix de tous les achats dans Airtable. Un coût changé est écrit dans la pièce puis poussé vers Airtable. " +
+      "Pièces fabriquées (remplace la formule Airtable « Cout unitaire ») : Σ quantité × coût de chaque composant de la " +
+      "nomenclature ; un sous-assemblage fabriqué est valorisé à son propre coût de nomenclature. Sans nomenclature : coût " +
+      "en place gardé. Alertes : composant sans coût (compté à 0), nomenclature circulaire. Les logiciels sont exclus. " +
+      "Recalcul à chaque écriture d'un achat, d'une pièce ou d'une ligne de nomenclature (change_log) — avec toutes les " +
+      "fabriquées qui utilisent la pièce —, et passe complète toutes les heures (achetées d'abord, puis fabriquées des " +
+      "sous-assemblages vers les produits finis) qui relit d'abord le prix de tous les achats dans Airtable. Un coût changé " +
+      "est écrit dans la pièce (coût unitaire, « Cout unitaire », valeur d'inventaire) puis poussé vers « Coût unitaire (FIFO) » d'Airtable. " +
       "Alertes par pièce : lot reçu sans prix (exclu de la moyenne), prix d'un lot très éloigné des autres achats (> 2,5× ou " +
       "< 0,4× la médiane — levée quand le prix est marqué vérifié sur la fiche pièce, tant qu'il ne change pas), stock sans aucun achat avec prix. Un stock supérieur aux achats reçus vient de l'inventaire de " +
       "départ : le surplus est valorisé au coût de départ saisi sur la fiche pièce, sinon au prix du plus ancien achat.",
     trigger_config: {
       kind: 'db_change',
-      source: 'change_log(purchases, products) → fifoCostWatcher (poll 10s) + passe complète horaire',
-      summary: "Réception ou modification d'un achat, changement de stock d'une pièce, et toutes les heures",
+      source: 'change_log(purchases, products, bom_items) → fifoCostWatcher (poll 10s) + passe complète horaire',
+      summary: "Achat reçu ou modifié, stock ou coût d'une pièce, ligne de nomenclature, et toutes les heures",
+    },
+    default_active: 1,
+  },
+  {
+    id: 'sys_dynamic_threshold',
+    name: 'Seuil dynamique des pièces',
+    description:
+      "Tient les colonnes de seuil des pièces (remplace les formules Airtable, dont l'import est gelé) : quantité sera " +
+      "disponible (inventaire − à envoyer + à recevoir, recalculés depuis les achats, articles, mouvements, assemblages et " +
+      "séries), seuil minimum et quantité dans les produits (Σ sur la nomenclature des parents × qté nécessaire), seuil " +
+      "dynamique, restant et pourcentage restant, quantité à recevoir et quantité à commander. Un kanban prend " +
+      "max(0, son seuil dynamique) comme « Seuil min. produits finis », qui se transmet à ses pièces. Rien n'est poussé " +
+      "vers Airtable. Seules les valeurs qui changent sont écrites.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(purchases, order_items, stock_movements, assemblages, bom_items, products, serial_numbers, shipments) → dynamicThresholdWatcher (poll 15s) + passe toutes les 5 min',
+      summary: 'Achat, article, mouvement, assemblage, nomenclature ou pièce modifiés, et toutes les 5 minutes',
     },
     default_active: 1,
   },
@@ -2151,6 +2217,24 @@ export const SYSTEM_AUTOMATIONS = [
       hubspot_property: 'subscribed_to_partnership_at',
     },
     configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_subscription_rachat',
+    name: 'Abonnements annulés : colonne « Rachat »',
+    description:
+      "Pour chaque abonnement annulé, remplit la colonne « Rachat » (/abonnements) : " +
+      "« rachat complet » si une facture hors abonnement du même client, de 90 jours avant à 30 jours après l'annulation, porte une ligne « rachat / buy back » ou atteint au moins 1 500 $ et 12 mois d'abonnement " +
+      "(sauf abonnement annulé moins de 14 jours après son début) ; « rachat partiel » si, en plus, le client garde un autre abonnement actif ; " +
+      "« fusion » si un autre abonnement payant du client démarre de 15 jours avant à 45 jours après l'annulation, ou si le client garde un autre abonnement actif plus ancien " +
+      "(une chaîne fusionnée puis rachetée prend « rachat ») ; sinon « non » (vrai churn). " +
+      "L'indice retenu s'affiche au survol de la cellule. Un choix fait à la main n'est jamais réécrit ; une valeur posée par la détection est réévaluée à chaque passage. " +
+      "Passe toutes les heures ; seuls les passages qui changent quelque chose sont journalisés. Désactivée : plus rien n'est posé.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'index.js → scheduledSubscriptionRachat (subscriptionRachat.js)',
+      summary: 'Toutes les heures (et 2 min après le démarrage)',
+    },
     default_active: 1,
   },
   {
@@ -2472,6 +2556,8 @@ export function seedSystemAutomations() {
   migratePartnershipToBlocks()
   seedPartnershipLostFlow()
   seedReturnSerialStatusFlow()
+  seedProjectCompanyPhaseFlow()
+  seedProjectWonSlackFlow()
   for (const id of RETIRED_SYSTEM_AUTOMATION_IDS) {
     db.prepare(`
       UPDATE automations SET active = 0, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')

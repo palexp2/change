@@ -36,6 +36,12 @@ test('rabais de 100 % : le HT tombe à 0, pas de repli sur le sous-total', () =>
   assert.equal(r.amount_before_tax, 0)
 })
 
+test('facture payée hors Stripe : solde dû à 0 même si amount_remaining = total', () => {
+  const r = resolveStripeInvoiceFields({ status: 'paid', total: 885310, amount_remaining: 885310, amount_paid: 0 })
+  assert.equal(r.balance_due, 0)
+  assert.equal(resolveStripeInvoiceFields({ status: 'open', total: 1000, amount_remaining: 1000 }).balance_due, 10)
+})
+
 test('sans total_excluding_tax : repli sur subtotal_excluding_tax puis subtotal', () => {
   assert.equal(
     resolveStripeInvoiceFields({ subtotal: 11500, subtotal_excluding_tax: 10000 }).amount_before_tax,

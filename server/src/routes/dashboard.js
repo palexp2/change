@@ -172,7 +172,8 @@ router.get('/', (req, res) => {
       JOIN shipments s ON s.order_id = o.id
       WHERE o.status = 'Envoyé'
         AND s.shipped_at IS NOT NULL
-        AND s.shipped_at >= date('now', '-112 days')
+        -- 20 semaines : 16 affichées + 3 de recul pour la fenêtre glissante de 4 sem.
+        AND s.shipped_at >= date('now', '-140 days')
         AND EXISTS (
           SELECT 1 FROM order_items oi
           WHERE oi.order_id = o.id AND oi.item_type = 'Facturable'
@@ -1532,12 +1533,29 @@ router.get('/top-products', async (req, res) => {
 // QB expose le solde courant de chaque compte via le champ CurrentBalance.
 // Les cartes de crédit (passif) ont typiquement un CurrentBalance négatif.
 //
-// Cache permanent invalidé sur toute écriture QB via onQbMutation ci-dessous,
-// et sur `?refresh=1` (bouton de rafraîchissement manuel). Une édition humaine
-// directe dans l'UI QuickBooks ne déclenche pas l'invalidation — utiliser
-// ?refresh=1 dans ce cas.
-const bankAccountsCache = new Map()
-onQbMutation(() => bankAccountsCache.clear())
+// Cache qbReportCache (ci-dessous) ; `?refresh=1` le contourne.
+// Cache des rapports QuickBooks de la vue globale. Une écriture QB (onQbMutation)
+// ne vide plus le cache : elle marque les entrées périmées, qui restent servies
+// jusqu'à 15 min d'âge. La page tire ~8 rapports d'un coup ; les relire à chaque
+// écriture de l'ERP faisait refuser QB (429 ThrottleExceeded). `last()` rend le
+// dernier résultat connu, servi quand QB échoue plutôt qu'une erreur.
+const QB_CACHE_MIN_MS = 15 * 60 * 1000
+function qbReportCache() {
+  const entries = new Map()
+  onQbMutation(() => { for (const e of entries.values()) e.dirty = true })
+  return {
+    get(key) {
+      const e = entries.get(key)
+      if (!e || (e.dirty && Date.now() - e.at >= QB_CACHE_MIN_MS)) return null
+      return e.payload
+    },
+    set(key, payload) { entries.set(key, { payload, at: Date.now(), dirty: false }) },
+    last(key) { return entries.get(key)?.payload ?? null },
+    clear() { entries.clear() },
+  }
+}
+
+const bankAccountsCache = qbReportCache()
 
 // Limite de la marge de crédit (Desjardins + BNC confondues) — plancher de la
 // trésorerie affichée sur le dashboard. Valeur métier fournie par Orisha.
@@ -1606,6 +1624,33 @@ router.get('/bank-accounts', async (req, res) => {
       a.balance_cad = Math.round(a.balance * rate * 100) / 100
     }
 
+    // Même calcul que la courbe (/bank-accounts/history) : solde en CAD du
+    // BalanceSheet à la date du jour (valeur aux livres, passif dû positif).
+    // Sans ça, le grand chiffre et le dernier point de la courbe divergeaient
+    // (taux spot vs taux des transactions, écritures postdatées). Repli sur le
+    // calcul spot si le rapport échoue.
+    try {
+      const today = new Date().toISOString().slice(0, 10)
+      const bs = await qbGet(`/reports/BalanceSheet?${new URLSearchParams({ accounting_method: 'Accrual', start_date: today, end_date: today })}`)
+      const bookById = new Map()
+      const walk = rows => {
+        for (const row of (rows?.Row || [])) {
+          if (row.type === 'Section') { walk(row.Rows); continue }
+          const cd = row.ColData || []
+          if (!cd[0]?.id) continue
+          const v = cd[1]?.value === '' || cd[1]?.value == null ? 0 : Number(cd[1].value)
+          if (Number.isFinite(v)) bookById.set(String(cd[0].id), v)
+        }
+      }
+      walk((bs?.Report || bs)?.Rows)
+      for (const a of accounts) {
+        const v = bookById.get(String(a.id)) ?? 0
+        a.balance_cad = Math.round((a.type === 'Bank' ? v : -v) * 100) / 100
+      }
+    } catch (e) {
+      console.error('[dashboard/bank-accounts] BalanceSheet du jour indisponible, repli taux spot:', e.message)
+    }
+
     // Tri : comptes bancaires d'abord, puis cartes de crédit, alpha par nom.
     accounts.sort((x, y) => {
       if (x.type !== y.type) return x.type === 'Bank' ? -1 : 1
@@ -1634,7 +1679,9 @@ router.get('/bank-accounts', async (req, res) => {
     bankAccountsCache.set('default', payload)
     res.json(payload)
   } catch (e) {
-    console.error('[dashboard/bank-accounts]', e)
+    console.error('[dashboard/bank-accounts]', e.message)
+    const stale = bankAccountsCache.last('default')
+    if (stale) return res.json(stale)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })
@@ -1656,13 +1703,17 @@ router.get('/bank-accounts', async (req, res) => {
 // Note FX : le rapport exprime les comptes en devise étrangère à leur valeur
 // aux livres (taux des transactions), pas au taux spot du jour — l'historique
 // peut donc s'écarter légèrement du solde instantané affiché au-dessus.
-const bankHistoryCache = new Map()
-onQbMutation(() => bankHistoryCache.clear())
+const bankHistoryCache = qbReportCache()
 
+// `?period=week&weeks=52` : même calcul, une colonne par semaine
+// (`summarize_column_by=Week`) ; chaque ligne garde `month` = mois de la semaine
+// et ajoute `period_start`.
 router.get('/bank-accounts/history', async (req, res) => {
+  const weekly = req.query.period === 'week'
+  const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+  const weeks = Math.min(Math.max(parseInt(req.query.weeks, 10) || 52, 2), 156)
+  const cacheKey = weekly ? `w${weeks}` : `m${months}`
   try {
-    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
-    const cacheKey = `m${months}`
     if (!req.query.refresh) {
       const hit = bankHistoryCache.get(cacheKey)
       if (hit) return res.json(hit)
@@ -1673,12 +1724,14 @@ router.get('/bank-accounts/history', async (req, res) => {
     const typeById = new Map()
     for (const a of (accData.QueryResponse?.Account || [])) typeById.set(String(a.Id), a.AccountType)
 
-    // Fenêtre glissante : `months` mois finissant par le mois courant (partiel).
+    // Fenêtre glissante : `months` mois (ou `weeks` semaines) finissant par la période courante (partielle).
     const now = new Date()
-    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
+    const start = weekly
+      ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (weeks - 1) * 7))
+      : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
     const params = new URLSearchParams({
       accounting_method: 'Accrual',
-      summarize_column_by: 'Month',
+      summarize_column_by: weekly ? 'Week' : 'Month',
       start_date: start.toISOString().slice(0, 10),
       end_date: new Date().toISOString().slice(0, 10),
     })
@@ -1723,6 +1776,7 @@ router.get('/bank-accounts/history', async (req, res) => {
     const currentMonth = new Date().toISOString().slice(0, 7)
     const series = monthCols.map((c, i) => ({
       month: c.month,
+      period_start: c.start,
       period_end: c.end,
       bank: round(bank[i]),
       credit_card: round(creditCard[i]),
@@ -1739,7 +1793,9 @@ router.get('/bank-accounts/history', async (req, res) => {
     bankHistoryCache.set(cacheKey, payload)
     res.json(payload)
   } catch (e) {
-    console.error('[dashboard/bank-accounts/history]', e)
+    console.error('[dashboard/bank-accounts/history]', e.message)
+    const stale = bankHistoryCache.last(cacheKey)
+    if (stale) return res.json(stale)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })
@@ -1749,8 +1805,7 @@ router.get('/bank-accounts/history', async (req, res) => {
 // pièces, 14001 produits finis, 14002 reconditionnés, 1400x en transit…), lus
 // dans le BalanceSheet mensuel. La valeur calculée par l'ERP (FIFO + numéros de
 // série) n'a pas d'historique ; le grand livre, si.
-const inventoryHistoryCache = new Map()
-onQbMutation(() => inventoryHistoryCache.clear())
+const inventoryHistoryCache = qbReportCache()
 
 // GET /api/dashboard/dormant-stock?days=90
 // Pièces en stock sans activité depuis N jours. Activité = consommation ou
@@ -1786,9 +1841,9 @@ router.get('/dormant-stock', (req, res) => {
 })
 
 router.get('/inventory/history', async (req, res) => {
+  const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+  const cacheKey = `m${months}`
   try {
-    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
-    const cacheKey = `m${months}`
     if (!req.query.refresh) {
       const hit = inventoryHistoryCache.get(cacheKey)
       if (hit) return res.json(hit)
@@ -1863,7 +1918,9 @@ router.get('/inventory/history', async (req, res) => {
     inventoryHistoryCache.set(cacheKey, payload)
     res.json(payload)
   } catch (e) {
-    console.error('[dashboard/inventory/history]', e)
+    console.error('[dashboard/inventory/history]', e.message)
+    const stale = inventoryHistoryCache.last(cacheKey)
+    if (stale) return res.json(stale)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })
@@ -1886,17 +1943,14 @@ router.get('/inventory/history', async (req, res) => {
 // jusqu'à son compte parent via ParentRef, ce qui range un éventuel
 // sous-compte de 40000 dans la série « Ventes ».
 //
-// Cache permanent invalidé sur toute écriture QB via onQbMutation, et sur
-// `?refresh=1`. Une édition humaine directe dans l'UI QuickBooks ne déclenche
-// pas l'invalidation — utiliser ?refresh=1 dans ce cas.
+// Cache qbReportCache ; `?refresh=1` le contourne.
 const REVENUE_ACCOUNTS = [
   { key: 'sale', acct_num: '40000', name: 'Ventes' },
   { key: 'subscription', acct_num: '41000', name: 'Revenus de service' },
 ]
 const OTHER_REVENUE_KEY = 'other'
 
-const revenueByMonthCache = new Map()
-onQbMutation(() => revenueByMonthCache.clear())
+const revenueByMonthCache = qbReportCache()
 
 // Fenêtre glissante de `months` mois finissant par le mois courant (partiel),
 // en clés 'YYYY-MM'. Partagée par /revenue-by-month et /productivity pour que
@@ -1910,13 +1964,28 @@ function trailingMonthKeys(months) {
   return keys
 }
 
+// /revenue-by-month et /productivity partent ensemble au chargement de la vue
+// globale : une seule lecture QB en vol par fenêtre, partagée.
+const revenueByMonthInflight = new Map()
+
 async function computeRevenueByMonth(months, { refresh = false } = {}) {
   const cacheKey = `m${months}`
   if (!refresh) {
-    const hit = revenueByMonthCache.get(cacheKey)
+    const hit = revenueByMonthCache.get(cacheKey) || revenueByMonthInflight.get(cacheKey)
     if (hit) return hit
   }
+  const p = fetchRevenueByMonth(months, cacheKey)
+    .catch(e => {
+      const stale = revenueByMonthCache.last(cacheKey)
+      if (stale) { console.error('[dashboard/revenue-by-month]', e.message); return stale }
+      throw e
+    })
+    .finally(() => revenueByMonthInflight.delete(cacheKey))
+  revenueByMonthInflight.set(cacheKey, p)
+  return p
+}
 
+async function fetchRevenueByMonth(months, cacheKey) {
   // Plan des comptes de produits : Id → { acctNum, parentId }, pour remonter
   // les sous-comptes vers leur compte de revenu racine.
   const accQ = new URLSearchParams({
@@ -2042,6 +2111,7 @@ router.get('/revenue-by-month', async (req, res) => {
 //
 // Ventes : mêmes chiffres que /revenue-by-month (rapport ProfitAndLoss, méthode
 // Accrual). `scope=sales` (défaut) = compte 40000 Ventes seulement ;
+// `scope=sales_service` = 40000 Ventes + 41000 Revenus de service ;
 // `scope=all` = tous les comptes de produits (ventes + abonnements + autres).
 //
 // Heures : Σ des heures régulières des `paie_items` dont l'employé est au
@@ -2077,7 +2147,7 @@ function overlapDays(aStart, aEnd, bStart, bEnd) {
 router.get('/productivity', async (req, res) => {
   try {
     const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
-    const scope = req.query.scope === 'all' ? 'all' : 'sales'
+    const scope = ['all', 'sales_service'].includes(req.query.scope) ? req.query.scope : 'sales'
     const revenue = await computeRevenueByMonth(months, { refresh: !!req.query.refresh })
     const revByMonth = new Map((revenue.months || []).map(m => [m.month, m]))
 
@@ -2148,7 +2218,10 @@ router.get('/productivity', async (req, res) => {
     const currentMonth = new Date().toISOString().slice(0, 7)
     const rows = bounds.map(b => {
       const rev = revByMonth.get(b.month)
-      const sales = round2(scope === 'all' ? (rev?.total || 0) : (rev?.sale || 0))
+      const sales = round2(
+        scope === 'all' ? (rev?.total || 0)
+          : scope === 'sales_service' ? (rev?.sale || 0) + (rev?.subscription || 0)
+            : (rev?.sale || 0))
       const hours = round2(hoursByMonth[b.month])
       const coverage = Math.round(coveredByMonth[b.month].size / b.days * 100)
       const isCurrent = b.month === currentMonth
@@ -2175,7 +2248,8 @@ router.get('/productivity', async (req, res) => {
       generated_at: revenue.generated_at,
       department: OPS_DEPARTMENT,
       scope,
-      scope_label: scope === 'all' ? 'Tous les revenus' : 'Ventes (40000)',
+      scope_label: scope === 'all' ? 'Tous les revenus'
+        : scope === 'sales_service' ? 'Ventes + service (40000 + 41000)' : 'Ventes (40000)',
       months: rows,
       totals: {
         months: complete.length,
@@ -2214,16 +2288,13 @@ router.get('/productivity', async (req, res) => {
 //
 // `total` = somme des mois de la fenêtre (la colonne totale du tableau).
 //
-// Cache permanent invalidé sur toute écriture QB via onQbMutation et sur
-// `?refresh=1`. Une édition humaine directe dans l'UI QuickBooks ne déclenche
-// pas l'invalidation — utiliser ?refresh=1 dans ce cas.
-const incomeStatementCache = new Map()
-onQbMutation(() => incomeStatementCache.clear())
+// Cache qbReportCache ; `?refresh=1` le contourne.
+const incomeStatementCache = qbReportCache()
 
 router.get('/income-statement', async (req, res) => {
+  const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+  const cacheKey = `m${months}`
   try {
-    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
-    const cacheKey = `m${months}`
     if (!req.query.refresh) {
       const hit = incomeStatementCache.get(cacheKey)
       if (hit) return res.json(hit)
@@ -2320,7 +2391,9 @@ router.get('/income-statement', async (req, res) => {
     incomeStatementCache.set(cacheKey, payload)
     res.json(payload)
   } catch (e) {
-    console.error('[dashboard/income-statement]', e)
+    console.error('[dashboard/income-statement]', e.message)
+    const stale = incomeStatementCache.last(cacheKey)
+    if (stale) return res.json(stale)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })
@@ -2335,8 +2408,7 @@ router.get('/income-statement', async (req, res) => {
 // du cash généré. Elles sont retirées : le FCF se lit alors comme la variation
 // de la « Trésorerie nette » de la vue globale (banques − cartes & marges),
 // hors financement à long terme.
-const cashFlowCache = new Map()
-onQbMutation(() => cashFlowCache.clear())
+const cashFlowCache = qbReportCache()
 
 // Aide gouvernementale (subventions + crédits d'impôt), par numéro de compte QB.
 // Argent reçu dans le mois = revenu constaté + baisse des comptes à recevoir
@@ -2347,9 +2419,9 @@ const AID_RECEIVABLE_ACCTS = ['12400', '15000', '15001']
 const acctNumOf = (label) => String(label || '').match(/^(\d{4,6})\b/)?.[1] || null
 
 router.get('/cash-flow', async (req, res) => {
+  const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+  const cacheKey = `m${months}`
   try {
-    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
-    const cacheKey = `m${months}`
     if (!req.query.refresh) {
       const hit = cashFlowCache.get(cacheKey)
       if (hit) return res.json(hit)
@@ -2438,22 +2510,43 @@ router.get('/cash-flow', async (req, res) => {
     cashFlowCache.set(cacheKey, payload)
     res.json(payload)
   } catch (e) {
-    console.error('[dashboard/cash-flow]', e)
+    console.error('[dashboard/cash-flow]', e.message)
+    const stale = cashFlowCache.last(cacheKey)
+    if (stale) return res.json(stale)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })
 
-// GET /api/dashboard/balance-sheet
-// Bilan QuickBooks en date d'aujourd'hui : rapport BalanceSheet (Accrual),
-// une seule colonne de montants. Aplati comme l'état des résultats
+// GET /api/dashboard/balance-sheet[?as_of=YYYY-MM-DD]
+// Bilan QuickBooks à une date (aujourd'hui par défaut) : rapport BalanceSheet
+// (Accrual), une seule colonne de montants. Aplati comme l'état des résultats
 // (header / data / summary + `parents`), avec `value` au lieu de `values`.
-// Même cache que l'état des résultats (onQbMutation, `?refresh=1`).
-const balanceSheetCache = new Map()
-onQbMutation(() => balanceSheetCache.clear())
+// Même cache que l'état des résultats (qbReportCache, `?refresh=1`).
+const balanceSheetCache = qbReportCache()
+
+// Montant de la colonne `idx` d'une ligne QB (0 si vide).
+const bsMoney = (cd, idx) => {
+  const raw = cd?.[idx]?.value
+  const v = raw === '' || raw == null ? 0 : Number(raw)
+  return Number.isFinite(v) ? round2(v) : 0
+}
+
+// Sous-total d'un groupe QB (TotalAssets, Liabilities, Equity), où qu'il soit
+// imbriqué (passifs et capital vivent sous « Total des obligations et du capital »).
+function bsGroupSummary(node, group) {
+  for (const row of (node?.Row || [])) {
+    if (row.group === group && row.Summary?.ColData) return row.Summary.ColData
+    const sub = row.Rows && bsGroupSummary(row.Rows, group)
+    if (sub) return sub
+  }
+  return null
+}
 
 router.get('/balance-sheet', async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10)
+  const asked = String(req.query.as_of || '')
+  const asOf = /^\d{4}-\d{2}-\d{2}$/.test(asked) && asked < today ? asked : today
   try {
-    const asOf = new Date().toISOString().slice(0, 10)
     if (!req.query.refresh) {
       const hit = balanceSheetCache.get(asOf)
       if (hit) return res.json(hit)
@@ -2463,11 +2556,7 @@ router.get('/balance-sheet', async (req, res) => {
     const data = await qbGet(`/reports/BalanceSheet?${params}`)
     const report = data?.Report || data
     const moneyIdx = (report?.Columns?.Column || []).findIndex(c => c.ColType === 'Money')
-    const valueOf = (cd) => {
-      const raw = cd?.[moneyIdx < 0 ? 1 : moneyIdx]?.value
-      const v = raw === '' || raw == null ? 0 : Number(raw)
-      return Number.isFinite(v) ? round2(v) : 0
-    }
+    const valueOf = (cd) => bsMoney(cd, moneyIdx < 0 ? 1 : moneyIdx)
 
     const rows = []
     let seq = 0
@@ -2501,11 +2590,69 @@ router.get('/balance-sheet', async (req, res) => {
         equity: totalOf('Equity'),
       },
     }
-    balanceSheetCache.clear()
+    // Le bilan du jour remplace celui de la veille ; les dates passées (points
+    // du graphique du capital, une par fin de mois) restent en cache.
+    if (asOf === today) balanceSheetCache.clear()
     balanceSheetCache.set(asOf, payload)
     res.json(payload)
   } catch (e) {
-    console.error('[dashboard/balance-sheet]', e)
+    console.error('[dashboard/balance-sheet]', e.message)
+    const stale = balanceSheetCache.last(asOf)
+    if (stale) return res.json(stale)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/balance-sheet/history?months=13
+// Évolution du capital : un point par fin de mois (le mois en cours = aujourd'hui),
+// avec actifs et passifs. Un seul rapport BalanceSheet ventilé par mois.
+const balanceSheetHistoryCache = qbReportCache()
+
+router.get('/balance-sheet/history', async (req, res) => {
+  const months = Math.min(36, Math.max(2, parseInt(req.query.months, 10) || 13))
+  const now = new Date()
+  const today = now.toISOString().slice(0, 10)
+  const cacheKey = `${today}:${months}`
+  try {
+    if (!req.query.refresh) {
+      const hit = balanceSheetHistoryCache.get(cacheKey)
+      if (hit) return res.json(hit)
+    }
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
+    const params = new URLSearchParams({
+      accounting_method: 'Accrual', summarize_column_by: 'Month',
+      start_date: start.toISOString().slice(0, 10), end_date: today,
+    })
+    const data = await qbGet(`/reports/BalanceSheet?${params}`)
+    const report = data?.Report || data
+    const cols = (report?.Columns?.Column || [])
+      .map((c, idx) => {
+        const meta = {}
+        for (const m of (c.MetaData || [])) meta[m.Name] = m.Value
+        return { idx, type: c.ColType, start: meta.StartDate || null, end: meta.EndDate || null }
+      })
+      .filter(c => c.type === 'Money' && c.start)
+    const assets = bsGroupSummary(report?.Rows, 'TotalAssets')
+    const liabilities = bsGroupSummary(report?.Rows, 'Liabilities')
+    const equity = bsGroupSummary(report?.Rows, 'Equity')
+    const payload = {
+      currency: report?.Header?.Currency || 'CAD',
+      generated_at: new Date().toISOString(),
+      points: cols.map(c => ({
+        month: c.start.slice(0, 7),
+        as_of: c.end && c.end < today ? c.end : today,
+        assets: bsMoney(assets, c.idx),
+        liabilities: bsMoney(liabilities, c.idx),
+        equity: bsMoney(equity, c.idx),
+      })),
+    }
+    balanceSheetHistoryCache.clear()
+    balanceSheetHistoryCache.set(cacheKey, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/balance-sheet/history]', e.message)
+    const stale = balanceSheetHistoryCache.last(cacheKey)
+    if (stale) return res.json(stale)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })

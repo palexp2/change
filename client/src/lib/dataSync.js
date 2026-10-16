@@ -28,6 +28,8 @@ let started = false
 // colonne sur les records inchangés : on refait un bootstrap complet plutôt que
 // de laisser le champ vide indéfiniment.
 let columnsSignature = null
+// Même empreinte, par table : sert à ne recharger que les tables touchées.
+let tableSignatures = null
 
 function token() {
   return localStorage.getItem('erp_token')
@@ -61,6 +63,7 @@ async function doBootstrap() {
     hydrateTable(tableName, payload, { replace: true })
   }
   columnsSignature = data.columns_signature || null
+  tableSignatures = data.table_signatures || null
   setLastSyncTs(data.snapshot_ts)
   const ms = Math.round(performance.now() - start)
   console.log(`[dataSync] bootstrap loaded ${Object.keys(data.tables || {}).length} tables in ${ms}ms`)
@@ -86,6 +89,7 @@ async function hydrateFromCache() {
       hydrateTable(tableName, payload, { replace: true })
     }
     columnsSignature = cached.columns_signature || null
+    tableSignatures = current.table_signatures || null
     setLastSyncTs(cached.snapshot_ts)
     console.log(`[dataSync] hydrated from IndexedDB (snapshot_ts=${cached.snapshot_ts})`)
     return true
@@ -93,6 +97,16 @@ async function hydrateFromCache() {
     console.warn('[dataSync] hydrateFromCache failed:', err.message)
     return false
   }
+}
+
+// Tables dont l'empreinte a changé, ou null si on ne peut pas le dire (liste de
+// tables différente, empreintes absentes) → re-bootstrap complet.
+function changedTables(next) {
+  if (!next || !tableSignatures) return null
+  const a = Object.keys(next), b = Object.keys(tableSignatures)
+  if (a.length !== b.length || a.some(t => !(t in tableSignatures))) return null
+  const changed = a.filter(t => next[t] !== tableSignatures[t])
+  return changed.length ? changed : null
 }
 
 async function doDelta() {
@@ -107,6 +121,23 @@ async function doDelta() {
     // ajoutée au serveur) : un delta ne remplirait la nouvelle colonne que sur
     // les records modifiés → on recharge tout.
     if (data.columns_signature && data.columns_signature !== columnsSignature) {
+      const changed = changedTables(data.table_signatures)
+      if (changed) {
+        // Un champ ajouté ou modifié : on ne recharge que sa table.
+        const fresh = await fetchJson(`/bootstrap?tables=${encodeURIComponent(changed.join(','))}`)
+        for (const [tableName, payload] of Object.entries(fresh.tables || {})) {
+          hydrateTable(tableName, payload, { replace: true })
+        }
+        for (const [tableName, delta] of Object.entries(data.tables || {})) {
+          if (!changed.includes(tableName)) applyDelta(tableName, delta)
+        }
+        columnsSignature = data.columns_signature
+        tableSignatures = data.table_signatures
+        setLastSyncTs(data.snapshot_ts < fresh.snapshot_ts ? data.snapshot_ts : fresh.snapshot_ts)
+        // Le snapshot local ne correspond plus : au prochain chargement, complet.
+        clearSnapshot().catch(() => {})
+        return data
+      }
       console.warn('[dataSync] colonnes du snapshot modifiées — re-bootstrap')
       return doBootstrap()
     }
@@ -137,6 +168,18 @@ export function sync() {
       if (err.status !== 410) console.error('[dataSync] sync failed:', err.message)
     })
     .finally(() => { inFlight = null })
+  return inFlight
+}
+
+// Comme sync(), mais si une synchro est déjà en vol (partie avant l'écriture
+// qu'on veut voir), on en relance une derrière plutôt que de s'y raccrocher.
+let rerun = false
+export function syncAfterWrite() {
+  if (!inFlight) return sync()
+  if (!rerun) {
+    rerun = true
+    inFlight.finally(() => { rerun = false; sync() })
+  }
   return inFlight
 }
 
@@ -190,6 +233,7 @@ export async function stopDataSync() {
   // autre rôle/visibilité).
   try { await clearSnapshot() } catch {}
   columnsSignature = null
+  tableSignatures = null
   started = false
 }
 

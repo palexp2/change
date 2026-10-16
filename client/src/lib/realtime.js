@@ -104,6 +104,10 @@ function open() {
     }
     // Travaux (file de prompts, suggestions, travaux récurrents) : un seul
     // événement par liste, la page recharge la liste concernée.
+    if (msg.type === 'detail_layout:updated') {
+      window.dispatchEvent(new CustomEvent(msg.type, { detail: msg }))
+      return
+    }
     if (msg.type?.startsWith('travaux:')) {
       window.dispatchEvent(new CustomEvent(msg.type, { detail: msg }))
       return

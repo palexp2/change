@@ -5,6 +5,7 @@ import api from '../lib/api.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { SendPaymentLinkModal } from '../components/SendPaymentLinkModal.jsx'
 import { OrderCreateModal } from '../components/OrderCreateModal.jsx'
@@ -16,6 +17,7 @@ import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useAutosave } from '../lib/useAutosave.js'
 import { invalidate } from '../lib/prefetch.js'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
 import CopyButton from '../components/CopyButton.jsx'
@@ -138,6 +140,19 @@ export default function FactureDetail({ recordId, onClose }) {
   const [voidError, setVoidError] = useState(null)
   const [pdfRetryError, setPdfRetryError] = useState(null)
   const [showOrderCreate, setShowOrderCreate] = useState(false)
+
+  // Autosave des champs personnalisés. Seuls les champs sans import Airtable,
+  // ou réglés en bidirectionnel dans /champs/factures, sont éditables — le
+  // serveur refuse les autres et renvoie la saisie vers Airtable.
+  const { save: saveCustomField, savingKeys: customSavingKeys } = useAutosave(
+    facture,
+    patch => api.factures.update(id, patch),
+    {
+      enabled: !!facture,
+      onSaved: updated => setFacture(f => (f ? { ...f, ...updated } : f)),
+      onError: (key, prev) => setFacture(f => (f ? { ...f, [key]: prev } : f)),
+    }
+  )
 
   async function handleDelete() {
     setDeleting(true)
@@ -439,7 +454,7 @@ export default function FactureDetail({ recordId, onClose }) {
           ),
         }}
       >
-        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="facture-procedure">
+        <div className="mb-5 rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm text-amber-900" data-testid="facture-procedure">
           <p className="font-semibold mb-1">Procédure</p>
           <ol className="list-decimal pl-5 space-y-1">
             <li>Lier la facture au client final. Jamais au distributeur.</li>
@@ -461,6 +476,8 @@ export default function FactureDetail({ recordId, onClose }) {
             testId="facture-fields"
             taken={FACTURE_TAKEN_FIELDS}
             wrapField={wrapGuardedField}
+            onSaveCustom={saveCustomField}
+            savingKeys={customSavingKeys}
           >
             <DetailField id="company_name" label="Entreprise">
               <LinkedRecordField
@@ -540,7 +557,7 @@ export default function FactureDetail({ recordId, onClose }) {
 
             <DetailField id="status" label="Statut">
               {facture.status
-                ? <Badge color={STATUS_COLORS[facture.status] || 'gray'} size="sm">{facture.status}</Badge>
+                ? <FieldChoiceBadge table="factures" field="status" value={facture.status} color={STATUS_COLORS[facture.status]} />
                 : <span className="text-sm text-slate-400">—</span>}
             </DetailField>
 
@@ -551,7 +568,7 @@ export default function FactureDetail({ recordId, onClose }) {
               <p className="text-sm text-slate-700">{fmtDate(facture.due_date)}</p>
             </DetailField>
             <DetailField id="currency" label="Devise">
-              <p className="text-sm font-mono text-slate-700">{facture.currency || '—'}</p>
+              {facture.currency ? <FieldChoiceBadge table="factures" field="currency" value={facture.currency} /> :<p className="text-sm text-slate-300">—</p>}
             </DetailField>
 
             <DetailField id="is_sent" label="Envoyée" testId="is_sent">

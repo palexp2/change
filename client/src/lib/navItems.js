@@ -5,7 +5,7 @@ import {
   Barcode, MessageSquare, CheckSquare, Hammer,
   Landmark, Users, Banknote, Contact,
   Clock, Mail, PhoneCall, FlaskConical,
-  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send, Megaphone, ClipboardList, CalendarClock, Tags, FileSignature } from 'lucide-react'
+  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send, Megaphone, MailPlus, ClipboardList, CalendarClock, Tags, FileSignature, Workflow, FileArchive } from 'lucide-react'
 import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 
 // Structure canonique du menu de gauche, partagée entre la sidebar (Layout)
@@ -92,6 +92,7 @@ export const defaultNavItems = [
   { group: 'Marketing', icon: Megaphone, accent: 'marketing', items: [
     { to: '/formulaires', icon: ClipboardList, label: 'Formulaires' },
     { to: '/rendez-vous', icon: CalendarClock, label: 'Rendez-vous' },
+    { to: '/courriels-marketing', icon: MailPlus, label: 'Courriels marketing' },
   ]},
   { group: 'Transport', icon: Truck, accent: 'envois', items: [
     { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },
@@ -118,6 +119,7 @@ export const defaultNavItems = [
     { to: '/paies',            icon: Banknote, label: 'Paies' },
   ]},
   { group: 'Autres outils', icon: Wrench, accent: 'outils', items: [
+    { to: '/processus', icon: Workflow, label: 'Processus' },
     { to: '/priorite-assemblage', icon: ListChecks, label: "Priorité d'assemblage" },
     { to: '/automations',  icon: Zap,             label: 'Automatisations' },
     // La page existait mais n'était joignable que par la section Connecteurs
@@ -129,6 +131,7 @@ export const defaultNavItems = [
     { to: '/acceptations', icon: FileSignature,   label: 'Acceptations' },
     { to: '/problemes-operations', icon: AlertTriangle, label: "Problèmes d'opérations" },
     { to: '/fournitures', icon: ShoppingCart, label: 'Fournitures' },
+    { to: '/documents-importants', icon: FileArchive, label: 'Documents importants' },
     { external: true, href: 'https://customer.orisha.io/chatbot/admin', icon: Bot, label: 'Admin Chatbot' },
   ]},
 ]

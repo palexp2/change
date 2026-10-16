@@ -25,8 +25,6 @@ import { SystemeContent, UtilisateursContent } from './AdminSections.jsx'
 import { CorbeilleContent } from './Corbeille.jsx'
 import { ConnectorsContent } from './Connectors.jsx'
 import { ActivityContent } from './ActivityFeed.jsx'
-import { ChangelogContent } from './Changelog.jsx'
-import { AiCostsContent } from './AiCosts.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { KeyboardShortcutsList } from '../components/KeyboardShortcutsModal.jsx'
 
@@ -413,15 +411,6 @@ function RaccourcisSection() {
   )
 }
 
-function NouveautesSection() {
-  return (
-    <div>
-      <h2 className="text-lg font-semibold text-slate-900 mb-4">Nouveautés</h2>
-      <ChangelogContent />
-    </div>
-  )
-}
-
 // Anciennes URL /admin/<onglet> : elles pointent vers la même section, sous son
 // nouveau toit. Deux onglets avaient déjà quitté l'admin pour une page à eux.
 const LEGACY_ADMIN_TABS = { automations: '/automations', agent: '/travaux' }
@@ -438,10 +427,8 @@ const CONTENT = {
   gmail: GmailSection,
   quickbooks: QuickBooksSection,
   raccourcis: RaccourcisSection,
-  nouveautes: NouveautesSection,
   systeme: SystemeContent,
   connecteurs: ConnectorsContent,
-  'couts-ia': AiCostsContent,
   activite: ActivityContent,
   corbeille: CorbeilleContent,
 }

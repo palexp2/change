@@ -7,12 +7,13 @@ import EmailTrackingBlock from '../components/EmailTrackingBlock.jsx'
 import { looksLikeHtml } from '../lib/emailDoc.js'
 import { stripEmailHtml, stripEmailText } from '../lib/emailParser.js'
 import { Badge, INTERACTION_TYPE_LABELS as TYPE_LABELS } from '../components/Badge.jsx'
+import { FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDateTime } from '../lib/formatDate.js'
-import { fmtPhone } from '../utils/formatters.js'
+import { PhoneValue } from '../lib/customFieldDisplay.jsx'
 import { fmtDurationSeconds as fmtDuration } from '../lib/duration.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -114,7 +115,7 @@ export default function InteractionDetail({ recordId: id, onClose }) {
         ),
         badge: <InteractionTypePill type={item.type} />,
         status: item.direction && (
-          <Badge color={DIRECTION_COLORS[item.direction]}>{item.direction === 'in' ? 'Entrant' : 'Sortant'}</Badge>
+          <FieldChoiceBadge table="interactions" field="direction" value={item.direction} color={DIRECTION_COLORS[item.direction]} label={item.direction === 'in' ? 'Entrant' : 'Sortant'} />
         ),
         meta: item.user_name && <span>Enregistré par {item.user_name}</span>,
         actions: (
@@ -175,7 +176,7 @@ export default function InteractionDetail({ recordId: id, onClose }) {
 
           {item.type === 'call' && (
             <DetailField id="phone_number" label="Numéro">
-              <div className="text-sm text-slate-900 font-mono">{fmtPhone(item.callee_number) || <span className="text-slate-400 font-sans">—</span>}</div>
+              <div className="text-sm text-slate-900 font-mono">{item.callee_number ? <PhoneValue value={item.callee_number} countryCode="hide" /> : <span className="text-slate-400 font-sans">—</span>}</div>
             </DetailField>
           )}
           {item.type === 'call' && (

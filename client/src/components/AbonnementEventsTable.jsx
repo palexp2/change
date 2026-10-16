@@ -7,8 +7,8 @@
 // Encapsule DataTable + les renderers + la modale d'abonnement pour qu'aucun
 // renderer ne soit dupliqué côté pages.
 
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { DataTable } from './DataTable.jsx'
 import { Badge } from './Badge.jsx'
 import { AbonnementDetailModal } from './AbonnementDetailModal.jsx'
@@ -41,6 +41,7 @@ export function AbonnementEventsTable({
   searchFields = ['company_name', 'stripe_subscription_id', 'amount_cad_delta', 'previous_amount_cad', 'new_amount_cad'],
   manageViews = false,
   hideRachatInDetail = false,
+  urlParam = null,
 }) {
   // Synthétise `month` depuis `event_date` quand absent — nécessaire pour le
   // groupage à deux niveaux mois/catégorie sur les données venant du
@@ -52,9 +53,39 @@ export function AbonnementEventsTable({
   const [selectedAbo, setSelectedAbo] = useState(null)
   const [loadingAboId, setLoadingAboId] = useState(null)
   const { addToast } = useToast()
+  // `urlParam` : la fiche ouverte vit dans l'URL (?<urlParam>=<id>) — lien
+  // copiable qui rouvre la page avec le même side-peek.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlAboId = urlParam ? searchParams.get(urlParam) : null
 
-  async function openAbo(subscriptionId) {
+  function setUrlAbo(id) {
+    setSearchParams(prev => {
+      const p = new URLSearchParams(prev)
+      if (id) p.set(urlParam, id)
+      else p.delete(urlParam)
+      return p
+    })
+  }
+
+  useEffect(() => {
+    if (!urlParam) return
+    if (!urlAboId) { setSelectedAbo(null); return }
+    if (selectedAbo?.id !== urlAboId) fetchAbo(urlAboId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlParam, urlAboId])
+
+  function openAbo(subscriptionId) {
     if (!subscriptionId || loadingAboId) return
+    if (urlParam) setUrlAbo(subscriptionId)
+    else fetchAbo(subscriptionId)
+  }
+
+  function closeAbo() {
+    if (urlParam) setUrlAbo(null)
+    else setSelectedAbo(null)
+  }
+
+  async function fetchAbo(subscriptionId) {
     setLoadingAboId(subscriptionId)
     try {
       const sub = await api.abonnements.get(subscriptionId)
@@ -62,6 +93,7 @@ export function AbonnementEventsTable({
     } catch (err) {
       // L'écran « Connexion perdue » couvre déjà la panne réseau : pas de doublon.
       if (getIsOffline()) return
+      if (urlParam && err?.status === 404) setUrlAbo(null)
       addToast(err?.status === 404
         ? { message: 'Abonnement introuvable', type: 'error' }
         : { message: 'Abonnement non ouvert', type: 'error', action: { label: 'Réessayer', onClick: () => openAbo(subscriptionId) } })
@@ -136,6 +168,16 @@ export function AbonnementEventsTable({
     category: k => CATEGORY_LABELS[k] || k,
   }
 
+  // Saisie des champs personnalisés (seules colonnes `editable`) ; la ligne
+  // revient par le temps réel `subscription_event:updated`.
+  const updateField = useCallback(async (row, col, value) => {
+    try {
+      await api.abonnements.eventUpdate(row.id, { [col.field]: value })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }, [addToast])
+
   const COLUMNS = TABLE_COLUMN_META.abonnement_events.map(meta => ({
     ...meta,
     render: RENDERS[meta.id],
@@ -151,13 +193,14 @@ export function AbonnementEventsTable({
         loading={loading}
         searchFields={searchFields}
         onRowClick={row => openAbo(row.subscription_id)}
+        onCellEdit={updateField}
         initialGroupBy={initialGroupBy}
         initialGroupOrder={initialGroupOrder}
         forceAllView={forceAllView}
         manageViews={manageViews}
         {...(height ? { height } : {})}
       />
-      <AbonnementDetailModal abonnement={selectedAbo} onClose={() => setSelectedAbo(null)} hideRachat={hideRachatInDetail} />
+      <AbonnementDetailModal abonnement={selectedAbo} onClose={closeAbo} hideRachat={hideRachatInDetail} />
     </>
   )
 }

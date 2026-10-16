@@ -200,6 +200,8 @@ async function workList({ fresh = false } = {}) {
 
 /** Envoie la session d'UN portail. */
 async function pushOne(t) {
+  // La session Instagram d'un compte perso ne quitte jamais ce navigateur.
+  if (t.account_id === 'bridge:instagram' && !(await igAllowed())) return { ...t, state: 'absent', detail: "compte perso : rien n'est envoyé" }
   const cookies = await cookiesFor(t.domains || [])
   if (!cookies.length) {
     // Un portail repéré hors de la liste d'origine du module demande la
@@ -416,7 +418,7 @@ async function readInstagramProfiles() {
     await pause(4000, 4000)
   }
   if (!profiles.length) return
-  try { await call('/instagram/profiles', { method: 'POST', body: { profiles } }) } catch { /* relu à la prochaine tournée */ }
+  try { await call('/instagram/profiles', { method: 'POST', body: { profiles, viewer: await igViewer() } }) } catch { /* relu à la prochaine tournée */ }
   trace(`${profiles.length} profil(s) envoyé(s)`)
 }
 
@@ -446,7 +448,7 @@ async function readInstagramComments() {
     if (!lsd) { errors.push(`pas de jeton pour ${account} (${page.status})`); continue }
     await pause()
     let after = null
-    for (let n = 0; n < 5; n++) {
+    for (let n = 0; n < 15; n++) {
       const body = new URLSearchParams({
         av: me, __a: '1', __user: '0', lsd, fb_api_caller_class: 'RelayModern',
         ...(dtsg ? { fb_dtsg: dtsg, jazoest: '2' + [...dtsg].reduce((t, ch) => t + ch.charCodeAt(0), 0) } : {}),
@@ -487,24 +489,52 @@ async function readInstagramComments() {
     pk: c.pk, text: c.text, created_at: c.created_at, user: user(c.user),
     preview_child_comments: (c.preview_child_comments || []).map(x => ({ pk: x.pk, text: x.text, created_at: x.created_at, user: user(x.user) })),
   })
+  // Une publication déjà lue en entier n'est relue que si son nombre de
+  // commentaires a bougé : on peut alors tout lire (sans plafond de 5 pages,
+  // qui coupait les grosses publications vers 75 commentaires) sans marteler.
+  const { igReadCounts = {} } = await chrome.storage.local.get('igReadCounts')
+  const children = async (p, c) => {
+    const out = [...(c.preview_child_comments || [])]
+    if (!(c.child_comment_count > out.length)) return out
+    const seen = new Set(out.map(x => String(x.pk)))
+    let maxId = null
+    for (let n = 0; n < 10; n++) {
+      const r = await pageFetch(tab.id, `/api/v1/media/${p.pk}/comments/${c.pk}/child_comments/${maxId ? `?max_id=${encodeURIComponent(maxId)}` : ''}`, { headers: IG_H })
+      if (r.status === 429) throw new Error('429')
+      const data = r.status === 200 ? json(r.text) : null
+      if (!data) break
+      for (const x of data.child_comments || []) if (!seen.has(String(x.pk))) { seen.add(String(x.pk)); out.push(x) }
+      await pause(1200, 1200)
+      maxId = data.has_more_tail_child_comments ? data.next_max_child_cursor : null
+      if (!maxId) break
+    }
+    return out
+  }
   let limited = false
   outer: for (const p of posts.values()) {
-    if (!p.comment_count) continue
-    let minId = null
-    for (let n = 0; n < 5; n++) {
-      const r = await pageFetch(tab.id, `/api/v1/media/${p.pk}/comments/?can_support_threading=true${minId ? `&min_id=${encodeURIComponent(minId)}` : ''}`, { headers: IG_H })
-      if (r.status === 429) { limited = true; errors.push('429 commentaires'); break outer }
-      const data = r.status === 200 ? json(r.text) : null
-      if (!data) { errors.push(`commentaires ${p.pk} : ${r.status}`); break }
-      p.comments.push(...(data.comments || []).map(slim))
-      minId = data.next_min_id
-      await pause(1200, 1200)
-      if (!minId) break
-    }
+    if (!p.comment_count || igReadCounts[p.pk] === p.comment_count) continue
+    let cursor = null, complete = false
+    try {
+      for (let n = 0; n < 60; n++) {
+        const q = cursor ? `&${cursor.key}=${encodeURIComponent(cursor.val)}` : ''
+        const r = await pageFetch(tab.id, `/api/v1/media/${p.pk}/comments/?can_support_threading=true${q}`, { headers: IG_H })
+        if (r.status === 429) { limited = true; errors.push('429 commentaires'); break outer }
+        const data = r.status === 200 ? json(r.text) : null
+        if (!data) { errors.push(`commentaires ${p.pk} : ${r.status}`); break }
+        for (const c of data.comments || []) p.comments.push(slim({ ...c, preview_child_comments: await children(p, c) }))
+        await pause(1200, 1200)
+        cursor = data.next_min_id ? { key: 'min_id', val: data.next_min_id }
+          : (data.has_more_comments && data.next_max_id) ? { key: 'max_id', val: data.next_max_id } : null
+        if (!cursor) { complete = true; break }
+      }
+    } catch { limited = true; errors.push('429 réponses'); break }
+    if (complete) igReadCounts[p.pk] = p.comment_count
+    trace(`${p.code} : ${p.comments.length} lus / ${p.comment_count}`)
   }
+  await chrome.storage.local.set({ igReadCounts })
   // Même vide, on le dit à l'ERP : il journalise pourquoi la lecture n'a rien donné.
   try {
-    const out = await call('/instagram/comments', { method: 'POST', body: { posts: [...posts.values()], errors: errors.slice(0, 10) }, timeoutMs: 120000 })
+    const out = await call('/instagram/comments', { method: 'POST', body: { posts: [...posts.values()], errors: errors.slice(0, 10), viewer: me }, timeoutMs: 120000 })
     trace(out?.summary || out?.error || 'lecture envoyée')
   } catch (e) { trace(`envoi: ${e.message}`) }
   return { limited }
@@ -513,8 +543,23 @@ async function readInstagramComments() {
 // Une tournée à la fois, et pas deux en moins de 15 min (sauf le filet horaire) :
 // Instagram bloque les rafales.
 let igRunning = false
+// Compte connecté dans CE profil de navigateur. Un profil perso (autre compte
+// Instagram) ne lit rien : seul le compte d'Orisha travaille pour Boréal.
+const igViewer = async () => (await chrome.cookies.get({ url: 'https://www.instagram.com/', name: 'ds_user_id' }))?.value || ''
+// Strict : seul un profil coché « Instagram : ce profil est celui d'Orisha »
+// touche à Instagram ; si l'ERP connaît le compte d'Orisha, il doit aussi
+// correspondre. Un profil perso (case décochée, défaut) n'a aucun contact.
+async function igAllowed() {
+  const { igOrisha = false } = await chrome.storage.local.get('igOrisha')
+  if (igOrisha !== true) return false
+  try {
+    const { own_pk: own } = await call('/instagram/scrape-plan')
+    return !own || (await igViewer()) === String(own)
+  } catch { return false }
+}
 async function instagramRound({ eager = false } = {}) {
   if (igRunning) { trace('tournée déjà en cours'); return }
+  if (!(await igAllowed())) { trace("compte Instagram ≠ Orisha : rien n'est lu dans ce profil"); return }
   const { igLastAt = 0 } = await chrome.storage.local.get('igLastAt')
   if (eager && Date.now() - igLastAt < 15 * 60_000) { trace('tournée trop récente'); return }
   trace(`tournée Instagram${eager ? ' (immédiate)' : ''}`)

@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { X } from 'lucide-react'
+import { rememberUndo, forgetUndo, handleUndoKey } from '../../lib/globalUndo.js'
 
 const ToastContext = createContext(null)
 
@@ -9,6 +10,8 @@ export function ToastProvider({ children }) {
   const addToast = useCallback(({ message, type = 'info', action, duration = 4000 }) => {
     const id = Date.now() + Math.random()
     setToasts(prev => [...prev, { id, message, type, action, duration }])
+    // Un toast « Annuler » est aussi annulable au Ctrl+Z (lib/globalUndo.js).
+    if (type === 'undo' && action?.onClick) rememberUndo(id, action.onClick)
     if (duration > 0) {
       setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration)
     }
@@ -18,6 +21,12 @@ export function ToastProvider({ children }) {
   const removeToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
+
+  useEffect(() => {
+    const h = e => handleUndoKey(e, { addToast, removeToast })
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [addToast, removeToast])
 
   return (
     <ToastContext.Provider value={{ addToast, removeToast }}>
@@ -45,7 +54,7 @@ function ToastContainer({ toasts, onDismiss }) {
           }`}>
           <span className="flex-1">{toast.message}</span>
           {toast.action && (
-            <button onClick={() => { toast.action.onClick(); onDismiss(toast.id) }}
+            <button onClick={() => { forgetUndo(toast.id); toast.action.onClick(); onDismiss(toast.id) }}
               className="text-xs font-medium underline hover:no-underline shrink-0">
               {toast.action.label}
             </button>

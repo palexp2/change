@@ -7,9 +7,9 @@ import assert from 'node:assert/strict'
 import { pollOnce, WATCHED_TABLES, _setLastSeenId, _getLastSeenId } from './fieldRuleWatcher.js'
 import { WRITABLE_TABLES } from './scriptSandbox.js'
 
-test('every sandbox-writable table is watched (plus return_items)', () => {
+test('every sandbox-writable table is watched (plus return_items, projects)', () => {
   // A rule writing a table the watcher never re-evaluates would break chains.
-  assert.deepEqual(new Set(WATCHED_TABLES), new Set([...WRITABLE_TABLES, 'return_items']))
+  assert.deepEqual(new Set(WATCHED_TABLES), new Set([...WRITABLE_TABLES, 'return_items', 'projects']))
 })
 
 test('pollOnce never moves the cursor backwards and does not throw', async () => {

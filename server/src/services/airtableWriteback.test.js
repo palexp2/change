@@ -659,3 +659,23 @@ test('entreprises : sens choisissable, rien ne part tant que tout reste en impor
   setFieldDirection('companies', 'dyn:notes', 'both')
   assert.equal(buildColumnMap('companies', {}).notes, 'Notes')
 })
+
+test('factures : sens choisissable, rien ne part tant que tout reste en import', () => {
+  assert.equal(writebackModuleForTable('factures'), 'factures')
+  const fieldMap = { document_number: 'Numéro de document', project: 'Projet', order: 'Commande', status: 'Statut' }
+  assert.deepEqual(buildColumnMap('factures', fieldMap), {})
+  // Clé de correspondance du sync des liens : jamais réécrite.
+  assert.equal(isDirectionConfigurable('factures', 'document_number'), false)
+  setFieldDirection('factures', 'project', 'both')
+  const map = buildColumnMap('factures', fieldMap)
+  assert.equal(map.project_id, 'Projet')
+  assert.equal(map.order_id, undefined)
+  assert.equal(pushableLinkColumn('factures', 'project_id'), 'projects')
+})
+
+test('factures : « Proposition » part en booléen (case à cocher Airtable)', () => {
+  const cfg = WRITEBACK_MODULES.factures
+  assert.equal(airtableFieldValue(cfg, 'cf_proposition', 1), true)
+  assert.equal(airtableFieldValue(cfg, 'cf_proposition', 0), false)
+  assert.equal(airtableFieldValue(cfg, 'cf_proposition', null), null)
+})

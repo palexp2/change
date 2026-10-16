@@ -121,19 +121,3 @@ export function ReceiptStatusBadge({ status }) {
   if (status === 'error')      return <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full"><AlertCircle size={10} /> Erreur</span>
   return <span className="inline-flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"><Clock size={10} /> En attente</span>
 }
-
-export function stockStatusColor(product) {
-  if (!product.min_stock || product.min_stock === 0) return 'gray'
-  if (product.stock_qty <= 0) return 'red'
-  if (product.stock_qty <= product.min_stock) return 'red'
-  if (product.stock_qty <= product.min_stock * 2) return 'yellow'
-  return 'green'
-}
-
-export function stockStatusLabel(product) {
-  if (!product.min_stock || product.min_stock === 0) return 'N/A'
-  if (product.stock_qty <= 0) return 'Rupture'
-  if (product.stock_qty <= product.min_stock) return 'Critique'
-  if (product.stock_qty <= product.min_stock * 2) return 'Faible'
-  return 'OK'
-}

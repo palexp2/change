@@ -696,6 +696,15 @@ export function workbench({ all = false } = {}) {
     }
   })
 
+  // A écrit « coach » ET « partner » : présent dans les deux piles tant que ce
+  // n'est pas traité (Charles, 2026-10-14 — Phil répond aux deux d'un coup).
+  const partnerIds = new Set(db.prepare(`
+    SELECT DISTINCT prospect_id FROM instagram_prospect_events
+    WHERE kind = 'comment' AND (json_extract(payload,'$.keyword') = 'partner'
+      OR lower(json_extract(payload,'$.comment_text')) LIKE '%partner%')
+  `).all().map(r => r.prospect_id))
+  const both = items.filter(i => i.group === 'coach' && partnerIds.has(i.prospect_id))
+
   const cfg = getSendConfig()
   const next = db.prepare("SELECT MIN(scheduled_at) m FROM instagram_drafts WHERE status='queued'").get()?.m || null
   const counts = {
@@ -706,6 +715,7 @@ export function workbench({ all = false } = {}) {
     done: items.filter(i => i.group === 'done').length,
     todo: items.filter(i => i.group !== 'done').length,
   }
+  for (const b of both) items.push({ ...b, group: 'partner' })
   for (const s of SEGMENTS) counts[s.key] = items.filter(i => i.group === s.key).length
   return {
     items,

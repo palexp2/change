@@ -125,7 +125,7 @@ export function FieldGuard({
                   <EyeOff size={13} />
                   {rulesForField.length > 0
                     ? `Gérer les règles de visibilité (${rulesForField.length})`
-                    : 'Masquer ce champ sous condition…'}
+                    : 'Afficher ce champ sous condition…'}
                 </button>
               ) : (
                 <div className="px-3 py-2 text-xs text-slate-400">

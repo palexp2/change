@@ -22,7 +22,9 @@ async function applyInstagram(state) {
   const pick = name => state.cookies.find(c => c.name === name && String(c.domain || '').includes('instagram.com'))?.value || ''
   const sessionid = String(pick('sessionid')).trim()
   if (sessionid.length < 20) return false
-  const { saveSessionCookie } = await import('../instagramCommentScrape.js')
+  const { saveSessionCookie, isOwnViewer } = await import('../instagramCommentScrape.js')
+  // Session d'un compte perso (profil de navigateur perso) : jamais retenue.
+  if (!isOwnViewer(pick('ds_user_id'))) return false
   if (!saveSessionCookie({ sessionid, dsUserId: String(pick('ds_user_id')).trim() })) return false
   // Même suite qu'un collage à la main : lecture, tri, messages, liste de la semaine.
   const { refreshAfterReconnect } = await import('../instagramRefresh.js')

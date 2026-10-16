@@ -39,6 +39,7 @@ import { isUpsConfigured } from '../connectors/ups.js'
 import { isVennConfigured } from '../connectors/venn.js'
 import { syncDigikey } from '../services/digikey.js'
 import { syncAllAchatsToQB, importFromQB, resolveTaxCodeRates } from '../services/quickbooks.js'
+import { fetchAccountLedger } from '../services/qbAccountLedger.js'
 import { syncAllMailboxes } from '../services/gmail.js'
 import { syncDrive } from '../services/drive.js'
 import { syncCompanies, syncContacts, syncProjets, syncPieces, syncOrders, syncOrderItems, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements, syncInstagramProspects } from '../services/airtable.js'
@@ -71,6 +72,7 @@ import {
 import { nativeMappedColumn } from '../services/airtableNativeMappedColumns.js'
 import { uploadsPath } from '../config/uploads.js'
 import { emit } from '../services/realtime.js'
+import { isErpComputedColumn } from '../services/customFieldWritability.js'
 
 // Wrap a sync call with logging
 function trackedWithLog(module, fn, trigger) {
@@ -141,11 +143,10 @@ const AIRTABLE_FIELD_MODULES = {
   // « Sens » est donc utile.
   paies:        { erpTable: 'paies',          label: 'Paies',              source: 'module',  syncKey: 'paies' },
   // Factures Airtable (backfill des liens + mappings dynamiques) — config dans
-  // airtable_module_config module='factures'. PAS de write-back : Stripe et le
-  // sync Airtable restent les seules sources d'écriture (ne pas ajouter à
-  // WRITEBACK_MODULES). Sans cette entrée, /champs/factures n'affichait ni la
-  // colonne « Champ Airtable » ni la colonne « Sens » alors que la table a bel
-  // et bien des mappings dynamiques.
+  // airtable_module_config module='factures'. Write-back depuis le 2026-10-15
+  // (WRITEBACK_MODULES.factures, défaut 'pull') : le sens se choisit champ par
+  // champ dans /champs/factures. Sans cette entrée, /champs/factures n'affichait
+  // ni la colonne « Champ Airtable » ni la colonne « Sens ».
   factures:     { erpTable: 'factures',       label: 'Factures',           source: 'module',  syncKey: 'factures' },
   // Nomenclature (BOM) — config dans airtable_module_config module='bom'. PAS de
   // write-back (absent de WRITEBACK_MODULES) : le sync entrant est la seule
@@ -936,7 +937,7 @@ router.post('/airtable/module-fields/:module/airtable-field-disabled', requireAu
 // seul `button` est absent — une action ne porte aucune valeur à pousser.
 const COMPUTED_CF_KINDS = new Set([
   'formula', 'lookup', 'rollup', 'button',
-  'created_time', 'last_modified_time', 'created_by', 'last_modified_by',
+  'created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber',
 ])
 
 // Types de champs Airtable que l'API refuse d'écrire (422) : AIRTABLE_READONLY_TYPES,
@@ -1138,7 +1139,7 @@ async function mappingDataHandler(moduleKey, req, res) {
   // colonnes mappables, en sens 'push' figé — uniquement si le module sait
   // écrire vers Airtable, sinon le mapping ne ferait rien du tout.
   const pushOnly = wbModule ? pushOnlyColumns(erpTable) : new Set()
-  const virtualColumns = [...pushOnly].filter(c => cfByColumn.has(c))
+  const virtualColumns = [...pushOnly].filter(c => cfByColumn.has(c) && !liveCols.has(c))
   const erp_columns = [...liveCols]
     .filter(c => !SYSTEM.has(c))
     // Colonnes cf_* orphelines : résidus physiques de champs personnalisés
@@ -1181,6 +1182,7 @@ async function mappingDataHandler(moduleKey, req, res) {
       const pushableLink = !!(wbModule && pushableLinkColumn(wbModule, c, d ? opts : null))
       // Champ Airtable calculé derrière ce mapping : rien ne peut y être écrit.
       const atComputed = !!(isMapped && isComputedAtField(d.airtable_field_name))
+      const erpComputed = isErpComputedColumn(erpTable, c)
       // Colonne native à résolveur (ex. projects.vendeur_ref → « Vendeur ») :
       // mappable comme les autres, mais son libellé/type viennent du registre
       // (elle n'a pas de champ de rendu) et son sens est figé en import — cf.
@@ -1224,7 +1226,7 @@ async function mappingDataHandler(moduleKey, req, res) {
         mapped: isMapped,
         // Un champ Airtable calculé n'est jamais réécrit : sens figé en import.
         direction: isMapped ? (atComputed ? 'pull' : dynamicFieldDirection(wbModule, c)) : null,
-        direction_configurable: !!(isMapped && wbModule && !atComputed && (!linkTarget || pushableLink)),
+        direction_configurable: !!(isMapped && wbModule && !atComputed && !erpComputed && (!linkTarget || pushableLink)),
         // Rattachement requis à l'import (« Retour » d'un article) : jamais
         // « Boréal → Airtable » seul.
         direction_no_push: !!(wbModule && isImportRequiredColumn(wbModule, c)),
@@ -1234,12 +1236,15 @@ async function mappingDataHandler(moduleKey, req, res) {
         direction_reason: !isMapped
           ? null
           : atComputed ? 'airtable_computed'
+            : erpComputed ? 'computed_push_only'
             : !wbModule ? 'module_no_writeback'
               : (linkTarget && !pushableLink) ? 'link_field'
                 : null,
         // Type brut du champ Airtable mappé (ex. 'formula') — le client s'en
         // sert pour nommer la raison du verrouillage dans l'infobulle.
         airtable_field_type: isMapped ? (atTypeByName.get(d.airtable_field_name) || null) : null,
+        // « Calculé par Boréal » : mappable, dans le seul sens Boréal → Airtable.
+        ...(erpComputed ? { push_only: true } : {}),
         // Métadonnées pour la page de gestion :
         def_id: d?.id || null,
         cf_id: cf?.id || d?.cf_id || null,
@@ -1697,9 +1702,9 @@ const CORE_FIELD_SPECS = {
     syncKey: 'factures',
     erpTable: 'factures',
     fields: [
-      { key: 'document_number', label: 'Numéro de document', required: true, hint: 'Clé de correspondance : doit égaler le numéro de la facture Stripe côté ERP', candidates: ['numéro de document', 'numero de document', 'document number', 'numéro'] },
-      { key: 'project',         label: 'Projet (lien)',      hint: 'Champ lié vers la table des projets — copié vers la facture ERP si elle n’a encore aucun lien', candidates: ['projet', 'project', 'projets'] },
-      { key: 'order',           label: 'Commande (lien)',    hint: 'Champ lié vers la table des commandes — copié vers la facture ERP si elle n’a encore aucun lien', candidates: ['commande', 'commandes', 'order'] },
+      { key: 'document_number', column: 'document_number', label: 'Numéro de document', required: true, hint: 'Clé de correspondance : doit égaler le numéro de la facture Stripe côté ERP', candidates: ['numéro de document', 'numero de document', 'document number', 'numéro'] },
+      { key: 'project',         column: 'project_id', label: 'Projet (lien)',      hint: 'Champ lié vers la table des projets — copié vers la facture ERP si elle n’a encore aucun lien', candidates: ['projet', 'project', 'projets'] },
+      { key: 'order',           column: 'order_id', label: 'Commande (lien)',    hint: 'Champ lié vers la table des commandes — copié vers la facture ERP si elle n’a encore aucun lien', candidates: ['commande', 'commandes', 'order'] },
     ],
   },
   // Produits : PLUS de mapping cœur. Le field_map du module « pieces » a été
@@ -2862,6 +2867,17 @@ router.get('/quickbooks/accounts', requireAuth, async (req, res) => {
     const q = new URLSearchParams({ query })
     const data = await qbGet(`/query?${q}`)
     res.json(data.QueryResponse?.Account || [])
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// GET /api/connectors/quickbooks/accounts/:id/ledger?since=YYYY-MM-DD —
+// historique des opérations d'un compte (grand livre QB, sous-comptes inclus).
+router.get('/quickbooks/accounts/:id/ledger', requireAuth, async (req, res) => {
+  try {
+    const since = /^\d{4}-\d{2}-\d{2}$/.test(req.query.since || '') ? req.query.since : '2000-01-01'
+    res.json(await fetchAccountLedger(req.params.id, since))
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

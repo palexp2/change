@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { ExternalLink, RefreshCw, CreditCard } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
@@ -63,7 +63,8 @@ function RachatCell({ row, onChange }) {
   }
 
   return (
-    <div className="relative inline-block" onClick={e => e.stopPropagation()}>
+    <div className="relative inline-block" onClick={e => e.stopPropagation()}
+      title={row.rachat_auto && row.rachat_reason ? `Auto · ${row.rachat_reason}` : undefined}>
       <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full pointer-events-none select-none ${
         row.rachat ? RACHAT_COLORS[row.rachat] : 'text-slate-300'
       } ${saving ? 'opacity-50' : ''}`}>
@@ -113,15 +114,29 @@ const RENDERS = {
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
+  products_list: row => row.products?.length
+    ? <span>{row.products.map((p, i) => (
+        <span key={i}>
+          {i > 0 && ', '}
+          {p.id
+            ? <Link to={`/products/${p.id}`} onClick={e => e.stopPropagation()} className="link-record">{p.name}</Link>
+            : p.name}
+          {p.qty > 1 && <span className="text-slate-400"> ×{p.qty}</span>}
+        </span>
+      ))}</span>
+    : <span className="text-slate-400">—</span>,
   status:     row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
     : <span className="text-slate-400">—</span>,
   amount_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_cad)}</span>,
+  promo_code: row => row.promo_code
+    ? <span className="font-mono text-xs">{row.promo_code}</span>
+    : <span className="text-slate-400">—</span>,
   currency: row => row.currency
     ? <Badge color={row.currency === 'USD' ? 'blue' : 'gray'}>{row.currency}</Badge>
     : <span className="text-slate-400">—</span>,
   interval_type: row => row.interval_type
-    ? <span className="text-slate-600">{intervalLabel(row)}</span>
+    ? intervalLabel(row)
     : <span className="text-slate-400">—</span>,
   start_date: row => <span className="text-slate-500">{fmtDate(row.start_date)}</span>,
   start_month: row => <span className="text-slate-500">{fmtMonth(row.start_month)}</span>,
@@ -139,9 +154,26 @@ export default function Abonnements() {
   })
   const [stripeConfigured, setStripeConfigured] = useState(false)
   const [selected, setSelected] = useState(null)
+  // /abonnements?id=<id> ouvre la fiche (lien {{lien_fiche_abonnement}} des automatisations).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const openId = searchParams.get('id')
+  useEffect(() => {
+    if (!openId) return
+    api.abonnements.get(openId).then(setSelected).catch(() => {})
+  }, [openId])
+  function closeSelected() {
+    setSelected(null)
+    if (openId) setSearchParams(p => { p.delete('id'); return p }, { replace: true })
+  }
+
+  // Chevrons ↑/↓ de la fiche : voisins dans l'ordre affiché (vue, filtres, tri).
+  const [visibleRows, setVisibleRows] = useState([])
+  const selIndex = selected ? visibleRows.findIndex(r => String(r.id) === String(selected.id)) : -1
+  const prevRow = selIndex > 0 ? visibleRows[selIndex - 1] : null
+  const nextRow = selIndex >= 0 && selIndex < visibleRows.length - 1 ? visibleRows[selIndex + 1] : null
 
   function handleRachatChange(id, val) {
-    setAbonnements(prev => prev.map(a => a.id === id ? { ...a, rachat: val } : a))
+    setAbonnements(prev => prev.map(a => a.id === id ? { ...a, rachat: val, rachat_auto: 0, rachat_reason: null } : a))
   }
 
   function handleTestChange(id, val) {
@@ -180,12 +212,15 @@ export default function Abonnements() {
         columns={COLUMNS}
         data={abonnements}
         loading={loading}
-        searchFields={['company_name', 'contact_name', 'rachat', 'amount_cad', 'currency']}
+        searchFields={['company_name', 'contact_name', 'products_list', 'rachat', 'amount_cad', 'currency', 'promo_code']}
         onRowClick={setSelected}
+        onFilteredDataChange={setVisibleRows}
         emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Aucun abonnement Stripe actif ou passé. Les abonnements se synchronisent automatiquement depuis Stripe." }}
       />
 
-      <AbonnementDetailModal abonnement={selected} onClose={() => setSelected(null)} />
+      <AbonnementDetailModal abonnement={selected} onClose={closeSelected} hideHistoryAdd
+        onPrev={prevRow ? () => setSelected(prevRow) : null}
+        onNext={nextRow ? () => setSelected(nextRow) : null} />
     </ListPage>
   )
 }

@@ -1,5 +1,5 @@
 import db from '../db/database.js'
-import { getAccessToken, airtablePatch, airtablePost } from '../connectors/airtable.js'
+import { getAccessToken, airtablePatch, airtablePost, airtableFetch } from '../connectors/airtable.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 import { logSync } from './syncLog.js'
 import {
@@ -10,7 +10,9 @@ import {
 import { nativeMappedColumn } from './airtableNativeMappedColumns.js'
 import { computedAirtableFieldNames } from './airtableFieldTypes.js'
 import { readRelation } from './customFieldsView.js'
+import { ERP_COMPUTED_COLUMNS } from './customFieldWritability.js'
 import { erpTableForAirtableTableId } from './airtableTableMap.js'
+import { resolveFactureAirtableId } from './factureLinks.js'
 
 // Résout l'airtable_id d'un record ERP lié (commande, adresse…) pour un linked record.
 function linkedAirtableId(table, erpId) {
@@ -473,6 +475,32 @@ export const WRITEBACK_MODULES = {
     },
     requiredCreationLinks: { product: 'product_id' },
   },
+  // Factures. Stripe (et QuickBooks) les créent : aucune facture ne naît dans
+  // Airtable depuis Boréal — mises à jour seulement, d'un record déjà lié.
+  // `defaultDirection: 'pull'` : déclarer le module rend le sens CHOISISSABLE
+  // dans /champs/factures, il ne pousse rien tant que personne n'a choisi.
+  //
+  // Le field_map cœur est celui de l'ancien sync complet (13 clés) ; seules
+  // les 3 clés de CORE_FIELD_SPECS.factures sont exposées. « Numéro de
+  // document » est la clé de correspondance du sync des liens : jamais
+  // réécrite. Projet / Commande (et Entreprise, clé legacy) sont des linked
+  // records : `linkColumns` traduit l'id Boréal en [recXXX].
+  factures: {
+    erpTable: 'factures',
+    skipKeys: new Set(['document_number', 'invoice_id']),
+    keyToColumn: { company: 'company_id', project: 'project_id', order: 'order_id', amount_before_tax: 'amount_before_tax_cad' },
+    linkColumns: { company_id: 'companies', project_id: 'projects', order_id: 'orders' },
+    defaultDirection: 'pull',
+    // « Proposition » est une case à cocher Airtable : elle refuse un entier
+    // même avec typecast.
+    valueCodecs: { cf_proposition: v => v === true || v === 'true' || Number(v) > 0 },
+    // Les factures nées dans Stripe depuis avril 2026 n'ont pas d'airtable_id :
+    // on le retrouve par le numéro de document au premier write-back.
+    resolveAirtableId: row => resolveFactureAirtableId(row),
+    // La table Factures d'Inventaire est SYNCHRONISÉE depuis Stripe/Invoices :
+    // ses champs synchronisés (dont « Proposition ») refusent l'écriture API.
+    syncedSource: { label: 'Stripe/Invoices', baseId: 'appyunQiuo800QKUB', tableId: 'tblHoOHCdSJ9Z0OdR', matchField: 'ID', matchColumn: 'invoice_id' },
+  },
 }
 
 // Variation signée d'un mouvement (champ « Changement » d'Airtable). Un
@@ -548,7 +576,7 @@ export function isDynamicDirectionKey(key) { return typeof key === 'string' && k
 // pousser (cf. noMappingReason côté client).
 export const PUSH_ONLY_CF_KINDS = new Set([
   'formula', 'lookup', 'rollup',
-  'created_time', 'last_modified_time', 'created_by', 'last_modified_by',
+  'created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber',
 ])
 
 // Colonnes d'une table portées par un champ calculé actif. Une colonne
@@ -563,9 +591,10 @@ export function pushOnlyColumns(erpTable) {
       `SELECT column_name FROM custom_fields
        WHERE erp_table=? AND deleted_at IS NULL AND kind IN (${placeholders})`
     ).all(erpTable, ...PUSH_ONLY_CF_KINDS).map(r => r.column_name)
-    if (!computed.length) return new Set()
     const physical = new Set(db.prepare(`PRAGMA table_info(${erpTable})`).all().map(c => c.name))
-    return new Set(computed.filter(c => !physical.has(c)))
+    // + colonnes « Calculé par Boréal » : physiques, mais tenues par un calcul
+    // de l'app — Airtable ne peut que les recevoir.
+    return new Set([...computed.filter(c => !physical.has(c)), ...(ERP_COMPUTED_COLUMNS[erpTable] || [])])
   } catch { return new Set() }  // table custom_fields absente (tests)
 }
 
@@ -1020,7 +1049,10 @@ export async function writeBackRecord(module, recordId, changedColumns = null) {
 
     const row = db.prepare(`SELECT * FROM ${cfg.erpTable} WHERE id=?`).get(recordId)
     if (!row) return { skipped: 'record introuvable' }
-    if (!row.airtable_id) return { skipped: 'record non lié à Airtable' } // pilote : update only
+    // Module qui sait retrouver le jumeau d'un record non lié (factures : par
+    // numéro de document) — sinon update only.
+    if (!row.airtable_id && cfg.resolveAirtableId) row.airtable_id = await cfg.resolveAirtableId(row)
+    if (!row.airtable_id) return { skipped: 'record non lié à Airtable' }
     airtableId = row.airtable_id
 
     const fieldMap = readFieldMap(module, config)
@@ -1038,7 +1070,9 @@ export async function writeBackRecord(module, recordId, changedColumns = null) {
     const fields = {}
     for (const [col, atField] of Object.entries(columnMap)) {
       if (changedSet && !changedSet.has(col) && !computed.has(col)) continue   // ne pousser que ce qui a changé
-      if (frozen.has(col)) continue                       // colonne gelée : jamais écrite
+      // Colonne gelée : jamais écrite — sauf « Calculé par Boréal », gelée à
+      // l'import seulement (Boréal → Airtable est son unique sens).
+      if (frozen.has(col) && !ERP_COMPUTED_COLUMNS[cfg.erpTable]?.has(col)) continue
       if (!(col in row)) continue                         // colonne supprimée de la table : ne pas pousser null
       // Colonne lien : Airtable attend un tableau de record ids. Un référent sans
       // jumeau Airtable est SAUTÉ plutôt que poussé vide — effacer le lien serait
@@ -1059,15 +1093,20 @@ export async function writeBackRecord(module, recordId, changedColumns = null) {
     if (Object.keys(fields).length === 0) return { skipped: 'aucun champ à pousser' }
 
     const token = await getAccessToken()
+    const sourceFields = cfg.syncedSource ? await splitSyncedSourceFields(cfg.syncedSource, fields, token) : {}
     // Mémoriser AVANT le PATCH : le webhook peut revenir avant la fin du fetch.
-    recordWriteback(airtableId, fields)
-    await airtablePatch(`/${config.base_id}/${config.table_id}/${airtableId}`, token, {
-      fields,
-      typecast: true,
-    })
+    recordWriteback(airtableId, { ...fields, ...sourceFields })
+    if (Object.keys(sourceFields).length) await patchSyncedSource(cfg.syncedSource, row, sourceFields, token)
+    if (Object.keys(fields).length) {
+      await airtablePatch(`/${config.base_id}/${config.table_id}/${airtableId}`, token, {
+        fields,
+        typecast: true,
+      })
+    }
+    const pushed = { ...fields, ...sourceFields }
     logSync(module, 'erp-writeback', { status: 'success', modified: 1, durationMs: Date.now() - t0 })
-    console.log(`↩️  Write-back ${module} → Airtable ${airtableId} (${Object.keys(fields).join(', ')})`)
-    return { ok: true, airtable_id: airtableId, fields }
+    console.log(`↩️  Write-back ${module} → Airtable ${airtableId} (${Object.keys(pushed).join(', ')})`)
+    return { ok: true, airtable_id: airtableId, fields: pushed }
   } catch (e) {
     // Échec : retirer la garde (si posée) sinon elle masquerait un vrai sync entrant ultérieur.
     if (airtableId) db.prepare('DELETE FROM airtable_writeback_guard WHERE airtable_id=?').run(airtableId)
@@ -1075,6 +1114,47 @@ export async function writeBackRecord(module, recordId, changedColumns = null) {
     console.error(`❌ Write-back ${module} ${recordId}:`, e.message)
     return { error: e.message }
   }
+}
+
+// ── Table Airtable synchronisée depuis une autre base ────────────────────────
+//
+// Un champ synchronisé refuse le PATCH API (403 « Edits to synced field … are
+// not allowed from this origin ») : on l'écrit dans la table SOURCE, que la
+// sync Airtable recopie ensuite. Un champ est réputé synchronisé quand la table
+// source a un champ du même nom (noms relus via l'API meta, cache 1 h).
+const SOURCE_FIELDS_TTL_MS = 3600_000
+const sourceFieldNamesCache = new Map()
+async function sourceFieldNames(src, token) {
+  const key = `${src.baseId}/${src.tableId}`
+  const hit = sourceFieldNamesCache.get(key)
+  if (hit && Date.now() - hit.at < SOURCE_FIELDS_TTL_MS) return hit.names
+  const meta = await airtableFetch(`/meta/bases/${src.baseId}/tables`, token)
+  const table = (meta.tables || []).find(t => t.id === src.tableId)
+  const names = new Set((table?.fields || []).map(f => f.name))
+  sourceFieldNamesCache.set(key, { at: Date.now(), names })
+  return names
+}
+
+// Retire de `fields` les champs synchronisés et les renvoie à part.
+async function splitSyncedSourceFields(src, fields, token) {
+  const names = await sourceFieldNames(src, token)
+  const moved = {}
+  for (const name of Object.keys(fields)) {
+    if (names.has(name)) { moved[name] = fields[name]; delete fields[name] }
+  }
+  return moved
+}
+
+async function patchSyncedSource(src, row, fields, token) {
+  const key = row[src.matchColumn]
+  if (!key) throw new Error(`${Object.keys(fields).join(', ')} : champ synchronisé depuis ${src.label}, ${src.matchColumn} absent`)
+  const formula = `{${src.matchField}}='${String(key).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+  const data = await airtableFetch(`/${src.baseId}/${src.tableId}?pageSize=2`
+    + `&fields[]=${encodeURIComponent(src.matchField)}&filterByFormula=${encodeURIComponent(formula)}`, token)
+  if (data.records?.length !== 1) {
+    throw new Error(`${src.label} : ${data.records?.length || 0} record(s) pour ${src.matchField}=${key}`)
+  }
+  await airtablePatch(`/${src.baseId}/${src.tableId}/${data.records[0].id}`, token, { fields, typecast: true })
 }
 
 // Crée dans Airtable un record ERP qui n'y existe pas encore (sens ERP → Airtable),

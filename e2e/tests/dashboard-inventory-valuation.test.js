@@ -32,45 +32,6 @@ describe("Dashboard — Valeur de l'inventaire", () => {
 
   after(async () => { await browser?.close() })
 
-  test('La section apparaît avec total, Pièces et statuts autorisés', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('h1:has-text("Tableau de bord")', { timeout: 10000 })
-
-    const heading = page.locator("h2:has-text(\"Valeur de l'inventaire\")")
-    await heading.waitFor({ timeout: 10000 })
-
-    const card = page.locator('.card', { has: heading })
-    await assert.doesNotReject(card.waitFor({ timeout: 5000 }))
-
-    // Grand total label
-    await assert.doesNotReject(
-      card.locator('text=Cumul total').waitFor({ timeout: 3000 })
-    )
-
-    // "Pièces" row must exist
-    const piecesRow = card.locator('text=Pièces').first()
-    await piecesRow.waitFor({ timeout: 3000 })
-
-    // At least one kept status should render (via the actual API data)
-    const cardText = await card.innerText()
-    const hasKeptStatus = [
-      'Disponible - Vente',
-      'Disponible - Location',
-      'À reconditionner',
-      'En retour',
-      'À analyser',
-    ].some(s => cardText.includes(s))
-    assert.ok(hasKeptStatus, 'aucun statut de numéro de série autorisé affiché — contenu: ' + cardText)
-
-    // None of the excluded statuses should appear as a row label
-    for (const ex of EXCLUDED_STATUSES) {
-      assert.ok(
-        !cardText.includes(ex),
-        `le statut exclu "${ex}" est affiché alors qu'il devrait être masqué`
-      )
-    }
-  })
-
   test('Le total Pièces matche la vue « Valeur inventaire » de la table products', async () => {
     // La carte du dashboard doit afficher exactement la même somme que celle
     // qu'on obtiendrait en additionnant valeur_inventaire pour les produits

@@ -5,7 +5,6 @@ import bcrypt from 'bcrypt';
 import db from '../db/database.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { sanitizeSignatureHtml } from '../utils/sanitizeHtml.js';
-import { promises as fsp } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
@@ -575,7 +574,7 @@ router.delete('/users/:id', (req, res) => {
 
 // GET /api/admin/health
 router.get('/health', async (req, res) => {
-  const { disk, diskBreakdown, diskMeasurement } = await getDiskUsage()
+  const { disk } = await getDiskUsage()
 
   // ── RAM ───────────────────────────────────────────────────────────────────
   const totalMem = os.totalmem()
@@ -590,9 +589,8 @@ router.get('/health', async (req, res) => {
   const uptime = os.uptime()
 
   const processes = await getPm2Processes()
-  const recentErrors = await readRecentErrors()
 
-  res.json({ disk, ram, cpu, uptime, processes, recentErrors, diskBreakdown, diskMeasurement })
+  res.json({ disk, ram, cpu, uptime, processes })
 })
 
 // `pm2 jlist` coûte ~250 ms : jamais attendu par la page. On sert la dernière
@@ -622,24 +620,6 @@ async function getPm2Processes() {
   if (!pm2Cache) return refreshPm2()
   if (Date.now() - pm2Cache.at > 10_000) refreshPm2()
   return pm2Cache.list
-}
-
-// Seule la fin du journal d'erreurs est utile : lire le fichier entier (6 Mo+)
-// bloquait la boucle d'événements.
-async function readRecentErrors() {
-  const logPath = process.env.PM2_ERROR_LOG || `${os.homedir()}/.pm2/logs/erp-server-error.log`
-  let fh
-  try {
-    fh = await fsp.open(logPath, 'r')
-    const { size } = await fh.stat()
-    const length = Math.min(size, 64 * 1024)
-    const buf = Buffer.alloc(length)
-    await fh.read(buf, 0, length, size - length)
-    const lines = buf.toString('utf8').trim().split('\n').filter(Boolean)
-    if (length < size) lines.shift() // première ligne possiblement tronquée
-    return lines.slice(-8).reverse()
-  } catch { return [] }
-  finally { await fh?.close() }
 }
 
 

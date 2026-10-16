@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
-import { ExternalLink } from 'lucide-react'
+import { ExternalLink, X } from 'lucide-react'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { useConfirm } from './ConfirmProvider.jsx'
 import AttachmentPreview from './AttachmentPreview.jsx'
 import api from '../lib/api.js'
 import RecordPeekDrawer from './RecordPeekDrawer.jsx'
@@ -38,7 +40,101 @@ function metadataTooltip(item) {
   return lines.length ? lines.join('\n') : undefined
 }
 
-export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeButton = false, hideRachat = false }) {
+// Annulation Stripe : « Annuler » propose fin de période (réversible, sans
+// confirmation) ou immédiat (confirmé). Une annulation programmée affiche sa
+// date et « Réactiver ».
+function CancelControl({ aboId, cancel, onDone }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  if (!cancel || cancel.status === 'canceled' || cancel.status === 'incomplete_expired') return null
+
+  async function run(when) {
+    if (when === 'now' && !await confirm({ title: 'Annuler maintenant ?', message: 'Fin immédiate dans Stripe, sans retour possible.', confirmLabel: 'Annuler maintenant' })) return
+    setBusy(true)
+    try {
+      await api.abonnements.cancel(aboId, when)
+      setOpen(false)
+      onDone?.()
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (cancel.cancel_at) {
+    return (
+      <div className="flex items-center gap-2 text-xs" data-testid="abo-cancel-scheduled">
+        <span className="text-red-600">Fin {fmtDate(cancel.cancel_at)}</span>
+        <button type="button" className="btn-secondary !py-1 !px-2 text-xs" disabled={busy} onClick={() => run('undo')}>Réactiver</button>
+      </div>
+    )
+  }
+  return open ? (
+    <div className="flex items-center gap-1.5" data-testid="abo-cancel-choices">
+      <button type="button" className="btn-secondary !py-1 !px-2 text-xs" disabled={busy} onClick={() => run('period_end')}
+        title={cancel.current_period_end ? `Fin ${fmtDate(cancel.current_period_end)}` : undefined}>Fin de période</button>
+      <button type="button" className="btn-danger !py-1 !px-2 text-xs" disabled={busy} onClick={() => run('now')}>Maintenant</button>
+      <button type="button" className="text-slate-400 hover:text-slate-600 p-1" disabled={busy} onClick={() => setOpen(false)} aria-label="Fermer"><X size={14} /></button>
+    </div>
+  ) : (
+    <button type="button" className="btn-secondary !py-1 !px-2 text-xs" onClick={() => setOpen(true)} data-testid="abo-cancel-button">Annuler</button>
+  )
+}
+
+// Phases à venir du calendrier Stripe (« Upcoming phases ») : une carte par
+// phase, date de début (et de fin) puis ses produits.
+function UpcomingPhases({ phases }) {
+  const fmtAmt = (v, cur) => v != null ? `${v.toFixed(2)} ${cur || ''}`.trim() : '—'
+  return (
+    <div data-testid="abo-upcoming-phases">
+      <h4 className="text-sm font-semibold text-slate-700 mb-2">Phases à venir</h4>
+      <div className="space-y-2">
+        {phases.map((p, i) => {
+          const known = p.items.filter(it => it.total != null)
+          const total = known.length ? known.reduce((s, it) => s + it.total, 0) : null
+          return (
+            <div key={i} className="border border-slate-200 rounded-lg overflow-hidden" data-testid="abo-phase">
+              <div className="flex items-center justify-between px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs">
+                <span className="font-semibold text-slate-600">{fmtDate(p.start)}{p.end ? ` → ${fmtDate(p.end)}` : ''}</span>
+                {p.discount && <span className="text-slate-500">Rabais : {p.discount}</span>}
+              </div>
+              <table className="w-full text-sm">
+                <tbody>
+                  {p.items.map((it, j) => (
+                    <tr key={j} className="border-b border-slate-100 last:border-0">
+                      <td className="px-4 py-2 text-slate-800">
+                        {it.product_name}
+                        {it.interval && <span className="text-xs text-slate-400"> / {it.interval_count > 1 ? `${it.interval_count} ` : ''}{it.interval === 'month' ? 'mois' : it.interval === 'year' ? 'an' : it.interval}</span>}
+                      </td>
+                      <td className="px-4 py-2 text-right text-slate-600">{fmtAmt(it.unit_amount, it.currency)}</td>
+                      <td className="px-4 py-2 text-right text-slate-600">×{it.quantity}</td>
+                      <td className="px-4 py-2 text-right font-medium text-slate-800">{fmtAmt(it.total, it.currency)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                {total != null && p.items.length > 1 && (
+                  <tfoot>
+                    <tr className="border-t border-slate-200">
+                      <td className="px-4 py-1.5 text-xs text-slate-500" colSpan={3}>Total avant taxes</td>
+                      <td className="px-4 py-1.5 text-right font-semibold text-slate-800">{fmtAmt(total, known[0].currency)}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// `onPrev` / `onNext` (optionnels) : chevrons ↑/↓ de l'en-tête, relayés tels
+// quels au panneau — fournis par la liste qui connaît l'ordre affiché.
+export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeButton = false, hideRachat = false, hideHistoryAdd = false, onPrev, onNext }) {
   // Facture ouverte par-dessus le panneau abonnement (clic sur une ligne de la
   // section « Factures »).
   const [facturePeek, setFacturePeek] = useState(null)
@@ -133,6 +229,15 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
     }
   }
 
+  async function handleCancelDone() {
+    loadDetails(aboState.id)
+    const fresh = await api.abonnements.get(aboState.id).catch(() => null)
+    if (!fresh) return
+    const updated = { ...aboState, status: fresh.status, cancel_date: fresh.cancel_date }
+    setLocalAbo(updated)
+    onChange?.(updated)
+  }
+
   // Montant avant taxes au cycle : en-tête, ligne « Rabais » et pied du tableau
   // lisent les mêmes totaux. Fallback sur intervalAmount pendant le chargement.
   const totals = details?.items?.length ? subscriptionTotals(details) : null
@@ -174,9 +279,12 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
               onChange={handleContactChange}
             />
           </div>
-          <div className="flex items-center gap-3">
-            <StatusBadge map={SUBSCRIPTION_STATUS} status={aboState.status} />
-            <span className="text-lg font-bold text-slate-800" data-testid="abo-modal-cycle-amount" title="Avant taxes">{fmtCad(displayedAmount)}<span className="text-xs font-normal text-slate-400">/{intervalLabel(aboState)}</span><span className="text-[10px] font-normal text-slate-400 ml-1">av. tx</span></span>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-3">
+              <StatusBadge map={SUBSCRIPTION_STATUS} status={aboState.status} />
+              <span className="text-lg font-bold text-slate-800" data-testid="abo-modal-cycle-amount" title="Avant taxes">{fmtCad(displayedAmount)}<span className="text-xs font-normal text-slate-400">/{intervalLabel(aboState)}</span><span className="text-[10px] font-normal text-slate-400 ml-1">av. tx</span></span>
+            </div>
+            <CancelControl aboId={aboState.id} cancel={details?.cancel} onDone={handleCancelDone} />
           </div>
         </div>
 
@@ -246,11 +354,14 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
               </div>
             </div>
 
+            {details.phases?.length > 0 && <UpcomingPhases phases={details.phases} />}
+
             <SubscriptionHistory
               subscriptionId={aboState.id}
               history={details.history}
               onChanged={() => loadDetails(aboState.id)}
               hideRachat={hideRachat}
+              hideAdd={hideHistoryAdd}
             />
 
             {details.invoices.length > 0 && (
@@ -324,6 +435,8 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeBut
       subtitle={aboState.company_name || aboState.customer_email || undefined}
       width={640}
       peekKey="abonnements"
+      onPrev={onPrev}
+      onNext={onNext}
     >
       <div className="px-5 py-4">{body}</div>
       {/* Facture empilée par-dessus l'abonnement — on ne quitte pas le contexte. */}

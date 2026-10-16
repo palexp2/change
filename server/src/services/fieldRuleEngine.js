@@ -6,6 +6,7 @@ import { sendEmail } from './ruleActions/email.js'
 import { createTask } from './ruleActions/task.js'
 import { runScriptAction } from './ruleActions/script.js'
 import { runSteps } from './ruleActions/steps.js'
+import { resolveRecordKeys } from './recordLinks.js'
 import { makeRateGuard } from './ruleActions/rateGuard.js'
 import { APP_URL } from '../config/appUrl.js'
 
@@ -53,6 +54,13 @@ export function buildOpPredicate(column, op, value) {
     if (!arr.length) return { predicate: '1=0', params: [] }
     const ph = arr.map(() => '?').join(',')
     return { predicate: `t.${column} IN (${ph})`, params: [...arr] }
+  }
+  // « n'est aucune de » : un champ vide compte comme « aucune ».
+  if (op === 'not_in') {
+    const arr = (Array.isArray(value) ? value : []).filter(v => v !== '')
+    if (!arr.length) return { predicate: '1=1', params: [] }
+    const ph = arr.map(() => '?').join(',')
+    return { predicate: `(t.${column} IS NULL OR t.${column} NOT IN (${ph}))`, params: [...arr] }
   }
   if (NUMERIC_OP_SQL[op]) {
     return { predicate: `CAST(t.${column} AS REAL) ${NUMERIC_OP_SQL[op]} ?`, params: [Number(value)] }
@@ -298,6 +306,14 @@ async function evaluateOneForRecord(rule, erpTable, recordId) {
   }
 }
 
+// Libellé lisible d'un enregistrement pour l'historique : titre ou nom, sinon
+// celui de sa fiche (un # de série, le produit d'un article de retour…).
+function recordLabeler(erpTable, rows) {
+  let resolved = {}
+  try { resolved = resolveRecordKeys(rows.filter(r => !r.title && !r.name).map(r => r.id), { hint: erpTable }) } catch { /* libellé facultatif */ }
+  return row => row.title || row.name || resolved[row.id]?.label || row.company_name || row.id
+}
+
 /**
  * Render + dispatch a rule's action across its matching candidates, track fires
  * (dedup), and log the run. Throws on internal failure (unknown adapter) so the
@@ -326,6 +342,7 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
   // and per automation over a sliding window. null for internal channels (task,
   // script) or when the rule opts out — those dispatch unthrottled as before.
   const guard = makeRateGuard(rule)
+  const labelOf = recordLabeler(erpTable, batch)
 
   const appUrl = APP_URL
   for (const row of batch) {
@@ -336,19 +353,19 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
       if (guard) {
         verdict = guard.check()
         if (!verdict.ok) {
-          suppressed.push({ id: row.id, label: row.title || row.name || row.id, reason: verdict.reason })
+          suppressed.push({ id: row.id, label: labelOf(row), reason: verdict.reason })
           continue // not fired, not failed — re-queued below so it retries when the window clears
         }
       }
       const res = await withOrigin(rule.id, () => adapter({ rule, row, rendered }))
       insertFire.run(rule.id, erpTable, row.id)
       if (guard) guard.record(verdict.recipient, erpTable, row.id)
-      fired.push({ id: row.id, label: row.title || row.name || row.id, log: res?.log })
+      fired.push({ id: row.id, label: labelOf(row), log: res?.log })
     } catch (e) {
       // Pas de nouvelle tentative : un échec compte comme un tir (Charles,
       // 2026-10-09). L'historique le montre, on relance à la main au besoin.
       insertFire.run(rule.id, erpTable, row.id)
-      failed.push({ id: row.id, error: e.message })
+      failed.push({ id: row.id, label: labelOf(row), error: e.message })
     }
   }
 
@@ -378,7 +395,7 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
   }
   if (failed.length) {
     lines.push('', 'Échecs :')
-    for (const f of failed) lines.push(`  • ${f.id} — ${f.error.replace(/\n/g, '\n      ')}`)
+    for (const f of failed) lines.push(`  • ${f.label} (${f.id}) — ${f.error.replace(/\n/g, '\n      ')}`)
   }
 
   // Always log a run that fired or failed. For a run that ONLY suppressed (common on
@@ -614,7 +631,7 @@ function substitute(tpl, row, allowed) {
  * `rule` must be the admin-facing shape:
  *   { id, trigger_config: {...}, action_type, action_config: {...} }
  */
-export function dryRunFieldRule(rule, { previewLimit = 10 } = {}) {
+export function dryRunFieldRule(rule, { previewLimit = 10, q = '' } = {}) {
   const tc = rule.trigger_config || {}
   const erpTable = tc.erp_table
   if (!erpTable || !IDENT_RE.test(erpTable)) {
@@ -635,9 +652,16 @@ export function dryRunFieldRule(rule, { previewLimit = 10 } = {}) {
     ? `SELECT t.*, c.name AS company_name FROM ${erpTable} t LEFT JOIN companies c ON t.company_id = c.id`
     : `SELECT t.* FROM ${erpTable} t`
   const { predicate, params } = buildTriggerPredicate(tc)
-  const sql = `${selectFrom} WHERE ${predicate} LIMIT 200`
+  // Recherche du panneau « Tester » : restreint les enregistrements qui
+  // satisfont déjà le déclencheur (identifiant, nom/titre, entreprise).
+  const term = String(q || '').trim()
+  const searchCols = ['t.id', ...['name', 'title'].filter(c => tableCols.includes(c)).map(c => `t.${c}`),
+    ...(hasCompany ? ['c.name'] : [])]
+  const search = term ? ` AND (${searchCols.map(c => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})` : ''
+  const like = `%${term.replace(/[\\%_]/g, m => `\\${m}`)}%`
+  const sql = `${selectFrom} WHERE (${predicate})${search} LIMIT 200`
 
-  const candidates = db.prepare(sql).all(...params)
+  const candidates = db.prepare(sql).all(...params, ...(term ? searchCols.map(() => like) : []))
   const firedIds = new Set(
     db.prepare('SELECT record_id FROM automation_rule_fires WHERE automation_id=?')
       .all(rule.id)
@@ -646,6 +670,7 @@ export function dryRunFieldRule(rule, { previewLimit = 10 } = {}) {
   const appUrl = APP_URL
 
   const previews = []
+  const labelOf = recordLabeler(erpTable, candidates.slice(0, previewLimit))
   for (const row of candidates.slice(0, previewLimit)) {
     row.app_url = appUrl
     const alreadyFired = firedIds.has(row.id)
@@ -653,7 +678,7 @@ export function dryRunFieldRule(rule, { previewLimit = 10 } = {}) {
       const rendered = renderActionConfig(rule.action_config, row, erpTable)
       previews.push({
         id: row.id,
-        label: row.title || row.name || row.id,
+        label: labelOf(row),
         already_fired: alreadyFired,
         rendered,
         error: null,
@@ -661,7 +686,7 @@ export function dryRunFieldRule(rule, { previewLimit = 10 } = {}) {
     } catch (e) {
       previews.push({
         id: row.id,
-        label: row.title || row.name || row.id,
+        label: labelOf(row),
         already_fired: alreadyFired,
         rendered: null,
         error: e.message,
@@ -837,13 +862,14 @@ export async function runRuleActionForRecord(automationId, erpTable, recordId) {
   if (!row) throw new Error(`Enregistrement introuvable: ${recordId}`)
   row.app_url = APP_URL
 
-  const label = row.title || row.name || row.company_name || row.id
+  const label = recordLabeler(erpTable, [row])(row)
   try {
     const rendered = renderActionConfig(rule.action_config, row, erpTable)
-    await withOrigin(rule.id, () => adapter({ rule, row, rendered }))
+    const res = await withOrigin(rule.id, () => adapter({ rule, row, rendered }))
     logRuleRun(rule.id, {
       status: 'success',
-      result: `[Bouton] Action ${rule.action_type} déclenchée sur ${label} (${row.id})`,
+      // Automatisation en blocs : ce qu'a fait chaque action, comme un tir automatique.
+      result: res?.log?.length ? [label, ...res.log].join('\n') : `[Bouton] Action ${rule.action_type} déclenchée sur ${label} (${row.id})`,
       duration_ms: Date.now() - started,
       triggerData: { trigger: 'button', record_id: row.id },
     })

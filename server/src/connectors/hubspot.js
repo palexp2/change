@@ -97,6 +97,27 @@ export async function getTask(id) {
   return hsFetch(`/crm/v3/objects/tasks/${id}?${params}`)
 }
 
+/**
+ * Associations `fromObject` → `toObject` ('contacts' | 'companies' | 'deals'),
+ * par lots de 100. Retourne Map<fromId, objectId> (1re association seulement).
+ */
+export async function readAssociations(fromObject, ids, toObject) {
+  const out = new Map()
+  for (let i = 0; i < ids.length; i += 100) {
+    const inputs = ids.slice(i, i + 100).map(id => ({ id: String(id) }))
+    const data = await hsFetch(`/crm/v4/associations/${fromObject}/${toObject}/batch/read`, { method: 'POST', body: { inputs } })
+    for (const r of data?.results || []) {
+      const to = r.to?.[0]?.toObjectId
+      if (r.from?.id && to != null) out.set(String(r.from.id), String(to))
+    }
+  }
+  return out
+}
+
+export function readTaskAssociations(taskIds, toObject) {
+  return readAssociations('tasks', taskIds, toObject)
+}
+
 /** Liste tous les owners (utilisateurs) du portail. */
 export async function listOwners() {
   const out = []

@@ -23,11 +23,15 @@ import {
   pushShipmentToAirtable,
 } from '../services/shipmentAirtableLink.js';
 import { parsePositiveInt, parseNonNegativeInt, validateNumericFields } from '../utils/validateNumbers.js';
-import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR, ERP_COMPUTED_EDIT_ERROR } from '../services/customFieldWritability.js';
 import { applyOrderItemDefaults } from '../services/orderItemDefaults.js';
 import { shippedCostSql, refreezeOrderShippedCosts, pieceUnitCostSql } from '../services/shippedCost.js';
 import { orderRevenueSql, orderIsSubscriptionSql } from '../services/orderRevenue.js';
-import { logSystemRun } from '../services/systemAutomations.js';
+import { logSystemRun, isSystemAutomationActive } from '../services/systemAutomations.js';
+import { getAutomationFrom } from '../services/postmarkConfig.js';
+import { emailTrackingSummary } from '../services/emailTracking.js';
+import { loadWelcomeEmailContext, buildWelcomeEmail, sendOrderWelcomeEmail, isAutoSendCandidate, AUTOMATION_ID as WELCOME_ID } from '../services/orderWelcomeEmail.js';
+import { orderFollowupState } from '../services/installationFollowup.js';
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { localDay } from '../utils/datetime.js'
@@ -433,7 +437,9 @@ router.get('/:id', (req, res) => {
   // l'impression pour que l'opérateur voie ce qui sortira (et puisse forcer).
   const docs_lang = resolveInstallationDocsLang(order);
 
-  res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers, profitability, docs_lang });
+  // Suivi d'installation (J+21) : seulement sur la première commande expédiée de l'entreprise.
+  const installation_followup = orderFollowupState(db, order.id, { active: isSystemAutomationActive('sys_installation_followup') });
+  res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers, profitability, docs_lang, installation_followup });
 });
 
 // POST /api/orders
@@ -510,7 +516,7 @@ router.post('/', (req, res) => {
     `SELECT o.* FROM ${readRelation('orders')} o WHERE o.id = ?`
   ).get(id);
   const orderItems = db.prepare(
-    `SELECT oi.*, pr.name_fr as product_name, pr.sku FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.order_id = ?`
+    `SELECT oi.*, pr.name_fr as product_name, pr.sku FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.order_id = ?`
   ).all(id);
 
   emitOrder('created', id, req.user?.id);
@@ -546,6 +552,9 @@ router.put('/:id', (req, res) => {
 
   alignAddressColumns(req.body);
 
+  // Le statut est calculé (services/orderStatus.js) : une saisie serait
+  // réécrite au recalcul suivant.
+  if ('status' in req.body) return res.status(400).json({ error: ERP_COMPUTED_EDIT_ERROR });
   // Un champ Airtable en import seul est refusé en 400 explicite (même règle
   // qu'au POST et que sur projects/payments) : l'écriture serait de toute façon
   // écrasée au prochain sync.
@@ -556,10 +565,9 @@ router.put('/:id', (req, res) => {
   // ensuite — même whitelist des deux côtés.
   const customCols = getWritableCustomColumns('orders').map(c => c.column_name);
   const { setClause, values, error } = buildPartialUpdate(req.body, {
-    allowed: ['company_id', 'project_id', 'assigned_to', 'status', 'priority',
+    allowed: ['company_id', 'project_id', 'assigned_to', 'priority',
       'notes', 'address_id', 'farm_address_id', 'date_commande', 'is_subscription', 'revenue_override_cad',
       'cogs_override_cad', ...customCols],
-    nonNullable: new Set(['status']),
     coerce: {
       ...ORDER_COLUMN_COERCE,
       ...Object.fromEntries(customCols.map(c => [c, bindable])),
@@ -599,49 +607,10 @@ router.put('/:id', (req, res) => {
   res.json(updated);
 });
 
-// PATCH /api/orders/:id/status
+// PATCH /api/orders/:id/status — le statut est calculé par Boréal
+// (services/orderStatus.js, automation `sys_order_status`) : plus de saisie.
 router.patch('/:id/status', (req, res) => {
-  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
-  if (!order) return res.status(404).json({ error: 'Order not found' });
-
-  const { status } = req.body;
-  const validStatuses = ['Commande vide', "Gel d'envois", 'En attente', 'Items à fabriquer ou à acheter', 'Tous les items sont disponibles', 'Tout est dans la boite', 'Partiellement envoyé', 'JWT-config', "Envoyé aujourd'hui", 'Envoyé', 'ERREUR SYSTÈME'];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: 'Invalid status' });
-  }
-
-  // When marking as Envoyé or Envoyé aujourd'hui, decrease stock for each item
-  const shippedStatuses = ['Envoyé', "Envoyé aujourd'hui"]
-  if (shippedStatuses.includes(status) && !shippedStatuses.includes(order.status)) {
-    const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
-    const movementIds = [];
-    const run = db.transaction(() => {
-      db.prepare(`UPDATE orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(status, order.id);
-      for (const item of items) {
-        if (!item.product_id) continue;
-        const product = db.prepare('SELECT stock_qty FROM products WHERE id = ?').get(item.product_id);
-        if (product) {
-          db.prepare(`UPDATE products SET stock_qty=MAX(0, stock_qty - ?), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-            .run(item.qty, item.product_id);
-          const movId = newRecordId();
-          db.prepare(
-            `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id)
-             VALUES (?, ?, 'out', ?, 'Commande envoyée', ?)`
-          ).run(movId, item.product_id, item.qty, req.user.id);
-          movementIds.push(movId);
-        }
-      }
-    });
-    run();
-    // Vers Airtable si le sens des mouvements le demande (sinon ignoré).
-    for (const movId of movementIds) createInAirtable('stock_movements', movId);
-  } else {
-    db.prepare(`UPDATE orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-      .run(status, req.params.id);
-  }
-
-  emitOrder('updated', req.params.id, req.user?.id);
-  res.json({ message: 'Status updated', status });
+  res.status(400).json({ error: ERP_COMPUTED_EDIT_ERROR });
 });
 
 // POST /api/orders/:id/shipments
@@ -1048,7 +1017,7 @@ router.post('/:id/scan', (req, res) => {
       const newQty = serialObj ? serialProgress(item).count : Math.min((item.fulfilled_qty || 0) + 1, item.qty)
       const newStatus = newQty >= item.qty ? 'Prélevé' : item.fulfillment_status === 'En attente' ? 'En attente' : 'À prélever'
       db.prepare(`UPDATE order_items SET fulfilled_qty = ?, fulfillment_status = ? WHERE id = ?`).run(newQty, newStatus, item.id)
-      const updated = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
+      const updated = db.prepare(`SELECT oi.*, pr.name_fr as product_name FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(item.id)
       updated.serials = db.prepare('SELECT * FROM serial_numbers WHERE order_item_id = ? ORDER BY serial').all(item.id)
       return updated
     }
@@ -1064,13 +1033,7 @@ router.post('/:id/scan', (req, res) => {
       if (!SERIAL_PICKABLE_STATUSES.includes(serial.status)) {
         return res.json({ type: 'serial', action: 'not_available', serial })
       }
-      // 2. Reconditionné (« Disponible - Location ») sur une commande d'achat :
-      //    faisable, mais pas idéal — l'opérateur confirme. L'inverse (neuf sur
-      //    un abonnement) passe sans rien demander.
-      if (!order.is_subscription && serial.status === 'Disponible - Location' && !req.body.confirm) {
-        return res.json({ type: 'serial', action: 'confirm_required', reason: 'refurb_on_purchase', serial })
-      }
-      // 3. Sa ligne : la première non pleine du produit.
+      // 2. Sa ligne : la première non pleine du produit.
       const { lines, item: openItem } = openLineForProduct(req.params.id, serial.product_id)
       // Une série déjà liée reste sur sa ligne ; la rescanner ne compte pas
       // un second exemplaire et ne la déplace jamais vers la ligne suivante.
@@ -1079,6 +1042,13 @@ router.post('/:id/scan', (req, res) => {
       const item = linkedItem || openItem
       if (!lines.length) return res.json({ type: 'serial', action: 'not_in_order', serial })
       if (!item) return res.json({ type: 'serial', action: 'lines_full', serial })
+      // 3. Reconditionné (« Disponible - Location ») sur une commande d'achat :
+      //    faisable, mais pas idéal — l'opérateur confirme. L'inverse (neuf sur
+      //    un abonnement) et un remplacement passent sans rien demander.
+      if (!order.is_subscription && item.item_type !== 'Remplacement'
+          && serial.status === 'Disponible - Location' && !req.body.confirm) {
+        return res.json({ type: 'serial', action: 'confirm_required', reason: 'refurb_on_purchase', serial })
+      }
       // 4. Son adresse ne doit pas déjà exister chez ce client.
       const conflict = serialAddressConflict(req.params.id, order.company_id, serial)
       if (conflict) return res.json({ type: 'serial', action: 'address_conflict', serial, conflict })
@@ -1125,7 +1095,7 @@ router.post('/:id/scan', (req, res) => {
       db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type) VALUES (?, ?, ?, 1, ?)')
         .run(itemId, req.params.id, serial.product_id || null, 'Facturable')
       applyOrderItemDefaults(itemId)
-      item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
+      item = db.prepare(`SELECT oi.*, pr.name_fr as product_name FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(itemId)
       action = 'added'
     }
 
@@ -1145,14 +1115,14 @@ router.post('/:id/scan', (req, res) => {
 
     if (item) {
       db.prepare('UPDATE order_items SET qty = qty + 1 WHERE id = ?').run(item.id)
-      item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
+      item = db.prepare(`SELECT oi.*, pr.name_fr as product_name FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(item.id)
       action = 'incremented'
     } else {
       const itemId = newRecordId()
       db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type) VALUES (?, ?, ?, 1, ?)')
         .run(itemId, req.params.id, product.id, 'Facturable')
       applyOrderItemDefaults(itemId)
-      item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
+      item = db.prepare(`SELECT oi.*, pr.name_fr as product_name FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(itemId)
       action = 'added'
     }
 
@@ -1164,12 +1134,79 @@ router.post('/:id/scan', (req, res) => {
   return res.json({ type: 'not_found', value: v })
 })
 
+// Courriel au client (fiche commande) : aperçu tant qu'il n'est pas parti,
+// puis l'envoi consigné avec ses ouvertures et clics. Un seul par commande.
+function welcomeEmailState(orderId) {
+  const sent = db.prepare(`
+    SELECT w.sent_at, w.lang, w.email_id, e.subject, e.body_html, e.to_address
+    FROM order_welcome_emails w JOIN emails e ON e.id = w.email_id WHERE w.order_id = ?`).get(orderId);
+  if (!sent) return null;
+  const t = emailTrackingSummary(sent.email_id);
+  const events = [
+    ...t.opens.map(at => ({ at, kind: 'open' })),
+    ...t.links.flatMap(l => l.clicks.map(at => ({ at, kind: 'click', label: l.label || l.url }))),
+  ].sort((a, b) => b.at.localeCompare(a.at));
+  return { sent_at: sent.sent_at, lang: sent.lang, to: sent.to_address, subject: sent.subject, bodyHtml: sent.body_html, events };
+}
+
+router.get('/:id/welcome-email', (req, res) => {
+  const ctx = loadWelcomeEmailContext(req.params.id);
+  if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.message });
+  const sent = welcomeEmailState(req.params.id);
+  if (sent) return res.json({ sent });
+  const autoLang = resolveInstallationDocsLang(ctx.order).lang;
+  const lang = ['fr', 'en'].includes(req.query.lang) ? req.query.lang : autoLang;
+  // `auto` : partira seul à 17 h (heure de l'Est) si personne ne l'envoie avant.
+  const auto = !ctx.missing && isSystemAutomationActive(WELCOME_ID) && isAutoSendCandidate(ctx.order);
+  const base = { to: ctx.to, from: getAutomationFrom(WELCOME_ID) || null, contact_name: ctx.contact_name, contact_id: ctx.contact_id, lang, missing: ctx.missing, auto };
+  if (ctx.missing === 'address') return res.json(base);
+  const { subject, html } = buildWelcomeEmail({ lang, items: ctx.items, address: ctx.address });
+  res.json({ ...base, subject, bodyHtml: html });
+});
+
+router.post('/:id/send-welcome-email', async (req, res) => {
+  const started = Date.now();
+  const orderId = req.params.id;
+  const ctx = loadWelcomeEmailContext(orderId);
+  if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.message });
+  if (welcomeEmailState(orderId)) return res.status(409).json({ error: 'Courriel déjà envoyé' });
+  if (ctx.missing === 'address') return res.status(400).json({ error: 'Aucune adresse de livraison' });
+  const active = db.prepare('SELECT active FROM automations WHERE id = ?').get(WELCOME_ID);
+  if (active && !active.active) return res.status(409).json({ error: 'Automatisation désactivée' });
+
+  // Destinataire, Cc, objet et corps peuvent venir de la fenêtre de rédaction.
+  const lang = ['fr', 'en'].includes(req.body?.lang) ? req.body.lang : resolveInstallationDocsLang(ctx.order).lang;
+  const built = buildWelcomeEmail({ lang, items: ctx.items, address: ctx.address });
+  const subject = String(req.body?.subject || '').trim() || built.subject;
+  const html = String(req.body?.body_html || '').trim() || built.html;
+  const to = String(req.body?.to || '').trim() || ctx.to;
+  const cc = String(req.body?.cc || '').trim() || null;
+  if (!to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' });
+  try {
+    const { from, interactionId } = await sendOrderWelcomeEmail(ctx, { lang, to, cc, subject, html, userId: req.user?.id || null });
+    logSystemRun(WELCOME_ID, {
+      status: 'success',
+      result: [`Courriel au client envoyé`, `  De : ${from}`, `  À : ${to}${cc ? ` (Cc : ${cc})` : ''}`, `  Objet : ${subject}`, `  Langue : ${lang}`,
+        `Commande : ${ctx.order.order_number || orderId}`].join('\n'),
+      duration_ms: Date.now() - started,
+      triggerData: { order_id: orderId, to, cc, interaction_id: interactionId },
+    });
+    res.json({ sent: welcomeEmailState(orderId) });
+  } catch (e) {
+    logSystemRun(WELCOME_ID, { status: 'error', error: e.message, duration_ms: Date.now() - started, triggerData: { order_id: orderId } });
+    res.status(502).json({ error: e.message });
+  }
+});
+
+
 // POST /api/orders/:id/generate-installation-docs
 // Fusionne en un seul PDF les copies locales (uploads/products/docs/*) :
 //   - item_type='Remplacement' → lien_pdf_remplacement_<lang>_local
 //   - sinon                     → lien_pdf_installation_<lang>_local
 // où <lang> = fr|en selon resolveInstallationDocsLang (contact de l'adresse de
 // livraison en tête), sauf si l'opérateur force `lang` (body ou query).
+// Ordre : « Priorité d'impression du document d'installation » du produit
+// (1 d'abord), produits sans priorité à la fin, puis ordre d'ajout.
 // Dedup par (product_id, doc_type) — un produit présent N fois ne génère qu'un doc.
 // Si un *_local est CSV (multi-URL), tous les fichiers sont inclus.
 // Les items dont le PDF local manque sont silencieusement ignorés.
@@ -1192,7 +1229,9 @@ router.post('/:id/generate-installation-docs', async (req, res) => {
     FROM order_items oi
     LEFT JOIN products p ON oi.product_id = p.id
     WHERE ${where}
-    ORDER BY oi.created_at
+    ORDER BY (NULLIF(TRIM(p.priorite_d_impression_du_document_d_installation), '') IS NULL),
+      CAST(p.priorite_d_impression_du_document_d_installation AS REAL),
+      oi.created_at
   `;
   let items = shipment ? db.prepare(itemsSql('oi.shipment_id = ?')).all(shipment.id) : [];
   if (items.length === 0) items = db.prepare(itemsSql('oi.order_id = ?')).all(req.params.id);

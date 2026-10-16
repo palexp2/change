@@ -13,12 +13,14 @@ import { emitEntity } from '../services/realtimeEmitters.js';
 import { parseFiniteInt, parsePositiveInt, parseNonNegativeInt } from '../utils/validateNumbers.js';
 import { readRelation } from '../services/customFieldsView.js'
 import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js'
+import { getWritableCustomColumns } from '../services/customFieldWritability.js'
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { productPurchasePrefill, createProductPurchase, syncProductPurchase, readProductPurchase, createPurchasesFromPo } from '../services/productPurchase.js'
 import { trackEmailHtml } from '../services/emailTracking.js'
 import { purchaseUnitPrice, computeFifo, applyFifo } from '../services/fifoCost.js'
 import { runFifoFullPass } from '../services/fifoCostWatcher.js'
+import { getDynamicThresholdsCached, publicThreshold } from '../services/dynamicThreshold.js'
 
 const INSTALLATION_DOC_FIELDS = [
   { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', type: 'installation-fr' },
@@ -121,6 +123,60 @@ router.post('/fifo/recompute', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }) }
 })
 
+// Seuil dynamique et quantité à commander de chaque pièce, calculés par
+// Boréal (services/dynamicThreshold.js). ?id= limite à une pièce.
+router.get('/dynamic-thresholds', async (req, res) => {
+  try {
+    const all = await getDynamicThresholdsCached()
+    if (req.query.id) return res.json({ data: publicThreshold(all.get(String(req.query.id))) })
+    const data = {}
+    for (const [id, t] of all) data[id] = publicThreshold(t)
+    res.json({ data })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// GET /api/products/:id/stock-state — module « État du stock » de la fiche :
+// détail du calcul d'inventaire, du seuil dynamique (parents contributeurs)
+// et de la quantité à commander, + numéros de série disponibles.
+const STOCK_SERIAL_STATUSES = ['Disponible - Vente', 'Disponible - Location', 'À reconditionner']
+router.get('/:id/stock-state', async (req, res) => {
+  try {
+    const id = req.params.id
+    const product = db.prepare('SELECT id, type, procurement_type, besoin_d_un_numero_de_serie FROM products WHERE id = ?').get(id)
+    if (!product) return res.status(404).json({ error: 'Product not found' })
+    const all = await getDynamicThresholdsCached()
+    const t = all.get(id) || null
+    const r = v => v == null ? null : Math.round(Number(v) * 100) / 100
+    const parents = db.prepare(`SELECT b.product_id AS id, b.qty_required, p.name_fr, p.sku, p.type
+      FROM bom_items b JOIN products p ON p.id = b.product_id WHERE b.component_id = ? AND p.deleted_at IS NULL`).all(id)
+      .map(p => {
+        const pt = all.get(p.id)
+        const qty = Number(p.qty_required) || 0
+        return { id: p.id, name: p.name_fr || p.sku, kanban: String(p.type || '').trim().toUpperCase() === 'KANBAN', qty,
+          seuil_min: r(pt?.seuil_min_produits_finis ?? 0), sera_disponible: r(pt?.sera_disponible ?? 0) }
+      })
+      .filter(p => p.qty)
+    const serials = db.prepare(`SELECT id, serial, status FROM serial_numbers
+      WHERE product_id = ? AND deleted_at IS NULL AND status IN (${STOCK_SERIAL_STATUSES.map(() => '?').join(',')}) ORDER BY serial`)
+      .all(id, ...STOCK_SERIAL_STATUSES)
+    const st = t?.stock || {}
+    res.json({
+      serialized: !!(product.besoin_d_un_numero_de_serie && !['0', '0.0', 'false'].includes(String(product.besoin_d_un_numero_de_serie).trim())),
+      kanban: String(product.type || '').trim().toUpperCase() === 'KANBAN',
+      stock: t ? Object.fromEntries(['recu', 'a_recevoir', 'envoye', 'a_envoyer', 'utilisees', 'ajustements_positifs', 'ajustements_negatifs',
+        'fabriques', 'inventaire_de_depart', 'series_disponibles_vente', 'inventaire', 'sera_disponible'].map(k => [k, r(st[k])])) : null,
+      threshold: t ? {
+        seuil_min_produits: r(t.seuil_min_produits), qte_dans_les_produits: r(t.qte_dans_les_produits),
+        seuil_dynamique: r(t.seuil_dynamique), seuil_min_produits_finis: r(t.seuil_min_produits_finis),
+        inventaire_minimum: r(t.inventaire_minimum), sera_disponible: r(t.sera_disponible),
+        quantite_a_commander: Math.ceil(r(t.quantite_a_commander)), cycle: !!t.cycle,
+      } : null,
+      parents,
+      serials,
+    })
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
 // GET /api/products/:id
 router.get('/:id', (req, res) => {
   const product = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
@@ -139,7 +195,11 @@ router.get('/:id', (req, res) => {
   }
 
   const f = computeFifo(product.id);
-  const fifo = f?.eligible ? { cost: f.cost, uncovered: f.uncovered, opening_cost: f.opening_cost, issues: f.issues } : null;
+  const fifo = f?.eligible ? {
+    kind: f.kind, cost: f.cost, uncovered: f.uncovered, opening_cost: f.opening_cost, issues: f.issues,
+    // Nomenclature : état de coût de chaque composant (alerte / accepté sans coût).
+    ...(f.kind === 'bom' ? { lines: f.layers.map(l => ({ component_id: l.component_id, flag: l.flag, free: !!l.free })) } : {}),
+  } : null;
   res.json({ ...product, movements, supplier_company, fifo });
 });
 
@@ -216,12 +276,35 @@ router.put('/:id/opening-cost', (req, res) => {
   res.json({ ok: true });
 });
 
+// Composant accepté sans coût dans la nomenclature de ce produit (0 $, sans
+// alerte) / acceptation retirée.
+function setFreeComponent(req, res, accept) {
+  const product = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+  if (accept) {
+    db.prepare(`
+      INSERT INTO bom_free_components (product_id, component_id, set_by, set_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(product_id, component_id) DO UPDATE SET set_by=excluded.set_by, set_at=excluded.set_at
+    `).run(product.id, req.params.componentId, req.user?.id || null, new Date().toISOString());
+  } else {
+    db.prepare('DELETE FROM bom_free_components WHERE product_id = ? AND component_id = ?').run(product.id, req.params.componentId);
+  }
+  // Coût changé : réécrit ici, les produits qui l'utilisent suivent (fifoCostWatcher).
+  applyFifo(product.id);
+  res.json({ ok: true });
+}
+router.post('/:id/bom-free/:componentId', (req, res) => setFreeComponent(req, res, true));
+router.delete('/:id/bom-free/:componentId', (req, res) => setFreeComponent(req, res, false));
+
 router.post('/:id/purchases/:purchaseId/price-approval', (req, res) => setPriceApproval(req, res, true));
 router.delete('/:id/purchases/:purchaseId/price-approval', (req, res) => setPriceApproval(req, res, false));
 
 
-router.get('/:id/purchases/prefill', (req, res) => {
-  res.json(productPurchasePrefill(req.params.id))
+router.get('/:id/purchases/prefill', async (req, res) => {
+  // Quantité par défaut : celle calculée par le seuil dynamique, si > 0.
+  let computedQty = null
+  try { computedQty = publicThreshold((await getDynamicThresholdsCached()).get(req.params.id))?.quantite_a_commander ?? null } catch { /* repli order_qty */ }
+  res.json(productPurchasePrefill(req.params.id, { computedQty }))
 })
 
 router.post('/:id/purchases', async (req, res) => {
@@ -252,7 +335,7 @@ router.post('/', (req, res) => {
     unit_cost || 0, price_cad || 0, stock_qty || 0, min_stock || 0, order_qty || 0,
     supplier || null, procurement_type || null, weight_lbs || 0, notes || null);
 
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  const product = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(id);
   emitEntity('product', 'created', id, product, req.user?.id);
   res.status(201).json(product);
 });
@@ -279,7 +362,7 @@ function nameSourceColumn() {
 
 // PUT /api/products/:id — partial update
 router.put('/:id', async (req, res) => {
-  const existing = db.prepare('SELECT id, notes_2 FROM products WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
 
   if ('ajustement_manuel' in req.body) {
@@ -291,13 +374,17 @@ router.put('/:id', async (req, res) => {
 
   const docCols = docUrlColumns();
   const docCoerce = Object.fromEntries(docCols.map(c => [c, v => (v ? String(v).trim() || null : null)]));
+  const coreCols = ['name_fr', 'name_en', 'type', 'unit_cost', 'price_cad', 'price_usd',
+    'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'quote_farm_wide', 'min_stock', 'order_qty',
+    'location', 'supplier', 'supplier_company_id', 'buy_via_po', 'procurement_type',
+    'weight_lbs', 'notes', 'notes_2', 'active', 'manufacturier', 'order_email',
+    'role', 'purchase_snooze_until', ...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols];
+  // Champs personnalisés saisis depuis la fiche (carte de champs) : seuls ceux
+  // que l'ERP a le droit d'écrire (règle unique de customFieldWritability).
+  const customCols = getWritableCustomColumns('products').map(c => c.column_name).filter(c => !coreCols.includes(c));
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     // SKU : pas modifiable une fois le produit créé (Charles, 2026-10-09).
-    allowed: ['name_fr', 'name_en', 'type', 'unit_cost', 'price_cad', 'price_usd',
-      'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'quote_farm_wide', 'min_stock', 'order_qty',
-      'location', 'supplier', 'supplier_company_id', 'buy_via_po', 'procurement_type',
-      'weight_lbs', 'notes', 'notes_2', 'active', 'manufacturier', 'order_email',
-      'role', 'purchase_snooze_until', ...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols],
+    allowed: [...coreCols, ...customCols],
     nonNullable: new Set(['name_fr']),
     coerce: {
       is_sellable: v => v ? 1 : 0,
@@ -323,21 +410,38 @@ router.put('/:id', async (req, res) => {
 
   // Attendu (et non fire-and-forget) : un échec Airtable doit se voir dans la
   // fiche, sinon l'ajustement resterait local et serait écrasé au prochain sync.
-  const pushCols = [...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols].filter(c => c in req.body);
+  const pushCols = [...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols, ...customCols].filter(c => c in req.body);
   if (nameSource) pushCols.push(nameSource);
   // « Notes » (champ Airtable) : la fiche renvoie tout son formulaire à chaque
   // saisie, on ne pousse donc que si le texte a vraiment changé.
   if ('notes_2' in req.body && (req.body.notes_2 || null) !== (existing.notes_2 || null)) pushCols.push('notes_2');
+  // Champs cœur mappés sur Airtable (ex. « Inventaire minimum ») : poussés
+  // quand leur valeur change, sinon le sync suivant ramène l'ancienne.
+  // writeBackRecord ne garde que ceux mappés en push/bidirectionnel.
+  const after = setClause ? db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id) : existing;
+  for (const c of coreCols) {
+    if (c === 'notes_2' || pushCols.includes(c) || !(c in req.body)) continue;
+    if (String(after[c] ?? '') !== String(existing[c] ?? '')) pushCols.push(c);
+  }
   const airtable = pushCols.length ? await writeBackRecord('pieces', req.params.id, pushCols) : undefined;
 
-  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const updated = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
   res.json(airtable ? { ...updated, airtable } : updated);
 });
 
+// Coût figé au moment du mouvement (« Coût unitaire au moment du mouvement »
+// d'Airtable) : sans lui, le mouvement né dans Boréal valait 0 $. La valeur
+// est en absolu, comme celle qu'Airtable calcule (le sens est dans le type).
+function movementCost(product, change) {
+  const unit = Number(product.unit_cost ?? product.cout_unitaire);
+  if (!Number.isFinite(unit)) return { unit_cost: null, movement_value: null };
+  return { unit_cost: unit, movement_value: Math.round(Math.abs(change) * unit * 100) / 100 };
+}
+
 // POST /api/products/:id/stock — adjust stock
 router.post('/:id/stock', (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const product = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
   const { qty, allow_negative } = req.body;
@@ -361,16 +465,17 @@ router.post('/:id/stock', (req, res) => {
       return res.status(400).json({ error: `Resulting stock would be negative (${newQty}). Set allow_negative to force.` });
     }
     const movId = newRecordId();
+    const cost = movementCost(product, change);
     db.transaction(() => {
       db.prepare(
-        `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(movId, req.params.id, type, Math.abs(change), reason, req.user.id);
+        `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id, unit_cost, movement_value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(movId, req.params.id, type, Math.abs(change), reason, req.user.id, cost.unit_cost, cost.movement_value);
       db.prepare(`UPDATE products SET stock_qty=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
         .run(newQty, req.params.id);
     })();
     createInAirtable('stock_movements', movId, { rowOverrides: { signed_change: change } });
-    const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    const updated = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
     emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
     return res.json(updated);
   }
@@ -418,11 +523,12 @@ router.post('/:id/stock', (req, res) => {
     movQty = amount;
   }
 
+  const cost = movementCost(product, newQty - product.stock_qty);
   const run = db.transaction(() => {
     db.prepare(
-      `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(movId, req.params.id, type, movQty, reason || null, req.user.id);
+      `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id, unit_cost, movement_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(movId, req.params.id, type, movQty, reason || null, req.user.id, cost.unit_cost, cost.movement_value);
 
     db.prepare(`UPDATE products SET stock_qty=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(newQty, req.params.id);
@@ -435,7 +541,7 @@ router.post('/:id/stock', (req, res) => {
     rowOverrides: type === 'adjustment' ? { signed_change: newQty - product.stock_qty } : {},
   });
 
-  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const updated = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
   res.json(updated);
 });
@@ -445,7 +551,7 @@ router.post('/:id/stock', (req, res) => {
 // other products from the same supplier with order_qty > 0. Also returns supplier_products
 // (all parts linked to this supplier) so the UI can offer a picker to add more lines.
 router.get('/:id/purchase-order/prefill', (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const product = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
   let supplier = null
@@ -495,6 +601,16 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
     `).all(product.supplier_company_id || null, product.supplier || null)
   }
 
+  // Adresses d'Orisha (fiche entreprise) : « Facturer à » / « Expédier à »
+  // pointent vers ces enregistrements ; le texte du PDF en découle.
+  const ownAddresses = db.prepare(`
+    SELECT a.id, a.line1, a.city, a.province, a.postal_code, a.country, a.address_type
+    FROM adresses a JOIN companies co ON co.id = a.company_id
+    WHERE co.name LIKE 'Automatisation Orisha%'
+    ORDER BY (a.address_rank = 'Principale') DESC, a.created_at ASC
+  `).all()
+  const ownAddressId = type => ownAddresses.find(a => a.address_type === type)?.id || null
+
   const po_number = reservePurchaseOrderNumber(db, product.id)
   res.setHeader('Cache-Control', 'no-store')
   const today = new Date().toISOString().slice(0, 10)
@@ -540,7 +656,9 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
       image_url: sp.image_url || null,
     })),
     details: '',
+    own_addresses: ownAddresses,
     bill_to: {
+      address_id: ownAddressId('Facturation'),
       company: 'Automatisation Orisha inc.',
       address1: '1535 ch. Sainte-Foy, Bureau 220',
       address2: 'Québec QC G1S 2P1 CA',
@@ -549,6 +667,7 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
       email: 'martin@orisha.io',
     },
     ship_to: {
+      address_id: ownAddressId('Livraison'),
       company: 'Automatisation Orisha inc.',
       address1: '1535 ch. Sainte-Foy, Bureau 220',
       address2: 'Québec QC G1S 2P1 CA',
@@ -697,7 +816,7 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
 // sauvegarde dans uploads/products/docs/, met à jour la colonne *_local (CSV de chemins).
 // Pour les champs vides : supprime les copies locales et vide la colonne *_local.
 router.post('/:id/refresh-installation-docs', async (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const product = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
   productDocsDir();
@@ -750,7 +869,7 @@ router.post('/:id/refresh-installation-docs', async (req, res) => {
   db.prepare(`UPDATE products SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(...values, req.params.id);
 
-  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const updated = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
   res.json({ product: updated, results });
 });
@@ -804,7 +923,7 @@ router.post('/:id/image', (req, res) => {
 
     db.prepare("UPDATE products SET image_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
       .run(imageUrl, req.params.id);
-    const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    const updated = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
     emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
     res.json(updated);
   });
@@ -817,7 +936,7 @@ router.delete('/:id/image', (req, res) => {
   unlinkLocalProductImage(existing.image_url);
   db.prepare("UPDATE products SET image_url = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
     .run(req.params.id);
-  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const updated = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
   res.json(updated);
 });

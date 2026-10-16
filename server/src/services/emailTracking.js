@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import db from '../db/database.js'
 import { APP_URL } from '../config/appUrl.js'
+import { emitEntity } from './realtimeEmitters.js'
 
 // Suivi d'un courriel envoyé depuis Boréal : chaque lien http(s) du corps
 // passe par /api/track/click/:linkId (une ligne email_links par lien, qui
@@ -53,6 +54,9 @@ export function recordEmailClick(linkId, { count = true } = {}) {
       db.prepare(`INSERT INTO email_clicks (link_id, email_id, clicked_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`)
         .run(link.id, link.email_id)
       db.prepare('UPDATE emails SET click_count = COALESCE(click_count, 0) + 1 WHERE id = ?').run(link.email_id)
+      // Envoi de soumission : son historique ouvert se rafraîchit.
+      const send = db.prepare('SELECT soumission_id FROM soumission_sends WHERE email_id = ?').get(link.email_id)
+      if (send) emitEntity('soumission', 'updated', send.soumission_id, { id: send.soumission_id, sends_updated_at: new Date().toISOString() })
     }
     return link.url
   } catch { return null }

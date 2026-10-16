@@ -319,6 +319,44 @@ function resolveAccount(email) {
   return db.prepare(`SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL ORDER BY updated_at DESC LIMIT 1`).get() || null
 }
 
+// ── Tableau annuel (/heures-rsde) ──────────────────────────────────────────
+
+// Depuis octobre 2026 les heures R&D se saisissent dans les feuilles de temps
+// de Boréal (synchro avec le Drive retirée le 2026-10-07) : à partir de ce mois,
+// le tableau annuel les prend en priorité sur l'import du Drive. Avant, les
+// feuilles de Boréal sont partielles et l'import du Drive fait foi.
+export const RD_TIMESHEET_SOURCE_SINCE = '2026-10'
+
+// Heures R&D saisies dans Boréal, par personne × mois (ventilées par projet).
+// Clé : `${norm(nom)}|${mois}`.
+export function borealRdMonthTotals(fromMonth, toMonth) {
+  const out = new Map()
+  for (const r of db.prepare(`
+    SELECT u.name, substr(d.date, 1, 7) AS month,
+      COALESCE(e.rsde_project, ac.rsde_project) AS project, SUM(e.duration_minutes) AS minutes
+    FROM timesheet_entries e
+    JOIN timesheet_days d ON d.id = e.day_id
+    JOIN users u ON u.id = d.user_id
+    LEFT JOIN activity_codes ac ON ac.id = e.activity_code_id
+    WHERE e.rsde = 1 AND d.deleted_at IS NULL AND u.name IS NOT NULL
+      AND d.date >= ? AND d.date <= ?
+    GROUP BY u.id, month, project
+  `).all(`${fromMonth}-01`, `${toMonth}-31`)) {
+    const key = `${norm(r.name)}|${r.month}`
+    if (!out.has(key)) out.set(key, { employee_name: r.name, month: r.month, hours: 0, projects: {} })
+    const cell = out.get(key)
+    const h = (Number(r.minutes) || 0) / 60
+    cell.hours += h
+    const p = canonicalProject(r.project) || 'Sans projet'
+    cell.projects[p] = (cell.projects[p] || 0) + h
+  }
+  for (const cell of out.values()) {
+    cell.hours = round2(cell.hours)
+    for (const p of Object.keys(cell.projects)) cell.projects[p] = round2(cell.projects[p])
+  }
+  return out
+}
+
 // ── Détail par jour (/heures-rsde) ─────────────────────────────────────────
 
 // Classeur du mois lu au Drive, gardé 1 h : changer d'onglet dans la page ne

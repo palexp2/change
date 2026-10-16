@@ -11,6 +11,7 @@ import { logSync } from '../services/syncLog.js'
 import { APP_URL } from '../config/appUrl.js'
 import { loadSchemaOverrides } from './discovery-form-schema.js'
 import { confirmAddressInput } from '../services/addressConfirm.js'
+import { placeAutocomplete, placeDetails } from '../services/geocode.js'
 
 // Crée/synchronise le customer Stripe sans bloquer la réponse, mais trace tout
 // échec dans sync_log au lieu de l'avaler silencieusement : si le customer
@@ -266,6 +267,35 @@ router.post('/:sessionId/confirm-address', async (req, res) => {
   res.json(await confirmAddressInput(req.body || {}))
 })
 
+// Suggestions d'adresses pendant la frappe (champ « Adresse » du formulaire) :
+// la clé Google reste au serveur, la garde est la même que confirm-address.
+async function placesAutocompleteHandler(req, res) {
+  try {
+    const predictions = await placeAutocomplete(String(req.query.input || '').slice(0, 200), {
+      sessionToken: String(req.query.session_token || ''),
+      country: 'CA|US',
+    })
+    res.json({ predictions })
+  } catch { res.json({ predictions: [] }) }
+}
+
+async function placesDetailsHandler(req, res) {
+  try {
+    const d = await placeDetails(String(req.query.place_id || ''), { sessionToken: String(req.query.session_token || '') })
+    if (!d) return res.status(400).json({ error: 'place_id requis' })
+    res.json(d)
+  } catch { res.status(502).json({ error: 'Adresse indisponible' }) }
+}
+
+async function sessionGuard(req, res, next) {
+  try { await validateSession(req.params.sessionId) } catch { return res.status(404).json({ error: 'Session introuvable' }) }
+  next()
+}
+
+// GET /api/customer/post-payment/:sessionId/places/{autocomplete,details}
+router.get('/:sessionId/places/autocomplete', sessionGuard, placesAutocompleteHandler)
+router.get('/:sessionId/places/details', sessionGuard, placesDetailsHandler)
+
 // POST /api/customer/post-payment/:sessionId/save — autosave partial state
 router.post('/:sessionId/save', async (req, res) => {
   try {
@@ -486,6 +516,15 @@ router.post('/by-token/:token/confirm-address', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
   res.json(await confirmAddressInput(req.body || {}))
 })
+
+function tokenGuard(req, res, next) {
+  if (!loadByToken(req.params.token)) return res.status(404).json({ error: 'Formulaire introuvable' })
+  next()
+}
+
+// GET /api/customer/post-payment/by-token/:token/places/{autocomplete,details}
+router.get('/by-token/:token/places/autocomplete', tokenGuard, placesAutocompleteHandler)
+router.get('/by-token/:token/places/details', tokenGuard, placesDetailsHandler)
 
 // POST /api/customer/post-payment/by-token/:token/submit — finalise et upsert les adresses.
 router.post('/by-token/:token/submit', (req, res) => {

@@ -173,13 +173,14 @@ export function getCustomFieldSpecs() {
 
 // Champs non configurables, affichés à titre informatif dans la modale.
 export const STRIPE_FACTURE_FIXED = [
-  { label: 'Statut', source: "status — traduit (paid → Payé, open → À payer, ou En retard selon l'échéance ou si Stripe est en « Retrying », void → Void…)" },
-  { label: 'Devise', source: 'currency — code ISO en majuscules' },
-  { label: 'Entreprise', source: 'customer — lookup companies.stripe_customer_id' },
-  { label: 'Abonnement / type', source: 'parent.subscription_details.subscription — lookup subscriptions.stripe_id ; kind = subscription/order' },
-  { label: 'Encaissement (date, montant, charge, PI)', source: 'status_transitions.paid_at, amount_paid, charge, payment_intent — posés seulement si status=paid' },
-  { label: 'Lien Stripe', source: 'id — https://dashboard.stripe.com/invoices/{id}' },
-  { label: 'PDF', source: 'invoice_pdf — téléchargé au premier passage' },
+  { label: 'Statut', columns: ['status'], source: "status — traduit (paid → Payé, open → À payer, ou En retard selon l'échéance ou si Stripe est en « Retrying », void → Void…)" },
+  { label: 'Devise', columns: ['currency'], source: 'currency — code ISO en majuscules' },
+  { label: 'Entreprise', columns: ['company_name', 'company_id'], source: 'customer — lookup companies.stripe_customer_id' },
+  { label: 'Abonnement / type', columns: ['subscription_id'], source: 'parent.subscription_details.subscription — lookup subscriptions.stripe_id ; kind = subscription/order' },
+  { label: 'Encaissement (date, montant, charge, PI)', columns: ['payment_date', 'payment_reference'], source: 'status_transitions.paid_at, amount_paid, charge, payment_intent — posés seulement si status=paid' },
+  { label: 'Lien Stripe', columns: ['invoice_id', 'lien_stripe'], source: 'id — https://dashboard.stripe.com/invoices/{id}' },
+  // ownRow : colonne absente de la DataTable — la page des champs lui donne sa ligne.
+  { label: 'PDF', columns: ['airtable_pdf_path'], ownRow: true, source: 'invoice_pdf — téléchargé au premier passage' },
 ]
 
 const CONFIG_SQL_GET = "SELECT value FROM connector_config WHERE connector='stripe' AND key='facture_field_map'"
@@ -261,6 +262,10 @@ export function resolveStripeInvoiceFields(invoice) {
     }
     out[f.key] = convert(raw, f.type)
   }
+  // Une facture payée ne doit plus rien. Payée hors Stripe (virement, Interac),
+  // l'événement Stripe garde `amount_remaining` = total : 9 factures « Payé »
+  // affichaient tout leur montant en solde dû (audit du 2026-10-15).
+  if (invoice?.status === 'paid' && out.balance_due != null) out.balance_due = 0
   return out
 }
 

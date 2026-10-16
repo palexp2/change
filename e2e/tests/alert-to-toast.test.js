@@ -1,10 +1,10 @@
-// Vérifie que les 3 pages qui utilisaient encore alert() natif (Dashboard,
-// ItemsVendus, PrioriteAssemblage) affichent désormais le Toast centralisé
+// Vérifie que les pages qui utilisaient encore alert() natif (Dashboard,
+// PrioriteAssemblage) affichent désormais le Toast centralisé
 // (.fixed.bottom-4.left-4 > .bg-red-600) sur erreur, et PLUS aucune boîte de
 // dialogue native bloquante.
 //
 // Méthode : on intercepte l'appel API muté (PUT /dashboard/goal,
-// PATCH /stripe-invoice-items/:id, POST /purchases) et on le force en 500.
+// POST /purchases) et on le force en 500.
 // Comme la requête est interceptée AVANT d'atteindre le serveur, RIEN n'est
 // créé ni modifié en DB → aucun cleanup nécessaire (cf. CLAUDE.md).
 const { test, describe, before, after } = require('node:test')
@@ -52,71 +52,6 @@ describe('alert() → Toast centralisé', () => {
   })
 
   after(async () => { await browser?.close() })
-
-  test('Dashboard — échec de sauvegarde de l\'objectif → toast', async () => {
-    nativeDialogs.length = 0
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-
-    // Déplie la section « Objectif de projets » si elle est repliée.
-    const toggle = page.locator('[data-testid="section-toggle-section_project_goal"]')
-    await toggle.waitFor({ state: 'visible', timeout: 10000 })
-    if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click()
-
-    // La carte ne contient que 2 boutons : le toggle + le bouton d'édition de
-    // l'objectif (« Configurer un objectif » ou l'icône SlidersHorizontal selon
-    // qu'un objectif existe déjà) → le dernier est toujours l'édition.
-    const card = page.locator('[data-section-id="section_project_goal"]')
-    await card.locator('button').last().click()
-
-    const modal = page.locator('[role="dialog"]').filter({ hasText: "Configurer l'objectif de projets" })
-    await modal.waitFor({ state: 'visible', timeout: 5000 })
-
-    await modal.locator('input[type="number"]').fill('42')
-    await modal.locator('input[type="date"]').first().fill('2026-01-01')
-    await modal.locator('input[type="date"]').last().fill('2026-12-31')
-
-    // Force l'échec du PUT (n'atteint jamais le serveur).
-    await page.route('**/erp/api/dashboard/goal', (route) =>
-      route.request().method() === 'PUT' ? fail500(route) : route.continue())
-
-    await modal.locator('button:has-text("Enregistrer")').click()
-
-    const toast = errorToast(page).filter({ hasText: 'E2E forced error' })
-    await toast.waitFor({ state: 'visible', timeout: 5000 })
-    assert.deepEqual(nativeDialogs, [], `aucune alert() native attendue, reçu: ${JSON.stringify(nativeDialogs)}`)
-
-    await page.unroute('**/erp/api/dashboard/goal')
-  })
-
-  test('ItemsVendus — échec de liaison produit → toast', async () => {
-    nativeDialogs.length = 0
-    await page.goto(URL + '/items-vendus', { waitUntil: 'networkidle' })
-
-    const field = page.locator('[data-testid^="linked-record-field-product-"]').first()
-    await field.waitFor({ state: 'visible', timeout: 10000 })
-
-    // Force l'échec du PATCH (n'atteint jamais le serveur).
-    await page.route('**/erp/api/stripe-invoice-items/*', (route) =>
-      route.request().method() === 'PATCH' ? fail500(route) : route.continue())
-
-    const state = await field.getAttribute('data-state')
-    if (state === 'selected') {
-      // Délier → onChange(null) → update()
-      await field.locator('[data-testid="linked-record-clear"]').click()
-    } else {
-      // Lier un produit → ouvrir le picker et choisir la 1re option → update()
-      await field.locator('[data-testid="linked-record-add"]').click()
-      const opt = page.locator('#linked-record-portal button').first()
-      await opt.waitFor({ state: 'visible', timeout: 5000 })
-      await opt.click()
-    }
-
-    const toast = errorToast(page).filter({ hasText: 'Échec de la mise à jour' })
-    await toast.waitFor({ state: 'visible', timeout: 5000 })
-    assert.deepEqual(nativeDialogs, [], `aucune alert() native attendue, reçu: ${JSON.stringify(nativeDialogs)}`)
-
-    await page.unroute('**/erp/api/stripe-invoice-items/*')
-  })
 
   test('PrioriteAssemblage — échec de création d\'achat → toast', async () => {
     nativeDialogs.length = 0

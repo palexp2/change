@@ -7,13 +7,17 @@ import db from '../db/database.js'
 import { logSystemRun, isSystemAutomationActive } from '../services/systemAutomations.js'
 import { ensureSoumissionSystemBuilder, AUTOMATION_ID as SOUMISSION_BUILDER_ID } from '../services/soumissionSystemBuilder.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
-import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
+import { recordEvent, classifyChange, gateContractChange } from '../services/subscriptionEvents.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
 import { autoLinkStripeFacture, linkSubscriptionContact } from '../services/stripeProjectLink.js'
 import {
   extractItemsFromStripeSub,
   getCurrentItemsSnapshot,
   setCurrentItemsSnapshot,
+  contractSignature,
+  getContractSignature,
+  setContractSignature,
+  promoCodeOf,
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 import { recomputeFactureBalance, openFactureStatus, isStripeInvoiceRetrying } from '../services/factureBalance.js'
@@ -72,7 +76,7 @@ async function handleSubscriptionWebhook(event) {
       try {
         const stripe = new Stripe(key)
         sub = await stripe.subscriptions.retrieve(sub.id, {
-          expand: ['latest_invoice', 'items.data.price', 'discounts.source.coupon'],
+          expand: ['latest_invoice', 'items.data.price', 'discounts.source.coupon', 'discounts.promotion_code', 'customer'],
         })
       } catch (e) {
         console.warn(`[stripe-webhook] retrieve sub ${sub.id} failed, falling back to payload:`, e.message)
@@ -96,8 +100,10 @@ async function handleSubscriptionWebhook(event) {
     start_date: startDate,
     cancel_date: cancelDate,
     trial_end_date: trialEndDate,
+    customer_email: customerEmail,
   } = resolveStripeSubscriptionFields(sub)
   const stripeUrl = `https://dashboard.stripe.com/subscriptions/${sub.id}`
+  const promoCode = promoCodeOf(sub)
 
   const existing = db.prepare('SELECT * FROM subscriptions WHERE stripe_id=?').get(sub.id)
   let subRowId
@@ -112,14 +118,14 @@ async function handleSubscriptionWebhook(event) {
         company_id=COALESCE(?,company_id),
         status=?, amount_monthly=?, currency=?,
         start_date=?, cancel_date=?, trial_end_date=?,
-        stripe_url=?, customer_id=?,
-        interval_type=?
+        stripe_url=?, customer_id=?, customer_email=COALESCE(?, customer_email),
+        interval_type=?, promo_code=COALESCE(?, promo_code)
       WHERE id=?
     `).run(
       companyId, status, amountMonthly, currency,
       startDate, cancelDate, trialEndDate,
-      stripeUrl, customerId,
-      intervalType,
+      stripeUrl, customerId, customerEmail,
+      intervalType, promoCode,
       subRowId,
     )
   } else {
@@ -127,13 +133,13 @@ async function handleSubscriptionWebhook(event) {
     db.prepare(`
       INSERT INTO subscriptions (
         id, company_id, stripe_id, status, amount_monthly, currency,
-        start_date, cancel_date, trial_end_date, stripe_url, customer_id,
-        interval_type
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        start_date, cancel_date, trial_end_date, stripe_url, customer_id, customer_email,
+        interval_type, promo_code
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       subRowId, companyId, sub.id, status, amountMonthly, currency,
-      startDate, cancelDate, trialEndDate, stripeUrl, customerId,
-      intervalType,
+      startDate, cancelDate, trialEndDate, stripeUrl, customerId, customerEmail,
+      intervalType, promoCode,
     )
   }
   // Abonnement né d'un contrat : le signataire en est le contact.
@@ -160,12 +166,22 @@ async function handleSubscriptionWebhook(event) {
     eventDate = startDate ? new Date(startDate).toISOString() : new Date(event.created * 1000).toISOString()
     prevAmountForEvent = null
     newAmountForEvent = amountMonthly
+    setContractSignature(subRowId, contractSignature(sub), extractItemsFromStripeSub(sub))
   } else {
-    // updated — compare prev/new pour détecter upgrade/downgrade/reactivation
-    category = classifyChange({
-      prevStatus, newStatus: status,
-      prevAmount, newAmount: amountMonthly,
+    // updated — compare prev/new pour détecter upgrade/downgrade/reactivation,
+    // puis la garde « contrat inchangé » : un montant recalculé seul n'est pas
+    // un mouvement, mais amount_monthly (ci-dessus) reste à jour.
+    const signature = contractSignature(sub)
+    const gate = gateContractChange({
+      category: classifyChange({
+        prevStatus, newStatus: status,
+        prevAmount, newAmount: amountMonthly,
+      }),
+      storedSignature: getContractSignature(subRowId),
+      signature,
     })
+    if (gate.storeSignature) setContractSignature(subRowId, signature, extractItemsFromStripeSub(sub))
+    category = gate.category
     if (!category) return
     eventDate = new Date(event.created * 1000).toISOString()
     prevAmountForEvent = prevAmount
@@ -234,7 +250,8 @@ async function upsertFactureFromStripeInvoice(invoice) {
   if (invoice.status === 'paid') {
     const paidTs = invoice.status_transitions?.paid_at
     paidAt = paidTs ? new Date(paidTs * 1000).toISOString() : new Date().toISOString()
-    paidAmount = (invoice.amount_paid ?? invoice.total ?? 0) / 100
+    // `||` : payée hors Stripe, l'événement porte amount_paid = 0.
+    paidAmount = (invoice.amount_paid || invoice.total || 0) / 100
     paidChargeId = typeof invoice.charge === 'string' ? invoice.charge : (invoice.charge?.id || null)
     // Stripe ≥ 2024 : payment_intent est sous inv.payments.data[0].payment.payment_intent
     paidPaymentIntent = invoice.payment_intent

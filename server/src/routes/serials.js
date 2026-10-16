@@ -280,8 +280,8 @@ router.get('/:id', (req, res) => {
   res.json(serial)
 })
 
-// PATCH /api/serials/:id — le produit et le statut d'un numéro de série se
-// modifient depuis la fiche. Seules colonnes ouvertes à l'écriture. Toutes deux
+// PATCH /api/serials/:id — le produit, le statut et les notes d'un numéro de
+// série se modifient depuis la fiche. Seules colonnes ouvertes à l'écriture. Toutes
 // sont mappées sur Airtable : la valeur posée ici ne tient au prochain sync que
 // si leur sens est « Bidirectionnel » dans /champs/serial_numbers (semé en
 // 'both' pour le statut) — d'où le write-back ci-dessous. Les autres colonnes
@@ -291,7 +291,7 @@ router.patch('/:id', (req, res) => {
   if (!db.prepare('SELECT id FROM serial_numbers WHERE id = ?').get(id)) {
     return res.status(404).json({ error: 'Not found' })
   }
-  const { setClause, values, cols, error } = buildPartialUpdate(req.body, { allowed: ['product_id', 'status'] })
+  const { setClause, values, cols, error } = buildPartialUpdate(req.body, { allowed: ['product_id', 'status', 'notes'] })
   if (error) return res.status(400).json({ error })
   if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
   const productId = values[cols.indexOf('product_id')]

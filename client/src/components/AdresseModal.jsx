@@ -51,11 +51,99 @@ export function adresseToForm(a) {
   }
 }
 
+// Champ « Rue » avec suggestions Google Places : choisir une suggestion rend
+// l'adresse découpée (`onPick({ line1, city, province, postal_code, country })`).
+// `places` remplace le proxy authentifié (page publique : `{ autocomplete, details }`).
+export function AddressAutocompleteInput({ value, onChange, onBlur, onPick, places = api.places, className = 'input', ariaLabel }) {
+  const [predictions, setPredictions] = useState([])
+  const [active, setActive] = useState(-1)
+  const [open, setOpen] = useState(false)
+  const sessionRef = useRef('')
+  const timerRef = useRef(null)
+  const seqRef = useRef(0)
+  useEffect(() => () => clearTimeout(timerRef.current), [])
+
+  const search = (text) => {
+    clearTimeout(timerRef.current)
+    if (text.trim().length < 3) { setPredictions([]); return }
+    if (!sessionRef.current) sessionRef.current = crypto.randomUUID?.() || String(Date.now())
+    const seq = ++seqRef.current
+    timerRef.current = setTimeout(async () => {
+      try {
+        const r = await places.autocomplete(text, sessionRef.current)
+        if (seq !== seqRef.current) return
+        setPredictions(r.predictions || [])
+        setActive(-1)
+        setOpen(true)
+      } catch { if (seq === seqRef.current) setPredictions([]) }
+    }, 250)
+  }
+
+  const pick = async (p) => {
+    setOpen(false)
+    setPredictions([])
+    seqRef.current++
+    const token = sessionRef.current
+    sessionRef.current = ''
+    try {
+      const d = await places.details(p.place_id, token)
+      const c = d.components || {}
+      onPick({
+        line1: c.line1 || p.description.split(',')[0].trim(),
+        city: c.city || '',
+        province: c.province || '',
+        postal_code: c.postal_code || '',
+        country: c.country,
+      })
+    } catch { onPick({ line1: p.description.split(',')[0].trim() }) }
+  }
+
+  const onKeyDown = (e) => {
+    if (!open || !predictions.length) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => (i + 1) % predictions.length) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => (i <= 0 ? predictions.length : i) - 1) }
+    else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); pick(predictions[active]) }
+    else if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) }
+  }
+
+  return (
+    <div className="relative">
+      <input
+        value={value}
+        onChange={e => { onChange(e.target.value); search(e.target.value) }}
+        onBlur={e => { setOpen(false); onBlur?.(e) }}
+        onFocus={() => predictions.length && setOpen(true)}
+        onKeyDown={onKeyDown}
+        className={className}
+        aria-label={ariaLabel}
+        autoComplete="off"
+        data-testid="adresse-line1-autocomplete"
+      />
+      {open && predictions.length > 0 && (
+        <ul className="absolute z-50 left-0 right-0 mt-1 max-h-60 overflow-auto rounded-md border border-slate-200 bg-white shadow-lg text-sm">
+          {predictions.map((p, i) => (
+            <li
+              key={p.place_id}
+              onMouseDown={e => { e.preventDefault(); pick(p) }}
+              onMouseEnter={() => setActive(i)}
+              className={`px-3 py-1.5 cursor-pointer ${i === active ? 'bg-slate-100' : ''}`}
+            >
+              {p.description}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 // Formulaire d'adresse partagé : édition (autosave champ par champ) ou création.
 // `contacts` alimente le champ « Contact associé » ; `onSaved`/`onCreated`
-// remontent la ligne renvoyée par l'API à l'appelant.
+// remontent la ligne renvoyée par l'API à l'appelant. `suggestFixes` : le
+// bandeau « À corriger » propose la valeur attendue, appliquée d'un clic.
 export function AdresseModalContent({
   companyId, contacts = [], editingAdresse, adresseForm, setAdresseForm, onSaved, onCreated, onClose,
+  suggestFixes = false, autocomplete = false,
 }) {
   const isEdit = !!editingAdresse
   const { addToast } = useToast()
@@ -242,6 +330,19 @@ export function AdresseModalContent({
     } finally { setFieldSaving(s2 => ({ ...s2, line1: false })) }
   }
 
+  // Suggestion du vérificateur (ex. pays Canada pour « AB ») : autosave.
+  async function applyCheckFix(patch) {
+    setAdresseForm(f => ({ ...f, ...patch }))
+    if (!isEdit) return
+    const keys = Object.keys(patch)
+    setFieldSaving(s2 => ({ ...s2, ...Object.fromEntries(keys.map(k => [k, true])) }))
+    try {
+      applySaved(await api.adresses.update(editingAdresse.id, patch))
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally { setFieldSaving(s2 => ({ ...s2, ...Object.fromEntries(keys.map(k => [k, false])) })) }
+  }
+
   async function reconfirm() {
     if (!isEdit) { await handleSubmitCreate({ preventDefault() {} }); return }
     setConfirming(true)
@@ -259,6 +360,8 @@ export function AdresseModalContent({
         status={check.status}
         issues={check.issues}
         onChecked={applySaved}
+        onApplyFix={suggestFixes ? applyCheckFix : undefined}
+        busy={anySaving}
         className="col-span-2"
       />
       <AddressConfirmPanel
@@ -273,12 +376,24 @@ export function AdresseModalContent({
       />
       <div className="col-span-2">
         <label className="label">Rue / Ligne 1</label>
-        <input
-          value={adresseForm.line1}
-          onChange={e => setAdresseForm(f => ({ ...f, line1: e.target.value }))}
-          onBlur={isEdit ? e => saveField('line1', e.target.value) : undefined}
-          className="input"
-        />
+        {autocomplete ? (
+          <AddressAutocompleteInput
+            value={adresseForm.line1}
+            onChange={v => setAdresseForm(f => ({ ...f, line1: v }))}
+            onBlur={isEdit ? e => saveField('line1', e.target.value) : undefined}
+            onPick={({ country, ...rest }) => applyCheckFix({
+              ...rest,
+              ...(country === 'CA' || country === 'US' ? { country } : {}),
+            })}
+          />
+        ) : (
+          <input
+            value={adresseForm.line1}
+            onChange={e => setAdresseForm(f => ({ ...f, line1: e.target.value }))}
+            onBlur={isEdit ? e => saveField('line1', e.target.value) : undefined}
+            className="input"
+          />
+        )}
       </div>
       <div>
         <label className="label">Ville</label>

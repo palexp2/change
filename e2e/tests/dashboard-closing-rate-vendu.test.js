@@ -28,32 +28,6 @@ describe('Dashboard — Taux de closing basé sur le champ « Vendu »', () => {
 
   after(async () => { await browser?.close() })
 
-  test('La carte affiche un graphique alimenté (pas l\'état vide)', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('h1:has-text("Tableau de bord")', { timeout: 15000 })
-
-    const heading = page.locator('h2:has-text("Taux de closing")')
-    await heading.waitFor({ timeout: 15000 })
-    const card = page.locator('.card', { has: heading })
-
-    const cardText = await card.innerText()
-    assert.ok(
-      /vendus \/ \(vendus \+ non vendus\)/i.test(cardText),
-      `La description doit parler de projets vendus. Reçu:\n${cardText}`
-    )
-    assert.ok(
-      !/Pas encore de données/i.test(cardText),
-      `Le graphique ne doit plus être vide alors que des projets ont le champ « Vendu » renseigné. Reçu:\n${cardText}`
-    )
-
-    // Points de la courbe présents (un cercle par mois avec un taux calculable)
-    const points = card.locator('svg circle')
-    assert.ok(await points.count() > 0, 'Aucun point tracé sur la courbe du taux de closing')
-
-    // Moyenne 3 derniers mois affichée
-    assert.ok(/moy\. 3 derniers mois/.test(cardText), 'La moyenne 3 derniers mois doit être affichée')
-  })
-
   test('Les compteurs gagnés/perdus proviennent du champ « Vendu », pas de status', async () => {
     const token = await page.evaluate(() => localStorage.getItem('erp_token'))
     assert.ok(token, 'token absent du localStorage')
@@ -109,26 +83,4 @@ describe('Dashboard — Taux de closing basé sur le champ « Vendu »', () => {
     assert.equal(rows.length, expected.size, 'Nombre de buckets mois×type différent du recalcul')
   })
 
-  test('Cliquer sur un mois ouvre le pipeline filtré sur ce mois', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    const heading = page.locator('h2:has-text("Taux de closing")')
-    await heading.waitFor({ timeout: 15000 })
-    const card = page.locator('.card', { has: heading })
-
-    const point = card.locator('svg circle').first()
-    await point.scrollIntoViewIfNeeded()
-    const box = await point.boundingBox()
-    assert.ok(box, 'point du graphique introuvable')
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-
-    await page.waitForURL(/\/pipeline\?month=\d{4}-\d{2}/, { timeout: 10000 })
-    const month = page.url().match(/month=(\d{4}-\d{2})/)?.[1]
-    assert.match(month || '', /^\d{4}-\d{2}$/)
-
-    // La bannière de filtre du pipeline doit apparaître et lister au moins un projet
-    await page.waitForSelector('text=Filtre :', { timeout: 10000 })
-    await page.waitForSelector(ROW_SEL, { timeout: 20000 })
-    const rowCount = await page.locator(ROW_SEL).count()
-    assert.ok(rowCount > 0, `Le pipeline filtré sur ${month} ne montre aucun projet`)
-  })
 })

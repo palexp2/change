@@ -280,7 +280,7 @@ const RENDERS = {
       <span className={`min-w-0 truncate text-slate-900 ${row.read_at ? '' : 'font-semibold'}`}>{row.company || row.original_name || '—'}</span>
     </span>
   ),
-  source: row => <span className="text-slate-500">{sourceLabel(row.source)}</span>,
+  source: row => sourceLabel(row.source),
   receipt_date: row => <span className="text-slate-500">{row.receipt_date ? fmtDate(row.receipt_date) : '—'}</span>,
   receipt_number: row => row.receipt_number
     ? <span className="font-mono text-xs text-slate-600">#{row.receipt_number}</span>
@@ -288,9 +288,7 @@ const RENDERS = {
   total: row => <span className="font-medium text-slate-700 tabular-nums">
     {row.currency && row.currency !== 'CAD' ? fmtMoney(row.total, row.currency) : fmtCad(row.total)}
   </span>,
-  currency: row => row.currency
-    ? <span className="font-mono text-xs text-slate-600">{row.currency}</span>
-    : <span className="text-slate-300">—</span>,
+  currency: row => row.currency || <span className="text-slate-300">—</span>,
   payment_method: row => <span className="text-slate-600">{row.payment_method || '—'}</span>,
   // `obsolete` (serveur) : document sans objet comptable — 0 $ ou copie d'un document
   // déjà publié sur QB. Le badge signale dès la liste ce qui peut être archivé.

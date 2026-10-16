@@ -83,6 +83,34 @@ const ITEMS_QUERY = `
 const idOf = v => (typeof v === 'string' ? v : v?.id || null)
 
 /**
+ * Bouton « System builder » de la fiche soumission (Pierre-Alexandre
+ * Papillon, 2026-10-15) : même préremplissage, sans paiement Stripe. Un
+ * formulaire déjà lié à la soumission est rendu tel quel.
+ * @returns {{ row: object|null, created: boolean, error?: string }}
+ */
+export function createSystemBuilderFromSoumission(soumissionId) {
+  const s = db.prepare('SELECT * FROM soumissions WHERE id=?').get(soumissionId)
+  if (!s) return { row: null, created: false, error: 'Soumission introuvable' }
+  return db.transaction(() => {
+    const existing = db.prepare('SELECT * FROM customer_onboarding_responses WHERE soumission_id=? ORDER BY created_at LIMIT 1').get(s.id)
+    if (existing) return { row: existing, created: false }
+    const built = systemFromSoumissionItems(db.prepare(ITEMS_QUERY).all(s.id), { lang: s.language === 'English' ? 'en' : 'fr' })
+    if (!built.greenhouses.length) return { row: null, created: false, error: 'Aucune serre (Chef de culture ou Assistant) dans la soumission' }
+    const topPermission = built.greenhouses.some(g => g.permission_level === 'chief_grower') ? 'chief_grower' : 'helper'
+    const notes = built.notes.length ? `Soumission #${s.quote_number ?? ''} — à vérifier :\n${built.notes.join('\n')}` : null
+    const id = newRecordId()
+    db.prepare(`
+      INSERT INTO customer_onboarding_responses
+        (id, company_id, project_id, soumission_id, permission_level, num_greenhouses, greenhouses_json,
+         public_token, form_options_json, technical_notes, status)
+      VALUES (?,?,?,?,?,?,?,?,?,?, 'in_progress')
+    `).run(id, s.company_id || null, s.project_id || null, s.id, topPermission, built.greenhouses.length,
+      JSON.stringify(built.greenhouses), generateShortToken(), JSON.stringify(built.form_options), notes)
+    return { row: db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(id), created: true }
+  })()
+}
+
+/**
  * Crée (une fois) le System builder de la session Checkout payée d'une
  * soumission. Synchrone : deux appels concurrents ne peuvent pas doubler.
  * @returns {object|null} la ligne customer_onboarding_responses (avec

@@ -1,7 +1,7 @@
 import {
   Landmark, BookUser, Wallet, CalendarCheck, CalendarClock,
   Banknote, ArrowLeftRight, CreditCard, Ship, Megaphone, HardDrive, FlaskConical, Wand2,
-  FileText, Tag, RefreshCw, ReceiptText, BookOpen,
+  FileText, RefreshCw, ReceiptText, BookOpen, ListTree,
 } from 'lucide-react'
 
 // Espace finance — les pages du suivi comptable quotidien, réunies derrière une
@@ -30,7 +30,6 @@ export const FINANCE_SECTIONS = [
   // survol de l'icône Comptabilité montre directement ce sous-menu.
   { to: '/factures',         label: 'Factures clients',         icon: FileText,       group: 'Ventes' },
   { to: '/paiements',        label: 'Paiements',                icon: Banknote,       group: 'Ventes' },
-  { to: '/items-vendus',     label: 'Items vendus',             icon: Tag,            group: 'Ventes' },
   { to: '/abonnements',      label: 'Abonnements',              icon: RefreshCw,      group: 'Ventes' },
   { to: '/abonnements/mouvements', label: "Mouvements d'abonnements", icon: RefreshCw, group: 'Ventes' },
 
@@ -40,6 +39,7 @@ export const FINANCE_SECTIONS = [
   // La collecte de factures est un onglet de cette page (lib/navSubsections.js).
   { to: '/sale-receipts',    label: 'Extraction de données',    icon: ReceiptText,    group: 'Fournisseurs & engagements' },
 
+  { to: '/plan-comptable',   label: 'Plan comptable',           icon: ListTree,       group: 'Écritures' },
   { to: '/journal-entries',  label: 'Écritures de journal',     icon: BookOpen,       group: 'Écritures' },
   { to: '/fin-de-mois',      label: 'Écritures de fin de mois', icon: CalendarCheck,  group: 'Écritures' },
   { to: '/revenus-reportes', label: "Revenus perçus d'avance",   icon: CalendarClock,  group: 'Écritures' },
@@ -75,7 +75,7 @@ const HUB_DEFS = [
     ['/comptes-prepayes', 'Comptes prépayés'], ['/comptes-prepayes?onglet=douanes', 'Douanes (ASFC)'],
     ['/cartes-paiement', 'Cartes de paiement'] ] },
   { label: 'Ventes',            icon: FileText,       group: 'Ventes', pages: [
-    ['/factures', 'Factures clients'], ['/items-vendus', 'Items vendus'],
+    ['/factures', 'Factures clients'],
     ['/paiements', 'Paiements'], ['/stripe-payouts', 'Versements Stripe'] ] },
   { label: 'Abonnements',       icon: RefreshCw,      group: 'Ventes', pages: [
     ['/abonnements', 'Abonnements'], ['/abonnements/mouvements', 'Mouvements'] ] },
@@ -85,6 +85,8 @@ const HUB_DEFS = [
   { label: 'Écritures',         icon: BookOpen,       group: 'Livres', pages: [
     ['/journal-entries', 'Journal'], ['/fin-de-mois', 'Fin de mois'],
     ['/revenus-reportes', "Revenus perçus d'avance"] ] },
+  { label: 'Plan comptable',    icon: ListTree,       group: 'Livres', pages: [
+    ['/plan-comptable', 'Plan comptable'] ] },
   { label: 'Inventaire',        icon: HardDrive,      group: 'Livres', pages: [
     ['/stock-movement', "Mouvements d'inventaire"], ['/comptabilite/regles-serials', 'Numéros de série'],
     ['/inventaire-drive', 'Inventaire Drive'] ] },

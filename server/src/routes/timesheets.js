@@ -4,10 +4,11 @@ import db from '../db/database.js'
 import { requireAuth, isHR } from '../middleware/auth.js'
 import { parseDurationToMinutes } from '../services/duration.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
-import { dayPayableMinutes } from '../services/timesheetHours.js'
+import { dayPayableMinutes, clockMinutes, hhmmToMin } from '../services/timesheetHours.js'
 import { userForEmployee } from '../services/paieTimesheetImport.js'
 import { scheduleTimesheetPaieSync } from '../services/timesheetPaieSync.js'
 import { employeeForUser, listConges, addConge, removeConge, workdays } from '../services/conges.js'
+import { quebecHolidays } from '../services/paieSchedule.js'
 import { isRdSheetMember, rdMonthGrid, applySheetValueToBoreal, canonicalProject, rdSuggestions, codeForProject } from '../services/rdTimesheetSheetSync.js'
 
 const router = Router()
@@ -381,6 +382,27 @@ router.post('/day', (req, res) => {
 
 const DAY_PATCHABLE = new Set(['mode', 'start_time', 'end_time', 'break_minutes', 'notes'])
 
+// Le RSDE d'une journée ne dépasse jamais son total payé : une pause allongée
+// ou un départ avancé après coup rabote les lignes R&D (la dernière d'abord).
+function capRdToDay(dayId) {
+  const day = db.prepare('SELECT start_time, end_time, break_minutes FROM timesheet_days WHERE id = ?').get(dayId)
+  const total = clockMinutes(day)
+  if (total == null) return
+  const lines = db.prepare('SELECT id, duration_minutes, rsde_start FROM timesheet_entries WHERE day_id = ? AND rsde = 1 ORDER BY sort_order').all(dayId)
+  let excess = lines.reduce((s, e) => s + (Number(e.duration_minutes) || 0), 0) - total
+  const clock = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+  for (const e of lines.reverse()) {
+    if (excess <= 0) break
+    const cut = Math.min(excess, Number(e.duration_minutes) || 0)
+    const mins = (Number(e.duration_minutes) || 0) - cut
+    excess -= cut
+    if (mins > 0) {
+      db.prepare(`UPDATE timesheet_entries SET duration_minutes = ?, rsde_end = CASE WHEN rsde_start IS NULL THEN rsde_end ELSE ? END,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(mins, e.rsde_start ? clock(hhmmToMin(e.rsde_start) + mins) : null, e.id)
+    } else db.prepare('DELETE FROM timesheet_entries WHERE id = ?').run(e.id)
+  }
+}
+
 // PATCH /api/timesheets/day/:id
 router.patch('/day/:id', (req, res) => {
   const day = db.prepare('SELECT * FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
@@ -411,6 +433,7 @@ router.patch('/day/:id', (req, res) => {
   updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
   params.push(req.params.id)
   db.prepare(`UPDATE timesheet_days SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  capRdToDay(req.params.id)
   // Si le user change le mode de SA propre journée, on mémorise cette préférence.
   if (req.body && typeof req.body.mode === 'string' && ALLOWED_MODES.has(req.body.mode) && req.user.id === day.user_id) {
     db.prepare('UPDATE users SET timesheet_default_mode = ? WHERE id = ?').run(req.body.mode, req.user.id)
@@ -537,18 +560,25 @@ router.post('/day/:dayId/entries', (req, res) => {
 })
 
 // PUT /api/timesheets/day/:dayId/rd — temps R&D d'une journée simplifiée :
-// { minutes, project, description? } remplace ses lignes R&D par une seule
+// { minutes, project, description?, start?, end? } remplace ses lignes R&D par une seule
 // (0 = aucune). Sans description fournie, celle de l'ancienne ligne est gardée.
 // Le code est celui que la personne emploie déjà pour ce projet.
 router.put('/day/:dayId/rd', (req, res) => {
-  const day = db.prepare('SELECT user_id, date, status FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.dayId)
+  const day = db.prepare('SELECT user_id, date, status, start_time, end_time, break_minutes FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.dayId)
   if (!day) return res.status(404).json({ error: 'Day not found' })
   if (!resolveTargetUserId(req, day.user_id)) return res.status(403).json({ error: 'Accès refusé' })
   const lockMsg = editLockError(day, req.user)
   if (lockMsg) return res.status(409).json({ error: lockMsg })
 
-  const mins = parseDurationToMinutes(req.body?.minutes ?? 0)
+  // Début / Fin RSDE (HH:MM) : fournis tous deux, la durée = Fin − Début.
+  const clock = v => (typeof v === 'string' && /^\d{2}:\d{2}$/.test(v) ? v : null)
+  const start = clock(req.body?.start), end = clock(req.body?.end)
+  const toMin = t => Number(t.slice(0, 2)) * 60 + Number(t.slice(3))
+  if (start && end && toMin(end) <= toMin(start)) return res.status(400).json({ error: 'Fin RSDE avant le début' })
+  const mins = start && end ? toMin(end) - toMin(start) : parseDurationToMinutes(req.body?.minutes ?? 0)
   if (mins == null || mins < 0 || mins > 24 * 60) return res.status(400).json({ error: 'minutes invalide' })
+  const dayTotal = clockMinutes(day)
+  if (dayTotal != null && mins > dayTotal) return res.status(400).json({ error: 'RSDE plus long que la journée' })
   const project = canonicalProject(req.body?.project) || null
   const codeId = mins > 0 ? codeForProject(day.user_id, project) : null
   const description = typeof req.body?.description === 'string' ? (req.body.description.trim() || null) : undefined
@@ -559,8 +589,8 @@ router.put('/day/:dayId/rd', (req, res) => {
     if (mins > 0) {
       const next = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM timesheet_entries WHERE day_id = ?').get(req.params.dayId).n
       // Projet posé sur la ligne : il tient même sans code actif pour ce projet.
-      db.prepare(`INSERT INTO timesheet_entries (id, day_id, sort_order, description, activity_code_id, duration_minutes, rsde, rsde_project)
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?)`).run(newRecordId(), req.params.dayId, next, description !== undefined ? description : (prev?.description || null), codeId, mins, project)
+      db.prepare(`INSERT INTO timesheet_entries (id, day_id, sort_order, description, activity_code_id, duration_minutes, rsde, rsde_project, rsde_start, rsde_end)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`).run(newRecordId(), req.params.dayId, next, description !== undefined ? description : (prev?.description || null), codeId, mins, project, start && end ? start : null, start && end ? end : null)
     }
     db.prepare(`UPDATE timesheet_days SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.dayId)
   })()
@@ -676,6 +706,26 @@ router.get('/conges/workdays', (req, res) => {
   const { start, end } = req.query
   if (!DATE_RE.test(start || '') || !DATE_RE.test(end || '')) return res.status(400).json({ error: 'Dates invalides' })
   res.json({ days: end < start ? 0 : workdays(start, end) })
+})
+
+// GET /api/timesheets/conges/team — congés à venir de toute l'équipe (visible par tous).
+router.get('/conges/team', (req, res) => {
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Toronto' })
+  res.json(db.prepare(`
+    SELECT v.id, v.employee_id, v.start_date, v.end_date, v.days, e.first_name, e.last_name,
+      (SELECT u.id FROM users u WHERE u.employee_id = e.id LIMIT 1) AS user_id
+    FROM vacations v JOIN employees e ON e.id = v.employee_id
+    WHERE v.end_date >= ? ORDER BY v.start_date, e.first_name
+  `).all(today))
+})
+
+// GET /api/timesheets/conges/holidays?start=&end= — fériés de la plage [{ date, name }] (badge « Férié · Noël »).
+router.get('/conges/holidays', (req, res) => {
+  const { start, end } = req.query
+  if (!DATE_RE.test(start || '') || !DATE_RE.test(end || '')) return res.status(400).json({ error: 'Dates invalides' })
+  const out = []
+  for (let y = Number(start.slice(0, 4)); y <= Number(end.slice(0, 4)); y++) for (const h of quebecHolidays(y)) if (h.date >= start && h.date <= end) out.push(h)
+  res.json(out)
 })
 
 // POST /api/timesheets/conges { user_id?, start_date, end_date?, half? }

@@ -124,10 +124,11 @@ async function soumissionCharge({ stripe, soumissionId, kind, acceptNewPrices = 
   const unit = it => Number(monthly ? it.unit_monthly_price : it.unit_price_cad) || 0
 
   await assertStripeCurrency(stripe, s.company_id, currency)
+  // Province inconnue : taxes calculées par Stripe sur l'adresse saisie par
+  // le client sur notre page de carte (Charles, 2026-10-15), au lieu d'un refus.
   const place = taxPlace(s.company_id)
-  if (!place) throw Object.assign(new Error('Province de taxation inconnue'), { code: 'no_tax_place' })
   const taxRateIds = []
-  for (const t of taxesForRegime(suggestTaxRegime(place), 0)) {
+  for (const t of place ? taxesForRegime(suggestTaxRegime(place), 0) : []) {
     taxRateIds.push(await getOrCreateTaxRate(stripe, t))
   }
 
@@ -143,6 +144,8 @@ async function soumissionCharge({ stripe, soumissionId, kind, acceptNewPrices = 
       currency,
       unit_amount: Math.round(unit(it) * 100),
       ...(monthly ? { recurring: { interval: 'month' } } : {}),
+      // Taxes automatiques (province inconnue) : Stripe exige le mode de taxe du prix.
+      ...(!place ? { tax_behavior: 'exclusive' } : {}),
       ...(it.stripe_product_id ? { product: it.stripe_product_id } : {
         product_data: {
           name: lineName(it),
@@ -180,26 +183,29 @@ async function soumissionCharge({ stripe, soumissionId, kind, acceptNewPrices = 
     erp_soumission_id: s.id, erp_company_id: s.company_id || '', erp_soumission_kind: kind,
     ...(s.project_id ? { erp_project_id: s.project_id } : {}),
   }
-  return { s, isFr, currency, line_items, lineLabels, discounts, offCents, metadata }
+  return { s, isFr, currency, line_items, lineLabels, discounts, offCents, metadata, autoTax: !place, months }
 }
 
 /**
- * Crée la session Checkout d'une soumission.
- * @returns {Promise<{ url: string }>}
- * @throws Error avec `.code` : not_found | expired | empty | no_tax_place | currency_mismatch
+ * Crée la session Checkout d'une soumission, affichée sur notre page de carte
+ * (Stripe Elements, comme les pages hébergées ; Charles, 2026-10-15).
+ * @returns {Promise<{ session, needsEmail: boolean, plan: object }>}
+ * @throws Error avec `.code` : not_found | expired | empty | currency_mismatch
  */
 export async function createSoumissionCheckout({ stripe, soumissionId, kind, acceptNewPrices = false }) {
   const monthly = kind === 'abonnement'
-  const { s, isFr, line_items, discounts, metadata } = await soumissionCharge({ stripe, soumissionId, kind, acceptNewPrices })
+  const { s, isFr, currency, line_items, lineLabels, discounts, offCents, metadata, autoTax, months } = await soumissionCharge({ stripe, soumissionId, kind, acceptNewPrices })
   const params = customer => ({
     mode: monthly ? 'subscription' : 'payment',
-    ...(customer ? { customer } : monthly ? {} : { customer_creation: 'always' }),
+    ui_mode: 'elements',
+    ...(customer ? { customer, customer_update: { address: 'auto', name: 'auto' } } : monthly ? {} : { customer_creation: 'always' }),
     line_items,
     ...(discounts ? { discounts } : {}),
+    ...(autoTax ? { automatic_tax: { enabled: true } } : {}),
+    billing_address_collection: 'auto',
     locale: isFr ? 'fr-CA' : 'en',
-    // Retour de Stripe : System builder créé, puis redirection vers son lien public.
-    success_url: `${APP_URL}/erp/pay/soumission/${encodeURIComponent(s.id)}/paye?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url: `${APP_URL}/erp/pay/soumission/${encodeURIComponent(s.id)}/annule`,
+    // Retour : System builder créé, puis redirection vers son lien public.
+    return_url: `${APP_URL}/erp/pay/soumission/${encodeURIComponent(s.id)}/paye?session_id={CHECKOUT_SESSION_ID}`,
     metadata,
     ...(monthly
       ? { subscription_data: { metadata } }
@@ -207,7 +213,27 @@ export async function createSoumissionCheckout({ stripe, soumissionId, kind, acc
   })
   const customer = s.company_id ? await ensureStripeCustomer(stripe, s.company_id) : undefined
   const session = await stripe.checkout.sessions.create(params(customer))
-  return { url: session.url }
+  const company = s.company_id ? db.prepare('SELECT name, country FROM companies WHERE id = ?').get(s.company_id) : null
+  // Rabais total pour N mois (ex. Head start plan) : 1er paiement réel après la
+  // dernière mensualité gratuite (Charles, 2026-10-15).
+  const gross = line_items.reduce((t, li) => t + li.price_data.unit_amount * li.quantity, 0)
+  const now = new Date()
+  const firstPaid = monthly && months && offCents >= gross
+    ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + months, now.getUTCDate())).toISOString().slice(0, 10)
+    : null
+  return {
+    session, needsEmail: !customer,
+    plan: {
+      isFr, currency, customer, companyName: company?.name || '', companyCountry: company?.country || '',
+      title: isFr ? (monthly ? 'Votre abonnement' : 'Votre achat') : (monthly ? 'Your subscription' : 'Your purchase'),
+      interval: monthly ? 'month' : null, discountCents: offCents, consent: true,
+      ...(firstPaid ? { billingStart: { date: firstPaid } } : {}),
+      lines: line_items.map((li, i) => ({
+        name: lineLabels[i] + (li.quantity > 1 ? ` × ${li.quantity}` : ''),
+        cents: li.price_data.unit_amount * li.quantity,
+      })),
+    },
+  }
 }
 
 // ── Client déjà abonné : les lignes de la soumission s'ajoutent à son
@@ -294,6 +320,10 @@ export async function applySoumissionUpgrade({ stripe, soumissionId, acceptNewPr
     const p = await previewSoumissionUpgrade({ stripe, soumissionId, acceptNewPrices })
     if (!p) throw Object.assign(new Error('Aucun abonnement actif'), { code: 'no_subscription' })
     if (p.alreadyApplied) return { already: true, sub: p.sub, metadata: p.metadata }
+    // Province inconnue : taxes comme l'abonnement (automatiques, sinon celles de ses lignes).
+    const subRates = p.autoTax && !p.sub.automatic_tax?.enabled
+      ? p.sub.items.data.find(i => i.tax_rates?.length)?.tax_rates.map(t => (typeof t === 'string' ? t : t.id))
+      : null
     const items = []
     for (const [i, li] of p.line_items.entries()) {
       const { product_data: pd, ...priceData } = li.price_data
@@ -312,7 +342,7 @@ export async function applySoumissionUpgrade({ stripe, soumissionId, acceptNewPr
       })
       items.push({
         price: price.id, quantity: li.quantity,
-        ...(li.tax_rates ? { tax_rates: li.tax_rates } : {}),
+        ...(li.tax_rates ? { tax_rates: li.tax_rates } : subRates ? { tax_rates: subRates } : {}),
         metadata: { erp_soumission_id: p.s.id },
       })
     }

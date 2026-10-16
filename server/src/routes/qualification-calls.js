@@ -616,15 +616,12 @@ router.post('/:id/send-system-builder-email', async (req, res) => {
   }
 })
 
-// Suppression — utilisée pour nettoyer un record créé par erreur depuis l'ERP.
-// Les records importés d'Airtable (airtable_record_id sans préfixe `local_`) sont
-// protégés : la sync Airtable les recréerait, et leur autorité reste là-bas.
+// Suppression (unitaire ou en lot depuis la liste). Les records importés d'Airtable
+// ne sont plus protégés : l'import (scripts/import-qualification-calls.js) est un
+// script manuel ponctuel, aucune sync ne les recrée — Boréal fait autorité.
 router.delete('/:id', (req, res) => {
-  const row = db.prepare('SELECT airtable_record_id FROM qualification_calls WHERE id = ?').get(req.params.id)
+  const row = db.prepare('SELECT id FROM qualification_calls WHERE id = ?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  if (!row.airtable_record_id || !row.airtable_record_id.startsWith('local_')) {
-    return res.status(403).json({ error: 'Suppression interdite : ce record provient d\'Airtable. À supprimer depuis Airtable.' })
-  }
   db.prepare('DELETE FROM qualification_calls WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
 })

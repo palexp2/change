@@ -63,6 +63,9 @@ export const CACHED_TABLES = [
   { name: 'fournitures',              idColumn: 'id', exclude: [], client: false },
   { name: 'marketing_forms',          idColumn: 'id', exclude: [], client: false },
   { name: 'ops_issues',               idColumn: 'id', exclude: [], client: false },
+  { name: 'customer_onboarding_responses', idColumn: 'id', exclude: [], client: false },
+  // Nomenclature : lue par le coût des pièces fabriquées (fifoCostWatcher).
+  { name: 'bom_items',                idColumn: 'id', exclude: [], client: false },
 ]
 
 function tableExists(name) {
@@ -217,13 +220,18 @@ export function computedFieldSignatures() {
       SELECT erp_table, column_name, kind, type, result_type, formula_expr,
              lookup_fk, lookup_target_table, lookup_target_column,
              lookup_limit_n, lookup_limit_dir,
-             rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
+             rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, rollup_filter,
              link_target_table, link_group_id, link_role, view_error
         FROM custom_fields
        WHERE deleted_at IS NULL AND kind IS NOT NULL AND kind <> 'data'
        ORDER BY erp_table, column_name
     `).all()
+    const today = new Date().toISOString().slice(0, 10)
     for (const { erp_table: table, ...def } of rows) {
+      // Rollup « N derniers jours » : sa valeur glisse avec le calendrier sans
+      // qu'aucune ligne ne change — la date du jour dans la signature fait
+      // recharger le cache une fois par jour.
+      if (/"last_days"/.test(def.rollup_filter || '')) def.today = today
       if (!parts.has(table)) parts.set(table, [])
       parts.get(table).push(JSON.stringify(def))
     }
@@ -331,16 +339,25 @@ export function syncRollupTriggers(parentTable, rollups) {
       const child = r.rollup_target_table, fk = r.rollup_target_fk
       if (!SAFE_SQL_IDENT.test(child || '') || !SAFE_SQL_IDENT.test(fk || '')) continue
       if (!tableExists(child)) continue
-      pairs.set(`${child}__${fk}`, { child, fk })
+      pairs.set(`${child}__${fk}`, { child, fk, linkList: !!r.link_list })
     }
   }
+  const parentHasAirtableId = tableExists(parentTable) &&
+    db.prepare(`PRAGMA table_info(${parentTable})`).all().some(c => c.name === 'airtable_id')
   const tx = db.transaction(() => {
     for (const name of existing) db.exec(`DROP TRIGGER IF EXISTS "${name}"`)
     const ins = (ref) => `INSERT INTO change_log_rollup (table_name, record_id)
         SELECT '${parentTable}', ${ref} WHERE ${ref} IS NOT NULL;`
-    for (const [key, { child, fk }] of pairs) {
+    for (const [key, { child, fk, linkList }] of pairs) {
       const base = `${prefix}${key}`
-      db.exec(`CREATE TRIGGER "${base}_ins" AFTER INSERT ON ${child} BEGIN ${ins(`NEW.${fk}`)} END;`)
+      // Champ lien Airtable (« ["recX"] ») : la valeur n'est pas l'id du parent,
+      // on retrouve les parents qu'elle cite — même appariement que la vue.
+      const insFor = linkList
+        ? (ref) => `INSERT INTO change_log_rollup (table_name, record_id)
+            SELECT '${parentTable}', _p.id FROM ${parentTable} _p WHERE ${ref} IS NOT NULL AND (_p.id = ${ref}` +
+            (parentHasAirtableId ? ` OR (_p.airtable_id <> '' AND instr(${ref}, _p.airtable_id) > 0)` : '') + `);`
+        : ins
+      db.exec(`CREATE TRIGGER "${base}_ins" AFTER INSERT ON ${child} BEGIN ${insFor(`NEW.${fk}`)} END;`)
       // Ligne déplacée d'un parent à l'autre : les deux changent.
       // Écriture identique (import Airtable qui réécrit la même valeur) :
       // rien ne change, le parent n'est pas renvoyé.
@@ -349,11 +366,13 @@ export function syncRollupTriggers(parentTable, rollups) {
         .map(n => `OLD.${n} IS NOT NEW.${n}`).join(' OR ')
       db.exec(`CREATE TRIGGER "${base}_upd" AFTER UPDATE ON ${child}
         ${changed ? `WHEN ${changed}` : ''} BEGIN
-        ${ins(`NEW.${fk}`)}
-        INSERT INTO change_log_rollup (table_name, record_id)
-          SELECT '${parentTable}', OLD.${fk} WHERE OLD.${fk} IS NOT NULL AND OLD.${fk} IS NOT NEW.${fk};
+        ${insFor(`NEW.${fk}`)}
+        ${linkList
+          ? `${insFor(`OLD.${fk}`).replace(/;$/, '')} AND OLD.${fk} IS NOT NEW.${fk};`
+          : `INSERT INTO change_log_rollup (table_name, record_id)
+          SELECT '${parentTable}', OLD.${fk} WHERE OLD.${fk} IS NOT NULL AND OLD.${fk} IS NOT NEW.${fk};`}
       END;`)
-      db.exec(`CREATE TRIGGER "${base}_del" AFTER DELETE ON ${child} BEGIN ${ins(`OLD.${fk}`)} END;`)
+      db.exec(`CREATE TRIGGER "${base}_del" AFTER DELETE ON ${child} BEGIN ${insFor(`OLD.${fk}`)} END;`)
     }
   })
   tx()

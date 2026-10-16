@@ -1,13 +1,14 @@
 import { useMemo } from 'react'
 import { Field } from './Field.jsx'
-import { SearchableSelect } from './SearchableSelect.jsx'
+import { ChoiceSelect } from './ChoiceSelect.jsx'
 import { MultiSelectField } from './MultiSelectField.jsx'
 import { InlineText, InlineTextarea, InlineUrl, InlineNumber, InlineDuration, InlineDate, InlineCheckbox } from './InlineFields.jsx'
 import { AttachmentField } from './AttachmentField.jsx'
 import { RatingInput } from './RatingStars.jsx'
+import { UserSelect } from './UserPicker.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
 import { useExtraCustomFields } from '../lib/useDetailFields.jsx'
-import { parseSelectChoices, colorForChoice, ChoiceBadge, isAirtableLinkField, LinkedRecordsValue, dateFormatOf, durationFormatOf } from '../lib/customFieldDisplay.jsx'
+import { parseSelectChoices, isAirtableLinkField, LinkedRecordsValue, dateFormatOf, durationFormatOf, currencySymbolOf } from '../lib/customFieldDisplay.jsx'
 import { dateFormatHasTime } from '../lib/formatDate.js'
 
 // Les champs personnalisés d'une table, rendus comme des blocs de champ
@@ -62,15 +63,17 @@ export function isLinkCustomField(f) {
 // `recordId` n'est utile qu'au champ Attachement, dont les fichiers sont
 // rattachés à l'enregistrement côté serveur.
 //
-// `selectPills` : variante d'affichage d'une Sélection — la valeur choisie et
-// les options du menu portent la pastille de couleur configurée sur le champ,
-// comme dans les tableaux. Par défaut l'éditeur reste en texte simple.
-//
 // `linkFilter` : pour un champ LIEN, restriction supplémentaire des candidats
 // proposés, décidée par la fiche (cf. LinkedRecordsValue → `extraFilter`).
 // `widePicker` : pour un champ LIEN, liste déroulante large aux libellés entiers.
-// `isoDate` : un champ Date (sans heure) se saisit et s'affiche en AAAA-MM-JJ.
-export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false, linkFilter = null, widePicker = false, compactNumber = false, isoDate = false }) {
+// Un champ Date (sans heure) se saisit et s'affiche en AAAA-MM-JJ — le seul
+// format de date offert par « Modifier le champ ».
+function decimalsOf(field) {
+  const d = field.decimals ?? field.field?.decimals
+  return Number.isInteger(d) ? d : null
+}
+
+export function CustomFieldEditor({ field, value, saving, onSave, recordId, linkFilter = null, widePicker = false, compactNumber = false }) {
   const commit = v => onSave?.(field.key, v)
   // Champ lien : la valeur est un (ou des) identifiant(s) de fiche — pastille
   // cliquable + picker recherchable de la table cible, le même dans toutes les
@@ -100,42 +103,39 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId, sele
       return <InlineTextarea value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     case 'url':
       return <InlineUrl value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
+    // Précision, symbole : ceux réglés dans « Modifier le champ », comme dans
+    // les tableaux.
     case 'number':
+      return <InlineNumber value={value} saving={saving} onSave={commit} compact={compactNumber} decimals={decimalsOf(field)} className="input text-sm w-full" testId={`cf-input-${field.key}`} />
     case 'currency':
-      return <InlineNumber value={value} saving={saving} onSave={commit} compact={compactNumber} className="input text-sm w-full" testId={`cf-input-${field.key}`} />
+      return <InlineNumber value={value} saving={saving} onSave={commit} decimals={decimalsOf(field) ?? 2} suffix={currencySymbolOf(field.field)} className="input text-sm w-full" testId={`cf-input-${field.key}`} />
     // Pourcentage : la colonne porte le nombre de pourcents — on saisit 45, le
     // « % » est là pour le dire (la barre de progression, elle, est un rendu de
     // lecture : cf. PercentValue).
     case 'percent':
-      return <InlineNumber value={value} saving={saving} onSave={commit} suffix="%" className="input text-sm w-full" testId={`cf-input-${field.key}`} />
+      return <InlineNumber value={value} saving={saving} onSave={commit} decimals={decimalsOf(field)} suffix="%" className="input text-sm w-full" testId={`cf-input-${field.key}`} />
     case 'duration':
       return <InlineDuration value={value} saving={saving} onSave={commit} format={durationFormatOf(field.field)} testId={`cf-input-${field.key}`} />
     case 'date':
-      return <InlineDate value={value} saving={saving} onSave={commit} withTime={dateFormatHasTime(dateFormatOf(field.field))} iso={isoDate} testId={`cf-input-${field.key}`} />
+      return <InlineDate value={value} saving={saving} onSave={commit} withTime={dateFormatHasTime(dateFormatOf(field.field))} iso testId={`cf-input-${field.key}`} />
     case 'checkbox':
       return <InlineCheckbox value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     // Évaluation : les 5 étoiles, cliquables (re-cliquer l'étoile courante
     // retire la note). Autosave comme les autres champs de fiche.
     case 'rating':
       return <RatingInput value={value} disabled={saving} onChange={commit} testId={`cf-input-${field.key}`} />
-    case 'single_select': {
-      const choices = parseSelectChoices(field.field)
-      const pill = o => <ChoiceBadge color={colorForChoice(choices, o.label)} className="single-select-label">{o.label}</ChoiceBadge>
+    case 'user':
+      return <UserSelect value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
+    case 'single_select':
       return (
-        <SearchableSelect
-          value={value ?? ''}
-          options={choices.map(c => ({ value: c.label ?? c.id, label: c.label ?? c.id }))}
-          emptyOption="—"
+        <ChoiceSelect
+          value={value}
+          choices={parseSelectChoices(field.field)}
           onChange={commit}
-          className="input text-sm w-full"
-          size="sm"
           disabled={saving}
-          renderValue={selectPills ? pill : undefined}
-          renderOption={selectPills ? pill : undefined}
           testId={`cf-input-${field.key}`}
         />
       )
-    }
     case 'multi_select':
       return (
         <MultiSelectField

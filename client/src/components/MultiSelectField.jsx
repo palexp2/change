@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Search, Check, X } from 'lucide-react'
 import { Badge } from './Badge.jsx'
-import { parseMultiSelectItems } from '../lib/customFieldDisplay.jsx'
+import { parseMultiSelectItems, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 
 // Champ de sélection multiple (façon Airtable) pour une fiche détail : les
 // valeurs retenues s'affichent en pastilles retirables, un « + » ouvre un menu
@@ -18,6 +18,8 @@ import { parseMultiSelectItems } from '../lib/customFieldDisplay.jsx'
 //  - onChange   : (nextArray) => void, appelé à chaque ajout/retrait (autosave).
 //  - saving     : désactive les interactions pendant l'enregistrement.
 //  - allowCreate: autorise la création d'une valeur libre depuis la recherche.
+//  - colorOf    : option — (valeur) => couleur ; pastilles et choix du menu
+//                 prennent alors la couleur du choix (conditions de visibilité).
 export function MultiSelectField({
   value,
   options = [],
@@ -25,6 +27,7 @@ export function MultiSelectField({
   saving = false,
   allowCreate = true,
   testId,
+  colorOf = null,
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -119,8 +122,10 @@ export function MultiSelectField({
   return (
     <div className="relative w-full" data-testid={testId}>
       <div className="flex flex-wrap items-center gap-1.5 min-h-[38px] rounded-lg border border-slate-200 bg-white px-2 py-1.5">
-        {selected.map(v => (
-          <Badge key={v} className="gap-1">
+        {selected.map(v => {
+          const Chip = colorOf ? ChoiceBadge : Badge
+          return (
+          <Chip key={v} color={colorOf ? colorOf(v) || 'gray' : undefined} className="gap-1">
             <span data-testid={testId ? `${testId}-chip` : undefined} className="truncate max-w-[220px]">{v}</span>
             <button
               type="button"
@@ -132,8 +137,9 @@ export function MultiSelectField({
             >
               <X size={11} />
             </button>
-          </Badge>
-        ))}
+          </Chip>
+          )
+        })}
         <button
           ref={btnRef}
           type="button"
@@ -190,7 +196,9 @@ export function MultiSelectField({
                   className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors ${idx === activeIdx ? 'bg-slate-50' : ''} ${isSel ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
                 >
                   <Check size={13} className={`flex-shrink-0 ${isSel ? 'text-brand-600' : 'text-transparent'}`} />
-                  <span className="flex-1 min-w-0 truncate">{o}</span>
+                  {colorOf
+                    ? <span className="flex-1 min-w-0"><ChoiceBadge color={colorOf(o) || 'gray'} className="single-select-label truncate max-w-full">{o}</ChoiceBadge></span>
+                    : <span className="flex-1 min-w-0 truncate">{o}</span>}
                 </button>
               )
             })}

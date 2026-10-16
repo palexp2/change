@@ -6,6 +6,8 @@ import { logSync } from '../services/syncLog.js'
 import { routeSync, ENGINE_ONLY_SYNCS } from '../services/airtableMirrorEngine.js'
 import { getAccessToken, airtablePost, airtablePatch, airtableDelete } from '../connectors/airtable.js'
 import { emit } from '../services/realtime.js'
+import { readRelation } from '../services/customFieldsView.js'
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { newRecordId } from '../utils/recordId.js'
 import { makeUpload } from '../utils/upload.js'
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
@@ -17,14 +19,15 @@ import path from 'path'
 const router = Router()
 
 // Liste : le catalogue, chaque fourniture avec le résumé de ses achats (le
-// détail des achats vit dans sa fiche).
+// détail des achats vit dans sa fiche). Lue par la VUE quand elle existe : elle
+// porte les champs calculés (formule, lookup, rollup, liaison…).
 router.get('/', requireAuth, (req, res) => {
   const rows = db.prepare(`
     SELECT f.*,
            COUNT(a.id) AS achats_count,
            MAX(a.purchased_at) AS last_purchased_at,
            ROUND(SUM(COALESCE(a.qty, 0) * COALESCE(a.unit_price, 0)), 2) AS total_spent
-    FROM fournitures f
+    FROM ${readRelation('fournitures')} f
     LEFT JOIN achats_fournitures a ON a.fourniture_id = f.id
     GROUP BY f.id
     ORDER BY f.name COLLATE NOCASE
@@ -133,11 +136,21 @@ const amount = v => {
 const day = v => { const s = String(v ?? '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : undefined }
 const positive = v => { const n = Number(v); return v !== '' && v != null && Number.isFinite(n) && n > 0 ? n : undefined }
 
+// Champs personnalisés : seuls ceux que l'ERP écrit (règle unique de
+// customFieldWritability) — ils restent ici, Airtable ne les connaît pas.
+const customValue = v => {
+  if (v === '' || v === undefined) return null
+  if (typeof v === 'boolean') return v ? 1 : 0
+  if (v != null && typeof v === 'object') return JSON.stringify(v)
+  return v
+}
+
 function patchMirrored({ module, table, cols, required = [], label }) {
   return async (req, res) => {
     const row = db.prepare(`SELECT id, airtable_id FROM ${table} WHERE id = ?`).get(req.params.id)
     if (!row) return res.status(404).json({ error: `${label} introuvable` })
     const body = req.body || {}
+    if (refusedAirtablePullKeys(table, body).length) return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
     const patch = {}
     for (const [col, norm] of Object.entries(cols)) {
       if (!(col in body)) continue
@@ -145,11 +158,15 @@ function patchMirrored({ module, table, cols, required = [], label }) {
       if (v === undefined || (v == null && required.includes(col))) return res.status(400).json({ error: `Valeur invalide : ${col}` })
       patch[col] = v
     }
-    if (!Object.keys(patch).length) return res.status(400).json({ error: 'Aucun champ modifiable' })
+    const custom = {}
+    for (const { column_name: col } of getWritableCustomColumns(table)) {
+      if (col in body) custom[col] = customValue(body[col])
+    }
+    if (!Object.keys(patch).length && !Object.keys(custom).length) return res.status(400).json({ error: 'Aucun champ modifiable' })
 
     const t0 = Date.now()
     try {
-      if (row.airtable_id) {
+      if (row.airtable_id && Object.keys(patch).length) {
         const cfg = db.prepare('SELECT base_id, table_id, field_map FROM airtable_module_config WHERE module = ?').get(module)
         let fieldMap = {}
         try { fieldMap = JSON.parse(cfg?.field_map || '{}') } catch { /* config illisible → erreur ci-dessous */ }
@@ -160,11 +177,12 @@ function patchMirrored({ module, table, cols, required = [], label }) {
         const token = await getAccessToken()
         await airtablePatch(`/${cfg.base_id}/${cfg.table_id}/${row.airtable_id}`, token, { fields, typecast: true })
       }
-      const sets = Object.keys(patch).map(c => `${c} = ?`).join(', ')
+      const all = { ...patch, ...custom }
+      const sets = Object.keys(all).map(c => `${c} = ?`).join(', ')
       db.prepare(`UPDATE ${table} SET ${sets}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-        .run(...Object.values(patch), row.id)
-      logSync(module, 'erp-update', { status: 'success', modified: 1, durationMs: Date.now() - t0 })
-      res.json(db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(row.id))
+        .run(...Object.values(all), row.id)
+      if (Object.keys(patch).length) logSync(module, 'erp-update', { status: 'success', modified: 1, durationMs: Date.now() - t0 })
+      res.json(db.prepare(`SELECT * FROM ${readRelation(table)} WHERE id = ?`).get(row.id))
     } catch (e) {
       logSync(module, 'erp-update', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
       res.status(502).json({ error: e.message })
@@ -270,12 +288,12 @@ router.delete('/:id', requireAuth, async (req, res) => {
 
 // Fiche d'une fourniture : le catalogue + tous ses achats, plus récent d'abord.
 router.get('/:id', requireAuth, (req, res) => {
-  const f = db.prepare('SELECT * FROM fournitures WHERE id = ?').get(req.params.id)
+  const f = db.prepare(`SELECT * FROM ${readRelation('fournitures')} WHERE id = ?`).get(req.params.id)
   if (!f) return res.status(404).json({ error: 'Fourniture introuvable' })
   const achats = db.prepare(`
     SELECT *,
            ROUND(COALESCE(qty, 0) * COALESCE(unit_price, 0), 2) AS total
-    FROM achats_fournitures
+    FROM ${readRelation('achats_fournitures')}
     WHERE fourniture_id = ?
     ORDER BY purchased_at DESC, created_at DESC
   `).all(f.id)

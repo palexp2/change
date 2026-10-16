@@ -57,7 +57,7 @@ export default function ExpenseLineLinks({ info, singleLine = false, peek = fals
           subtitle={[achat.vendor_invoice_number, achat.invoice_date].filter(Boolean).join(' · ')}>
           <div className="px-5 py-4">
             <Suspense fallback={<div className="p-6 text-sm text-slate-400">Chargement…</div>}>
-              <AchatPanel achat={achat} onClose={() => setAchat(null)} onSaved={() => {}} />
+              <AchatPanel achat={achat} isoDates onClose={() => setAchat(null)} onSaved={() => {}} />
             </Suspense>
           </div>
         </RecordPeekDrawer>

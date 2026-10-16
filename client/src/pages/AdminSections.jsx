@@ -5,7 +5,7 @@ import { rolesOf } from '../../../shared/roles.mjs'
 // entière qui exportent déjà leur contenu embarquable.
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Eye, EyeOff } from 'lucide-react'
+import { Plus, Settings, Server, Cpu, RefreshCw, CheckCircle, XCircle, Clock, Eye, EyeOff } from 'lucide-react'
 import api from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { Badge } from '../components/Badge.jsx'
@@ -110,53 +110,6 @@ export function SystemeContent() {
           <BarStat label="RAM" used={data.ram.used} total={data.ram.total} color="bg-violet-500" warn={80} danger={95} />
         </div>
 
-        {data.diskBreakdown?.length > 0 && data.disk && (
-          <div>
-            <p className="text-xs font-medium text-slate-500 mb-1 flex items-center gap-1"><HardDrive size={11} /> Répartition de l’espace utilisé</p>
-            <p className="text-xs text-slate-400 mb-3">
-              {fmt(data.disk.used)} utilisés · {fmt(data.disk.available)} disponibles · % de l’espace utilisé
-            </p>
-            <div className="space-y-3">
-              {data.diskBreakdown.filter(c => c.bytes > 0).map(c => {
-                const pct = data.disk.used ? c.bytes / data.disk.used * 100 : 0
-                const share = pct > 0 && pct < 1 ? '< 1' : Math.round(pct)
-                return (
-                  <div key={c.id || c.label}>
-                  <details>
-                    <summary className="cursor-pointer rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 text-xs text-slate-600">
-                      <span className="inline-flex w-[calc(100%-1rem)] flex-wrap items-baseline justify-between gap-x-3 gap-y-1 align-top">
-                        <span>{c.label}</span>
-                        <span className="tabular-nums whitespace-nowrap">{fmt(c.bytes)} <span className="text-slate-400">({share} %)</span></span>
-                      </span>
-                    </summary>
-                    {c.description && <p className="text-xs text-slate-500 mt-2 ml-4">{c.description}</p>}
-                    {c.details?.length > 0 && (
-                      <ul className="mt-2 ml-4 space-y-1 text-xs text-slate-500">
-                        {c.details.map(detail => (
-                          <li key={detail.label} className="flex flex-wrap justify-between gap-x-3 gap-y-1">
-                            <span className="break-all">{detail.label}</span>
-                            <span className="tabular-nums whitespace-nowrap">{fmt(detail.bytes)}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </details>
-                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1.5" aria-hidden="true">
-                      <div className="h-1.5 rounded-full bg-blue-500" style={{ width: `${Math.min(pct, 100)}%` }} />
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-            {data.diskMeasurement && (
-              <p className="text-xs text-slate-400 mt-3">
-                Mesure disque : {fmtDateTime(data.diskMeasurement.at)} · actualisée chaque minute.
-                {data.diskMeasurement.partial && ' Certains dossiers sont inaccessibles ; leur espace reste non ventilé.'}
-              </p>
-            )}
-          </div>
-        )}
-
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
           <CpuStat label="CPU 1 min" load={data.cpu.load1} cores={data.cpu.cores} />
           <CpuStat label="CPU 5 min" load={data.cpu.load5} cores={data.cpu.cores} />
@@ -194,27 +147,6 @@ export function SystemeContent() {
             </div>
           ))}
         </div>
-
-        {/* Dernières erreurs */}
-        {data.recentErrors.length > 0 && (
-          <div>
-            <p className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1"><AlertTriangle size={11} className="text-amber-500" /> Dernières erreurs</p>
-            <div className="bg-slate-900 rounded-xl p-3 space-y-1 max-h-48 overflow-y-auto">
-              {data.recentErrors.map((line, i) => {
-                const m = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?):?\s*(.*)$/s)
-                const parsed = m ? new Date(m[1]) : null
-                const time = parsed && !isNaN(parsed) ? fmtDateTime(parsed) : null
-                const msg = m ? m[2] : line
-                return (
-                  <p key={i} className="text-xs font-mono text-slate-300 leading-relaxed break-all">
-                    {time && <span className="text-slate-500 mr-2 flex-shrink-0">{time}</span>}
-                    {msg}
-                  </p>
-                )
-              })}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Plus, Trash2, ExternalLink, AlertTriangle, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
+import { ChoiceSelect } from './ChoiceSelect.jsx'
 import { ProductPicker } from './ProductPicker.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { computeCanadaTaxes } from '../lib/taxes.js'
@@ -234,16 +235,11 @@ export function CreateSubscriptionModal({ companyId, isOpen, onClose, onCreated 
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="label">Fréquence</label>
-                <select className={`${inputCls} w-full`} value={frequency} onChange={e => setFrequency(e.target.value)} data-testid="subscription-frequency">
-                  {FREQUENCIES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
-                </select>
+                <ChoiceSelect className={`${inputCls} w-full`} value={frequency} choices={FREQUENCIES} onChange={setFrequency} emptyOption={null} testId="subscription-frequency" />
               </div>
               <div>
                 <label className="label">Devise</label>
-                <select className={`${inputCls} w-full`} value={currency} onChange={e => setCurrency(e.target.value)}>
-                  <option value="CAD">CAD</option>
-                  <option value="USD">USD</option>
-                </select>
+                <ChoiceSelect className={`${inputCls} w-full`} value={currency} choices={[{ value: 'CAD', color: 'gray' }, { value: 'USD', color: 'blue' }]} table="abonnements" field="currency" colorsOnly onChange={setCurrency} emptyOption={null} />
               </div>
               <div>
                 <label className="label">Essai gratuit (jours)</label>

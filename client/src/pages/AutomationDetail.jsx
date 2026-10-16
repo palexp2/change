@@ -8,6 +8,8 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { api } from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
+import { TASK_PRIORITY_CHOICES } from '../lib/tableDefs.js'
 import { SlackChannelSelect } from '../components/AutomationBuilder.jsx'
 import { WebhookEditor } from '../components/WebhookEditor.jsx'
 import { AUTOMATION_ACTION_LABELS as ACTION_TYPE_LABELS } from '../components/Badge.jsx'
@@ -17,7 +19,7 @@ import Spinner from '../components/Spinner.jsx'
 import ThinkingOrb from '../components/ThinkingOrb'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
-const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push'])
+const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push', 'sys_subscription_rachat'])
 
 // Connexion Google Sheets « CTB - Suivi » — config d'action éditable, trigger
 // en lecture seule, bouton unique de diagnostic (aucune écriture).
@@ -1059,8 +1061,8 @@ export default function AutomationDetail({ recordId, embedded = false, block = n
           </div>
         )}
 
-        {/* Logs */}
-        {!isNew && (
+        {/* Logs — en panneau, le bouton « Historique » de la page les montre déjà. */}
+        {!isNew && !embedded && (
           <div className="bg-white rounded-lg border p-5">
             <h2 className="text-sm font-semibold mb-4">Dernières exécutions</h2>
             <AutomationLogs logs={logs} />
@@ -1388,11 +1390,9 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
           </Field>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Priorité">
-              <select value={actionConfig.priority || 'Normal'}
-                onChange={e => onChange({ ...actionConfig, priority: e.target.value })} disabled={readOnly}
-                className="input disabled:bg-gray-50">
-                <option>Basse</option><option>Normal</option><option>Haute</option><option>Urgent</option>
-              </select>
+              <ChoiceSelect value={actionConfig.priority || 'Normal'} choices={TASK_PRIORITY_CHOICES}
+                onChange={v => onChange({ ...actionConfig, priority: v })} disabled={readOnly}
+                className="input w-full" emptyOption={null} />
             </Field>
             <Field label="Échéance (jours)">
               <input type="number" min="0" value={actionConfig.due_in_days ?? ''}
@@ -1702,11 +1702,9 @@ function TriggerConfig({ triggerType, triggerConfig, onTypeChange, onConfigChang
     <div className="space-y-4">
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
-        <select value={triggerType} onChange={e => { onTypeChange(e.target.value); onConfigChange({}) }}
-          className="input">
-          <option value="schedule">Planifié (cron)</option>
-          <option value="manual">Déclenchement manuel</option>
-        </select>
+        <ChoiceSelect value={triggerType} onChange={v => { onTypeChange(v); onConfigChange({}) }}
+          choices={[{ value: 'schedule', label: 'Planifié (cron)' }, { value: 'manual', label: 'Déclenchement manuel' }]}
+          className="input w-full" emptyOption={null} />
       </div>
 
       {triggerType === 'schedule' && (

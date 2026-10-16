@@ -37,6 +37,13 @@ export const SYSTEM_FLOWS = {
       { type: 'update', title: 'Envoi mis à jour', sub: "Envois · date d'envoi du suivi", config: [] },
     ],
   },
+  sys_order_welcome_email: {
+    trigger: { type: 'manual', title: 'Clic « Envoyer »', sub: 'Fiche commande · Courriel au client', config: [] },
+    actions: [
+      { type: 'email', title: 'Courriel au client', sub: 'Adresse + installation selon les articles, FR ou EN', config: ['from'] },
+      { type: 'create', title: 'Interaction courriel', sub: "Fil d'activité du contact", config: [] },
+    ],
+  },
   sys_revenue_recognition: {
     trigger: { type: 'record', title: 'Quand un envoi est expédié', sub: 'Envois · statut = Envoyé', config: ['__trigger'] },
     actions: [
@@ -114,9 +121,9 @@ export const SYSTEM_FLOWS = {
   sys_installation_followup: {
     trigger: { type: 'schedule', title: 'Tous les jours à 9 h', sub: 'Clients livrés il y a 21 jours', config: [] },
     actions: [
-      { type: 'find', title: 'Nouveaux clients', sub: 'Une seule commande, jamais relancés', config: [] },
-      { type: 'email', title: "Courriel de suivi d'installation", sub: "Contact de l'adresse de livraison", config: ['from'] },
-      { type: 'task', title: 'Tâche si le client est bloqué', sub: 'Assignée à Marc-Antoine', config: [] },
+      { type: 'find', title: 'Premières commandes expédiées', sub: 'Une fois par entreprise', config: [] },
+      { type: 'email', title: "Courriel de suivi d'installation", sub: "Courriel de l'adresse de livraison", config: ['from'] },
+      { type: 'task', title: 'Tâche si le client est bloqué', sub: 'Assignée à Philippe', config: [] },
     ],
   },
   sys_stripe_weekly_payout_push: {
@@ -437,10 +444,10 @@ export const SYSTEM_FLOWS = {
     ],
   },
   sys_instagram_weekly_slack: {
-    trigger: { type: 'event', title: 'Après la reconnexion Instagram', sub: 'Une fois par semaine', config: [] },
+    trigger: { type: 'schedule', title: 'Chaque matin à 7 h', sub: 'Ou le samedi si « hebdo »', config: ['cadence', 'daily_hour'] },
     actions: [
-      { type: 'find', title: 'Prospects de la semaine', sub: 'Depuis le dernier envoi', config: [] },
-      { type: 'slack', title: 'Liste à Philippe', sub: 'Résumé court et deux liens', config: ['slack_channel', 'send_weekday', 'slack_webhook_url', 'slack_webhook_env', 'recipient', 'notify_email'] },
+      { type: 'find', title: 'Prospects depuis hier', sub: 'Depuis le dernier envoi', config: [] },
+      { type: 'slack', title: 'Liste à Philippe', sub: 'Résumé court et un lien', config: ['slack_channel', 'send_weekday', 'slack_webhook_url', 'slack_webhook_env', 'recipient', 'notify_email'] },
     ],
   },
   sys_missing_invoice_request: {
@@ -534,10 +541,17 @@ export const SYSTEM_FLOWS = {
     ],
   },
   sys_fifo_cost: {
-    trigger: { type: 'record', title: 'Quand un achat ou une pièce change', sub: 'Achats, Pièces · et toutes les heures', config: [] },
+    trigger: { type: 'record', title: 'Quand un achat, une pièce ou une nomenclature change', sub: 'Achats, Pièces, BOM · et toutes les heures', config: [] },
     actions: [
-      { type: 'update', title: 'Coût unitaire FIFO', sub: 'Pièces · moyenne des lots restants', config: [] },
+      { type: 'update', title: 'Coût unitaire FIFO', sub: 'Pièces achetées · moyenne des lots restants', config: [] },
+      { type: 'update', title: 'Coût de nomenclature', sub: 'Pièces fabriquées · Σ qté × coût composant', config: [] },
       { type: 'airtable', title: 'Coût poussé vers Airtable', sub: 'Pièces', config: [] },
+    ],
+  },
+  sys_dynamic_threshold: {
+    trigger: { type: 'record', title: 'Quand un achat, un article, un mouvement ou une nomenclature change', sub: 'Achats, Articles, Mouvements, Assemblages, BOM · et toutes les 5 min', config: [] },
+    actions: [
+      { type: 'update', title: 'Seuil dynamique et quantité à commander', sub: 'Pièces · seulement les valeurs qui changent', config: [] },
     ],
   },
   sys_return_item_created: {

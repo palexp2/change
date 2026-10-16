@@ -150,7 +150,13 @@ function normalize(raw) {
         // Sans ce repli, un champ retiré avant le passage à `hidden` revenait
         // s'afficher tout seul (c'était le cas des notes d'une entreprise).
         const hidden = 'hidden' in e ? !!e.hidden : e.visible === false
-        return { key: e.key, hidden }
+        const out = { key: e.key, hidden }
+        // Réglages de lecture du champ : case (colonne, nouvelle rangée) et
+        // lecture seule — sans eux, ils disparaissaient au rechargement.
+        if (e.col === 0 || e.col === 1) out.col = e.col
+        if (e.brk) out.brk = true
+        if (e.readonly) out.readonly = true
+        return out
       }
       return null
     })
@@ -181,17 +187,30 @@ function loadLayout(entityType) {
     .finally(() => { entry.loaded = true; entry.promise = null; notify(entityType) })
 }
 
+// Un admin a modifié la fiche ailleurs : on relit la configuration partagée.
+if (typeof window !== 'undefined') {
+  window.addEventListener('detail_layout:updated', e => {
+    const type = e.detail?.entity_type
+    const entry = type && cache.get(type)
+    if (!entry || entry.promise) return
+    entry.loaded = false
+    loadLayout(type)
+  })
+}
+
 // Fusionne la disposition stockée avec les champs déclarés par la fiche :
 // - une clé stockée qui n'existe plus est ignorée ;
 // - un champ nouvellement ajouté au code apparaît à la fin, visible — sauf
 //   s'il se déclare `defaultHidden` (colonnes de sync), auquel cas il attend
 //   dans le menu « Ajouter un champ ».
 function mergeEntries(stored, fields) {
-  const known = new Set(fields.map(f => f.key))
   const seen = new Set()
   const entries = []
   for (const e of stored || []) {
-    if (seen.has(e.key) || !(e.group || known.has(e.key))) continue
+    // Une clé que la fiche ne déclare pas (encore) est gardée telle quelle :
+    // champ conditionnel ou personnalisé pas encore chargé — la perdre ici
+    // effaçait sa place à la prochaine réorganisation.
+    if (seen.has(e.key)) continue
     entries.push(e)
     seen.add(e.key)
   }
@@ -270,12 +289,39 @@ export function useDetailFieldLayout(entityType, fields) {
 
   // `nextVisibleKeys` peut contenir les clés de groupe ; un groupe absent de la
   // liste est gardé en fin (jamais perdu par un appelant qui l'ignore).
-  const applyOrder = useCallback((nextVisibleKeys) => {
+  // `placement` (option) : { clé: { col: 0|1, brk?: true } } — case de lecture
+  // du champ dans la fiche à deux colonnes (col ; brk = commence une nouvelle
+  // rangée même si la case de gauche est libre). Sans patch, conservée.
+  const applyOrder = useCallback((nextVisibleKeys, _movedKey, placement) => {
     const groupsByKey = new Map(entries.filter(e => e.group).map(e => [e.key, e]))
-    const next = nextVisibleKeys.map(key => groupsByKey.get(key) || { key, hidden: false })
+    const byEntry = new Map(entries.map(e => [e.key, e]))
+    const next = nextVisibleKeys.map(key => {
+      if (groupsByKey.has(key)) return groupsByKey.get(key)
+      // Les réglages du champ (colonne, lecture seule…) le suivent.
+      const out = { ...(byEntry.get(key) || {}), key, hidden: false }
+      if (placement && key in placement) {
+        out.col = placement[key].col
+        if (placement[key].brk) out.brk = true
+        else delete out.brk
+      }
+      return out
+    })
     for (const [key, g] of groupsByKey) if (!nextVisibleKeys.includes(key)) next.push(g)
-    persist([...next, ...entries.filter(e => e.hidden)])
-  }, [entries, persist])
+    // Champs non déclarés par la fiche affichée : réinsérés après leur voisin
+    // d'origine, pour qu'ils retrouvent leur place quand ils réapparaissent.
+    const shown = new Set(nextVisibleKeys)
+    const out = [...next, ...entries.filter(e => e.hidden && !shown.has(e.key) && byKey.has(e.key))]
+    entries.forEach((e, i) => {
+      if (e.group || byKey.has(e.key)) return
+      let at = 0
+      for (let j = i - 1; j >= 0; j--) {
+        const k = out.findIndex(o => o.key === entries[j].key)
+        if (k !== -1) { at = k + 1; break }
+      }
+      out.splice(at, 0, e)
+    })
+    persist(out)
+  }, [entries, byKey, persist])
 
   const addGroup = useCallback((label) => {
     const key = `grp:${Math.random().toString(36).slice(2, 10)}`
@@ -300,19 +346,33 @@ export function useDetailFieldLayout(entityType, fields) {
     persist([
       ...entries.filter(e => e.key !== key && !e.hidden),
       ...entries.filter(e => e.key !== key && e.hidden),
-      { key, hidden: true },
+      { ...entries.find(e => e.key === key), key, hidden: true },
     ])
   }, [entries, persist])
 
   const show = useCallback((key) => {
     persist([
       ...entries.filter(e => e.key !== key && !e.hidden),
-      { key, hidden: false },
+      { ...entries.find(e => e.key === key), key, hidden: false },
       ...entries.filter(e => e.key !== key && e.hidden),
     ])
   }, [entries, persist])
 
-  return { fields: visible, items, userGroups, hiddenFields: hidden, applyOrder, hide, show, addGroup, renameGroup, removeGroup }
+  // Lecture seule (clic droit sur le champ) : la fiche affiche la valeur sans
+  // permettre de la modifier sur place. Réglage commun à tous.
+  const setReadonly = useCallback((key, on) => {
+    persist(entries.map(e => {
+      if (e.key !== key) return e
+      const { readonly: _drop, ...rest } = e
+      return on ? { ...rest, readonly: true } : rest
+    }))
+  }, [entries, persist])
+  const readonlyKeys = useMemo(() => new Set(entries.filter(e => e.readonly).map(e => e.key)), [entries])
+
+  const colOf = useMemo(() => new Map(entries.filter(e => e.col != null).map(e => [e.key, e.col])), [entries])
+  const brkKeys = useMemo(() => new Set(entries.filter(e => e.brk).map(e => e.key)), [entries])
+
+  return { fields: visible, items, userGroups, hiddenFields: hidden, colOf, brkKeys, readonlyKeys, setReadonly, applyOrder, hide, show, addGroup, renameGroup, removeGroup }
 }
 
 // ── « Autoriser la suppression de la fiche » ─────────────────────────────────

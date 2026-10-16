@@ -202,8 +202,10 @@ export function QuestionChoices({ p, onAnswer, showQuestion = false }) {
  * Deux départs possibles : au DÉBUT de la file (la tâche repart tout de suite,
  * avant le reste) ou à la FIN (la réponse est enregistrée, la tâche reprendra
  * quand son tour reviendra).
+ * `simple` : un seul bouton « Envoyer », toujours en fin de file (fenêtre de questions du FAB).
+ * `enterSends` : Entrée envoie, Maj+Entrée fait un retour à la ligne.
  */
-export function ReplyBox({ onSend, autoFocus, rows = 2 }) {
+export function ReplyBox({ onSend, autoFocus, rows = 2, simple = false, enterSends = false }) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(null)   // 'front' | 'back' | null
   const ref = useRef(null)
@@ -226,8 +228,25 @@ export function ReplyBox({ onSend, autoFocus, rows = 2 }) {
         value={text}
         onChange={e => setText(e.target.value)}
         // Cmd/Ctrl+Entrée envoie (au début de la file) : Entrée seule sert aux retours à la ligne.
-        onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send('front') }}
+        // Sauf avec `enterSends`, Entrée seule envoie aussi (Maj+Entrée = retour à la ligne).
+        onKeyDown={e => {
+          if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+          if (e.metaKey || e.ctrlKey || (enterSends && !e.shiftKey)) {
+            e.preventDefault()
+            send(simple ? 'back' : 'front')
+          }
+        }}
       />
+      {simple ? (
+        <div className="flex items-center gap-2 mt-1.5">
+          <button
+            className={btnPrimary} data-testid="travaux-reply-back"
+            onClick={() => send('back')} disabled={!!sending || !text.trim()}
+          >
+            {sending ? <ThinkingOrb size={14} ink /> : <Send size={14} />} Envoyer
+          </button>
+        </div>
+      ) : (
       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
         <button
           className={btnPrimary} data-testid="travaux-reply-front"
@@ -245,6 +264,7 @@ export function ReplyBox({ onSend, autoFocus, rows = 2 }) {
         </button>
         <span className="text-xs text-slate-400">⌘/Ctrl + Entrée</span>
       </div>
+      )}
     </div>
   )
 }

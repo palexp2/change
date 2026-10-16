@@ -18,7 +18,11 @@
 import db from '../../db/database.js'
 import { newRecordId } from '../../utils/recordId.js'
 
-const VALID_PRIORITY = new Set(['Basse', 'Normal', 'Haute', 'Urgent'])
+// Mêmes valeurs que la contrainte CHECK de tasks.priority (db/schema.js).
+// « Urgent » : ancienne valeur proposée par l'éditeur d'automatisation, que la
+// base refusait — lue comme « Urgente ».
+const VALID_PRIORITY = new Set(['Basse', 'Normal', 'Haute', 'Urgente'])
+const PRIORITY_ALIASES = { Urgent: 'Urgente' }
 
 export async function createTask({ rule, row, rendered }) {
   const ac = rule.action_config || {}
@@ -28,7 +32,8 @@ export async function createTask({ rule, row, rendered }) {
   }
   const description = rendered.description || null
   const assignedTo = ac.assigned_to || null
-  const priority = VALID_PRIORITY.has(ac.priority) ? ac.priority : 'Normal'
+  const wanted = PRIORITY_ALIASES[ac.priority] || ac.priority
+  const priority = VALID_PRIORITY.has(wanted) ? wanted : 'Normal'
 
   let dueDate = null
   if (Number.isFinite(ac.due_in_days) && ac.due_in_days >= 0) {

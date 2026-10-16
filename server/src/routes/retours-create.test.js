@@ -19,7 +19,7 @@ test('« Créer un retour » : articles, échange immédiat et # de série rempl
 
   db.prepare("INSERT INTO companies (id, name) VALUES ('co1', 'Ferme'), ('co2', 'Autre')").run()
   db.prepare("INSERT INTO products (id, name_fr, besoin_d_un_numero_de_serie) VALUES ('pS', 'Contrôleur', '1.0'), ('pN', 'Câble', NULL), ('pR', 'Contrôleur v2', '1.0')").run()
-  db.prepare("INSERT INTO serial_numbers (id, airtable_id, serial, product_id, company_id, status) VALUES ('sn1', 'recSN1', 'CC1', 'pS', 'co1', 'Opérationnel - Vendu'), ('sn2', NULL, 'CC2', 'pS', 'co1', 'Détruit'), ('sn3', NULL, 'CC3', 'pS', 'co2', 'Opérationnel - Vendu')").run()
+  db.prepare("INSERT INTO serial_numbers (id, airtable_id, serial, product_id, company_id, status) VALUES ('sn1', 'recSN1', 'CC1', 'pS', 'co1', 'Opérationnel - Vendu'), ('sn2', NULL, 'CC2', 'pS', 'co1', 'Détruit'), ('sn3', NULL, 'CC3', 'pS', 'co2', 'Opérationnel - Vendu'), ('sn4', NULL, 'CC4', 'pS', 'co1', 'Opérationnel - Loué')").run()
   db.prepare("INSERT INTO orders (id, order_number, company_id, status) VALUES ('o1', 10, 'co1', 'Envoyé')").run()
   db.prepare("INSERT INTO order_items (id, order_id, product_id, qty, date_de_l_envoi) VALUES ('oi1', 'o1', 'pN', 5, '2025-01-01')").run()
   db.prepare("INSERT INTO tickets (id, airtable_id) VALUES ('tk1', 'recTK1')").run()
@@ -32,7 +32,7 @@ test('« Créer un retour » : articles, échange immédiat et # de série rempl
 
   const cand = await apiFetch(base, token, 'GET', '/api/retours/company-candidates/co1')
   assert.equal(cand.status, 200)
-  assert.deepEqual(cand.body.serials.map(s => s.id), ['sn1'])
+  assert.deepEqual(cand.body.serials.map(s => s.id), ['sn1', 'sn4'])
   assert.deepEqual(cand.body.items.map(i => i.id), ['oi1'])
 
   const refused = await apiFetch(base, token, 'POST', '/api/retours/create', { company_id: 'co1', contact_id: 'ct1', items: [{ serial_id: 'sn3', reason: 'x' }] })
@@ -67,5 +67,24 @@ test('« Créer un retour » : articles, échange immédiat et # de série rempl
   const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(r.body.order.id)
   assert.equal(order.company_id, 'co1')
   assert.equal(order.address_id, 'ad1')
+  assert.equal(Number(order.is_subscription), 0) // n° de série « Vendu » → achat
   assert.equal(db.prepare('SELECT order_id FROM returns WHERE id = ?').get(r.body.return_id).order_id, order.id)
+
+  // « Loué » → abonnement ; mêlé à un « Vendu » → une commande par type.
+  db.prepare("UPDATE serial_numbers SET status = 'Opérationnel - Vendu' WHERE id = 'sn1'").run()
+  const mixed = await apiFetch(base, token, 'POST', '/api/retours/create', {
+    company_id: 'co1', contact_id: 'ct1',
+    items: [
+      { serial_id: 'sn4', reason: 'Retour de garantie avec échange immédiat', substitute_product_id: 'pR' },
+      { serial_id: 'sn1', reason: 'Retour de garantie avec échange immédiat', substitute_product_id: 'pR' },
+    ],
+    exchange: {},
+  })
+  assert.equal(mixed.status, 201)
+  assert.deepEqual(mixed.body.orders.map(o => o.is_subscription), [true, false])
+  const [sub, buy] = mixed.body.orders.map(o => db.prepare('SELECT * FROM orders WHERE id = ?').get(o.id))
+  assert.equal(Number(sub.is_subscription), 1)
+  assert.equal(Number(buy.is_subscription), 0)
+  assert.deepEqual(db.prepare('SELECT replaced_serial FROM order_items WHERE order_id = ?').all(sub.id).map(l => l.replaced_serial), ['sn4'])
+  assert.deepEqual(db.prepare('SELECT replaced_serial FROM order_items WHERE order_id = ?').all(buy.id).map(l => l.replaced_serial), ['sn1'])
 })

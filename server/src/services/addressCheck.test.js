@@ -96,3 +96,21 @@ test('formatAddress reste lisible même sur une adresse vide', () => {
   assert.equal(formatAddress(VALID), '1234 rue Principale, Québec, QC, G1V 0B3, CA')
   assert.equal(formatAddress({}), '(adresse vide)')
 })
+
+test('suggestion de correction quand l\'erreur trahit la bonne valeur', () => {
+  const fixes = addr => validateAddress(addr).issues.map(i => i.fix?.patch).filter(Boolean)
+  // Province canadienne saisie aux États-Unis → pays Canada (une seule suggestion).
+  assert.deepEqual(fixes({ ...VALID, province: 'AB', postal_code: 'T2P 1J9', country: 'US' }), [{ country: 'CA' }])
+  // Province canadienne avec un ZIP américain valide → l'État du ZIP, pas le Canada.
+  assert.deepEqual(fixes({ line1: '3628 Fieldbrook Rd', city: 'McKinleyville', province: 'AB', postal_code: '95519', country: 'US' }),
+    [{ province: 'CA' }])
+  assert.deepEqual(fixes({ line1: '705 Route 2', city: 'Danville', province: '', postal_code: '05828', country: 'US' }),
+    [{ province: 'VT' }])
+  // Code postal d'une autre province → province du code postal.
+  assert.deepEqual(fixes({ ...VALID, province: 'ON' }), [{ province: 'QC' }])
+  assert.deepEqual(fixes({ ...VALID, province: '' }), [{ province: 'QC' }])
+  // Chiffre tapé en lettre.
+  assert.deepEqual(fixes({ ...VALID, postal_code: 'G1V OB3' }), [{ postal_code: 'G1V 0B3' }])
+  // Rien à deviner → aucune suggestion.
+  assert.deepEqual(fixes({ ...VALID, line1: '' }), [])
+})

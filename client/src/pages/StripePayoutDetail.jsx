@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Info, Eye, Send, X } from 'lucide-react'
 import api from '../lib/api.js'
-import { Badge, STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
+import { STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { ConfirmModal } from '../components/Modal.jsx'
+import { FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 import { FactureQuickViewModal } from '../components/FactureQuickViewModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
@@ -215,7 +216,7 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
             <div>
               <div className="flex items-center gap-3 flex-wrap">
                 <div className="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(payout.amount, payout.currency)}</div>
-                {payout.status && <Badge color={STATUS_COLORS[payout.status] || 'gray'}>{payout.status}</Badge>}
+                {payout.status && <FieldChoiceBadge table="stripe_payouts" field="status" value={payout.status} color={STATUS_COLORS[payout.status]} />}
                 {alreadyPushed && (
                   payout.qb_deposit_url ? (
                     <a
@@ -264,8 +265,8 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
             testId="payout-fields"
           >
             <DetailField id="arrival_date" label="Date de dépôt"><PayoutValue value={fmtDate(payout.arrival_date)} /></DetailField>
-            <DetailField id="currency" label="Devise"><PayoutValue value={payout.currency} /></DetailField>
-            <DetailField id="method" label="Méthode"><PayoutValue value={payout.method} /></DetailField>
+            <DetailField id="currency" label="Devise">{payout.currency ? <FieldChoiceBadge table="stripe_payouts" field="currency" value={payout.currency} /> : <PayoutValue value={null} />}</DetailField>
+            <DetailField id="method" label="Méthode">{payout.method ? <FieldChoiceBadge table="stripe_payouts" field="method" value={payout.method} /> :<PayoutValue value={null} />}</DetailField>
             <DetailField id="type" label="Type"><PayoutValue value={payout.type} /></DetailField>
             <DetailField id="bank" label="Banque">
               <PayoutValue value={payout.bank_name ? `${payout.bank_name}${payout.bank_last4 ? ' …' + payout.bank_last4 : ''}` : null} />

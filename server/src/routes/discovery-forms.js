@@ -29,6 +29,7 @@ import { emitOrder } from '../services/realtimeEmitters.js'
 import { buildPartialUpdate } from './customer-post-payment.js'
 import { applyOrderItemDefaults } from '../services/orderItemDefaults.js'
 import { localDay } from '../utils/datetime.js'
+import { createSystemBuilderFromSoumission } from '../services/soumissionSystemBuilder.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -160,6 +161,14 @@ router.post('/', (req, res) => {
      WHERE r.id=?
   `).get(id)
   res.status(201).json(shapeForm(row))
+})
+
+// POST /api/discovery-forms/from-soumission/:soumissionId — System builder
+// prérempli depuis les articles de la soumission (ou celui déjà lié).
+router.post('/from-soumission/:soumissionId', (req, res) => {
+  const { row, created, error } = createSystemBuilderFromSoumission(req.params.soumissionId)
+  if (!row) return res.status(error === 'Soumission introuvable' ? 404 : 400).json({ error })
+  res.status(created ? 201 : 200).json({ ...shapeForm(row), created })
 })
 
 // GET /api/discovery-forms — liste, avec filtres optionnels.

@@ -180,10 +180,13 @@ export default function Automations() {
     change({ ...draft, steps })
     if (nextStep !== undefined) setStep(nextStep)
   }
+  // L'action ouverte reste ouverte, même quand une autre passe devant ou derrière elle.
   function move(from, to) {
     const s = [...draft.steps]
     s.splice(to, 0, s.splice(from, 1)[0])
-    setSteps(s, step === from + 1 ? to + 1 : step)
+    const c = step - 1
+    const next = c === from ? to : from < c && to >= c ? c - 1 : from > c && to <= c ? c + 1 : c
+    setSteps(s, step === 0 ? 0 : next + 1)
   }
 
   const builder = isBuilder(sel) && draft
@@ -301,13 +304,17 @@ export default function Automations() {
                   const kind = k === 'field_rule' ? 'field_rule' : 'flow'
                   change({ ...draft, kind, ...(tc ? { tc } : {}) }, { kind, ...(tc ? { trigger_config: tc } : {}) })
                 }}
-                onTc={tc => change({ ...draft, tc })} />
+                onTc={tc => change({
+                  ...draft, tc,
+                  // Autre table : les conditions « Exécuter seulement si » visaient ses anciennes colonnes.
+                  ...(tc.erp_table !== draft.tc.erp_table ? { steps: draft.steps.map(({ when: _w, ...s }) => s) } : {}),
+                })} />
             )}
             {builder && panel === 'edit' && cur && (
               <StepPanel key={`${sel.id}-${step}`} step={cur} index={step - 1} users={users}
                 triggerTable={triggerTable} triggerTokens={triggerTokens} prevSteps={draft.steps.slice(0, step - 1)}
                 onChange={s => setSteps(draft.steps.map((x, i) => (i === step - 1 ? s : x)))}
-                onType={t => setSteps(draft.steps.map((x, i) => (i === step - 1 ? { ...newStep(t), id: x.id } : x)))}
+                onType={t => setSteps(draft.steps.map((x, i) => (i === step - 1 ? { ...newStep(t), id: x.id, ...(x.when ? { when: x.when } : {}) } : x)))}
                 onDelete={() => setSteps(draft.steps.filter((_, i) => i !== step - 1), 0)} />
             )}
           </div>

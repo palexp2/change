@@ -24,7 +24,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import {
   Play, Pause, Trash2, ChevronUp, ChevronsUp, Plus, Sparkles, Check, X, ListOrdered, Link2, CheckCircle2, AlertTriangle, RefreshCw, ChevronDown, Send,
-  Hourglass, GripVertical, Plug, CircleStop, PauseCircle, PlayCircle,
+  Hourglass, GripVertical, Plug, PauseCircle, PlayCircle,
   Lightbulb, MessageSquare, ChevronLeft, ChevronRight, CalendarDays, Paperclip,
   Settings2, Square, Wand2, Star, ArrowUpRight, FileText, RotateCw, Power, Settings, Cpu, Github, Bot, HeartPulse, CloudUpload,
 } from 'lucide-react'
@@ -40,6 +40,7 @@ import { ClaudeUsageStrip, modelLabel } from '../components/ClaudeUsage.jsx'
 import { PageLink, requestPage } from '../components/PageLink.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Spinner from '../components/Spinner.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
 // Briques partagées avec le panneau rapide (accessible depuis toute l'app) :
@@ -93,9 +94,11 @@ const CADENCE_LABELS = {
   bihebdo: 'Deux fois par semaine', hebdo: 'Hebdomadaire', mensuel: 'Mensuel',
   trimestriel: 'Trimestriel', annuel: 'Annuel', adhoc: 'À faire une fois',
 }
-const OWNERS = [
-  { value: 'AL', label: 'Antoine (AL)' },
-  { value: 'ML', label: 'Michel (ML)' },
+// Sections des travaux récurrents : un espace par utilisateur, liste servie par
+// le serveur. Celle-ci ne sert que le temps du premier chargement.
+const DEFAULT_OWNERS = [
+  { value: 'AL', label: 'Antoine Lambert' },
+  { value: 'ML', label: 'Michel Lambert' },
 ]
 
 /** Durée écoulée lisible, rafraîchie chaque seconde tant que l'item tourne. */
@@ -359,26 +362,6 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
 
   const actions = (
     <div className="flex items-center gap-0.5 shrink-0">
-      {/* Frein posé sur un item précis : quand CELUI-CI se termine, la file se
-          met en pause au lieu d'enchaîner. La façon la plus simple de borner la
-          consommation de jetons sans surveiller la page. */}
-      {['queued', 'running'].includes(p.status) && (
-        <button
-          data-testid="travaux-stop-after"
-          data-active={p.stop_after ? '1' : '0'}
-          className={`inline-flex items-center gap-1 px-1.5 py-1 text-[11px] rounded-lg border transition ${
-            p.stop_after
-              ? 'border-amber-300 bg-amber-50 text-amber-700'
-              : 'border-transparent text-slate-400 hover:bg-slate-100 hover:text-slate-600'
-          }`}
-          title={p.stop_after
-            ? 'La file se mettra en pause une fois cette tâche terminée. Clique pour annuler.'
-            : 'Mettre la file en pause une fois cette tâche terminée — les suivantes attendront ton feu vert.'}
-          onClick={() => onPatch(p.id, { stop_after: p.stop_after ? 0 : 1 })}
-        >
-          <CircleStop size={13} />{p.stop_after ? ' Pause après' : ''}
-        </button>
-      )}
       {['done', 'blocked'].includes(p.status) && (
         <button
           className={iconBtn} data-testid="travaux-reply"
@@ -1721,19 +1704,25 @@ function IdeasTab({ toast, space }) {
       </h2>
       <div className="rounded-xl border border-slate-200 bg-white p-4 mb-5">
         <div className="text-sm font-semibold text-slate-800 mb-3">Nouvelle idée</div>
-        <input
-          className={`${inputCls} w-full`}
-          value={form.title}
-          onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) add() }}
-          data-testid="idea-title-input"
-        />
-        <textarea
-          className={`${inputCls} w-full mt-2`}
-          rows={2}
-          value={form.notes}
-          onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-        />
+        <label className="block">
+          <span className="block text-[11px] font-medium text-slate-500 mb-0.5">Titre</span>
+          <input
+            className={`${inputCls} w-full`}
+            value={form.title}
+            onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) add() }}
+            data-testid="idea-title-input"
+          />
+        </label>
+        <label className="block mt-2">
+          <span className="block text-[11px] font-medium text-slate-500 mb-0.5">Notes</span>
+          <textarea
+            className={`${inputCls} w-full`}
+            rows={2}
+            value={form.notes}
+            onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+          />
+        </label>
         <div className="flex items-center justify-between gap-3 mt-3 flex-wrap">
           <p className="text-xs text-slate-500">
             Rien ne s'exécute depuis les idées : elles restent là pour être relues.
@@ -2187,7 +2176,7 @@ function PayCalendar({ t }) {
   )
 }
 
-function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
+function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false, owners = DEFAULT_OWNERS }) {
   const { draft, edit, flush } = useRecordDraft(
     { label: t.label, day_hint: t.day_hint || '', notes: t.notes || '', due_day: t.due_day ?? '', lead_days: t.lead_days ?? '' },
     patch => onPatch(t.id, patch),
@@ -2382,7 +2371,7 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
                 data-testid="recurring-owner"
                 onChange={e => onPatch(t.id, { owner: e.target.value })}
               >
-                {OWNERS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                {owners.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
             <label className="block">
@@ -2443,7 +2432,10 @@ function isForToday(t, today) {
 
 function RecurringTab({ toast }) {
   const [tasks, setTasks] = useState([])
-  const [owner, setOwner] = useState('AL')
+  // `null` = pas encore décidé : le premier chargement apprend du serveur la
+  // section de l'utilisateur connecté, affichée par défaut.
+  const [owner, setOwner] = useState(null)
+  const [owners, setOwners] = useState(DEFAULT_OWNERS)
   const [loading, setLoading] = useState(true)
   // `form.owner` par défaut = la section affichée, mais reste choisissable :
   // on peut ajouter un travail pour l'autre personne sans changer d'onglet.
@@ -2462,11 +2454,13 @@ function RecurringTab({ toast }) {
       if (owner) params.owner = owner
       if (weekKey) params.week = weekKey
       const out = await api.travaux.listRecurring(params)
+      if (out.owners?.length) setOwners(out.owners)
+      if (owner === null) { setOwner(out.me || ''); return }
       setTasks(out.tasks)
       setWeek(out.week || null)
       setWeeks(out.weeks || [])
-    } catch (e) { toast.error(e.message) }
-    finally { setLoading(false) }
+      setLoading(false)
+    } catch (e) { toast.error(e.message); setLoading(false) }
   }, [owner, weekKey, toast])
 
   useEffect(() => { load() }, [load])
@@ -2532,7 +2526,7 @@ function RecurringTab({ toast }) {
     try {
       const out = await api.travaux.updateRecurring(id, p)
       if (p.owner) {
-        toast.success(`Assigné à ${OWNERS.find(o => o.value === p.owner)?.label || p.owner}`)
+        toast.success(`Assigné à ${owners.find(o => o.value === p.owner)?.label || p.owner}`)
         load()
       }
       return out
@@ -2596,18 +2590,18 @@ function RecurringTab({ toast }) {
   return (
     <div>
       <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-        <div className="flex items-center gap-1.5">
-          {OWNERS.map(o => (
-            <button
-              key={o.value}
-              className={`px-3 py-1.5 text-sm rounded-lg ${owner === o.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-              onClick={() => setOwner(o.value)}
-            >{o.label}</button>
-          ))}
-          <button
-            className={`px-3 py-1.5 text-sm rounded-lg ${owner === '' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-            onClick={() => setOwner('')}
-          >Tout le monde</button>
+        {/* Un espace par utilisateur ; celui de l'utilisateur connecté s'ouvre par défaut. */}
+        <div className="w-56" data-testid="recurring-owner-filter">
+          <SearchableSelect
+            value={owner ?? ''}
+            options={owners}
+            onChange={v => setOwner(v || '')}
+            emptyOption="Tout le monde"
+            placeholder="Tout le monde"
+            className="input-field text-sm w-full"
+            size="sm"
+            testId="recurring-owner-select"
+          />
         </div>
         <div className="text-xs text-slate-500" data-testid="recurring-remaining">
           {remaining} {remaining > 1 ? 'travaux' : 'travail'} à faire {isCurrent ? 'cette semaine' : 'cette semaine-là'}
@@ -2642,7 +2636,7 @@ function RecurringTab({ toast }) {
                   <CatchUpRow key={`${t.id}:${period.period_key}`} t={t} period={period} currentLabel={t.period_label} onToggle={toggle} />
                 )))}
                 {todayTasks.map(t => (
-                  <RecurringRow key={t.id} t={t} onToggle={toggle} onPatch={patch} onDelete={remove} fading={fading.has(t.id)} />
+                  <RecurringRow key={t.id} t={t} onToggle={toggle} onPatch={patch} onDelete={remove} fading={fading.has(t.id)} owners={owners} />
                 ))}
               </div>
             </div>
@@ -2669,7 +2663,7 @@ function RecurringTab({ toast }) {
               )}
               <div className="p-1">
                 {g.todo.length ? g.todo.map(t => (
-                  <RecurringRow key={t.id} t={t} onToggle={toggle} onPatch={patch} onDelete={remove} fading={fading.has(t.id)} />
+                  <RecurringRow key={t.id} t={t} onToggle={toggle} onPatch={patch} onDelete={remove} fading={fading.has(t.id)} owners={owners} />
                 )) : g.catchUp.length ? (
                   <div className="px-3 py-2.5 text-sm text-amber-700">
                     Rien à faire pour {g.period_label} — il reste la période à rattraper ci-dessus.
@@ -2697,7 +2691,7 @@ function RecurringTab({ toast }) {
                   {isDoneOpen(g) && (
                     <div className="p-1 pt-0" data-testid={`recurring-done-${g.cadence}`}>
                       {g.done.map(t => (
-                        <RecurringRow key={t.id} t={t} onToggle={toggle} onPatch={patch} onDelete={remove} />
+                        <RecurringRow key={t.id} t={t} onToggle={toggle} onPatch={patch} onDelete={remove} owners={owners} />
                       ))}
                     </div>
                   )}
@@ -2724,7 +2718,7 @@ function RecurringTab({ toast }) {
           title="À qui ce travail revient"
           onChange={e => setForm(f => ({ ...f, owner: e.target.value }))}
         >
-          {OWNERS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {owners.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <button className={btnPrimary} onClick={add} disabled={!form.label.trim()}><Plus size={14} /> Ajouter</button>
       </div>
@@ -2788,6 +2782,9 @@ function QueuePauseControl({ toast }) {
   }
 
   const paused = !!state?.paused
+  // Plus de bouton « Pause » (retiré à la demande) : seul « Reprendre la file »
+  // reste, quand la file a été mise en pause autrement (« arrêter après celle-ci »).
+  if (!paused) return null
   return (
     <button
       data-testid="travaux-pause-queue"

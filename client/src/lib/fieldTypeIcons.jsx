@@ -1,7 +1,7 @@
 import {
   Type, AlignLeft, Hash, DollarSign, Timer, Calendar, CalendarClock, Clock,
   Link2, Table2, Phone, CheckSquare, CircleChevronDown, Tags, Search, Sigma, Percent,
-  SquareFunction, MousePointerClick, User, UserCog, Paperclip, Star, Mail, ListOrdered, Barcode,
+  SquareFunction, MousePointerClick, User, UserCog, Paperclip, Star, Mail, ListOrdered, Barcode, ArrowUp01, Cpu,
 } from 'lucide-react'
 
 // Icônes des types de champ — un pictogramme par type, partagé partout où un
@@ -59,6 +59,9 @@ const ICONS = {
   last_modified_time: Clock,
   created_by:         UserCog,
   last_modified_by:   UserCog,
+  autonumber:         ArrowUp01,
+  // Calculé par Boréal : valeur tenue par un calcul de l'app (stock, seuil…).
+  erp_computed:       Cpu,
 }
 
 // Clé d'icône d'une définition de champ. Un champ virtuel est reconnu à son
@@ -70,6 +73,7 @@ export function fieldIconKey(field) {
   // table (cf. linkTargetOfType, fieldOverrides.jsx) : même icône que 'link'.
   if (typeof field === 'string' && field.startsWith('link:')) return 'link'
   if (typeof field === 'string') return ICONS[field] ? field : 'text'
+  if (field.erp_computed) return 'erp_computed'
   const kind = field.kind
   if (isCountField(field)) return 'count'
   if (kind && kind !== 'data' && ICONS[kind]) return kind

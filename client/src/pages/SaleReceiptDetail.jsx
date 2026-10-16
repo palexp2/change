@@ -11,6 +11,7 @@ import { api } from '../lib/api.js'
 import { fmtDate, fmtDateTime, fmtDayShort } from '../lib/formatDate.js'
 import { CurrencyConversionModal } from '../components/CurrencyConversionModal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { PeekFooter } from '../components/PeekFooter.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -1156,18 +1157,17 @@ function CurrencyField({ receipt, onUpdate }) {
   return (
     <>
       <div className="flex items-center gap-2 mt-0.5">
-        <select
-          className="input-field text-sm py-1 px-2"
-          data-testid="receipt-currency"
-          value={value}
-          onChange={e => { setValue(e.target.value); commit(e.target.value) }}
-          disabled={saving}
-        >
-          <option value="">—</option>
-          <option value="CAD">CAD</option>
-          <option value="USD">USD</option>
-          <option value="EUR">EUR</option>
-        </select>
+        <div className="w-32">
+          <ChoiceSelect
+            className="input text-sm w-full"
+            testId="receipt-currency"
+            value={value}
+            choices={['CAD', 'USD', 'EUR']}
+            table="sale_receipts" field="currency" colorsOnly
+            onChange={v => { setValue(v); commit(v) }}
+            disabled={saving}
+          />
+        </div>
         {saving && <ThinkingOrb size={12} ink className="text-slate-400" />}
       </div>
       {/* Les montants du dossier ont été convertis : ils ne sont plus ceux du document.

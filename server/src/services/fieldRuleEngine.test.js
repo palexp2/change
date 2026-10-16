@@ -40,6 +40,14 @@ test('empty in list is an always-false predicate', () => {
   })
 })
 
+test('not_in matches empty values too; an empty list matches everything', () => {
+  assert.deepEqual(buildOpPredicate('phase', 'not_in', ['A', 'B', '']), {
+    predicate: '(t.phase IS NULL OR t.phase NOT IN (?,?))',
+    params: ['A', 'B'],
+  })
+  assert.deepEqual(buildOpPredicate('phase', 'not_in', []), { predicate: '1=1', params: [] })
+})
+
 test('numeric ops CAST the column to REAL and coerce value to Number', () => {
   // The column is TEXT in DB (e.g. orders.nombre_d_items) — without CAST,
   // "10" < "2" lexicographically. The CAST is what makes "> 1" mean numeric.

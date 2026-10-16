@@ -12,6 +12,7 @@ const cmdKey = isMac ? '⌘' : 'Ctrl'
 // `admin` : raccourci réservé aux admins (masqué pour les autres).
 const SYSTEM_SHORTCUTS = [
   { keys: [cmdKey, 'K'], label: 'Recherche globale' },
+  { keys: [cmdKey, 'Z'], label: 'Annuler la dernière modification' },
   { keys: [cmdKey, '/'], label: 'File de travaux (ajouter un prompt, répondre à Claude)' },
   { keys: ['M'], label: 'Modifier le système', admin: true },
   { keys: ['?'], label: 'Aide des raccourcis' },

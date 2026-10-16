@@ -18,6 +18,7 @@
 //   single_select                  : TEXT   = LIBELLÉ du choix
 //   multi_select                   : TEXT   = tableau JSON de libellés
 //   attachment                     : TEXT   = tableau JSON de descripteurs de fichiers
+//   user                           : TEXT   = NOM du membre de l'équipe
 
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
@@ -169,6 +170,18 @@ function choiceIndex(options) {
   return idx.size ? idx : null
 }
 
+// Membres actifs de l'équipe : nom ou courriel normalisé → nom exact. Un texte
+// qui ne désigne personne ne devient pas un utilisateur (comme Airtable).
+function userIndex() {
+  const idx = new Map()
+  for (const u of db.prepare(`SELECT name, email FROM users WHERE active = 1 AND deleted_at IS NULL`).all()) {
+    if (!u.name) continue
+    idx.set(norm(u.name), u.name)
+    if (u.email) idx.set(norm(u.email), u.name)
+  }
+  return idx
+}
+
 // Un champ adopté d'une DURÉE Airtable mais typé texte côté Boréal garde ce
 // qu'Airtable envoie : des secondes nues (« 1500 » = 25 min). Le relire comme
 // une saisie (entier nu = minutes) multiplierait tout par 60.
@@ -184,7 +197,7 @@ function mirrorsAirtableDuration(field) {
   } catch { return false }
 }
 
-function textToValue(text, type, options, { choices, bareSeconds } = {}) {
+function textToValue(text, type, options, { choices, bareSeconds, users } = {}) {
   switch (type) {
     case 'text':
     case 'long_text':
@@ -223,6 +236,10 @@ function textToValue(text, type, options, { choices, bareSeconds } = {}) {
       const n = textToNumber(text)
       if (n !== null) return { ok: true, value: n === 0 ? 0 : 1 }
       return { ok: false }
+    }
+    case 'user': {
+      const hit = (users || userIndex()).get(norm(text))
+      return hit === undefined ? { ok: false } : { ok: true, value: hit }
     }
     case 'single_select': {
       if (!choices) return { ok: false }
@@ -326,13 +343,14 @@ export function planTypeConversion(field, toType, toOptions) {
   }
 
   const bareSeconds = toType === 'duration' && fromType !== 'duration' && mirrorsAirtableDuration(field)
+  const users = toType === 'user' ? userIndex() : null
   const failCounts = new Map()
   const convByText = new Map()
   for (const r of rows) {
     const text = textOf(r.v)
     if (text == null) { plan.clears.push(r.id); continue }
     if (!convByText.has(text)) {
-      convByText.set(text, UNFABRICABLE.has(toType) ? { ok: false } : textToValue(text, toType, toOptions, { choices, bareSeconds }))
+      convByText.set(text, UNFABRICABLE.has(toType) ? { ok: false } : textToValue(text, toType, toOptions, { choices, bareSeconds, users }))
     }
     const res = convByText.get(text)
     if (res.ok) {

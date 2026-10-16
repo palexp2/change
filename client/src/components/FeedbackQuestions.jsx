@@ -34,6 +34,7 @@ export function FeedbackQuestions({ hidden = false }) {
   const [ids, setIds] = useState(readIds)
   const [prompts, setPrompts] = useState([])
   const [open, setOpen] = useState(false)
+  const [tab, setTab] = useState(null)
   const seq = useRef(0)
 
   useEffect(() => {
@@ -73,6 +74,10 @@ export function FeedbackQuestions({ hidden = false }) {
 
   if (!ids.length) return null
   const answered = prompts.filter(p => !thinking(p)).length
+  // Plusieurs fils : un onglet par question, un seul fil affiché à la fois.
+  const tabbed = prompts.length > 1
+  const current = prompts.find(p => p.id === tab) || prompts[0]
+  const shown = tabbed ? [current] : prompts
 
   return (
     <>
@@ -98,7 +103,33 @@ export function FeedbackQuestions({ hidden = false }) {
 
       <Modal isOpen={open} onClose={() => setOpen(false)} title="Mes questions" size="md" zIndex={95}>
         <div className="space-y-4" data-testid="feedback-questions-list">
-          {prompts.map(p => (
+          {tabbed && (
+            <div className="flex items-center gap-1 flex-wrap border-b border-slate-200 pb-2" role="tablist">
+              {prompts.map(p => {
+                const active = p.id === current.id
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    data-testid="feedback-question-tab"
+                    onClick={() => setTab(p.id)}
+                    title={askedText(p)}
+                    className={`max-w-[12rem] px-2.5 py-1 rounded-lg text-sm font-medium inline-flex items-center gap-1.5 ${
+                      active ? 'bg-brand-50 text-brand-700' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {thinking(p)
+                      ? <ThinkingOrb state="working" size={10} ink />
+                      : <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />}
+                    <span className="truncate">{askedText(p)}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+          {shown.map(p => (
             <div key={p.id} className="border border-slate-200 rounded-lg p-3 space-y-2">
               <div className="flex items-start gap-2">
                 <HelpCircle size={14} className="text-slate-400 mt-0.5 shrink-0" />
@@ -110,7 +141,7 @@ export function FeedbackQuestions({ hidden = false }) {
                 <div className="text-sm text-slate-600 whitespace-pre-wrap bg-slate-50 rounded-lg px-3 py-2">{p.user_summary}</div>
               )}
               {isAsking(p) && <QuestionChoices p={p} onAnswer={opt => reply(p.id, opt)} />}
-              {!thinking(p) && <ReplyBox onSend={(text, placement) => reply(p.id, text, placement)} />}
+              {!thinking(p) && <ReplyBox simple enterSends onSend={(text, placement) => reply(p.id, text, placement)} />}
               <div className="flex justify-end">
                 <button
                   type="button"

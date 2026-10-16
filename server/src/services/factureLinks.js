@@ -57,12 +57,90 @@ function findStripeFactureByDocNumber(documentNumber) {
   `).get(documentNumber) || null
 }
 
+// ── Jumeau Airtable d'une facture (factures.airtable_id) ─────────────────────
+//
+// Depuis le débranchement du sync complet (avril 2026), plus rien ne posait
+// `airtable_id` sur les factures nées dans Stripe : le write-back les sautait
+// (« record non lié ») et un champ réglé Boréal → Airtable ne partait jamais.
+// Le lien se pose par le numéro de document, seulement s'il est sans ambiguïté :
+// une seule facture ERP porte ce numéro, et aucune autre n'a déjà ce record.
+export function linkFactureAirtableId(documentNumber, recordId) {
+  if (!documentNumber || !recordId) return false
+  const rows = db.prepare('SELECT id, airtable_id FROM factures WHERE document_number=?').all(documentNumber)
+  if (rows.length !== 1 || rows[0].airtable_id) return false
+  if (db.prepare('SELECT 1 FROM factures WHERE airtable_id=?').get(recordId)) return false
+  db.prepare('UPDATE factures SET airtable_id=? WHERE id=?').run(recordId, rows[0].id)
+  return rows[0].id
+}
+
+const formulaString = s => `'${String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+
+// Records Airtable portant ces numéros de document (par lots de 50).
+async function fetchByDocumentNumbers(docNumbers, fieldMap = getFieldMap()) {
+  const token = await getAccessToken()
+  const out = []
+  for (let i = 0; i < docNumbers.length; i += 50) {
+    const slice = docNumbers.slice(i, i + 50)
+    const formula = `OR(${slice.map(d => `{${fieldMap.document_number}}=${formulaString(d)}`).join(',')})`
+    let offset = null
+    do {
+      const url = `/${FACTURES_BASE_ID}/${FACTURES_TABLE_ID}`
+        + `?fields[]=${encodeURIComponent(fieldMap.document_number)}`
+        + `&filterByFormula=${encodeURIComponent(formula)}&pageSize=100`
+        + (offset ? `&offset=${encodeURIComponent(offset)}` : '')
+      const data = await airtableFetch(url, token)
+      out.push(...(data.records || []))
+      offset = data.offset || null
+    } while (offset)
+  }
+  return out
+}
+
+// Pose les liens d'une liste de records : un numéro présent deux fois côté
+// Airtable reste non lié (ambigu).
+function linkRecords(records, fieldMap) {
+  const byDoc = new Map()
+  for (const r of records) {
+    const doc = r.fields?.[fieldMap.document_number]
+    if (doc) byDoc.set(doc, byDoc.has(doc) ? null : r.id)
+  }
+  let linked = 0
+  db.transaction(() => {
+    for (const [doc, recId] of byDoc) if (recId && linkFactureAirtableId(doc, recId)) linked++
+  })()
+  return linked
+}
+
+// Résolution à la demande (write-back d'une facture encore non liée).
+export async function resolveFactureAirtableId(row) {
+  if (row?.airtable_id) return row.airtable_id
+  if (!row?.document_number) return null
+  const fieldMap = getFieldMap()
+  linkRecords(await fetchByDocumentNumbers([row.document_number], fieldMap), fieldMap)
+  return db.prepare('SELECT airtable_id FROM factures WHERE id=?').get(row.id)?.airtable_id || null
+}
+
+// Rattrapage : toutes les factures sans jumeau Airtable.
+export async function backfillFactureAirtableIds() {
+  const docs = db.prepare(`
+    SELECT document_number FROM factures
+    WHERE airtable_id IS NULL AND document_number IS NOT NULL AND document_number <> ''
+    GROUP BY document_number HAVING COUNT(*) = 1
+  `).all().map(r => r.document_number)
+  if (!docs.length) return { candidates: 0, linked: 0 }
+  const fieldMap = getFieldMap()
+  const records = await fetchByDocumentNumbers(docs, fieldMap)
+  return { candidates: docs.length, fetched: records.length, linked: linkRecords(records, fieldMap) }
+}
+
 // Applique les liens Projet/Commande d'un record Airtable à la facture ERP
 // correspondante, dans le respect des règles ci-dessus.
 // Retourne 'set-project' | 'set-order' | 'no-stripe-match' | 'already-linked' | 'no-airtable-link'.
 function applyLink(record, fieldMap = getFieldMap()) {
   const documentNumber = record.fields?.[fieldMap.document_number]
   if (!documentNumber) return 'no-document-number'
+  // Toute facture vue passer au webhook reçoit son jumeau Airtable.
+  linkFactureAirtableId(documentNumber, record.id)
 
   const facture = findStripeFactureByDocNumber(documentNumber)
   if (!facture) return 'no-stripe-match'

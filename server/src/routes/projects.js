@@ -234,7 +234,7 @@ router.get('/:id/commissions', async (req, res) => {
   const project = db.prepare('SELECT id, commissions FROM projects WHERE id = ?').get(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   try {
-    const data = await fetchProjectCommissions(project.commissions);
+    const data = await fetchProjectCommissions(project.commissions, project.id);
     res.json({ data });
   } catch (e) {
     res.status(502).json({ error: e.message });
@@ -272,7 +272,7 @@ router.post('/:id/commissions', async (req, res) => {
     // Même forme que l'import Airtable (« rec1, rec2 »), pour ne pas mélanger
     // deux écritures du même champ.
     db.prepare('UPDATE projects SET commissions = ? WHERE id = ?').run(ids.join(', '), project.id);
-    const data = await fetchProjectCommissions(ids.join(', '));
+    const data = await fetchProjectCommissions(ids.join(', '), project.id);
     res.status(201).json({ id: recordId, data });
   } catch (e) {
     res.status(502).json({ error: e.message });

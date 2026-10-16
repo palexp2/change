@@ -3,6 +3,7 @@ import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { broadcastAll } from '../services/realtime.js'
 
 const router = Router()
 
@@ -17,7 +18,7 @@ const ALLOWED_TABLES = new Set([
   'public_files', 'qualification_calls', 'soumissions', 'stock_movements', 'achats_fournitures', 'fournitures',
   'product_movements', 'sync_log', 'bank_transactions',
   'stripe_invoice_items', 'stripe_payouts', 'users', 'payments',
-  'ops_issues',
+  'ops_issues', 'important_documents',
   // Vues dérivées (pas de table DB) — règles comptables des numéros de série.
   'serial_transitions', 'serial_accounting_rules', 'serial_missing_valuations',
   // ── Clés de vue des tableaux ENCASTRÉS dans une fiche ───────────────────
@@ -37,7 +38,7 @@ const ALLOWED_TABLES = new Set([
   'contact_tasks', 'serial_state_changes',
   // Pages listes sans table SQL propre (ou dérivée) qui n'avaient pas leur clé.
   'activity_log', 'activity_codes', 'changelog', 'mapaq_import', 'vendor_profiles',
-  'email_templates',
+  'email_templates', 'marketing_email_templates',
   // Revenus perçus d'avance : lignes calculées mois par mois, aucune table SQL.
   'revenus_reportes',
   // File de travaux (/travaux) : items du store de l'agent, aucune table SQL.
@@ -53,6 +54,7 @@ const ALLOWED_TABLES = new Set([
 const VIEW_KEY_TO_SQL_TABLE = {
   retours: 'returns',
   abonnements: 'subscriptions',
+  abonnement_events: 'subscription_events',
   // Articles d'un envoi (fiche envoi) : lignes order_items, vues séparées.
   shipment_items: 'order_items',
   // Articles d'un retour (fiche retour) : lignes return_items.
@@ -449,6 +451,8 @@ router.put('/detail/:entityType', requireAdmin, (req, res) => {
         hasDelete ? deleteVal : null, hasSections ? sectionsVal : null, hasSizes ? sizesVal : null,
         hasHeader ? headerVal : null)
   }
+  // Les autres sessions ouvertes rechargent la configuration de la fiche.
+  broadcastAll({ type: 'detail_layout:updated', entity_type: req.params.entityType })
   res.json({ ok: true })
 })
 

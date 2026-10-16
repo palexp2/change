@@ -9,6 +9,7 @@ import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { LineItemsTable } from '../components/LineItemsTable.jsx'
@@ -90,7 +91,30 @@ function emptyForm(type) {
 }
 
 // Exporté : la fiche Entreprise ouvre le même panneau depuis son onglet « Achats fourn. ».
-export function AchatModal({ achat, initialType, onClose, onSaved }) {
+// Champ date en texte AAAA-MM-JJ (le type="date" natif suit la langue du
+// navigateur). Calendrier via data-date-picker ; saisie invalide → revient.
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+function IsoDateInput({ value, onCommit, required }) {
+  const current = value ? String(value).slice(0, 10) : ''
+  const [local, setLocal] = useState(current)
+  useEffect(() => { setLocal(current) }, [current])
+  const commit = raw => {
+    const s = String(raw ?? '').trim()
+    if (s === current) return
+    const valid = ISO_DATE.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s
+    if (s !== '' && !valid) { setLocal(current); return }
+    onCommit(s)
+  }
+  return (
+    <input type="text" inputMode="numeric" data-date-picker value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => commit(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      className="input tabular-nums" required={required} />
+  )
+}
+
+export function AchatModal({ achat, initialType, onClose, onSaved, isoDates = false }) {
   const isEdit = !!achat?.id
   const [form, setForm] = useState(achat
     ? { ...achat, amount_cad: achat.amount_cad ?? '', tax_cad: achat.tax_cad ?? '', amount_paid_cad: achat.amount_paid_cad ?? '' }
@@ -125,6 +149,10 @@ export function AchatModal({ achat, initialType, onClose, onSaved }) {
   const fBlur = (k) => (e) => saveField({ [k]: e.target.value })
   const fSelect = (k) => (e) => {
     const v = e.target.value
+    setForm(p => ({ ...p, [k]: v }))
+    saveField({ [k]: v })
+  }
+  const commitDate = (k) => (v) => {
     setForm(p => ({ ...p, [k]: v }))
     saveField({ [k]: v })
   }
@@ -177,9 +205,14 @@ export function AchatModal({ achat, initialType, onClose, onSaved }) {
         </div>
         <div>
           <label className="label">Statut</label>
-          <select value={form.status} onChange={isEdit ? fSelect('status') : f('status')} className="input">
-            {(isBill ? BILL_STATUS : PURCHASE_STATUS).map(s => <option key={s}>{s}</option>)}
-          </select>
+          <ChoiceSelect
+            value={form.status}
+            choices={(isBill ? BILL_STATUS : PURCHASE_STATUS).map(v => ({ value: v, color: STATUS_COLORS[v] }))}
+            table="achats_fournisseurs" field="status" colorsOnly
+            onChange={v => { setForm(p => ({ ...p, status: v })); if (isEdit) saveField({ status: v }) }}
+            emptyOption={null}
+            className="input w-full"
+          />
         </div>
       </div>
 
@@ -204,12 +237,16 @@ export function AchatModal({ achat, initialType, onClose, onSaved }) {
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Date *</label>
-          <input type="date" value={form.date_achat} onChange={isEdit ? fSelect('date_achat') : f('date_achat')} className="input" required />
+          {isoDates
+            ? <IsoDateInput value={form.date_achat} onCommit={commitDate('date_achat')} required />
+            : <input type="date" value={form.date_achat} onChange={isEdit ? fSelect('date_achat') : f('date_achat')} className="input" required />}
         </div>
         {isBill ? (
           <div>
             <label className="label">Date d'échéance</label>
-            <input type="date" value={form.due_date || ''} onChange={isEdit ? fSelect('due_date') : f('due_date')} className="input" />
+            {isoDates
+              ? <IsoDateInput value={form.due_date} onCommit={commitDate('due_date')} />
+              : <input type="date" value={form.due_date || ''} onChange={isEdit ? fSelect('due_date') : f('due_date')} className="input" />}
           </div>
         ) : (
           <div>

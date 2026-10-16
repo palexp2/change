@@ -8,6 +8,7 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { invalidate } from '../lib/prefetch.js'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { Modal } from './Modal.jsx'
+import { ChoiceSelect } from './ChoiceSelect.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 import Spinner from './Spinner.jsx'
@@ -269,15 +270,14 @@ export default function FacturePaymentsSection({
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <label className="label">Mode</label>
-              <select
+              <ChoiceSelect
                 value={method}
-                onChange={e => setMethod(e.target.value)}
-                className="input input-sm"
-              >
-                {MANUAL_METHODS.map(m => (
-                  <option key={m} value={m}>{METHOD_LABELS[m]}</option>
-                ))}
-              </select>
+                choices={MANUAL_METHODS.map(m => ({ value: m, label: METHOD_LABELS[m] }))}
+                table="payments" field="method" colorsOnly
+                onChange={setMethod}
+                className="input input-sm w-full"
+                emptyOption={null}
+              />
             </div>
             <div>
               <label className="label">Date</label>
@@ -302,14 +302,14 @@ export default function FacturePaymentsSection({
             </div>
             <div>
               <label className="label">Devise</label>
-              <select
+              <ChoiceSelect
                 value={currency}
-                onChange={e => setCurrency(e.target.value)}
-                className="input input-sm"
-              >
-                <option value="CAD">CAD</option>
-                <option value="USD">USD</option>
-              </select>
+                choices={['CAD', 'USD']}
+                table="payments" field="currency" colorsOnly
+                onChange={setCurrency}
+                className="input input-sm w-full"
+                emptyOption={null}
+              />
             </div>
           </div>
           <div className="mt-3">

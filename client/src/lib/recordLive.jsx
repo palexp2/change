@@ -82,6 +82,7 @@ export const ENTITY_TABLES = {
   subscription: 'subscriptions',
   activity_code: 'activity_codes',
   ops_issue: 'ops_issues',
+  important_document: 'important_documents',
 }
 
 // ── Mémoire courte des pastilles ────────────────────────────────────────────

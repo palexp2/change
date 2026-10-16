@@ -3,6 +3,7 @@ import { newRecordId } from '../utils/recordId.js'
 import { sendSlack } from './slack.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
 import { emitEntity } from './realtimeEmitters.js'
+import { quebecHolidays as paieHolidays } from './paieSchedule.js'
 
 // Congés saisis par l'employé depuis sa feuille de temps (bouton « Congé »).
 // Même modèle que la table Congés d'Airtable RH : employé, début, fin, jours
@@ -34,21 +35,11 @@ export function employeeForUser(userId) {
 
 const iso = d => d.toISOString().slice(0, 10)
 const utc = s => new Date(s + 'T00:00:00Z')
-function nthMonday(y, m, n) { const d = new Date(Date.UTC(y, m, 1)); d.setUTCDate(1 + ((8 - d.getUTCDay()) % 7) + 7 * (n - 1)); return iso(d) }
-// Férié tombant la fin de semaine → lundi suivant (Noël, St-Jean, Canada, Jour de l'An).
-function observed(y, m, day) { const d = new Date(Date.UTC(y, m, day)); const w = d.getUTCDay(); if (w === 6) d.setUTCDate(day + 2); if (w === 0) d.setUTCDate(day + 1); return iso(d) }
-function easter(y) {
-  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25)
-  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4
-  const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451)
-  return new Date(Date.UTC(y, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1))
-}
-// Jours fériés du Québec (mêmes dates que la table « Jours fériés » d'Airtable RH).
+// Jours fériés : la liste de la paie (fériés observés, lendemain de Noël compris) fait foi.
+const holidayCache = new Map()
 export function quebecHolidays(y) {
-  const gf = easter(y); gf.setUTCDate(gf.getUTCDate() - 2)
-  const may25 = new Date(Date.UTC(y, 4, 25)); may25.setUTCDate(25 - (((may25.getUTCDay() + 6) % 7) || 7))
-  return new Set([observed(y, 0, 1), iso(gf), iso(may25), observed(y, 5, 24), observed(y, 6, 1),
-    nthMonday(y, 8, 1), nthMonday(y, 9, 2), observed(y, 11, 25)])
+  if (!holidayCache.has(y)) holidayCache.set(y, new Set(paieHolidays(y).map(h => h.date)))
+  return holidayCache.get(y)
 }
 
 // Jours ouvrables du congé, sans fins de semaine ni fériés (« Jours de travail » d'Airtable).
@@ -62,16 +53,14 @@ export function workdays(start, end) {
 }
 
 const WD = ['dimanche', 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi']
-const MO = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
-const dayLabel = (s, withMonth = true) => { const d = utc(s); return `${WD[d.getUTCDay()]} ${d.getUTCDate() === 1 ? '1er' : d.getUTCDate()}${withMonth ? ` ${MO[d.getUTCMonth()]}` : ''}` }
+const dayLabel = s => `${WD[utc(s).getUTCDay()]} ${s.slice(0, 10)}`
 const fmtDays = n => String(n).replace('.', ',')
 
-// « lundi 5 octobre », « du lundi 5 au vendredi 9 octobre (5 jours) », « lundi 5 octobre (demi-journée) ».
+// « lundi 2026-10-05 », « du lundi 2026-10-05 au vendredi 2026-10-09 (5 jours) », « lundi 2026-10-05 (demi-journée) ».
 export function whenLabel(v) {
   const days = v.days ?? workdays(v.start_date, v.end_date)
   if (v.start_date === v.end_date) return `${dayLabel(v.start_date)}${days === 0.5 ? ' (demi-journée)' : ''}`
-  const sameMonth = v.start_date.slice(0, 7) === v.end_date.slice(0, 7)
-  return `du ${dayLabel(v.start_date, !sameMonth)} au ${dayLabel(v.end_date)} (${fmtDays(days)} jour${days > 1 ? 's' : ''})`
+  return `du ${dayLabel(v.start_date)} au ${dayLabel(v.end_date)} (${fmtDays(days)} jour${days > 1 ? 's' : ''})`
 }
 
 function config() {

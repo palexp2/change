@@ -1,7 +1,7 @@
 import { usePrivateFile } from './usePrivateFile.js'
 import { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, Check, Zap, Phone, Mail, ImageOff, Paperclip, FileText } from 'lucide-react'
+import { ExternalLink, Check, Zap, Phone, Mail, ImageOff, Paperclip, FileText, User } from 'lucide-react'
 import { PdfThumb, attachmentKind, AttachmentPreviewModal } from '../components/AttachmentPreview.jsx'
 import { SheetThumb } from '../components/SheetPreview.jsx'
 import { useRecordLinks } from './useRecordLinks.js'
@@ -13,6 +13,7 @@ import { formatPercent, percentFill, normalizePercentDisplay } from './percent.j
 import { formatDecimals } from './decimalPrefs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { RatingStars } from '../components/RatingStars.jsx'
+import { UserCellEditor } from '../components/UserPicker.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import api from './api.js'
 import ThinkingOrb from '../components/ThinkingOrb'
@@ -468,7 +469,8 @@ export function parseLinkedKeys(value, { splitCommas = true } = {}) {
 // qu'une fiche pose quand la restriction dépend de l'enregistrement affiché et
 // non du champ : l'adresse de livraison d'une commande ne se choisit que parmi
 // les adresses de SON entreprise.
-// `widePicker` : liste déroulante large, libellés entiers (cf. LinkedRecordField).
+// `widePicker` : liste déroulante large, libellés entiers (cf. LinkedRecordField) ;
+// la pastille montre aussi l'adresse au complet (`full`) quand la cible en a une.
 export function LinkedRecordsValue({ field, value, byLabel = false, detail = false, onChange = null, saving = false, navigable = true, extraFilter = null, widePicker = false }) {
   const keys = useMemo(() => parseLinkedKeys(value, { splitCommas: !byLabel }), [value, byLabel])
   const target = field?.record_link_target || null
@@ -503,8 +505,9 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
           <LinkedRecordField
             key={`${key}-${i}`}
             value={key}
-            options={[{ id: key, name: chipLabel(resolved[i], key) }]}
+            options={[{ id: key, name: (widePicker && resolved[i]?.full) || chipLabel(resolved[i], key) }]}
             labelFn={o => o.name}
+            wrap={widePicker}
             getHref={navigable && resolved[i]?.url ? () => resolved[i].url : undefined}
             searchTarget={target}
             searchFilter={filter}
@@ -540,7 +543,8 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
     // Pourquoi cette pastille ne s'ouvre pas en picker : le champ est alimenté
     // par Airtable en sens import, toute saisie serait écrasée au prochain sync
     // (même règle que le toast des cellules de tableau).
-    const why = field?.writable === false
+    const why = field?.erp_computed ? 'Calculé par Boréal — non modifiable'
+      : field?.writable === false
       ? "Importé d'Airtable — modifiable une fois le sens de sync passé en bidirectionnel"
       : null
     return (
@@ -952,6 +956,8 @@ export const CUSTOM_FIELD_TABLES = new Set([
   // Problèmes d'opérations (/problemes-operations) : champs perso acceptés par
   // la route CRUD, donc saisissables sur la fiche comme dans le tableau.
   'ops_issues',
+  // Mouvements d'abonnements (/abonnements/mouvements).
+  'subscription_events',
 ])
 
 // Clés de vue DataTable dont la table SQL sous-jacente porte un autre nom.
@@ -961,6 +967,7 @@ export const CUSTOM_FIELD_TABLES = new Set([
 const VIEW_KEY_TO_SQL_TABLE = {
   retours: 'returns',
   abonnements: 'subscriptions',
+  abonnement_events: 'subscription_events',
   // Articles d'un envoi (EnvoisDetail) : ce sont des order_items, mais avec
   // leurs propres vues/colonnes visibles, séparées du tableau Articles de la
   // fiche commande.
@@ -1055,7 +1062,7 @@ export function customFieldToColumn(f) {
     // il pilote filtre/tri/édition et ne doit pas changer.
     // Champ lien Airtable : son type stocké est 'text' (la colonne porte des
     // identifiants), mais c'est un lien — icône et libellé doivent le dire.
-    fieldType: isRecordLinkField(f) ? 'link' : (f.kind && f.kind !== 'data' ? f.kind : f.type),
+    fieldType: f.erp_computed ? 'erp_computed' : isRecordLinkField(f) ? 'link' : (f.kind && f.kind !== 'data' ? f.kind : f.type),
     // Champ lien : la cellule ne s'édite pas au clavier mais par associations /
     // dissociations — pastilles avec « × » + liste recherchable de la table
     // cible (cf. components/LinkCellEditor.jsx). `record_link_target` peut rester
@@ -1079,6 +1086,10 @@ export function customFieldToColumn(f) {
     // Select : on expose les choix au filtre (FilterRow) et à l'éditeur inline.
     ...((f.type === 'single_select' || f.type === 'multi_select')
       ? { options: parseSelectChoices(f), selectChoices: parseSelectChoices(f) }
+      : {}),
+    // Utilisateur : la cellule s'édite dans la liste des membres de l'équipe.
+    ...(f.type === 'user'
+      ? { renderEditor: ({ row, commit, cancel }) => <UserCellEditor value={row[f.column_name]} onCommit={commit} onCancel={cancel} /> }
       : {}),
     // Durée : format d'affichage (h:mm / h:mm:ss) pour DynamicCell.
     ...(f.type === 'duration' ? { durationFormat: durationFormatOf(f) } : {}),
@@ -1106,7 +1117,7 @@ export function customFieldToColumn(f) {
     editable: f.type !== 'button' && !isAttachmentField(f) && (!f.kind || f.kind === 'data') && f.writable !== false,
     // Flag pour l'UI (toast explicatif au double-clic) : la cellule est en
     // lecture seule PARCE QUE le champ est importé d'Airtable en sens 'pull'.
-    ...(f.writable === false ? { airtablePullReadonly: true } : {}),
+    ...(f.erp_computed ? { erpComputed: true } : f.writable === false ? { airtablePullReadonly: true } : {}),
     render: row => renderCustomFieldValue(f, row[f.column_name], row),
   }
 }
@@ -1140,6 +1151,8 @@ export function customFieldColumnType(f) {
       || f.result_type === 'currency' || f.type === 'percent' || f.result_type === 'percent') return 'number'
   if (f.type === 'single_select') return 'single_select'
   if (f.type === 'multi_select') return 'multi_select'
+  // Utilisateur : le filtre propose « Est moi » et la liste des noms.
+  if (f.type === 'user') return 'user'
   return 'text'
 }
 
@@ -1322,6 +1335,9 @@ export function renderCustomFieldValue(field, value, row, { detail = false, link
   if (field.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodeOf(field)} />
   if (field.type === 'email') return <EmailValue value={value} />
   if (field.type === 'barcode') return <span className="font-mono text-slate-700">{value}</span>
+  if (field.type === 'user') {
+    return <span className="inline-flex items-center gap-1 text-slate-700"><User size={12} className="text-slate-400 shrink-0" />{value}</span>
+  }
   if (linkifyTextUrls && typeof value === 'string' && /^https?:\/\/\S+$/i.test(value.trim()) && normalizeUrl(value)) {
     return <UrlValue value={value} />
   }

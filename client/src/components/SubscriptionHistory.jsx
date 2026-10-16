@@ -5,8 +5,10 @@ import { useConfirm } from './ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { CATEGORIES, CATEGORY_LABELS, CATEGORY_COLORS } from '../lib/subscriptionEvents.js'
-import { Badge } from './Badge.jsx'
 import { RachatPicker } from './RachatPicker.jsx'
+import { ChoiceSelect, FieldChoiceBadge } from './ChoiceSelect.jsx'
+
+const CATEGORY_CHOICES = CATEGORIES.map(c => ({ value: c, label: CATEGORY_LABELS[c], color: CATEGORY_COLORS[c] }))
 
 // Préserve la portion horaire du timestamp original quand l'utilisateur ne
 // modifie que la date — évite de tasser l'historique vers minuit UTC.
@@ -35,7 +37,7 @@ function fmtAmount(v) {
   return v == null ? '' : String(v)
 }
 
-export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRachat = false }) {
+export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRachat = false, hideAdd = false }) {
   const confirm = useConfirm()
   const { addToast } = useToast()
   const [editingId, setEditingId] = useState(null)
@@ -50,12 +52,14 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRa
 
   function recomputeDelta(cat, prevStr, newStr) {
     const d = autoComputeDelta(cat, parseAmount(prevStr), parseAmount(newStr))
-    setEditDelta(d == null ? '' : String(Math.round(d * 100) / 100))
+    const delta = d == null ? '' : String(Math.round(d * 100) / 100)
+    setEditDelta(delta)
+    return delta
   }
 
   function onChangeCategory(v) {
     setEditCategory(v)
-    recomputeDelta(v, editPrev, editNew)
+    return recomputeDelta(v, editPrev, editNew)
   }
   function onChangePrev(v) {
     setEditPrev(v)
@@ -113,17 +117,18 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRa
   // Autosave d'un événement existant : PATCH sur blur de chaque champ. Pas de
   // bouton « Enregistrer » (règle autosave) — seule la création (__new__) garde
   // un bouton car le record n'a pas encore d'id.
-  async function autosaveEvent(originalIso) {
+  // `next` : valeurs pas encore dans l'état (menu Mouvement, enregistré au choix).
+  async function autosaveEvent(originalIso, next = {}) {
     if (!editingId || editingId === '__new__') return
     setSavingEvent(true)
     try {
       const payload = {
         event_date: combineEventDate(editDate, originalIso),
-        category: editCategory || null,
+        category: ('category' in next ? next.category : editCategory) || null,
         currency: editCurrency || null,
         previous_amount_cad: parseAmount(editPrev),
         new_amount_cad: parseAmount(editNew),
-        amount_cad_delta: parseAmount(editDelta),
+        amount_cad_delta: parseAmount('delta' in next ? next.delta : editDelta),
       }
       await api.abonnements.eventPatch(subscriptionId, editingId, payload)
       onChanged?.()
@@ -178,17 +183,22 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRa
             disabled={inputsDisabled}
             className="w-full text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500"
           />
-          <select
-            data-testid="event-category"
+          <ChoiceSelect
+            testId="event-category"
             value={editCategory}
-            onChange={e => onChangeCategory(e.target.value)}
-            onBlur={onBlurSave}
+            choices={CATEGORY_CHOICES}
+            table="abonnement_events"
+            field="category"
+            colorsOnly
+            onChange={v => {
+              const delta = onChangeCategory(v)
+              if (!isNew) autosaveEvent(originalIso, { category: v, delta })
+            }}
             disabled={inputsDisabled}
-            className="w-full text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500"
-          >
-            <option value="">— aucun mouvement —</option>
-            {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
-          </select>
+            className="w-full text-xs"
+            size="xs"
+            emptyOption="— aucun mouvement —"
+          />
         </div>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
@@ -287,15 +297,17 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRa
     <div>
       <div className="flex items-center justify-between mb-2">
         <h4 className="text-sm font-semibold text-slate-700">Historique des changements</h4>
-        <button
-          type="button"
-          onClick={startAddEvent}
-          disabled={editingId !== null}
-          data-testid="event-add"
-          className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 inline-flex items-center gap-1"
-        >
-          <Plus size={12} /> Ajouter une entrée
-        </button>
+        {!hideAdd && (
+          <button
+            type="button"
+            onClick={startAddEvent}
+            disabled={editingId !== null}
+            data-testid="event-add"
+            className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 inline-flex items-center gap-1"
+          >
+            <Plus size={12} /> Ajouter une entrée
+          </button>
+        )}
       </div>
       <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
         {editingId === '__new__' && renderEditRow(null, '__new__', true)}
@@ -313,7 +325,7 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRa
               <div className="flex-shrink-0 pt-0.5 w-32 space-y-1">
                 <div className="text-xs text-slate-400">{fmtDate(h.date)}</div>
                 {h.category
-                  ? <Badge color={CATEGORY_COLORS[h.category] || 'gray'}>{CATEGORY_LABELS[h.category] || h.category}</Badge>
+                  ? <FieldChoiceBadge table="abonnement_events" field="category" value={h.category} label={CATEGORY_LABELS[h.category] || h.category} color={CATEGORY_COLORS[h.category]} />
                   : <span className="text-[10px] text-slate-400">— aucun mouvement —</span>
                 }
               </div>

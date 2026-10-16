@@ -63,13 +63,13 @@ export const STRIPE_SUBSCRIPTION_FIELDS = [
 
 // Champs non configurables, affichés à titre informatif dans la modale.
 export const STRIPE_SUBSCRIPTION_FIXED = [
-  { label: 'Statut', source: 'status — traduit (active, trialing, past_due, canceled…)' },
-  { label: 'Montant mensuel', source: 'latest_invoice.total_excluding_tax ?? items × qty − rabais — net, avant taxes, mensualisé (computeMonthlyNet)' },
-  { label: 'Devise', source: 'currency — code ISO en majuscules' },
-  { label: 'Entreprise', source: 'customer — lookup companies.stripe_customer_id' },
-  { label: 'Intervalle', source: 'items[0].price.recurring — interval_count + interval (mois/année)' },
-  { label: 'Client Stripe', source: 'customer — identifiant cus_…' },
-  { label: 'Lien Stripe', source: 'id — https://dashboard.stripe.com/subscriptions/{id}' },
+  { label: 'Statut', columns: ['status'], source: 'status — traduit (active, trialing, past_due, canceled…)' },
+  { label: 'Montant mensuel', columns: ['amount_cad', 'amount_monthly'], source: 'latest_invoice.total_excluding_tax ?? items × qty − rabais — net, avant taxes, mensualisé (computeMonthlyNet)' },
+  { label: 'Devise', columns: ['currency'], source: 'currency — code ISO en majuscules' },
+  { label: 'Entreprise', columns: ['company_name', 'company_id'], source: 'customer — lookup companies.stripe_customer_id' },
+  { label: 'Intervalle', columns: ['interval_type'], source: 'items[0].price.recurring — interval_count + interval (mois/année)' },
+  { label: 'Client Stripe', columns: ['customer_id'], source: 'customer — identifiant cus_…' },
+  { label: 'Lien Stripe', columns: ['stripe_url', 'stripe_id'], source: 'id — https://dashboard.stripe.com/subscriptions/{id}' },
 ]
 
 const CONFIG_SQL_GET = "SELECT value FROM connector_config WHERE connector='stripe' AND key='subscription_field_map'"
@@ -116,9 +116,8 @@ export function saveSubscriptionFieldMap(body) {
 
 // Résout tous les champs configurables d'un Subscription Stripe selon le mapping
 // courant. Retourne { start_date, cancel_date, trial_end_date, customer_email }
-// prêts à insérer. Nota : côté webhook, `customer` n'est pas expandé (string) —
-// les chemins customer.* y résolvent null, mais le webhook n'écrit pas ces
-// colonnes de toute façon.
+// prêts à insérer. Le webhook relit l'abonnement avec `customer` expandé ; si
+// cette relecture échoue, les chemins customer.* résolvent null (colonne gardée).
 export function resolveStripeSubscriptionFields(sub) {
   const map = getSubscriptionFieldMap()
   const out = {}

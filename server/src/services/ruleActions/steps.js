@@ -16,7 +16,7 @@ import { createTask } from './task.js'
 import { sendEmail } from './email.js'
 import { runScriptSandboxed, READABLE_TABLES, WRITABLE_TABLES } from '../scriptSandbox.js'
 import { buildConditionsPredicate } from '../fieldRuleEngine.js'
-import { recordPathOf } from '../recordLinks.js'
+import { recordPathOf, resolveRecordKeys } from '../recordLinks.js'
 import { APP_URL } from '../../config/appUrl.js'
 
 export const STEP_TYPES = ['task', 'slack', 'email', 'update', 'find', 'hubspot', 'qb', 'script']
@@ -92,6 +92,11 @@ const ADAPTERS = {
     await runScriptSandboxed('update(params.table, params.id, params.patch)', {
       row, params: { table, id, patch }, enableWrite: true, writableTables: new Set([table]),
     })
+    // Comme une saisie à la main : repart vers Airtable selon le sens réglé
+    // par champ (/champs/<table>) ; sinon le prochain sync l'écraserait.
+    const { writeBackRecord, writebackModuleForTable } = await import('../airtableWriteback.js')
+    const module = writebackModuleForTable(table)
+    if (module) Promise.resolve(writeBackRecord(module, id, Object.keys(patch))).catch(() => {})
     return { id, ...patch }
   },
 
@@ -114,6 +119,13 @@ const ADAPTERS = {
     if (!IDENT_RE.test(r.property || '')) throw new Error('Propriété HubSpot invalide')
     const { hsFetch } = await import('../../connectors/hubspot.js')
     const byEmail = key.includes('@')
+    // Contact par courriel : créé s'il n'existe pas encore dans HubSpot.
+    if (byEmail && object === 'contacts') {
+      const data = await hsFetch('/crm/v3/objects/contacts/batch/upsert', {
+        method: 'POST', body: { inputs: [{ idProperty: 'email', id: key, properties: { email: key, [r.property]: r.value ?? '' } }] },
+      })
+      return { hubspot: key, cree: data?.results?.[0]?.new ? 'oui' : 'non' }
+    }
     await hsFetch(`/crm/v3/objects/${object}/${encodeURIComponent(key)}${byEmail ? '?idProperty=email' : ''}`, {
       method: 'PATCH', body: { properties: { [r.property]: r.value ?? '' } },
     })
@@ -150,14 +162,17 @@ const ADAPTERS = {
 const short = (v, n = 300) => { const t = String(v ?? ''); return t.length > n ? `${t.slice(0, n)}…` : t }
 const asDate = v => (/^\d{13}$/.test(String(v)) ? ` (${new Date(Number(v)).toISOString().replace('T', ' ').slice(0, 16)} UTC)` : '')
 
+// « SN-0123 » plutôt que l'identifiant de l'enregistrement modifié.
+const recordLabel = (table, id) => resolveRecordKeys([id], { hint: table })[id]?.label || id
+
 // Ce que l'étape a réellement fait, valeurs comprises, pour l'historique.
 const DESCRIBE = {
   task: (r, o) => `Tâche créée « ${short(r.title)} »${o.id ? ` (${o.id})` : ''}`,
   slack: r => `Slack → ${r.channel} : « ${short(r.text)} »`,
   email: r => `Courriel → ${r.to} : « ${short(r.subject)} »`,
-  update: (r, o) => `Modifié ${o.id} : ${Object.entries(o).filter(([k]) => k !== 'id').map(([k, v]) => `${k} = ${short(v, 80)}`).join(', ')}`,
+  update: (r, o, rule) => `Modifié ${recordLabel(r.table || rule?.trigger_config?.erp_table, o.id)} : ${Object.entries(o).filter(([k]) => k !== 'id').map(([k, v]) => `${k} = ${short(v, 80)}`).join(', ')}`,
   find: (r, o) => `Recherche ${r.table} : ${o.nombre} trouvé(s)${o.liste ? ` — ${short(o.liste, 200)}` : ''}`,
-  hubspot: r => `HubSpot ${r.object === 'companies' ? 'entreprise' : 'contact'} ${r.record} : ${r.property} = ${r.value ?? ''}${asDate(r.value)}`,
+  hubspot: (r, o) => `HubSpot ${r.object === 'companies' ? 'entreprise' : 'contact'} ${r.record}${o?.cree === 'oui' ? ' (créé)' : ''} : ${r.property} = ${r.value ?? ''}${asDate(r.value)}`,
   qb: (r, o) => `QuickBooks écriture ${o.qb_id || ''} : ${r.amount} $ débit ${r.debit} / crédit ${r.credit}${r.memo ? ` « ${short(r.memo, 80)} »` : ''}`,
   script: () => 'Script exécuté',
 }
@@ -207,8 +222,13 @@ export async function runSteps({ rule, row: base }) {
       const out = (await adapter({ rule, row, c: s.config || {}, r, outputs })) || {}
       outputs.push(out)
       let d = ''
-      try { d = DESCRIBE[s.type]?.(r, out) || '' } catch { /* détail facultatif */ }
+      try { d = DESCRIBE[s.type]?.(r, out, rule) || '' } catch { /* détail facultatif */ }
       log.push(`✓ Étape ${i + 1} (${s.type}) ${d}`.trim())
+      // « Arrêter si rien n'est trouvé » : la suite n'a pas d'enregistrement à viser.
+      if (s.type === 'find' && s.config?.stop_if_none && !out.nombre) {
+        log.push('– Arrêt : rien trouvé')
+        break
+      }
     } catch (e) {
       // Les étapes déjà réussies restent visibles dans l'historique : un échec
       // en fin de chaîne ne doit pas laisser croire que rien n'est parti.

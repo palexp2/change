@@ -12,7 +12,7 @@ import { FieldTypeIcon } from '../lib/fieldTypeIcons.jsx'
 import { formatDurationSeconds, normalizeDurationFormat, parseDurationToSeconds } from '../lib/duration.js'
 import {
   currencySymbolOf, phoneCountryCodeOf, dateFormatOf, isAirtableLinkField, linkDisplayTargetOf,
-  percentDisplayOf, NO_COLOR,
+  percentDisplayOf, NO_COLOR, columnChoiceValues,
 } from '../lib/customFieldDisplay.jsx'
 import {
   VALUE_LESS_LINK_OPS, MULTI_VALUE_LINK_OPS, linkFilterOpsForType,
@@ -121,6 +121,30 @@ function NameTakenHint({ label }) {
 const ROLLUP_AGG_NAMES = {
   SUM: 'Somme', COUNT: 'Nombre', AVG: 'Moyenne', MIN: 'Min', MAX: 'Max',
   ARRAY: 'Liste', ARRAYUNIQUE: 'Liste unique',
+}
+
+// Condition d'un rollup (alignée sur ROLLUP_FILTER_OPS serveur).
+const ROLLUP_FILTER_OPS = [
+  { value: 'last_days', label: 'N derniers jours' },
+  { value: 'eq', label: '=' },
+  { value: 'neq', label: '≠' },
+  { value: 'gt', label: '>' },
+  { value: 'lt', label: '<' },
+  { value: 'not_empty', label: 'non vide' },
+  { value: 'empty', label: 'vide' },
+]
+const rollupFilterNeedsValue = op => !['empty', 'not_empty'].includes(op)
+
+// Condition prête à partir au serveur, ou null (aucune / incomplète).
+function rollupFilterPayload(f) {
+  if (!f?.column || !f.op) return null
+  if (rollupFilterNeedsValue(f.op) && String(f.value ?? '').trim() === '') return null
+  return rollupFilterNeedsValue(f.op) ? { column: f.column, op: f.op, value: f.value } : { column: f.column, op: f.op }
+}
+
+function parseRollupFilter(raw) {
+  if (!raw) return null
+  try { return typeof raw === 'string' ? JSON.parse(raw) : raw } catch { return null }
 }
 
 const ROLLUP_AGG_OPTIONS = [
@@ -331,7 +355,7 @@ function serializeChoices(choices) {
 // Sous-types de champs auto-remplis (lecture seule, calculés à la lecture).
 // Le `kind` stocké côté serveur est directement le sous-type ; côté UI on les
 // regroupe sous l'onglet « Auto ».
-const AUTO_KINDS = ['created_time', 'last_modified_time', 'created_by', 'last_modified_by']
+const AUTO_KINDS = ['created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber']
 
 // Type « Lien » : la colonne porte l'identifiant d'un enregistrement d'une autre
 // table et s'affiche en pastille cliquable vers sa fiche. Pas un type stocké —
@@ -359,9 +383,10 @@ const FIELD_TYPE_OPTIONS = [
   { id: 'email',              label: 'Courriel',        kind: 'data', type: 'email', hint: 'Adresse cliquable' },
   { id: 'phone',              label: 'Téléphone',       kind: 'data', type: 'phone', hint: 'Formaté et cliquable' },
   { id: 'barcode',            label: 'Code-barres',     kind: 'data', type: 'barcode', hint: 'Code lu à la douchette ou saisi' },
+  { id: 'user',               label: 'Utilisateur',     kind: 'data', type: 'user', hint: 'Un membre de l\'équipe' },
   { id: 'checkbox',           label: 'Case à cocher',   kind: 'data', type: 'checkbox', hint: 'Oui / non' },
   { id: 'single_select',      label: 'Sélection',       kind: 'data', type: 'single_select', hint: 'Un choix, en pastille colorée' },
-  { id: 'multi_select',       label: 'Multi-sélection', kind: 'data', type: 'multi_select', hint: 'Plusieurs choix, en pastilles' },
+  { id: 'multi_select',       label: 'Sélection multiple', kind: 'data', type: 'multi_select', hint: 'Plusieurs choix, en pastilles' },
   { id: 'attachment',         label: 'Attachement',     kind: 'data', type: 'attachment', hint: 'Fichiers déposés : PDF, images…' },
   { id: 'formula',            label: 'Formule',         kind: 'formula', hint: 'Calcul à partir d\'autres colonnes' },
   { id: 'lookup',             label: 'Lookup',          kind: 'lookup', hint: 'Valeur d\'une table liée' },
@@ -373,6 +398,7 @@ const FIELD_TYPE_OPTIONS = [
   { id: 'last_modified_time', label: 'Modifié le',      kind: 'auto', autoType: 'last_modified_time', hint: 'Dernière modification' },
   { id: 'created_by',         label: 'Créé par',        kind: 'auto', autoType: 'created_by', hint: 'Utilisateur créateur' },
   { id: 'last_modified_by',   label: 'Modifié par',     kind: 'auto', autoType: 'last_modified_by', hint: 'Dernier utilisateur' },
+  { id: 'autonumber',         label: 'Numéro auto',     kind: 'auto', autoType: 'autonumber', hint: 'Numéro séquentiel unique' },
   // Une liaison ne se crée ni ne se convertit ici (le serveur refuse) : cette
   // entrée ne sert qu'à NOMMER le type d'un champ de liaison existant.
   { id: 'link',               label: 'Liaison',         kind: 'link', hint: 'Relation entre deux tables' },
@@ -380,6 +406,9 @@ const FIELD_TYPE_OPTIONS = [
   // le menu. Un champ lien importé d'Airtable porte ce type sans pouvoir en
   // changer (c'est la sync qui l'a posé).
   { id: LINK_TYPE_ID,         label: 'Lien',            kind: 'data', type: 'text', hint: 'Ouvre la fiche d\'une autre table' },
+  // Valeur tenue par un calcul de l'app (stock, seuil dynamique…) : ce type
+  // n'est jamais choisi ici, il NOMME celui d'un champ que Boréal calcule.
+  { id: 'erp_computed',       label: 'Calculé par Boréal', kind: 'data', hint: 'Tenu à jour par l\'app — non modifiable' },
 ]
 const FIELD_TYPE_BY_ID = new Map(FIELD_TYPE_OPTIONS.map(o => [o.id, o]))
 
@@ -400,6 +429,7 @@ const FIELD_TYPE_SYNONYMS = {
   email: 'email courriel mail adresse',
   phone: 'phone numero tel',
   barcode: 'barcode code barre qr scan douchette upc ean sku',
+  user: 'user collaborator collaborateur membre equipe personne assigne responsable',
   checkbox: 'checkbox booleen bool oui non toggle',
   single_select: 'single select selection simple liste choix pastille dropdown',
   multi_select: 'multi select multiple etiquettes tags liste choix',
@@ -413,6 +443,7 @@ const FIELD_TYPE_SYNONYMS = {
   last_modified_time: 'last modified time date de modification',
   created_by: 'created by auteur utilisateur',
   last_modified_by: 'last modified by utilisateur',
+  autonumber: 'autonumber auto number numero automatique sequence compteur id',
   link: 'link liaison relation',
   [LINK_TYPE_ID]: 'lien link liaison airtable record lie fiche',
 }
@@ -490,7 +521,7 @@ function columnFilterMeta(table, column, columns) {
   const curated = (TABLE_COLUMN_META[table] || [])
     .find(c => c.field === column || c.mappingColumn === column)
   if (curated?.type === 'single_select' || curated?.type === 'multi_select') {
-    return { type: curated.type, choices: (curated.options || []).map(String) }
+    return { type: curated.type, choices: columnChoiceValues(curated) }
   }
   return { type: null, choices: [] }
 }
@@ -703,6 +734,7 @@ const AUTO_TYPE_OPTIONS = [
   { v: 'last_modified_time', label: 'Date de modification',   hint: 'Quand l\'enregistrement a été modifié pour la dernière fois' },
   { v: 'created_by',         label: 'Créé par',               hint: 'Utilisateur ayant créé l\'enregistrement' },
   { v: 'last_modified_by',   label: 'Modifié par',            hint: 'Dernier utilisateur ayant modifié' },
+  { v: 'autonumber',         label: 'Numéro auto',            hint: 'Numéro séquentiel unique' },
 ]
 
 // Bloc « Champ Airtable » de la modale : la cellule de mapping fournie par la
@@ -1300,6 +1332,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   const [rollupSource, setRollupSource] = useState('')   // `${table}::${fk}` encodé
   const [rollupColumn, setRollupColumn] = useState('')
   const [rollupAgg, setRollupAgg] = useState('SUM')
+  const [rollupFilter, setRollupFilter] = useState(null) // { column, op, value } | null
   // pour kind='button'
   const [buttonLabel, setButtonLabel] = useState('')
   const [buttonAutomationId, setButtonAutomationId] = useState('')
@@ -1357,6 +1390,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         rollup_target_fk: editing.rollup_target_fk || '',
         rollup_target_column: editing.rollup_target_column || '',
         rollup_agg: editing.rollup_agg || 'SUM',
+        rollup_filter: JSON.stringify(rollupFilterPayload(parseRollupFilter(editing.rollup_filter))),
         result_type: editing.result_type || 'text',
         description: editing.description || '',
         // Table visée d'un « Lien » : suivie ici, `editing` n'étant pas rafraîchi
@@ -1441,6 +1475,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setRollupSource(editing.rollup_target_table ? `${editing.rollup_target_table}::${editing.rollup_target_fk}` : '')
       setRollupColumn(editing.rollup_target_column || '')
       setRollupAgg(editing.rollup_agg || 'SUM')
+      setRollupFilter(parseRollupFilter(editing.rollup_filter))
       if (editing.type === 'button') {
         let opts = editing.options
         if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
@@ -1482,6 +1517,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setRollupSource('')
       setRollupColumn('')
       setRollupAgg('SUM')
+      setRollupFilter(null)
       setButtonLabel('')
       setButtonAutomationId('')
       setButtonStyle('brand')
@@ -1649,7 +1685,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   // retenu dans le menu — le type reste 'text' en base, c'est la table visée qui
   // fait le lien, et elle se choisit juste sous le menu.
   const isCount = kind === 'rollup' && rollupAgg === 'COUNT'
-  const typeOptionId = (atLink || linkPick)
+  const typeOptionId = editing?.erp_computed ? 'erp_computed'
+    : (atLink || linkPick)
     ? LINK_TYPE_ID
     : (kind === 'data' ? type : (kind === 'auto' ? autoType : (isCount ? 'count' : kind)))
   // Le menu ne propose que ce qui est réellement posable sur CE champ : pas de
@@ -1662,7 +1699,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       ...(autoOptions || []).map(o => o.v),
       ...(editingKind === 'auto' ? [editing.kind] : []),
     ])
+    if (editing?.erp_computed) return FIELD_TYPE_OPTIONS.filter(o => o.id === 'erp_computed')
     return FIELD_TYPE_OPTIONS.filter(o => {
+      if (o.id === 'erp_computed') return false
       if (editingKind === 'link' || o.kind === 'link') return editingKind === 'link' && o.kind === 'link'
       // Champ lien importé d'Airtable : « Lien » est le seul choix, la sync a
       // posé le type. Partout ailleurs c'est un type comme un autre.
@@ -1962,7 +2001,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       if (type === 'phone') payload.options = { country_code: phoneCountryCode }
       // La valeur par défaut saisie pendant la conversion part dans le même PUT.
       if (type === 'checkbox') payload.default_value = defaultValue === '1'
-      else if (type !== 'single_select' && type !== 'multi_select' && type !== 'attachment') payload.default_value = defaultValue
+      else if (type !== 'single_select' && type !== 'multi_select' && type !== 'attachment' && type !== 'user') payload.default_value = defaultValue
       // Devenu un « Lien » en changeant de nature : la table visée part dans le
       // même PUT que la conversion.
       if (linkPick) {
@@ -1998,6 +2037,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         rollup_target_fk: rollupFk,
         rollup_target_column: rollupAgg === 'COUNT' ? null : rollupColumn,
         rollup_agg: rollupAgg,
+        rollup_filter: rollupFilterPayload(rollupFilter),
         result_type: rt,
         ...computedFormatPayload(rt),
       })
@@ -2115,7 +2155,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
     autosave(payload)
   }
 
-  function maybeAutosaveRollup({ agg = rollupAgg, table = rollupTable, fk = rollupFk, column = rollupColumn, rt = resultType }) {
+  function maybeAutosaveRollup({ agg = rollupAgg, table = rollupTable, fk = rollupFk, column = rollupColumn, rt = resultType, filter = rollupFilter }) {
     if (!editing) return
     if (!table || !fk) return
     if (agg !== 'COUNT' && !column) return
@@ -2128,10 +2168,25 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       rollup_target_fk: fk,
       rollup_target_column: nextCol,
       rollup_agg: agg,
+      // Une autre table liée n'a pas les mêmes colonnes : la condition suit.
+      rollup_filter: rollupFilterPayload(filter),
       // ARRAY / ARRAYUNIQUE → liste texte ; on bascule le type de résultat en
       // conséquence pour rester cohérent avec l'affichage.
       result_type: isArrayAgg(agg) ? 'text' : rt,
     })
+  }
+
+  // Condition d'un rollup en édition : part dès qu'elle est complète (ou vidée),
+  // une fois la config du rollup elle-même valide.
+  function changeRollupFilter(next) {
+    setRollupFilter(next)
+    if (!editing || !rollupTable || !rollupFk) return
+    if (rollupAgg !== 'COUNT' && !rollupColumn) return
+    const payload = rollupFilterPayload(next)
+    if (next?.column && !payload) return
+    const key = JSON.stringify(payload)
+    if (lastSaved.current.rollup_filter === key) return
+    autosave({ rollup_filter: payload }).then(r => { if (r) lastSaved.current.rollup_filter = key })
   }
 
   // Autosave de la config d'un bouton en édition : ne PATCH que si label +
@@ -2277,6 +2332,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           rollup_target_fk: rollupFk,
           rollup_target_column: rollupAgg === 'COUNT' ? null : rollupColumn,
           rollup_agg: rollupAgg,
+          rollup_filter: rollupFilterPayload(rollupFilter),
           // ARRAY / ARRAYUNIQUE produisent une liste texte → forcer le type texte
           // (le tri/filtre/affichage numérique n'a pas de sens sur une liste).
           result_type: isArrayAgg(rollupAgg) ? 'text' : resultType,
@@ -2355,7 +2411,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           options={typeOptions}
           hint={typeHint}
           onChange={pickFieldType}
-          disabled={!!editing && !canConvert}
+          disabled={(!!editing && !canConvert) || !!editing?.erp_computed}
         >
           {/* Table visée par un champ « Lien » : la colonne porte l'identifiant
               d'une de ses fiches, et s'affiche en pastille cliquable. Un champ
@@ -2565,8 +2621,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
             )}
             {/* La valeur par défaut des select est portée par les choix (étoile),
                 pas par ce champ texte. Un Attachement n'a pas de valeur par
-                défaut : on ne pré-remplit pas un enregistrement avec un fichier. */}
-            {!linkPick && type !== 'single_select' && type !== 'multi_select' && type !== 'checkbox' && type !== 'attachment' && (
+                défaut : on ne pré-remplit pas un enregistrement avec un fichier.
+                Un Utilisateur non plus (le serveur n'en retient pas). */}
+            {!linkPick && type !== 'single_select' && type !== 'multi_select' && type !== 'checkbox' && type !== 'attachment' && type !== 'user' && (
               <div>
                 <label className="label">Valeur par défaut</label>
                 {/* Date : sélecteur de date (avec l'heure si le format l'affiche),
@@ -2770,10 +2827,11 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                   if (v === rollupSource) return
                   setRollupSource(v)
                   setRollupColumn('')
+                  setRollupFilter(null)
                   const i = v.indexOf('::')
                   const t = i < 0 ? v : v.slice(0, i)
                   const fk = i < 0 ? '' : v.slice(i + 2)
-                  maybeAutosaveRollup({ table: t, fk, column: '' })
+                  maybeAutosaveRollup({ table: t, fk, column: '', filter: null })
                 }}
                 searchPlaceholder="Rechercher une table…"
                 size="sm"
@@ -2829,6 +2887,53 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                     : 'Agrège la colonne choisie sur les enregistrements liés.'}
               </p>
             </div>}
+            {/* Condition : seuls les enregistrements liés qui la remplissent
+                comptent (ex. achats des 365 derniers jours). */}
+            {rollupTable && (
+              <div>
+                <label className="label">Condition</label>
+                <div className="flex items-center gap-1.5">
+                  <SearchableSelect
+                    value={rollupFilter?.column || ''}
+                    options={rollupColumnOptions}
+                    getOptionValue={o => o.column}
+                    getOptionKey={o => o.column}
+                    getOptionLabel={o => uiColumnLabel(rollupTable, o)}
+                    emptyOption="Tous"
+                    onChange={col => {
+                      if (!col) { changeRollupFilter(null); return }
+                      const isDate = rollupColumnOptions.find(o => o.column === col)?.result_type === 'date'
+                      const op = isDate ? 'last_days' : (rollupFilter?.op && rollupFilter.op !== 'last_days' ? rollupFilter.op : 'eq')
+                      changeRollupFilter({ column: col, op, value: isDate ? '365' : (rollupFilter?.value ?? '') })
+                    }}
+                    searchPlaceholder="Rechercher un champ…"
+                    size="sm"
+                    className="input text-sm flex-1 min-w-0 bg-white"
+                    testId="cf-rollup-filter-column"
+                  />
+                  {rollupFilter?.column && (
+                    <select
+                      value={rollupFilter.op}
+                      onChange={e => changeRollupFilter({ ...rollupFilter, op: e.target.value })}
+                      className="input text-sm w-36 bg-white"
+                      data-testid="cf-rollup-filter-op"
+                    >
+                      {ROLLUP_FILTER_OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  )}
+                  {rollupFilter?.column && rollupFilterNeedsValue(rollupFilter.op) && (
+                    <input
+                      type={['last_days', 'gt', 'lt'].includes(rollupFilter.op) ? 'number' : 'text'}
+                      value={rollupFilter.value ?? ''}
+                      onChange={e => setRollupFilter({ ...rollupFilter, value: e.target.value })}
+                      onBlur={() => changeRollupFilter(rollupFilter)}
+                      className="input text-sm w-24"
+                      data-testid="cf-rollup-filter-value"
+                    />
+                  )}
+                </div>
+              </div>
+            )}
             {/* ARRAY / UNIQUE : toujours une liste texte, pas de format à choisir. */}
             {!isArrayAgg(rollupAgg) && !isCount && <ResultTypeSelect value={resultType} onChange={changeResultType} />}
           </>

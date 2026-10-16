@@ -25,10 +25,11 @@
       "week": 30
     },
     "compte-2": {
-      "week": 30
+      "week": 60
     },
     "guillaume": {
-      "week": 30
+      "week": 60,
+      "session": 30
     }
   }
 }

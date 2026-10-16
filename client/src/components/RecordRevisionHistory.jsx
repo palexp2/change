@@ -25,6 +25,21 @@ const RESOURCE_TABLE = {
   'problemes-operations': 'ops_issues', fournitures: 'fournitures',
   formulaires: 'marketing_forms', employees: 'employees', orders: 'orders',
   companies: 'companies', contacts: 'contacts', tasks: 'tasks', paies: 'paies',
+  'discovery-forms': 'customer_onboarding_responses',
+}
+
+// Libellés des tables sans TABLE_COLUMN_META.
+const COLUMN_LABELS = {
+  customer_onboarding_responses: {
+    status: 'Statut', submitted_at: 'Soumis le', company_id: 'Entreprise', project_id: 'Projet',
+    is_new_site: 'Nouveau site', farm_address_json: 'Adresse de la ferme', farm_address_id: 'Adresse de la ferme',
+    shipping_same_as_farm: 'Livraison à la ferme', shipping_address_json: 'Adresse de livraison', shipping_address_id: 'Adresse de livraison',
+    network_access: 'Accès réseau', wifi_ssid: 'Wi-Fi', wifi_password: 'Mot de passe Wi-Fi', permission_level: 'Permissions',
+    num_greenhouses: 'Nb serres', greenhouses_json: 'Serres', extras_json: 'Extras', custom_answers_json: 'Réponses',
+    verification_json: 'Vérifications', technical_notes: 'Notes techniques', form_options_json: 'Options',
+    within_central_controller_range: 'Portée du contrôleur', central_controller_distance: 'Distance du contrôleur',
+    needs_wind_sensor: 'Anémomètre', generated_order_id: 'Commande', soumission_id: 'Soumission',
+  },
 }
 
 // « /orders/42?x » → { table: 'orders', id: '42' }, ou null.
@@ -39,6 +54,7 @@ const humanize = c => c.replace(/^cf_/, '').replace(/_/g, ' ').replace(/^./, m =
 
 function fieldLabel(table, ch, fields) {
   return fields?.[ch.column]?.label
+    || COLUMN_LABELS[table]?.[ch.column]
     || TABLE_COLUMN_META[table]?.find(c => (c.field || c.id) === ch.column)?.label
     || TABLE_RECORD_LABELS[ch.link_table]
     || humanize(ch.column)
@@ -151,8 +167,16 @@ function display(v, label, field) {
   if (typeof v === 'string' && (field?.type === 'date' || ISO_TS.test(v))) {
     return /^\d{4}-\d{2}-\d{2}(T00:00:00(\.0+)?Z)?$/.test(v) ? fmtDate(v) : fmtDateTime(v)
   }
+  if (typeof v === 'string' && /^\{.*\}$/s.test(v)) {
+    try { return JSON.stringify(JSON.parse(v), null, 2) } catch { /* pas du JSON */ }
+  }
   if (typeof v === 'string' && /^\[.*\]$/s.test(v)) {
-    try { const a = JSON.parse(v); if (Array.isArray(a)) return a.map(x => (typeof x === 'object' ? x?.name || x?.filename || x?.label || JSON.stringify(x) : x)).join(', ') } catch { /* pas du JSON */ }
+    try {
+      const a = JSON.parse(v)
+      // Liste d'objets sans nom (ex. serres) : indentée, pour un diff ligne à ligne.
+      if (Array.isArray(a) && a.length && a.every(x => x && typeof x === 'object' && !(x.name || x.filename || x.label))) return JSON.stringify(a, null, 2)
+      if (Array.isArray(a)) return a.map(x => (typeof x === 'object' ? x?.name || x?.filename || x?.label || JSON.stringify(x) : x)).join(', ')
+    } catch { /* pas du JSON */ }
   }
   return String(v)
 }

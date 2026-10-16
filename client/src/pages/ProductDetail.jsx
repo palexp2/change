@@ -2,20 +2,23 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeftRight, FileText, ExternalLink, RefreshCw, Hammer, AlertTriangle, CheckCircle2, Trash2, SlidersHorizontal, ShoppingCart, FoldVertical, UnfoldVertical } from 'lucide-react'
 import api from '../lib/api.js'
-import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
+import { Badge } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { Section } from '../components/SectionNav.jsx'
 import { useSectionNav } from '../lib/useSectionNav.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
+import ProductStockState from '../components/ProductStockState.jsx'
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
 import PurchaseDetail from './PurchaseDetail.jsx'
 import ProductPurchaseModal from './ProductPurchaseModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { RecordOps } from '../lib/recordOps.js'
 import TableThumb from '../components/TableThumb.jsx'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
 import ImageSlot from '../components/ImageSlot.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { TABLE_COLUMN_META, STOCK_MOVEMENT_TYPES, STOCK_MOVEMENT_TYPE_COLORS, stockMovementSignedQty } from '../lib/tableDefs.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
 import { useFieldOverrides, parseNativeChoices } from '../lib/fieldOverrides.jsx'
@@ -28,7 +31,7 @@ import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { useRecordDeleteAllowed, useDetailSectionOrder, useDetailSectionSizes, usePeekFieldEdit } from '../lib/detailFieldLayout.jsx'
 import { useReorderDnd } from '../lib/useReorderDnd.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { columnChoiceValues, formatCurrency, currencySymbolOf } from '../lib/customFieldDisplay.jsx'
+import { parseSelectChoices, formatCurrency, currencySymbolOf } from '../lib/customFieldDisplay.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -45,7 +48,7 @@ const PRODUCT_FIELDS = [
   { key: 'name_fr',            label: 'Nom (FR)',           type: 'text', span2: true },
   { key: 'name_en',            label: 'Nom (EN)',           type: 'text', span2: true },
   { key: 'unit_cost',          label: 'Coût unitaire (CAD)',type: 'number', step: '0.01' },
-  { key: 'price_cad',          label: 'Prix CAD',           type: 'number', step: '0.01' },
+  { key: 'price_cad',          label: 'Prix client (CAD)',  type: 'number', step: '0.01' },
   { key: 'price_usd',          label: 'Prix USD',           type: 'number', step: '0.01', defaultVisible: false },
   { key: 'monthly_price_cad',  label: 'Prix mensuel CAD',   type: 'number', step: '0.01', defaultVisible: false },
   { key: 'monthly_price_usd',  label: 'Prix mensuel USD',   type: 'number', step: '0.01', defaultVisible: false },
@@ -66,18 +69,23 @@ const PRODUCT_FIELDS = [
   { key: 'notes_2',            label: 'Notes',              type: 'textarea', span2: true },
   { key: 'is_sellable',        label: 'Vendable',           type: 'checkbox' },
   { key: 'active',             label: 'Produit actif',      type: 'checkbox' },
+  // Tous les champs de la table restent proposés dans « Ajouter un champ »
+  // (demande P.-A. Papillon, 2026-10-16), même ceux rendus ailleurs.
+  { key: 'image_url',          label: 'Image',              type: 'image', defaultVisible: false },
+  { key: 'airtable_id',        label: 'ID Airtable',        type: 'readonly', blank: '—', defaultVisible: false },
 ]
 // Colonnes rendues AILLEURS que dans la carte de champs (image de l'en-tête,
 // section Documents) : sans ça, elles reviendraient en double dans la liste des
 // champs de la table proposée par « Ajouter un champ ».
 const TAKEN_ELSEWHERE = [
-  'image_url',
   // Retiré de la fiche (demande P.-A. Papillon, 2026-10-01) ; la soumission lit
   // toujours la colonne. Listé ici pour ne pas revenir via « Ajouter un champ ».
   'quote_farm_wide',
   'lien_pdf_installation_fr', 'lien_pdf_installation_fr_local',
   'lien_pdf_installation_en', 'lien_pdf_installation_en_local',
-  'lien_pdf_remplacement_fr', 'lien_pdf_remplacement_fr_local',
+  // `lien_pdf_remplacement_fr` n'y est plus : c'est un champ de la table, il
+  // reste proposé dans « Ajouter un champ ».
+  'lien_pdf_remplacement_fr_local',
   'lien_pdf_remplacement_en', 'lien_pdf_remplacement_en_local',
   // Section « Ajustement d'inventaire » retirée (demande P.-A. Papillon,
   // 2026-10-02) : sa raison ne revient pas par la carte de champs.
@@ -119,6 +127,9 @@ const BOM_RENDERS = {
     if (b == null) return <span className="text-slate-300">—</span>
     return <span className={`font-bold ${b === 0 ? 'text-red-600' : 'text-slate-900'}`}>{b}</span>
   },
+  bottleneck: row => row.bottleneck
+    ? <Badge color={row.buildable === 0 ? 'red' : 'yellow'}>Goulot</Badge>
+    : null,
   ref_des: row => <span className="text-slate-500 text-xs">{row.ref_des || '—'}</span>,
   product_name: row => (
     row.product_id ? (
@@ -144,6 +155,9 @@ const USED_IN_RENDERS = {
       <div className="h-7 w-7 rounded border border-dashed border-slate-200" />
     )
   ),
+  product_stock_qty: row => row.product_stock_qty == null
+    ? <span className="text-slate-300">—</span>
+    : <span className="font-medium text-slate-700 tabular-nums">{fmtNumber(row.product_stock_qty)}</span>,
 }
 const USED_IN_COLUMNS = TABLE_COLUMN_META.product_used_in.map(meta => ({ ...meta, render: USED_IN_RENDERS[meta.id] }))
 
@@ -162,14 +176,14 @@ function computeBuildable(bom) {
   // Pas de composant suivi → on ne peut rien calculer.
   const units = tracked.length > 0 ? Math.min(...tracked.map(r => r.buildable)) : null
   // Composants « goulot » (ceux qui fixent la limite) et manquants (0 assemblable).
-  const bottlenecks = units != null ? tracked.filter(r => r.buildable === units) : []
   const missing = tracked.filter(r => r.buildable === 0)
-  return { rows, units, bottlenecks, missing, untrackedCount, trackedCount: tracked.length }
+  const marked = units != null ? rows.map(r => (r.buildable === units ? { ...r, bottleneck: true } : r)) : rows
+  return { rows: marked, units, missing, untrackedCount, trackedCount: tracked.length }
 }
 
 // Bannière « Assemblable N unités » + alertes composants manquants / goulots.
 function BomBuildableBanner({ summary }) {
-  const { units, bottlenecks, missing, untrackedCount, trackedCount } = summary
+  const { units, missing, untrackedCount, trackedCount } = summary
   if (trackedCount === 0) {
     return (
       <div data-testid="bom-buildable-banner" className="mb-4 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
@@ -202,13 +216,6 @@ function BomBuildableBanner({ summary }) {
         <div data-testid="bom-missing" className="mt-2 text-sm text-red-700">
           <span className="font-semibold">Composant{missing.length > 1 ? 's' : ''} en rupture : </span>
           {missing.map(r => r.component_name || r.component_sku || '?').join(', ')}
-        </div>
-      )}
-      {!zero && bottlenecks.length > 0 && (
-        <div data-testid="bom-bottleneck" className="mt-2 text-sm text-slate-600">
-          <span className="font-semibold">Goulot : </span>
-          {bottlenecks.map(r => r.component_name || r.component_sku || '?').join(', ')}
-          <span className="text-slate-400"> — limite la production à {units}.</span>
         </div>
       )}
       {untrackedCount > 0 && (
@@ -254,7 +261,7 @@ function ConfiguredNumberInput({ value, config, step, className, onChange }) {
   )
 }
 
-const FIFO_ISSUE_LABELS ={ sans_prix: 'Sans prix', prix_douteux: 'Prix douteux', stock_sans_achat: 'Stock sans achat' }
+const FIFO_ISSUE_LABELS ={ sans_prix: 'Sans prix', prix_douteux: 'Prix douteux', stock_sans_achat: 'Stock sans achat', sans_cout: 'Composant sans coût', cycle: 'Nomenclature circulaire' }
 
 // Quantité de l'achat encore en stock (FIFO). Prix douteux : l'icône ambre
 // valide le prix d'un clic ; sans prix : elle marque l'achat gratuit (0 $).
@@ -275,6 +282,20 @@ function FifoQtyCell({ p, onTogglePrice }) {
       ) : icon}
       {fmtNumber(p.fifo_qty)}
     </span>
+  )
+}
+
+// Composant de nomenclature sans coût : l'icône ambre l'accepte à 0 $ pour ce
+// produit (l'alerte tombe) ; la coche verte annule.
+function BomCostFlag({ row, onToggle }) {
+  if (row.cost_flag !== 'sans_cout' && !row.cost_free) return null
+  return (
+    <button type="button" data-testid={`bom-free-${row.component_id}`}
+      className={`inline-flex mr-1 align-middle ${row.cost_free ? 'text-emerald-600' : 'text-amber-600'}`}
+      title={row.cost_free ? 'Sans coût (0 $) · annuler' : 'Sans coût · accepter à 0 $'}
+      onClick={e => { e.stopPropagation(); onToggle(row) }}>
+      {row.cost_free ? <CheckCircle2 size={12} /> : <AlertTriangle size={12} />}
+    </button>
   )
 }
 
@@ -337,6 +358,24 @@ const PURCHASE_RENDERS = {
 }
 const PURCHASE_COLUMNS = TABLE_COLUMN_META.product_purchases.map(meta => ({ ...meta, render: PURCHASE_RENDERS[meta.id] }))
 
+// « Prix unitaire » ajouté après coup : la sélection de colonnes mémorisée par
+// navigateur (`erp_allView_cols_*`) prime sur le défaut et le masquait. On l'y
+// insère une seule fois — le masquer ensuite reste possible et respecté.
+function revealPurchasePriceColumn() {
+  try {
+    const flag = 'erp_productPurchases_revealedPrice'
+    if (localStorage.getItem(flag)) return
+    localStorage.setItem(flag, '1')
+    const key = 'erp_allView_cols_product_purchases'
+    const saved = JSON.parse(localStorage.getItem(key) || 'null')
+    if (!Array.isArray(saved) || !saved.length || saved.includes('prix_unitaire')) return
+    const at = saved.indexOf('quantite_commande')
+    const next = [...saved]
+    next.splice(at === -1 ? next.length : at + 1, 0, 'prix_unitaire')
+    localStorage.setItem(key, JSON.stringify(next))
+  } catch {}
+}
+
 function Field({ label, children, span2 = false }) {
   return (
     <div className={span2 ? 'col-span-2' : ''}>
@@ -346,10 +385,11 @@ function Field({ label, children, span2 = false }) {
   )
 }
 
-const SECTION_KEYS = ['info', 'mouvements', 'achats', 'bom', 'utilise', 'docs']
+const SECTION_KEYS = ['info', 'stock', 'mouvements', 'achats', 'bom', 'utilise', 'docs']
 
 const SECTION_LABELS = {
   info: 'Informations',
+  stock: 'Stock',
   mouvements: 'Mouvements',
   achats: 'Achats',
   bom: 'BOM',
@@ -436,19 +476,15 @@ function StockAdjustForm({ product, onSaved, onClose }) {
   )
 }
 
-// Les sous-tableaux étant empilés, chacun est borné en hauteur selon son nombre
-// de lignes (32 px/ligne + l'en-tête collant) pour éviter les grands vides sous
-// une table de deux lignes.
-function stackedTableHeight(rows) {
-  if (!rows) return '190px'
-  return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
-}
+// Sous-tableaux empilés : 10 lignes, le reste sur demande (jamais d'ascenseur).
+const SUBTABLE_ROW_LIMIT = 10
 
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
 // titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
 // le produit est supprimé pendant que le drawer est ouvert).
 export default function ProductDetail({ recordId, onClose }) {
+  useState(revealPurchasePriceColumn)
   const id = recordId
   // « Suppression permise » : case du mode de personnalisation de la fiche.
   const canDelete = useRecordDeleteAllowed('products')
@@ -483,7 +519,8 @@ export default function ProductDetail({ recordId, onClose }) {
   const registryChoices = useMemo(() => {
     const map = {}
     for (const f of registryFields || []) {
-      const choices = columnChoiceValues({ options: f.options })
+      // Choix avec leur couleur : le menu de la fiche les montre en pastilles.
+      const choices = parseSelectChoices(f)
       if (choices.length) map[f.column_name] = choices
     }
     return map
@@ -497,6 +534,15 @@ export default function ProductDetail({ recordId, onClose }) {
     return map
   }, [registryFields])
   const bomSummary = useMemo(() => computeBuildable(bom), [bom])
+  // Clic droit sur une ligne de nomenclature → « Supprimer » (aussi dans Airtable).
+  const bomOps = useMemo(() => new RecordOps({
+    labels: { delete: 'Supprimer la ligne', deleted: 'Ligne supprimée' },
+    remove: async row => {
+      await api.bom.delete(row.id)
+      setBom(prev => prev.filter(r => r.id !== row.id))
+    },
+    deleteConfirm: row => `Retirer ${row.component_name || 'ce composant'} de la nomenclature ?`,
+  }), [])
 
   const { record: product, setRecord: setProduct, loading, loadError, reload: load } =
     useDetailRecord(async () => {
@@ -537,12 +583,15 @@ export default function ProductDetail({ recordId, onClose }) {
 
   // Toutes les sections étant visibles simultanément, la nomenclature est
   // chargée au montage (plus de chargement paresseux à la sélection d'un onglet).
-  useEffect(() => {
+  const reloadBom = useCallback(() => {
     api.bom.list({ product_id: id, limit: 'all' }).then(r => setBom(r.data || [])).catch(() => {})
+  }, [id])
+  useEffect(() => {
+    reloadBom()
     api.bom.list({ component_id: id, limit: 'all' }).then(r => setUsedIn(r.data || [])).catch(() => setUsedIn([]))
     api.products.purchases(id).then(r => setPurchases(r.data || [])).catch(() => setPurchases([]))
     api.products.deleteCheck(id).then(setDeleteCheck).catch(() => setDeleteCheck(null))
-  }, [id])
+  }, [id, reloadBom])
 
   async function saveOpeningCost(v) {
     try {
@@ -570,6 +619,30 @@ export default function ProductDetail({ recordId, onClose }) {
   togglePriceRef.current = togglePurchasePrice
   const purchaseColumns = useMemo(() => PURCHASE_COLUMNS.map(c => c.id === 'fifo_qty'
     ? { ...c, render: p => <FifoQtyCell p={p} onTogglePrice={row => togglePriceRef.current(row)} /> }
+    : c), [])
+
+  // Nomenclature : état de coût de chaque composant (calcul serveur) posé sur
+  // ses lignes, et bascule « accepté sans coût ».
+  const bomRows = useMemo(() => {
+    const byComponent = new Map((product?.fifo?.lines || []).map(l => [l.component_id, l]))
+    return bomSummary.rows.map(r => {
+      const l = byComponent.get(r.component_id)
+      return l ? { ...r, cost_flag: l.flag, cost_free: l.free } : r
+    })
+  }, [bomSummary.rows, product?.fifo?.lines])
+  async function toggleFreeComponent(row) {
+    try {
+      await api.products.bomFreeComponent(id, row.component_id, !row.cost_free)
+      const fresh = await api.products.get(id)
+      setProduct(prev => prev ? { ...prev, fifo: fresh.fifo, unit_cost: fresh.unit_cost } : prev)
+    } catch (e) {
+      addToast({ type: 'error', message: e.message || 'Action impossible', duration: 6000 })
+    }
+  }
+  const toggleFreeRef = useRef(toggleFreeComponent)
+  toggleFreeRef.current = toggleFreeComponent
+  const bomColumns = useMemo(() => BOM_COLUMNS.map(c => c.id === 'component_name'
+    ? { ...c, render: row => <><BomCostFlag row={row} onToggle={r => toggleFreeRef.current(r)} />{BOM_RENDERS.component_name(row)}</> }
     : c), [])
 
   // Liste des entreprises pour le champ « Fournisseur » (LinkedRecordField).
@@ -659,22 +732,40 @@ export default function ProductDetail({ recordId, onClose }) {
     }, delay)
   }
 
+  // Champ personnalisé de la carte (DetailFieldGrid) : écrit sur la pièce, puis
+  // poussé vers Airtable si le champ y est bidirectionnel.
+  const [customSaving, setCustomSaving] = useState(null)
+  const customSavingKeys = useMemo(() => (customSaving ? { [customSaving]: true } : {}), [customSaving])
+  async function saveCustomField(key, value) {
+    setCustomSaving(key)
+    try {
+      return await save(async () => {
+        const { airtable, ...updated } = await api.products.update(id, { [key]: value === '' ? null : value })
+        setProduct(p => (p ? { ...p, ...updated } : updated))
+        if (airtable?.error) throw new Error(`Airtable : ${airtable.error}`)
+      })
+    } finally {
+      setCustomSaving(null)
+    }
+  }
+
   // Ordre des sections réglable dans le mode personnalisation du panneau
   // (flèches / glisser sur le titre de chaque section), partagé comme celui des champs.
   const { sections, applyOrder: applySectionOrder } = useDetailSectionOrder('products', SECTION_KEYS)
   const sectionSiblings = useCallback(() => sections, [sections])
   const sectionDnd = useReorderDnd({ siblingsOf: sectionSiblings, applyOrder: applySectionOrder })
   const sectionReorder = peekEdit?.editing ? sectionDnd : undefined
-  // Pièce achetée : pas de nomenclature à montrer. « Utilisé dans » n'apparaît
-  // que si la pièce figure dans le BOM d'au moins un produit.
+  // Pièce achetée : pas de nomenclature à montrer ; produit fabriqué : pas
+  // d'achats. « Utilisé dans » n'apparaît que si la pièce figure dans le BOM
+  // d'au moins un produit.
   const shownSections = useMemo(
-    () => sections.filter(k => !(k === 'bom' && form.procurement_type === 'Acheté') && !(k === 'utilise' && !usedIn.length)),
+    () => sections.filter(k => !(k === 'bom' && form.procurement_type === 'Acheté') && !(k === 'achats' && form.procurement_type === 'Fabriqué') && !(k === 'utilise' && !usedIn.length) && !(k === 'stock' && (!form.procurement_type || form.procurement_type === 'Logiciel'))),
     [sections, form.procurement_type, usedIn.length],
   )
   const { activeSection, goToSection, registerSection } = useSectionNav(shownSections, { ready: !loading && !!product })
   // Hauteur de chaque tableau (entier / limité), réglée en mode personnalisation.
   const { isFull: tableIsFull, setFull: setTableFull } = useDetailSectionSizes('products')
-  const tableHeight = (key, rows) => (tableIsFull(key) ? 'auto' : stackedTableHeight(rows))
+  const tableRowLimit = key => (tableIsFull(key) ? 0 : SUBTABLE_ROW_LIMIT)
   const sizeToggle = (key) => {
     if (!peekEdit?.editing) return null
     const full = tableIsFull(key)
@@ -719,7 +810,14 @@ export default function ProductDetail({ recordId, onClose }) {
   function fieldEditor(field) {
     if (field.type === 'readonly') {
       // Non modifiable : texte nu, sans le cadre blanc d'un champ de saisie.
-      return <div className="text-sm text-slate-900 py-1.5 tabular-nums">{product[field.key] ?? (field.key === 'sku' ? '—' : 0)}</div>
+      const raw = product[field.key]
+      const shown = raw != null && raw !== '' && field.key !== 'sku' && Number.isFinite(Number(raw)) ? fmtNumber(raw) : raw
+      return <div className="text-sm text-slate-900 py-1.5 tabular-nums">{shown ?? (field.key === 'sku' ? '—' : field.blank ?? 0)}</div>
+    }
+    if (field.type === 'image') {
+      return product.image_url
+        ? <TableThumb src={product.image_url} alt={product.name_fr || ''} className="border border-slate-200" />
+        : <div className="text-sm text-slate-400 py-1.5">—</div>
     }
     if (field.type === 'checkbox') {
       return (
@@ -748,28 +846,18 @@ export default function ProductDetail({ recordId, onClose }) {
     }
     if (field.type === 'select') {
       // Choix codés sur le champ, sinon ceux du registre. La valeur en place
-      // s'ajoute si elle n'y figure pas (donnée héritée du sync) : sans ça le
-      // champ s'afficherait vide et l'effacerait à la première sauvegarde.
-      const declared = field.options || registryChoices[field.key] || []
-      const current = form[field.key] || ''
-      const options = current && !declared.includes(current) ? [current, ...declared] : declared
-      // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
-      return options.length > 10 ? (
-        <SearchableSelect
-          value={current}
-          options={options.map(o => ({ value: o, label: o }))}
-          emptyOption="—"
+      // reste proposée si elle n'y figure pas (donnée héritée du sync) : sans ça
+      // le champ s'afficherait vide et l'effacerait à la première sauvegarde.
+      return (
+        <ChoiceSelect
+          value={form[field.key] || ''}
+          choices={field.options || registryChoices[field.key] || []}
+          table="products"
+          field={field.key}
           onChange={v => change(field.key, v)}
           className={inp}
-          size="sm"
           testId={`product-field-${field.key}`}
         />
-      ) : (
-        <select className={inp} value={current} onChange={e => change(field.key, e.target.value)}
-          data-testid={`product-field-${field.key}`}>
-          <option value="">—</option>
-          {options.map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
       )
     }
     if (field.type === 'textarea') {
@@ -808,7 +896,11 @@ export default function ProductDetail({ recordId, onClose }) {
           allowGroups
           bareReorder
           renameInPlace
+          hideVisRuleBadge
+          visRuleChoices
           record={product}
+          onSaveCustom={saveCustomField}
+          savingKeys={customSavingKeys}
           taken={TAKEN_ELSEWHERE}
           className="card p-6"
           testId="product-fields"
@@ -822,11 +914,23 @@ export default function ProductDetail({ recordId, onClose }) {
               // Champs secondaires : ils attendent dans « Ajouter un champ »
               // plutôt que de charger la carte d'office.
               defaultHidden={field.defaultVisible === false}
+              choices={field.type === 'select' ? (field.options || registryChoices[field.key] || []) : undefined}
+              checkbox={field.type === 'checkbox'}
             >
               {fieldEditor(field)}
             </DetailField>
           ))}
         </DetailFieldGrid>
+      </Section>
+    ),
+    // État du stock calculé par Boréal et le pourquoi de la quantité à commander
+    // (remplace la ligne « Stock / min / dispo / seuil » de l'en-tête).
+    stock: (
+      <Section key="stock" reorder={sectionReorder} id="stock" label={SECTION_LABELS.stock} registerRef={registerSection('stock')}>
+        <ProductStockState productId={id} procurementType={form.procurement_type}
+          refreshKey={`${product?.stock_qty}|${product?.movements?.length}|${product?.min_stock}|${product?.seuil_min_produits_finis}`}
+          onSaveSeuilMin={v => saveCustomField('seuil_min_produits_finis', v)}
+          onSaveInvMin={v => { setForm(f => ({ ...f, min_stock: v ?? 0 })); saveCustomField('min_stock', v ?? 0) }} />
       </Section>
     ),
     mouvements: (
@@ -845,11 +949,14 @@ export default function ProductDetail({ recordId, onClose }) {
         }
       >
         <DataTable
+          key={id}
           table="product_movements"
           columns={MOVEMENT_COLUMNS}
           data={product.movements || []}
           searchFields={['type', 'reason', 'user_name']}
-          height={tableHeight('mouvements', product.movements?.length)}
+          height="auto"
+          rowLimit={tableRowLimit('mouvements')}
+          footerAtBottom
           emptyState={{ icon: ArrowLeftRight, title: 'Aucun mouvement', description: "Aucune entrée, sortie ou ajustement de stock n'a encore été enregistré pour ce produit." }}
         />
       </Section>
@@ -862,13 +969,16 @@ export default function ProductDetail({ recordId, onClose }) {
             <ShoppingCart size={14} /> Ajouter un achat
           </button>
         </div>}>
-        {product.fifo && <FifoSummary fifo={product.fifo} onOpeningCost={saveOpeningCost} />}
+        {product.fifo && product.fifo.kind !== 'bom' && <FifoSummary fifo={product.fifo} onOpeningCost={saveOpeningCost} />}
         <DataTable
+          key={id}
           table="product_purchases"
           columns={purchaseColumns}
           data={purchases}
           searchFields={['at_id', 'supplier_company_name', 'supplier_vendor_name', 'emplacement']}
-          height={tableHeight('achats', purchases.length)}
+          height="auto"
+          rowLimit={tableRowLimit('achats')}
+          footerAtBottom
           peek={{
             title: row => row.at_id || 'Achat',
             subtitle: row => row.supplier_company_name || row.supplier_vendor_name || '',
@@ -885,12 +995,18 @@ export default function ProductDetail({ recordId, onClose }) {
         action={sizeToggle('bom')}>
         {bom.length > 0 && <BomBuildableBanner summary={bomSummary} />}
         <DataTable
+          key={id}
           table="bom_items"
-          columns={BOM_COLUMNS}
+          columns={bomColumns}
           columnPatches={BOM_COLUMN_PATCHES}
-          data={bomSummary.rows}
+          data={bomRows}
           searchFields={['component_name', 'component_sku', 'ref_des']}
-          height={tableHeight('bom', bomSummary.rows.length)}
+          height="auto"
+          rowLimit={tableRowLimit('bom')}
+          footerAtBottom
+          recordOps={bomOps}
+          // Champ ajouté (lookup, formule…) : ses valeurs arrivent avec les lignes.
+          onFieldsChanged={reloadBom}
           // Clic sur une ligne → fiche du composant en side-peek.
           peek={{
             title: row => row.component_name || 'Composant',
@@ -910,11 +1026,14 @@ export default function ProductDetail({ recordId, onClose }) {
       <Section key="utilise" reorder={sectionReorder} id="utilise" label={SECTION_LABELS.utilise} count={sectionCounts.utilise} registerRef={registerSection('utilise')}
         action={sizeToggle('utilise')}>
         <DataTable
+          key={id}
           table="product_used_in"
           columns={USED_IN_COLUMNS}
           data={usedIn}
           searchFields={['product_name', 'product_sku', 'ref_des']}
-          height={tableHeight('utilise', usedIn.length)}
+          height="auto"
+          rowLimit={tableRowLimit('utilise')}
+          footerAtBottom
           peek={{
             title: row => row.product_name || 'Produit',
             subtitle: row => row.product_sku || '',
@@ -940,10 +1059,7 @@ export default function ProductDetail({ recordId, onClose }) {
         const filled = docFields.filter(f => product[f.url])
         return (
           <div className="card p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="text-sm text-slate-500">
-                Copies locales (mises à jour à la demande à partir des liens Airtable).
-              </div>
+            <div className="flex items-center justify-end mb-4">
               <button
                 type="button"
                 onClick={() => setShowRefreshDocsModal(true)}
@@ -961,67 +1077,69 @@ export default function ProductDetail({ recordId, onClose }) {
                 const locals = (product[f.local] || '').split(',').map(s => s.trim()).filter(Boolean)
                 return (
                   <Field key={f.url} label={f.label} span2>
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="text"
-                        className={inp}
-                        value={raw}
-                        onChange={e => {
-                          const v = e.target.value
-                          setDocDraft(d => ({ ...d, [f.url]: v }))
-                          saveAdjust(f.url, v.trim(), 600)
-                        }}
-                      />
-                      {urls.length === 1 && (
-                        <a
-                          href={urls[0]}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100"
-                          title="Ouvrir"
-                        >
-                          <ExternalLink size={14} />
-                        </a>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          className={inp}
+                          value={raw}
+                          onChange={e => {
+                            const v = e.target.value
+                            setDocDraft(d => ({ ...d, [f.url]: v }))
+                            saveAdjust(f.url, v.trim(), 600)
+                          }}
+                        />
+                        {urls.length === 1 && (
+                          <a
+                            href={urls[0]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100"
+                            title="Ouvrir"
+                          >
+                            <ExternalLink size={14} />
+                          </a>
+                        )}
+                      </div>
+                      {(urls.length > 0 || locals.length > 0) && (
+                        <div className="flex flex-wrap gap-3 mt-2">
+                          {Array.from({ length: Math.max(urls.length, locals.length) }, (_, i) => {
+                            const url = urls[i]
+                            const localPath = locals[i] || null
+                            const localFilename = localPath ? localPath.replace(/^products\/docs\//, '') : null
+                            const localUrl = localFilename ? `/erp/api/product-docs/${encodeURIComponent(localFilename)}` : null
+                            return (
+                              <div key={localPath || i} className="flex flex-col items-start gap-1.5 min-w-0">
+                                {url && urls.length > 1 && (
+                                  <a
+                                    href={url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs link-record truncate"
+                                    title={url}
+                                  >
+                                    <ExternalLink size={12} className="shrink-0" /> [{i + 1}]
+                                  </a>
+                                )}
+                                {localUrl ? (
+                                  <AttachmentPreview
+                                    url={localUrl}
+                                    fileName={localFilename}
+                                    title={`${f.label.replace('Lien PDF ', '')}${locals.length > 1 ? ` · ${i + 1}` : ''}`}
+                                    kind="pdf"
+                                    showFileName={false}
+                                    overModal
+                                    testId={`product-doc-${f.url}-${i}`}
+                                  />
+                                ) : (
+                                  <div className="text-xs text-slate-400 italic">Aucune copie locale</div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
                       )}
                     </div>
-                    {(urls.length > 0 || locals.length > 0) && (
-                      <div className="flex flex-wrap gap-3 mt-2">
-                        {Array.from({ length: Math.max(urls.length, locals.length) }, (_, i) => {
-                          const url = urls[i]
-                          const localPath = locals[i] || null
-                          const localFilename = localPath ? localPath.replace(/^products\/docs\//, '') : null
-                          const localUrl = localFilename ? `/erp/api/product-docs/${encodeURIComponent(localFilename)}` : null
-                          return (
-                            <div key={localPath || i} className="flex flex-col items-start gap-1.5 min-w-0">
-                              {url && urls.length > 1 && (
-                                <a
-                                  href={url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-xs link-record truncate"
-                                  title={url}
-                                >
-                                  <ExternalLink size={12} className="shrink-0" /> [{i + 1}]
-                                </a>
-                              )}
-                              {localUrl ? (
-                                <AttachmentPreview
-                                  url={localUrl}
-                                  fileName={localFilename}
-                                  title={`${f.label.replace('Lien PDF ', '')}${locals.length > 1 ? ` · ${i + 1}` : ''}`}
-                                  kind="pdf"
-                                  showFileName={false}
-                                  overModal
-                                  testId={`product-doc-${f.url}-${i}`}
-                                />
-                              ) : (
-                                <div className="text-xs text-slate-400 italic">Aucune copie locale</div>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
                   </Field>
                 )
               })}
@@ -1049,13 +1167,11 @@ export default function ProductDetail({ recordId, onClose }) {
         ),
         badge: product && (
           <>
-            <Badge color={stockStatusColor(product)} size="md">{stockStatusLabel(product)}</Badge>
             {!form.active && <Badge color="red">Inactif</Badge>}
             {form.is_sellable && <Badge color="indigo">Vendable</Badge>}
           </>
         ),
         status: <SaveStatus status={saveState} />,
-        meta: <span>Stock: <strong>{product?.stock_qty}</strong> / min: {form.min_stock || 0}</span>,
         actions: form.buy_via_po && (
           <button
             onClick={() => setShowPoModal(true)}

@@ -4,12 +4,12 @@ import { newRecordId } from '../utils/recordId.js'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, normalizeLookupLimit, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, inferLookupResultType, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
+import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, normalizeLookupLimit, validateRollup, normalizeRollupFilter, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, inferLookupResultType, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
 import { parseDurationToSeconds, normalizeDurationFormat } from '../services/duration.js'
 import { normalizePercentDisplay } from '../services/percent.js'
 import { runRuleActionForRecord } from '../services/fieldRuleEngine.js'
 import { findLabelConflict, labelConflictError } from '../utils/fieldLabels.js'
-import { isColumnWritable } from '../services/customFieldWritability.js'
+import { isColumnWritable, isErpComputedColumn } from '../services/customFieldWritability.js'
 import { invalidateColumnsCache } from '../db/changeLog.js'
 import { erpTableForAirtableTableId } from '../services/airtableTableMap.js'
 import { writebackModuleForTable, PUSH_ONLY_CF_KINDS } from '../services/airtableWriteback.js'
@@ -78,6 +78,9 @@ const ALLOWED_TABLES = new Set([
   // Fournitures et leurs achats — miroirs Airtable, même raison : colonne
   // d'accueil d'un champ Airtable branché dans /champs.
   'fournitures', 'achats_fournitures',
+  // Mouvements d'abonnements (/abonnements/mouvements) : champs saisis dans le
+  // tableau via PATCH /projets/abonnement-events/:id.
+  'subscription_events',
 ])
 
 function slugify(s) {
@@ -415,7 +418,7 @@ router.get('/:erpTable', (req, res) => {
     `SELECT cf.id, cf.name, cf.column_name, cf.type, cf.decimals, cf.sort_order,
             cf.kind, cf.formula_expr, cf.lookup_fk, cf.lookup_target_table, cf.lookup_target_column,
             cf.lookup_limit_n, cf.lookup_limit_dir, cf.result_type,
-            cf.rollup_target_table, cf.rollup_target_fk, cf.rollup_target_column, cf.rollup_agg, cf.view_error, cf.options, cf.default_value,
+            cf.rollup_target_table, cf.rollup_target_fk, cf.rollup_target_column, cf.rollup_agg, cf.rollup_filter, cf.view_error, cf.options, cf.default_value,
             cf.link_target_table, cf.link_group_id, cf.link_role, cf.link_single, cf.source, cf.airtable_mapping_id,
             cf.description,
             m.id AS mapping_id, m.import_disabled, m.options AS mapping_options
@@ -526,6 +529,8 @@ router.get('/:erpTable', (req, res) => {
       // vide — c'est ce que la modale de champ édite.
       record_link_filter: recordLink ? parseLinkFilter(cfOpts?.link_filter) : [],
       writable: isColumnWritable(erpTable, { ...row, mapping_id, import_disabled }, wbModule),
+      // Type « Calculé par Boréal » : valeur tenue par un calcul de l'app.
+      erp_computed: isErpComputedColumn(erpTable, row.column_name),
     }
   })
   res.json({ data })
@@ -956,11 +961,13 @@ router.post('/:erpTable/choices/:column/from-airtable', async (req, res) => {
 //   - last_modified_time : date de dernière modification (colonne updated_at)
 //   - created_by         : utilisateur ayant créé l'enregistrement (activity_log)
 //   - last_modified_by   : dernier utilisateur ayant modifié (activity_log)
+//   - autonumber         : numéro séquentiel de la ligne (rowid)
 const AUTO_TYPES = {
   created_time:       { result_type: 'date', needsCreatedAt: true },
   last_modified_time: { result_type: 'date', needsUpdatedAt: true },
   created_by:         { result_type: 'text', needsEntity: true },
   last_modified_by:   { result_type: 'text', needsEntity: true },
+  autonumber:         { result_type: 'number' },
 }
 
 // ── Création d'un champ — une seule porte d'entrée ───────────────────────────
@@ -1141,10 +1148,13 @@ const FIELD_KINDS = {
       // Les agrégats sont numériques par défaut.
       const resultType = requireResultType(body?.result_type, { fallback: 'number' })
       validateRollup(rollup, erpTable)
+      // Condition (ex. « Date de commande dans les 365 derniers jours ») : JSON ou null.
+      const filter = normalizeRollupFilter(body?.rollup_filter, rollup.rollup_target_table)
       return {
         type: typeForResultType(resultType),
         columns: {
           ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType,
+          rollup_filter: filter ? JSON.stringify(filter) : null,
           decimals: resultDecimals(resultType, body?.decimals), ...resultTypeOptions(resultType, body),
         },
       }
@@ -1161,7 +1171,7 @@ const FIELD_KINDS = {
   },
 }
 
-// Les quatre champs auto-remplis partagent toute leur mécanique : seul diffère
+// Les champs auto-remplis partagent toute leur mécanique : seul diffère
 // ce qu'exige la table (colonne created_at/updated_at, ou un mapping activity_log).
 for (const [autoType, spec] of Object.entries(AUTO_TYPES)) {
   FIELD_KINDS[autoType] = {
@@ -1177,7 +1187,7 @@ for (const [autoType, spec] of Object.entries(AUTO_TYPES)) {
       if (spec.needsEntity && !ACTIVITY_ENTITY_MAP[erpTable]) {
         return { error: `Attribution (activity_log) non disponible pour ${erpTable}` }
       }
-      return { type: 'text', columns: { result_type: spec.result_type } }
+      return { type: spec.result_type === 'number' ? 'number' : 'text', columns: { result_type: spec.result_type } }
     },
   }
 }
@@ -1186,7 +1196,7 @@ const CF_INSERT_COLUMNS = [
   'decimals', 'options', 'default_value', 'formula_expr', 'result_type',
   'lookup_fk', 'lookup_target_table', 'lookup_target_column',
   'lookup_limit_n', 'lookup_limit_dir',
-  'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg',
+  'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg', 'rollup_filter',
   'link_target_table', 'link_group_id', 'link_role', 'link_single',
   'source', 'airtable_mapping_id', 'description',
 ]
@@ -1216,7 +1226,7 @@ const FIELD_SELECT = `
   SELECT id, name, column_name, type, kind, decimals, sort_order, options, default_value,
          formula_expr, result_type, lookup_fk, lookup_target_table, lookup_target_column,
          lookup_limit_n, lookup_limit_dir,
-         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
+         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, rollup_filter,
          link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id, description
   FROM custom_fields WHERE id=?`
 
@@ -1406,13 +1416,13 @@ router.post('/:erpTable/duplicate', (req, res) => {
         (id, erp_table, name, column_name, type, decimals, sort_order, options, kind,
          formula_expr, lookup_fk, lookup_target_table, lookup_target_column,
          lookup_limit_n, lookup_limit_dir, result_type,
-         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, description, source)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'native')
+         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, rollup_filter, description, source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'native')
     `).run(
       id, erpTable, name, columnName, type, src.decimals, sortOrder, src.options, src.kind,
       src.formula_expr, src.lookup_fk, src.lookup_target_table, src.lookup_target_column,
       src.lookup_limit_n, src.lookup_limit_dir, src.result_type,
-      src.rollup_target_table, src.rollup_target_fk, src.rollup_target_column, src.rollup_agg, src.description ?? null,
+      src.rollup_target_table, src.rollup_target_fk, src.rollup_target_column, src.rollup_agg, src.rollup_filter ?? null, src.description ?? null,
     )
     regenerateView(erpTable)
   } else {
@@ -1590,7 +1600,7 @@ router.get('/link/:fieldId/options', (req, res) => {
 // « 45 % » ou en barre de progression selon `options.display`.
 // 'rating' : note en étoiles, INTEGER de 0 à 5 (échelle fixe, cf. services/rating.js).
 // 'barcode' : code-barres / QR, TEXT tel que lu par la douchette (Barcode d'Airtable).
-const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'percent', 'url', 'email', 'phone', 'barcode', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'rating', 'attachment'])
+const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'percent', 'url', 'email', 'phone', 'barcode', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'rating', 'attachment', 'user'])
 
 // Types qui acceptent un nombre de décimales (une durée a son propre format,
 // une note est un entier).
@@ -1679,7 +1689,7 @@ router.put('/:id', (req, res) => {
     // formule ne doit pas garder son agrégat fantôme en base.
     for (const c of ['formula_expr', 'result_type', 'lookup_fk', 'lookup_target_table', 'lookup_target_column',
       'lookup_limit_n', 'lookup_limit_dir',
-      'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg']) {
+      'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg', 'rollup_filter']) {
       updates.push(`${c}=?`); values.push(built.columns?.[c] ?? null)
     }
     for (const c of ['decimals', 'options', 'default_value']) {
@@ -1808,7 +1818,8 @@ router.put('/:id', (req, res) => {
     viewDirty = true
   }
   if (!wantedKind && ('rollup_target_table' in (req.body || {}) || 'rollup_target_fk' in (req.body || {}) ||
-      'rollup_target_column' in (req.body || {}) || 'rollup_agg' in (req.body || {}))) {
+      'rollup_target_column' in (req.body || {}) || 'rollup_agg' in (req.body || {}) ||
+      'rollup_filter' in (req.body || {}))) {
     if (existing.kind !== 'rollup') return res.status(400).json({ error: 'Champs rollup uniquement' })
     const agg = ('rollup_agg' in req.body ? req.body.rollup_agg : existing.rollup_agg)
     const merged = {
@@ -1819,11 +1830,16 @@ router.put('/:id', (req, res) => {
         ? (req.body.rollup_target_column || null)
         : existing.rollup_target_column),
       rollup_agg: agg,
+      rollup_filter: 'rollup_filter' in req.body ? req.body.rollup_filter : existing.rollup_filter,
     }
-    try { validateRollup(merged, existing.erp_table) } catch (e) { return res.status(400).json({ error: e.message }) }
-    updates.push('rollup_target_table=?', 'rollup_target_fk=?', 'rollup_target_column=?', 'rollup_agg=?')
+    let filter
+    try {
+      validateRollup(merged, existing.erp_table)
+      filter = normalizeRollupFilter(merged.rollup_filter, merged.rollup_target_table)
+    } catch (e) { return res.status(400).json({ error: e.message }) }
+    updates.push('rollup_target_table=?', 'rollup_target_fk=?', 'rollup_target_column=?', 'rollup_agg=?', 'rollup_filter=?')
     values.push(merged.rollup_target_table, merged.rollup_target_fk, merged.rollup_target_column,
-                String(merged.rollup_agg).toUpperCase())
+                String(merged.rollup_agg).toUpperCase(), filter ? JSON.stringify(filter) : null)
     viewDirty = true
   }
   // result_type pilote l'affichage / le type de colonne (texte, nombre, date, URL).
@@ -1996,7 +2012,7 @@ router.put('/:id', (req, res) => {
     SELECT id, name, column_name, type, decimals, kind, formula_expr,
            lookup_fk, lookup_target_table, lookup_target_column, lookup_limit_n, lookup_limit_dir,
            result_type, sort_order,
-           rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, view_error, options, default_value,
+           rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, rollup_filter, view_error, options, default_value,
            link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id, description
     FROM custom_fields WHERE id=?
   `).get(req.params.id)

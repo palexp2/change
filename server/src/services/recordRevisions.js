@@ -28,6 +28,8 @@ export const REVISION_TABLES = {
   sale_receipts: { exclude: ['raw_data'] },
   marketing_forms: { exclude: ['fields_json'] },
   achats_fournisseurs: {},
+  // System builder (/discovery-forms)
+  customer_onboarding_responses: { exclude: ['public_token', 'stripe_session_id'] },
 }
 
 // Entité activity_log de chaque table (attribution de l'auteur).
@@ -39,13 +41,14 @@ const ENTITY = {
   fournitures: 'fourniture', ops_issues: 'ops_issue', products: 'product',
   sale_receipts: 'sale_receipt', marketing_forms: 'marketing_form',
   achats_fournisseurs: 'achat_fournisseur',
+  customer_onboarding_responses: 'discovery_form',
 }
 
 // Colonnes de mécanique (horodatages de sync, de vérification…) : jamais une
 // révision à elles seules.
 const NOISE = /^(id|created_at|updated_at|synced_at|geocoded_at|password_hash|last_hubspot_sync|hs_updated_at|hs_created_at|airtable_modified_at)$|_checked_at$|_synced_at$|^last_sync/
 
-const MAX_VALUE = 20000
+export const MAX_VALUE = 20000
 const POLL_MS = 3000
 const BATCH = 1000
 const ATTRIB_MS = 5000
@@ -100,11 +103,11 @@ export function keyList(v) {
   return REC_LIST.test(t) ? t.split(/\s*,\s*/) : null
 }
 
-const canon = v => {
+export const canon = v => {
   const l = keyList(v)
   return l ? [...l].sort().join(',') : String(v ?? '')
 }
-const same = (o, n) => canon(o) === canon(n)
+export const same = (o, n) => canon(o) === canon(n)
 
 function diff(before, after) {
   const changes = []
@@ -183,7 +186,7 @@ export function processRecord(table, id, changeType, at) {
 
 const TABLE_LIST = () => Object.keys(REVISION_TABLES)
 
-function pollOnce() {
+export function pollOnce() {
   const tables = TABLE_LIST()
   const cursor = Number(getState('cursor') || 0)
   const rows = db.prepare(`

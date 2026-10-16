@@ -58,7 +58,7 @@ function fortyHourProductIds() {
  * Abonnement actif → le produit s'y ajoute (page d'approbation) ; sinon
  * nouvel abonnement (Checkout). Lien sans contact reconnu → nouveau client.
  */
-export async function pagePayPlan({ stripe, token, acceptanceId }) {
+export async function pagePayPlan({ stripe, token, acceptanceId, country = null }) {
   const { c, a } = pageAcceptance(token, acceptanceId)
   const contact = signer(a)
   const company = contact?.company_id
@@ -78,13 +78,18 @@ export async function pagePayPlan({ stripe, token, acceptanceId }) {
     currency = (await stripe.customers.retrieve(customer)).currency || null
     fixed = !!currency
   }
+  // Jamais facturé chez Stripe : le pays choisi sur la page de carte décide,
+  // même contre le pays au dossier — le client a raison (Charles, 2026-10-15).
+  const switchable = !currency
+  if (switchable && (country === 'US' || country === 'CA')) currency = country === 'US' ? 'usd' : 'cad'
   if (!currency && company) currency = /^(us|usa|united states|états-unis|etats-unis)$/i.test(String(company.country || '').trim()) ? 'usd' : (company.currency === 'USD' ? 'usd' : 'cad')
   if (!currency) currency = c.language === 'en' ? 'usd' : 'cad'
   const priceId = pickPriceId(c, tier, currency, fixed)
   if (!priceId) throw fail('currency_mismatch')
   const price = await stripe.prices.retrieve(priceId, { expand: ['product'] })
   if (fixed && price.currency !== currency) throw fail('currency_mismatch')
-  const base = { c, a, price, contact, customer, isFr: c.language !== 'en', currency: price.currency, tier, billingStart: c.billingStart || null }
+  const base = { c, a, price, contact, customer, isFr: c.language !== 'en', currency: price.currency, tier, billingStart: c.billingStart || null,
+    switchable: switchable && !!c[`price_${tier}_usd`] && !!c[`price_${tier}_cad`] }
   // Déjà abonné à ce produit (n'importe quelle langue, n'importe quel abonnement).
   const same = new Set(siblingStripeProducts(price.product.id))
   const holder = live.find(s => s.items.data.some(i => same.has(productOf(i))))
@@ -188,7 +193,9 @@ export async function createPageCheckout({ stripe, plan }) {
     ui_mode: 'elements',
     line_items: [{ price: price.id, quantity: 1 }],
     automatic_tax: { enabled: true },
-    billing_address_collection: 'required',
+    // 'auto' : pays + code postal suffisent aux taxes (la page ne demande que ça) ;
+    // 'required' exige une adresse complète et refuse le paiement.
+    billing_address_collection: 'auto',
     ...(customer
       ? { customer, customer_update: { address: 'auto', name: 'auto' } }
       : (a.email ? { customer_email: a.email } : {})),

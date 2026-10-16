@@ -186,3 +186,13 @@ test('évaluation → texte garde le nombre d’étoiles', () => {
   assert.equal(valueToText(3, 'rating', null), '3')
   assert.equal(convertSingleValue('3', 'text', null, 'rating', null).value, 3)
 })
+
+test('texte → utilisateur : nom ou courriel d’un membre actif, le reste est signalé', () => {
+  const id = `u_conv_${process.pid}`
+  db.prepare(`INSERT INTO users (id, email, password_hash, name, role, active) VALUES (?, ?, 'x', 'Élise Tremblay', 'user', 1)`)
+    .run(id, `elise.${process.pid}@example.test`)
+  assert.equal(convertSingleValue('elise tremblay', 'text', null, 'user', null).value, 'Élise Tremblay')
+  assert.equal(convertSingleValue(`Elise.${process.pid}@example.test`, 'text', null, 'user', null).value, 'Élise Tremblay')
+  assert.equal(convertSingleValue('Personne Inconnue', 'text', null, 'user', null).ok, false)
+  assert.equal(sqlAffinityFor('user'), 'TEXT')
+})

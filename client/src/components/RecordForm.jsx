@@ -5,7 +5,7 @@ import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useSaveStatus, SaveStatus } from './SaveStatus.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
-import { SearchableSelect } from './SearchableSelect.jsx'
+import { ChoiceSelect } from './ChoiceSelect.jsx'
 import Spinner from './Spinner.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
@@ -38,7 +38,7 @@ import { RatingInput } from './RatingStars.jsx'
 //                   | 'email' | 'url' | 'select' | 'checkbox' | 'rating'
 //                   | 'record_link'
 //                   (défaut 'text')
-//   options       — pour 'select' : [{ value, label }] ou string[]
+//   options       — pour 'select' : [{ value, label, color? }] ou string[]
 //   rows, min, step
 //   span          — 2 pour occuper toute la largeur d'une grille 2 colonnes
 //   defaultValue  — valeur initiale (défaut '' / false pour checkbox)
@@ -225,29 +225,18 @@ function GenericInput({ spec, value, onChange, id }) {
     const commit = v => onChange(v == null || v === '[]' ? '' : v)
     return <LinkedRecordsValue field={field} value={value} detail navigable={false} onChange={commit} />
   }
+  // Sélection : menu de pastilles (couleur du choix, grise sans couleur), le
+  // même partout — un <select> natif ne sait pas colorer ses choix. Recherche
+  // incluse (règle CLAUDE.md des dropdowns).
   if (spec.type === 'select') {
-    const options = normalizeOptions(spec.options)
-    // Règle CLAUDE.md : tout dropdown susceptible de dépasser 10 options doit
-    // offrir une recherche. `searchable` force le composant recherchable même
-    // en dessous du seuil (cohérence avec la fiche détail de la même table).
-    if (spec.searchable || options.length > 10) {
-      return (
-        <SearchableSelect
-          value={value ?? ''}
-          options={options}
-          onChange={onChange}
-          emptyOption="—"
-          className="input w-full"
-          size="sm"
-          testId={spec.testId || `form-field-${spec.field}`}
-        />
-      )
-    }
     return (
-      <select {...common} value={value ?? ''} onChange={e => onChange(e.target.value)} className="select">
-        <option value="">—</option>
-        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
+      <ChoiceSelect
+        value={value}
+        choices={normalizeOptions(spec.options)}
+        onChange={onChange}
+        className="input w-full"
+        testId={spec.testId || `form-field-${spec.field}`}
+      />
     )
   }
   const type = spec.type === 'number' || spec.type === 'currency' ? 'number'
@@ -371,8 +360,9 @@ export function RecordForm({
         ...f,
         label: gate.labelFor(f.field, f.label || col?.label) || NBSP_LABEL_FALLBACK,
         // Les choix d'un select viennent de tableDefs quand la page ne les
-        // redéclare pas — une seule source de vérité par table.
-        options: f.options ?? col?.options,
+        // redéclare pas — une seule source de vérité par table. Ordre, libellés
+        // et couleurs réglés sur le champ s'y appliquent (cf. gate.choicesFor).
+        options: f.type === 'select' ? gate.choicesFor(f.field, f.options ?? col?.options) : (f.options ?? col?.options),
       }
     })
     return resolveFormFields(withLabels, config)

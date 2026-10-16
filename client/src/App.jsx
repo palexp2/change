@@ -41,7 +41,6 @@ import Retours from './pages/Retours.jsx'
 import Factures from './pages/Factures.jsx'
 import Paiements from './pages/Paiements.jsx'
 import PaiementsEmis from './pages/PaiementsEmis.jsx'
-import ItemsVendus from './pages/ItemsVendus.jsx'
 import Abonnements from './pages/Abonnements.jsx'
 import AbonnementMouvements from './pages/AbonnementMouvements.jsx'
 import Assemblages from './pages/Assemblages.jsx'
@@ -69,14 +68,16 @@ import Instagram from './pages/Instagram.jsx'
 import ComptaDashboard from './pages/ComptaDashboard.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
+import PlanComptable from './pages/PlanComptable.jsx'
 import StockMovements from './pages/StockMovements.jsx'
 import Fournitures from './pages/Fournitures.jsx'
+import Processus from './pages/Processus.jsx'
 import MarketingForms from './pages/MarketingForms.jsx'
 import Meetings from './pages/Meetings.jsx'
 import MeetingBooking from './pages/MeetingBooking.jsx'
 import StripeCatalog from './pages/StripeCatalog.jsx'
 import Acceptations from './pages/Acceptations.jsx'
-import EmailTemplates from './pages/EmailTemplates.jsx'
+import EmailTemplates, { MarketingEmailTemplates } from './pages/EmailTemplates.jsx'
 import ContractSign from './pages/ContractSign.jsx'
 import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import ReglesBancaires from './pages/ReglesBancaires.jsx'
@@ -98,6 +99,7 @@ import DiscoveryForms from './pages/DiscoveryForms.jsx'
 import DiscoveryFormEditor from './pages/DiscoveryFormEditor.jsx'
 import PublicFiles from './pages/PublicFiles.jsx'
 import OpsIssues from './pages/OpsIssues.jsx'
+import DocumentsImportants from './pages/DocumentsImportants.jsx'
 import Parametres, { AdminRedirect } from './pages/Parametres.jsx'
 import ActivityFeed from './pages/ActivityFeed.jsx'
 import Changelog from './pages/Changelog.jsx'
@@ -264,7 +266,6 @@ function AppRoutes() {
       <Route path="/paiements" element={<ProtectedRoute><Paiements /></ProtectedRoute>} />
       {/* Paiements ÉMIS (remplace l'onglet Pmt_Suivi) — distinct de /paiements (encaissements clients) */}
       <Route path="/paiements-emis" element={<ProtectedRoute><PaiementsEmis /></ProtectedRoute>} />
-      <Route path="/items-vendus" element={<ProtectedRoute><ItemsVendus /></ProtectedRoute>} />
       <Route path="/abonnements" element={<ProtectedRoute><Abonnements /></ProtectedRoute>} />
       <Route path="/abonnements/mouvements" element={<ProtectedRoute><AbonnementMouvements /></ProtectedRoute>} />
       <Route path="/assemblages" element={<ProtectedRoute><Assemblages /></ProtectedRoute>} />
@@ -305,10 +306,13 @@ function AppRoutes() {
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
       <Route path="/stripe-payouts" element={<ProtectedRoute><StripePayouts /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
+      <Route path="/plan-comptable" element={<ProtectedRoute><PlanComptable /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/fournitures" element={<ProtectedRoute><Fournitures /></ProtectedRoute>} />
+      <Route path="/processus" element={<ProtectedRoute><Processus /></ProtectedRoute>} />
       <Route path="/formulaires" element={<ProtectedRoute><MarketingForms /></ProtectedRoute>} />
       <Route path="/rendez-vous" element={<ProtectedRoute><Meetings /></ProtectedRoute>} />
+      <Route path="/courriels-marketing" element={<ProtectedRoute><MarketingEmailTemplates /></ProtectedRoute>} />
       <Route path="/achats-fournitures" element={<Navigate to="/fournitures" replace />} />
       <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
       <Route path="/regles-bancaires" element={<ProtectedRoute><ReglesBancaires /></ProtectedRoute>} />
@@ -335,6 +339,7 @@ function AppRoutes() {
       <Route path="/acceptations" element={<ProtectedRoute><Acceptations /></ProtectedRoute>} />
       <Route path="/modeles-courriel" element={<ProtectedRoute><EmailTemplates /></ProtectedRoute>} />
       <Route path="/problemes-operations" element={<ProtectedRoute><OpsIssues /></ProtectedRoute>} />
+      <Route path="/documents-importants" element={<ProtectedRoute><DocumentsImportants /></ProtectedRoute>} />
       <Route path="/activity" element={<ProtectedRoute adminOnly><ActivityFeed /></ProtectedRoute>} />
       <Route path="/parametres" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />
       <Route path="/parametres/:section" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />
@@ -350,7 +355,9 @@ function AppRoutes() {
     {/* La fiche de l'enregistrement pointé par l'URL, par-dessus la page de
         fond. Les gardes de rôle de la liste s'appliquent (RH, admin). */}
     {recordMatch && canOpenRecord(user, recordDef) && (
-      <RecordRoutePanel key={recordMatch.path} match={recordMatch} canGoBack={canGoBack} />
+      // key par ressource : les chevrons ↑/↓ changent de fiche sans démonter
+      // le panneau (ni rejouer son entrée).
+      <RecordRoutePanel key={recordMatch.resource} match={recordMatch} canGoBack={canGoBack} />
     )}
     </>
     </ErrorBoundary>

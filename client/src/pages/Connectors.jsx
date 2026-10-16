@@ -1,6 +1,6 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText, Landmark, MessageCircle } from 'lucide-react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText, Landmark, MessageCircle } from 'lucide-react'
 import { usePlaidLink } from 'react-plaid-link'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
@@ -15,9 +15,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TaxMappingModal } from '../components/TaxMappingModal.jsx'
 import QuickBooksAccountCard from '../components/QuickBooksAccountCard.jsx'
-import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
-import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import Spinner from '../components/Spinner.jsx'
@@ -1412,7 +1410,6 @@ function UpsConfig({ configured: initialConfigured, onRefresh }) {
       )}
       <p className="text-xs text-slate-400">
         Utilisé pour les <strong>étiquettes de retour</strong> (fiche retour), la comparaison de tarifs et le suivi des envois.
-        Chaque appel est tracé dans le journal des synchronisations ci-dessous (module « UPS »).
       </p>
     </div>
   )
@@ -2564,110 +2561,6 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
   )
 }
 
-// ── Sync Log Panel ───────────────────────────────────────────────────────────
-
-const TRIGGER_LABELS = { webhook: 'Webhook', manual: 'Manuel', scheduled: 'Planifié' }
-const TRIGGER_COLORS = { webhook: 'bg-blue-100 text-blue-700', manual: 'bg-purple-100 text-purple-700', scheduled: 'bg-slate-100 text-slate-600' }
-
-const MODULE_LABELS = {
-  airtable: 'CRM', projets: 'Projets', pieces: 'Produits', orders: 'Commandes',
-  achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
-  soumissions: 'Soumissions', retours: 'Retours', retour_items: 'Items retour',
-  adresses: 'Adresses', bom: 'BOM', serial_changes: 'Changements série',
-  assemblages: 'Assemblages', factures: 'Factures', amazon: 'Amazon Business', digikey: 'DigiKey', ups: 'UPS',
-  instagram: 'Prospects Instagram',
-}
-
-const SYNC_LOG_RENDERS = {
-  created_at:       l => <span className="text-slate-500 whitespace-nowrap">{fmtDateTime(l.created_at)}</span>,
-  module:           l => <span className="font-medium text-slate-700">{MODULE_LABELS[l.module] || l.module}</span>,
-  trigger:          l => (
-    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${TRIGGER_COLORS[l.trigger] || 'bg-slate-100 text-slate-600'}`}>
-      {TRIGGER_LABELS[l.trigger] || l.trigger}
-    </span>
-  ),
-  status:           l => l.status === 'success'
-    ? <span className="text-green-600 font-medium">OK</span>
-    : <span className="text-red-500 font-medium">Erreur</span>,
-  records_modified: l => (
-    (l.records_modified > 0 || l.records_destroyed > 0)
-      ? <span>
-          {l.records_modified > 0 && <span className="text-slate-600">+{l.records_modified}</span>}
-          {l.records_destroyed > 0 && <span className="text-red-400 ml-1">-{l.records_destroyed}</span>}
-        </span>
-      : <span className="text-slate-300">—</span>
-  ),
-  duration_ms:      l => <span className="text-slate-400">{l.duration_ms != null ? `${(l.duration_ms / 1000).toFixed(1)}s` : '—'}</span>,
-  error_message:    l => <span className="text-red-400 block max-w-xs truncate" title={l.error_message || ''}>{l.error_message || '—'}</span>,
-}
-const SYNC_LOG_COLUMNS = TABLE_COLUMN_META.sync_log.map(meta => ({ ...meta, render: SYNC_LOG_RENDERS[meta.id] }))
-
-function SyncLogPanel() {
-  const [open, setOpen] = useState(false)
-  const [logs, setLogs] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  const load = async () => {
-    try {
-      const data = await api.syncLog.list({ limit: open ? 'all' : 50 })
-      setLogs(data)
-    } catch {} finally { setLoading(false) }
-  }
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [open])
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { const id = setInterval(load, 15000); return () => clearInterval(id) }, [open])
-
-  const fmtTime = formatRelativeTime
-
-  // Stats summary
-  const last24h = logs.filter(l => new Date(l.created_at) > new Date(Date.now() - 86400000))
-  const successCount = last24h.filter(l => l.status === 'success').length
-  const errorCount = last24h.filter(l => l.status === 'error').length
-  const lastScheduled = logs.find(l => l.trigger === 'scheduled')
-  const lastWebhook = logs.find(l => l.trigger === 'webhook')
-
-  return (
-    <div className="card overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left"
-      >
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-slate-100 text-slate-500">
-          <BarChart3 size={16} />
-        </div>
-        <span className="font-medium text-slate-900 flex-1">Journal de synchronisation</span>
-        <span className="text-xs text-slate-400">
-          24h : <span className="text-green-600 font-medium">{successCount}</span> ok
-          {errorCount > 0 && <>, <span className="text-red-500 font-medium">{errorCount}</span> err</>}
-        </span>
-      </button>
-
-      {open && (
-        <div className="border-t border-slate-100">
-          <div className="px-4 py-2 bg-slate-50/50">
-            <div className="flex gap-4 text-xs text-slate-500">
-              <span>{logs.length} entrée{logs.length > 1 ? 's' : ''} · 7 derniers jours</span>
-              {lastScheduled && <span>Dernière planifiée : {fmtTime(lastScheduled.created_at)}</span>}
-              {lastWebhook && <span>Dernier webhook : {fmtTime(lastWebhook.created_at)}</span>}
-            </div>
-          </div>
-
-          <DataTable
-            table="sync_log"
-            columns={SYNC_LOG_COLUMNS}
-            data={logs}
-            loading={loading}
-            searchFields={['module', 'trigger', 'status', 'error_message']}
-            height="60vh"
-          />
-        </div>
-      )}
-    </div>
-  )
-}
-
 const SYNC_LABELS = {
   gmail: 'Gmail', drive: 'Drive', airtable: 'CRM Airtable',
   projets: 'Projets', pieces: 'Pièces', orders: 'Commandes',
@@ -2763,10 +2656,6 @@ export function ConnectorsContent() {
                   onRefresh={() => load(false)}
                 />
               ))}
-            </div>
-
-            <div className="mt-6">
-              <SyncLogPanel />
             </div>
           </>
         )}

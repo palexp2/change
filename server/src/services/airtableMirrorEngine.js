@@ -60,6 +60,7 @@ import {
   BOM_FIELD_MAP_PLAN,
 } from './airtableUiFieldMap.js'
 import { uploadsPath } from '../config/uploads.js'
+import { recordOrderlessItems, recordMovementChanges, recordAssemblageProducts } from './partStockMirror.js'
 import { HUBSPOT_OWNED_COLUMNS, isHubSpotContactsSyncActive, normHsId } from './hubspotContactsSync.js'
 
 // ── Transformations nommées ─────────────────────────────────────────────────
@@ -622,6 +623,9 @@ export const CORE_PLANS = {
       assembled_at:    ['assembled_at', 'text'],
       assembly_points: ['assembly_points', 'int0'],
     },
+    // `product_id` ne garde que le premier produit lié ; l'inventaire des
+    // pièces a besoin de tous (un assemblage peut en fabriquer plusieurs).
+    finalize: async ({ records, changes, fieldMap }) => recordAssemblageProducts(records, fieldMap, { full: !changes }),
   },
   adresses: {
     fields: {
@@ -678,6 +682,9 @@ export const CORE_PLANS = {
     // `stock_movements.product_id` est le pivot : sans produit, le mouvement
     // n'est rattachable à rien. Le legacy compte ces records comme « sautés ».
     require: ['product_id'],
+    // `qty` perd décimales et signe : la valeur exacte est gardée à part pour
+    // l'inventaire des pièces.
+    finalize: async ({ records, changes, fieldMap }) => recordMovementChanges(records, fieldMap, { full: !changes }),
     // Trois colonnes que le mapping champ-à-champ ne peut pas exprimer :
     //  • `type` se déduit du texte Airtable ET du SIGNE de la quantité
     //  • `qty` est la valeur absolue arrondie de cette même quantité
@@ -1071,13 +1078,16 @@ export const CORE_PLANS = {
     // Coût unitaire au moment de l'envoi : Airtable ne donne que le TOTAL gelé,
     // l'ERP en a besoin à l'unité. Rattrapage après coup, une seule fois par
     // ligne (la colonne ne se recalcule jamais).
-    finalize: async () => {
+    finalize: async ({ records, changes, fieldMap }) => {
       db.prepare(`
         UPDATE order_items SET shipped_unit_cost = CAST(cout_total_au_moment_de_l_envoi AS REAL) / MAX(qty, 1)
         WHERE shipped_unit_cost IS NULL
           AND cout_total_au_moment_de_l_envoi IS NOT NULL
           AND CAST(cout_total_au_moment_de_l_envoi AS REAL) > 0
       `).run()
+      // Les articles sautés faute de commande (anciens envois) comptent quand
+      // même dans l'inventaire des pièces : gardés à part.
+      recordOrderlessItems(records, fieldMap, { full: !changes })
     },
   },
   projets: {

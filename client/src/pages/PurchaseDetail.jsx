@@ -127,7 +127,7 @@ export default function PurchaseDetail({ recordId: id, onClose }) {
             {/* Réception complète : seulement une fois la facture liée. */}
             <DetailField id={RECEIVED_KEY} label="Date de réception complète" saving={fieldSaving[RECEIVED_KEY]}>
               {invoiceLinked
-                ? <InlineDate value={purchase[RECEIVED_KEY]} saving={fieldSaving[RECEIVED_KEY]} onSave={v => saveField(RECEIVED_KEY, v)} testId="purchase-received-date" />
+                ? <InlineDate iso value={purchase[RECEIVED_KEY]} saving={fieldSaving[RECEIVED_KEY]} onSave={v => saveField(RECEIVED_KEY, v)} testId="purchase-received-date" />
                 : (
                   <span className="text-sm text-slate-400" title="Liez d'abord la facture" data-testid="purchase-received-date-locked">
                     {purchase[RECEIVED_KEY] ? fmtDate(purchase[RECEIVED_KEY]) : 'Facture non liée'}

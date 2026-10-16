@@ -57,6 +57,16 @@ function columnsSignature(specs) {
   return createHash('sha1').update(parts).digest('hex').slice(0, 16)
 }
 
+// Même empreinte, table par table : un champ ajouté sur une table ne fait
+// recharger que celle-là au client (?tables=…), pas les ~7 Mo du snapshot.
+function tableSignatures(specs) {
+  const out = {}
+  for (const t of Object.keys(specs)) {
+    out[t] = createHash('sha1').update(`${specs[t].columns.join(',')}#${specs[t].computedSignature || ''}`).digest('hex').slice(0, 12)
+  }
+  return out
+}
+
 // Convertit un array de rows objets (better-sqlite3) en format colonne-orienté.
 // rows: array d'objets {col: val} → { columns: [...], rows: [[v1, v2, …]] }
 function toColumnar(rowsObj, columns) {
@@ -135,6 +145,23 @@ router.get('/', requireAuth, async (req, res) => {
   const specs = filterCachedSpecs(getAllCachedTableSpecs(), req.user)
   const signature = columnsSignature(specs)
 
+  // Rechargement partiel : seulement les tables demandées, jamais mis en cache.
+  if (req.query.tables) {
+    const wanted = String(req.query.tables).split(',').filter(t => specs[t])
+    const snapshotTs = db.prepare(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS ts`).get().ts
+    const tables = {}
+    for (const t of wanted) {
+      const spec = specs[t]
+      const where = spec.hasSoftDelete ? ' WHERE deleted_at IS NULL' : ''
+      try {
+        tables[t] = toColumnar(db.prepare(`SELECT ${spec.selectClause} FROM ${spec.relation}${where}`).all(), spec.columns)
+      } catch (err) {
+        return res.status(500).json({ error: err.message })
+      }
+    }
+    return res.json({ snapshot_ts: snapshotTs, columns_signature: signature, table_signatures: tableSignatures(specs), tables })
+  }
+
   const cached = cachedSnapshot(signature)
   if (cached) return sendBody(res, cached)
   // Un autre onglet construit déjà ce snapshot : on attend le sien.
@@ -161,7 +188,8 @@ router.get('/', requireAuth, async (req, res) => {
   let tableFailed = false
   try {
     await emit(`{"snapshot_ts":${JSON.stringify(snapshotTs)}` +
-      `,"columns_signature":${JSON.stringify(signature)},"tables":{`)
+      `,"columns_signature":${JSON.stringify(signature)}` +
+      `,"table_signatures":${JSON.stringify(tableSignatures(specs))},"tables":{`)
 
     let firstTable = true
     for (const tableName of Object.keys(specs)) {
@@ -324,7 +352,7 @@ router.get('/delta', requireAuth, (req, res) => {
     tables[tableName] = { columns, upsert: rows, delete: deleteIds }
   }
 
-  res.json({ snapshot_ts: snapshotTs, since, columns_signature: columnsSignature(specs), tables })
+  res.json({ snapshot_ts: snapshotTs, since, columns_signature: columnsSignature(specs), table_signatures: tableSignatures(specs), tables })
 })
 
 // Endpoint de debug : liste les tables cachées et leur cardinalité actuelle.

@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
-import { ArrowLeft, Copy, Trash2, PackagePlus, Mail } from 'lucide-react'
+import { Copy, Trash2, PackagePlus, Mail, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { PageTitle } from '../components/PageTitle.jsx'
-import { Badge, SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
+import { SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
 import SoumissionSendModal, { SoumissionSentStamp, soumissionWasSent } from '../components/SoumissionSendModal.jsx'
 import { useSoumissionBuilder, discountsPayload } from '../components/SoumissionBuilder.jsx'
@@ -70,7 +71,8 @@ export default function SoumissionDetail({ recordId, onClose }) {
     else if (msg.type === 'soumission:deleted') onClose?.()
   })
 
-  const isDraft = soumission?.status === 'Brouillon' && !soumission?.airtable_id
+  // Toute soumission de l'app se supprime ; celles d'Airtable reviendraient au sync.
+  const canDelete = !!soumission && !soumission.airtable_id
 
   // Notes modifiables sur place, hors mode édition. `discount_valid_until`
   // est renvoyé tel quel : la route l'écrase sinon.
@@ -102,7 +104,10 @@ export default function SoumissionDetail({ recordId, onClose }) {
   }
 
   const handleDelete = async () => {
-    if (!(await confirm('Supprimer cette soumission ?'))) return
+    const msg = soumission?.converted_order
+      ? `Supprimer cette soumission ? La commande #${soumission.converted_order.order_number} est conservée.`
+      : 'Supprimer cette soumission ?'
+    if (!(await confirm(msg))) return
     setDeleting(true)
     try {
       await api.documents.soumissions.delete(id)
@@ -120,6 +125,21 @@ export default function SoumissionDetail({ recordId, onClose }) {
     }
   }
 
+  // System builder prérempli depuis les articles ; déjà créé → on l'ouvre.
+  const [building, setBuilding] = useState(false)
+  const openSystemBuilder = async () => {
+    setBuilding(true)
+    try {
+      const form = await api.discoveryForms.fromSoumission(id)
+      setSoumission(s => s ? { ...s, system_builder: { id: form.id, form_number: form.form_number } } : s)
+      navigate(`/discovery-forms/${form.id}`)
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setBuilding(false)
+    }
+  }
+
   const pdfTitle = soumission
     ? `${soumission.language === 'English' ? 'Quote' : 'Soumission'}-${String(soumission.id).slice(0, 8).toUpperCase()}`
     : 'Soumission'
@@ -131,21 +151,25 @@ export default function SoumissionDetail({ recordId, onClose }) {
     <DetailShell className="px-4 py-6">
 
         {/* Top bar */}
-        <div className="flex items-center justify-between mb-6">
-          {soumission.project_id ? (
-            <Link to={`/projects/${soumission.project_id}`} state={{ tab: 'soumissions' }}
-              className="flex items-center gap-2 text-slate-500 hover:text-slate-700 text-sm">
-              <ArrowLeft size={16} />
-              {soumission.project_name ? `Projet : ${soumission.project_name}` : 'Projet'}
-            </Link>
-          ) : <div />}
-
+        {/* Projet : déjà dans le champ « Projet » plus bas. */}
+        <div className="flex items-center justify-end mb-6">
           <div className="flex items-center gap-2">
             {soumission.converted_order && (
               <Link to={`/orders/${soumission.converted_order.id}`}
                 className="flex items-center gap-1.5 border border-green-200 bg-green-50 text-green-700 px-3 py-2 rounded-lg text-sm hover:bg-green-100">
                 <PackagePlus size={14} /> Commande #{soumission.converted_order.order_number}
               </Link>
+            )}
+            {soumission.system_builder ? (
+              <Link to={`/discovery-forms/${soumission.system_builder.id}`} data-testid="soumission-system-builder"
+                className="flex items-center gap-1.5 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
+                <FileText size={14} /> SYS-{soumission.system_builder.form_number ?? '?'}
+              </Link>
+            ) : (
+              <button onClick={openSystemBuilder} disabled={building} data-testid="soumission-system-builder"
+                className="flex items-center gap-1.5 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
+                <FileText size={14} /> {building ? '…' : 'System builder'}
+              </button>
             )}
             <SoumissionSentStamp soumission={soumission} history />
             <button onClick={() => setSending(true)} data-testid="soumission-send"
@@ -156,8 +180,8 @@ export default function SoumissionDetail({ recordId, onClose }) {
               className="flex items-center gap-1.5 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
               <Copy size={14} /> {duplicating ? 'Copie…' : 'Dupliquer'}
             </button>
-            {isDraft && (
-              <button onClick={handleDelete} disabled={deleting}
+            {canDelete && (
+              <button onClick={handleDelete} disabled={deleting} title="Supprimer"
                 className="flex items-center gap-1.5 border border-red-200 text-red-500 px-3 py-2 rounded-lg text-sm hover:bg-red-50">
                 <Trash2 size={14} />
               </button>
@@ -184,12 +208,10 @@ export default function SoumissionDetail({ recordId, onClose }) {
               )}
             </div>
             <div className="flex flex-col items-end gap-2 flex-shrink-0">
-              <Badge color={STATUS_COLORS[soumission.status] || 'gray'}>{soumission.status || 'Brouillon'}</Badge>
+              <FieldChoiceBadge table="soumissions" field="status" value={soumission.status || 'Brouillon'} color={STATUS_COLORS[soumission.status || 'Brouillon']} />
               <div className="flex items-center gap-2">
-                <span className="text-xs text-slate-500">{soumission.language === 'English' ? 'English' : 'Français'}</span>
-                <span className="text-xs font-mono font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">
-                  {soumission.currency || 'CAD'}
-                </span>
+                <FieldChoiceBadge table="soumissions" field="language" value={soumission.language === 'English' ? 'English' : 'French'} label={soumission.language === 'English' ? 'English' : 'Français'} />
+                <FieldChoiceBadge table="soumissions" field="currency" value={soumission.currency || 'CAD'} />
               </div>
               {soumission.airtable_id && <span className="text-xs text-blue-400">Airtable</span>}
             </div>

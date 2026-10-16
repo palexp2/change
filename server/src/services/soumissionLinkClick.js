@@ -79,6 +79,8 @@ export function recordSoumissionLinkClick(req, soumissionId, kind) {
     `).get(soumissionId)
     if (!s) return
     const clickedAt = new Date().toISOString()
+    db.prepare('INSERT INTO soumission_link_clicks (soumission_id, kind, clicked_at) VALUES (?, ?, ?)').run(s.id, kind, clickedAt)
+    emitEntity('soumission', 'updated', s.id, { id: s.id, sends_updated_at: clickedAt })
     let interactionId = null
     if (isSystemAutomationActive(CLICK_AUTOMATION_ID) && (s.company_id || s.contact_id)) {
       const started = Date.now()

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { isCheckboxTruthy } from '../lib/customFieldDisplay.jsx'
 import { toDateTimeLocalInput, fromDateTimeLocalInput } from '../lib/formatDate.js'
+import { useFieldFormat } from '../lib/fieldFormat.js'
 import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
 
 // Éditeurs « inline » pour les champs d'une fiche détail : la valeur s'édite sur
@@ -105,15 +106,24 @@ export function InlineTextarea({ value, saving, onSave, testId, minRows = 2 }) {
 export function InlineNumber({
   value, saving, onSave, min, max, step = 'any',
   suffix, className = 'input text-sm w-28', testId, compact = false,
+  // Précision réglée du champ (nombre de décimales) : la valeur s'affiche
+  // arrondie à cette précision (« 25 », pas « 25.0 » pour 0 décimale).
+  decimals: decimalsProp = null,
 }) {
+  const fmt = useFieldFormat()
+  const decimals = decimalsProp ?? (Number.isInteger(fmt?.decimals) ? fmt.decimals : (fmt?.type === 'currency' ? 2 : null))
+  if (suffix == null && fmt?.type === 'currency') suffix = '$'
+  if (suffix == null && fmt?.type === 'percent') suffix = '%'
   const shown = v => {
     if (v == null) return ''
-    if (!compact || v === '') return v
+    if (v === '') return v
     const n = Number(v)
-    return Number.isFinite(n) ? n : v
+    if (!Number.isFinite(n)) return v
+    if (Number.isInteger(decimals)) return n.toFixed(decimals)
+    return compact ? n : v
   }
   const [local, setLocal] = useState(shown(value))
-  useEffect(() => { setLocal(shown(value)) }, [value, compact]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setLocal(shown(value)) }, [value, compact, decimals]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const commit = (raw) => {
     const str = String(raw ?? '').trim()
@@ -125,7 +135,7 @@ export function InlineNumber({
     if (!Number.isFinite(n)) { setLocal(value ?? ''); return }
     if (min != null) n = Math.max(Number(min), n)
     if (max != null) n = Math.min(Number(max), n)
-    setLocal(n)
+    setLocal(shown(n))
     if (value == null || Number(value) !== n) onSave(n)
   }
 
@@ -183,6 +193,7 @@ export function InlineDuration({ value, saving, onSave, format = 'h:mm', classNa
 // sinon un enregistrement).
 // `iso` : saisie texte AAAA-MM-JJ, affichée telle quelle quelle que soit la
 // langue du navigateur (le sélecteur natif suit la locale) ; commit au blur.
+// Un clic ouvre quand même le calendrier de l'app (DatePickerHost).
 export function InlineDate({ value, saving, onSave, withTime = false, iso = false, className = 'input text-sm w-full', testId }) {
   if (withTime) return <InlineDateTime value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
   if (iso) return <InlineIsoDate value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
@@ -220,6 +231,7 @@ function InlineIsoDate({ value, saving, onSave, className, testId }) {
     <input
       type="text"
       inputMode="numeric"
+      data-date-picker
       value={local}
       onChange={e => setLocal(e.target.value)}
       onBlur={e => commit(e.target.value)}
@@ -231,18 +243,30 @@ function InlineIsoDate({ value, saving, onSave, className, testId }) {
   )
 }
 
+// Date + heure en texte « AAAA-MM-JJ HH:MM » : le datetime-local natif suit la
+// langue du navigateur (« 10/16/2026, 02:05 PM » en anglais). Saisie invalide → revient.
+const ISO_DATETIME = /^(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})$/
 function InlineDateTime({ value, saving, onSave, className, testId }) {
-  const current = toDateTimeLocalInput(value)
+  const current = toDateTimeLocalInput(value).replace('T', ' ')
   const [local, setLocal] = useState(current)
   useEffect(() => { setLocal(current) }, [current])
+  const commit = raw => {
+    const str = String(raw ?? '').trim()
+    if (str === current) return
+    if (str === '') { onSave(''); return }
+    const m = str.match(ISO_DATETIME)
+    if (!m || !isValidIsoDate(m[1]) || Number(m[2]) > 23 || Number(m[3]) > 59) { setLocal(current); return }
+    onSave(fromDateTimeLocalInput(`${m[1]}T${m[2].padStart(2, '0')}:${m[3]}`))
+  }
   return (
     <input
-      type="datetime-local"
+      type="text"
+      inputMode="numeric"
       value={local}
       onChange={e => setLocal(e.target.value)}
-      onBlur={e => { if (e.target.value !== current) onSave(fromDateTimeLocalInput(e.target.value)) }}
+      onBlur={e => commit(e.target.value)}
       onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      className={className}
+      className={`${className} tabular-nums`}
       disabled={saving}
       data-testid={testId}
     />

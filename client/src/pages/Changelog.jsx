@@ -112,7 +112,7 @@ function GuardStatus() {
 }
 
 // Journal seul (garde + tableau), sans coquille de page : servi par la page
-// /changelog et par la section « Nouveautés » des Paramètres.
+// /changelog.
 export function ChangelogContent() {
   // Demandeur : uniquement le champ `requester` de l'entrée — le nom que la
   // demande d'origine a fait remonter jusqu'ici. Aucune déduction — absent = « — ».

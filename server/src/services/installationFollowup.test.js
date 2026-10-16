@@ -10,6 +10,7 @@ import {
   selectEligibleCompanies,
   sendInstallationFollowups,
   buildFeedbackUrl,
+  orderFollowupState,
   INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT,
 } from './installationFollowup.js'
 
@@ -30,12 +31,15 @@ function makeDb() {
     CREATE TABLE orders (
       id TEXT PRIMARY KEY,
       company_id TEXT,
+      address_id TEXT,
+      order_number TEXT,
       deleted_at DATETIME
     );
     CREATE TABLE shipments (
       id TEXT PRIMARY KEY,
       order_id TEXT,
       shipped_at DATETIME,
+      status TEXT DEFAULT 'Envoyé',
       address_id TEXT,
       deleted_at DATETIME
     );
@@ -44,6 +48,9 @@ function makeDb() {
       contact_id TEXT,
       company_id TEXT,
       address_type TEXT,
+      courriel_du_contact TEXT,
+      nom_complet_du_contact TEXT,
+      langue_du_contact TEXT,
       created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
     CREATE TABLE contacts (
@@ -71,6 +78,10 @@ function makeDb() {
       to_address TEXT,
       automated INTEGER
     );
+    CREATE TABLE installation_followups (
+      company_id TEXT PRIMARY KEY, order_id TEXT, shipment_id TEXT, email_id TEXT NOT NULL UNIQUE,
+      lang TEXT, sent_at TEXT NOT NULL, answer TEXT, answered_at TEXT, note TEXT, task_id TEXT
+    );
   `)
   return db
 }
@@ -84,9 +95,9 @@ function seedEligibleCustomer(db, overrides = {}) {
     language = 'English',
     followupSentAt = null,
     orderCount = 1,
-    // Must be >= INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT ('2026-04-16') AND
-    // 21+ days before NOW. The default NOW below is '2026-05-15', so '2026-04-20' works.
-    shippedAt = '2026-04-20',
+    // Must be >= INSTALLATION_FOLLOWUP_EARLIEST_SHIPMENT ('2026-09-23') AND
+    // 21+ days before NOW ('2026-10-20').
+    shippedAt = '2026-09-25',
     addressType = 'Livraison',
     contactEmail = 'ship@acme.test',
     contactLanguage = null,
@@ -110,7 +121,7 @@ function seedEligibleCustomer(db, overrides = {}) {
     VALUES (?, ?, ?, ?)`).run(`${companyId}-s0`, `${companyId}-o0`, shippedAt, `${companyId}-adr`)
 }
 
-const NOW = '2026-05-15T12:00:00Z' // 25 days after the default shippedAt '2026-04-20'
+const NOW = '2026-10-20T12:00:00Z' // 25 days after the default shippedAt '2026-09-25'
 
 test('selects a single-order customer 21+ days after first shipment', () => {
   const db = makeDb()
@@ -121,10 +132,33 @@ test('selects a single-order customer 21+ days after first shipment', () => {
   assert.equal(rows[0].contact_email, 'ship@acme.test')
 })
 
-test('excludes customer with 2 orders', () => {
+test('a second order does not block: the first shipped order counts', () => {
   const db = makeDb()
   seedEligibleCustomer(db, { orderCount: 2 })
+  const rows = selectEligibleCompanies(db, { nowIso: NOW })
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].order_id, 'co1-o0')
+})
+
+test('first shipment = earliest shipped one, not yet-to-ship ones', () => {
+  const db = makeDb()
+  seedEligibleCustomer(db, { orderCount: 2 })
+  db.prepare(`INSERT INTO shipments (id, order_id, shipped_at, status, address_id) VALUES ('s-old', 'co1-o1', '2026-09-24', 'À envoyer', 'co1-adr')`).run()
+  assert.equal(selectEligibleCompanies(db, { nowIso: NOW })[0].order_id, 'co1-o0')
+})
+
+test('company whose first shipment predates the cutoff is never selected', () => {
+  const db = makeDb()
+  seedEligibleCustomer(db, { orderCount: 2 })
+  db.prepare(`INSERT INTO shipments (id, order_id, shipped_at, address_id) VALUES ('s-old', 'co1-o1', '2025-06-01', 'co1-adr')`).run()
   assert.equal(selectEligibleCompanies(db, { nowIso: NOW }).length, 0)
+})
+
+test('falls back to the address contact email when no contact is linked', () => {
+  const db = makeDb()
+  seedEligibleCustomer(db, { contactEmail: null })
+  db.prepare(`UPDATE adresses SET courriel_du_contact = 'adr@acme.test' WHERE id = 'co1-adr'`).run()
+  assert.equal(selectEligibleCompanies(db, { nowIso: NOW })[0].contact_email, 'adr@acme.test')
 })
 
 test('excludes customer already marked as followup sent', () => {
@@ -133,22 +167,16 @@ test('excludes customer already marked as followup sent', () => {
   assert.equal(selectEligibleCompanies(db, { nowIso: NOW }).length, 0)
 })
 
-test('excludes company whose lifecycle_phase is not Customer', () => {
-  const db = makeDb()
-  seedEligibleCustomer(db, { lifecyclePhase: 'Prospect' })
-  assert.equal(selectEligibleCompanies(db, { nowIso: NOW }).length, 0)
-})
-
 test('excludes shipment older than the earliest cutoff', () => {
   const db = makeDb()
-  // Shipment 2 years before the default earliestShipment ('2026-04-16').
+  // Shipment 2 years before the default earliestShipment.
   seedEligibleCustomer(db, { shippedAt: '2024-01-15' })
   assert.equal(selectEligibleCompanies(db, { nowIso: NOW }).length, 0)
 })
 
 test('excludes customer shipped less than 21 days ago', () => {
   const db = makeDb()
-  seedEligibleCustomer(db, { shippedAt: '2026-05-10' }) // 5 days before NOW
+  seedEligibleCustomer(db, { shippedAt: '2026-10-15' }) // 5 days before NOW
   // Relax the earliest cutoff so only the <21d rule can reject it.
   const rows = selectEligibleCompanies(db, { nowIso: NOW, earliestShipment: '2000-01-01' })
   assert.equal(rows.length, 0)
@@ -156,7 +184,7 @@ test('excludes customer shipped less than 21 days ago', () => {
 
 test('includes customer exactly at 21 days', () => {
   const db = makeDb()
-  seedEligibleCustomer(db, { shippedAt: '2026-04-24' }) // exactly 21d before NOW (2026-05-15)
+  seedEligibleCustomer(db, { shippedAt: '2026-09-29' }) // exactly 21d before NOW
   const rows = selectEligibleCompanies(db, { nowIso: NOW, earliestShipment: '2000-01-01' })
   assert.equal(rows.length, 1)
 })
@@ -187,10 +215,9 @@ test('excludes customer whose only order is soft-deleted', () => {
   assert.equal(selectEligibleCompanies(db, { nowIso: NOW }).length, 0)
 })
 
-test('picks the EARLIEST shipping address when several exist', () => {
+test('uses the address of the first shipment, not another shipping address', () => {
   const db = makeDb()
   seedEligibleCustomer(db)
-  // Add a second, LATER shipping address attached to a different contact with a different email.
   db.prepare(`INSERT INTO contacts (id, first_name, email, company_id)
     VALUES ('co1-ct2', 'Later', 'later@acme.test', 'co1')`).run()
   db.prepare(`INSERT INTO adresses (id, contact_id, company_id, address_type, created_at)
@@ -198,7 +225,6 @@ test('picks the EARLIEST shipping address when several exist', () => {
 
   const rows = selectEligibleCompanies(db, { nowIso: NOW })
   assert.equal(rows.length, 1)
-  // Must be the earliest address (original), not the newer one.
   assert.equal(rows[0].contact_email, 'ship@acme.test')
 })
 
@@ -219,7 +245,11 @@ test('sendInstallationFollowups sends, writes interaction+email, sets the flag',
   assert.equal(out.errors, 0)
   assert.equal(sent.length, 1)
   assert.equal(sent[0].To, 'ship@acme.test')
-  assert.ok(sent[0].HtmlBody.includes('company=co1'), 'email must contain feedback link with company_id')
+  assert.ok(!sent[0].Bcc, 'no blind copy')
+  const f = db.prepare('SELECT * FROM installation_followups').get()
+  assert.equal(f.company_id, 'co1')
+  assert.equal(f.order_id, 'co1-o0')
+  assert.ok(sent[0].HtmlBody.includes(`t=${f.email_id}`), 'feedback links carry the email token')
 
   const flag = db.prepare('SELECT installation_followup_sent_at FROM companies WHERE id = ?').get('co1')
   assert.ok(flag.installation_followup_sent_at, 'installation_followup_sent_at must be set after send')
@@ -298,16 +328,34 @@ test('French contact gets a French email and French button labels', async () => 
     nowIso: NOW,
     sendFn: async (d) => { sent.push(d); return {} },
   })
-  assert.equal(sent[0].Subject, "Comment s'est passé l'installation ?")
+  assert.equal(sent[0].Subject, "Comment s'est passée l'installation ?")
   assert.ok(sent[0].HtmlBody.includes("C'était pénible"))
+  assert.ok(sent[0].HtmlBody.includes('Salut Jo'))
 })
 
-test('buildFeedbackUrl encodes answer, language and company id', () => {
-  const u = buildFeedbackUrl('https://app.test', 'stuck', 'French', 'co-xyz')
+test('buildFeedbackUrl carries the token and the answer', () => {
+  const u = buildFeedbackUrl('https://app.test', 'stuck', 'tok123')
   assert.ok(u.startsWith('https://app.test/erp/api/public/installation-feedback?'))
-  assert.ok(u.includes('answer=stuck'))
-  assert.ok(u.includes('lang=French'))
-  assert.ok(u.includes('company=co-xyz'))
+  assert.ok(u.includes('a=stuck'))
+  assert.ok(u.includes('t=tok123'))
+})
+
+test('orderFollowupState: planned on the first shipped order, null on the others', () => {
+  const db = makeDb()
+  seedEligibleCustomer(db, { orderCount: 2 })
+  assert.deepEqual(orderFollowupState(db, 'co1-o0'), { state: 'planned', due_at: '2026-10-16' })
+  assert.equal(orderFollowupState(db, 'co1-o1'), null)
+  assert.equal(orderFollowupState(db, 'co1-o0', { active: false }), null)
+})
+
+test('orderFollowupState: sent, then the answer', async () => {
+  const db = makeDb()
+  seedEligibleCustomer(db)
+  await sendInstallationFollowups(db, { appUrl: 'https://t', fromAddress: 'a@b.c', nowIso: NOW, sendFn: async () => ({}) })
+  db.prepare("UPDATE installation_followups SET answer = 'stuck'").run()
+  const st = orderFollowupState(db, 'co1-o0')
+  assert.equal(st.state, 'sent')
+  assert.equal(st.answer, 'stuck')
 })
 
 test('earliest-shipment constant is present and ISO-formatted', () => {

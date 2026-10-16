@@ -7,10 +7,10 @@ export const SYSTEM_GROUPS = {
     'sys_partnership_hubspot', 'sys_payment_failed_task',
   ],
   "Expédition & retours": [
-    'sys_shipment_tracking_email', 'sys_address_check', 'sys_return_label',
+    'sys_shipment_tracking_email', 'sys_order_welcome_email', 'sys_address_check', 'sys_return_label',
     'sys_return_instructions_email', 'sys_return_bulk_by_company', 'sys_return_item_created',
     'sys_return_item_received', 'sys_ups_return_label', 'sys_ups_return_label_email',
-    'sys_purolator_tracking', 'sys_loomis_tracking', 'sys_order_item_shipped_cost',
+    'sys_purolator_tracking', 'sys_loomis_tracking', 'sys_order_item_shipped_cost', 'sys_dynamic_threshold',
     'sys_address_confirm',
   ],
   "Comptabilité": [

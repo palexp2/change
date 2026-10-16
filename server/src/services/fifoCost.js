@@ -31,14 +31,18 @@
 // Stock nul, ou aucun lot en stock avec un prix : coût = prix du dernier lot
 // reçu qui en a un.
 // Aucun achat reçu avec prix : le coût en place n'est pas touché.
+//
+// Pièces fabriquées (2026-10-14) : même chemin, mais le coût est celui de leur
+// nomenclature (services/bomCost.js) — Boréal remplace aussi la formule
+// Airtable « Cout unitaire », dont l'import est coupé (migration 135).
 
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
 import { expenseLinesByPurchase } from './purchaseLinkAudit.js'
+import { computeBomCost } from './bomCost.js'
 
 // Pièces dont le coût ne vient pas des achats : le coût d'un produit fabriqué
-// est celui de son BOM (« Cout unitaire » côté Airtable), un logiciel n'a pas
-// de stock.
+// est celui de sa nomenclature (computeBomCost), un logiciel n'a pas de stock.
 const NOT_PURCHASED = new Set(['Fabriqué', 'Logiciel'])
 // Seuils de l'alerte « prix douteux » : rapport au prix médian des autres lots.
 const OUTLIER_HIGH = 2.5
@@ -171,13 +175,24 @@ function productPurchases(product) {
  * Calcul FIFO d'une pièce. Lecture seule.
  * @returns {null | { product_id, eligible, cost, qty, covered, uncovered, layers, issues }}
  */
-export function computeFifo(productId) {
+export function computeFifo(productId, memo) {
   const product = db.prepare(
-    'SELECT id, airtable_id, procurement_type, stock_qty, unit_cost FROM products WHERE id = ?'
+    'SELECT id, airtable_id, procurement_type, stock_qty, unit_cost, cout_unitaire FROM products WHERE id = ?'
   ).get(productId)
   if (!product) return null
-  const eligible = !NOT_PURCHASED.has(product.procurement_type || '')
   const qty = Math.max(num(product.stock_qty), 0)
+  if (product.procurement_type === 'Fabriqué') {
+    const b = computeBomCost(product.id, memo)
+    // Sans ligne de nomenclature : rien à calculer, coût en place gardé.
+    const eligible = b.cost != null
+    return {
+      product_id: product.id, kind: 'bom', eligible, cost: b.cost,
+      current_cost: product.unit_cost, current_cout_unitaire: product.cout_unitaire,
+      opening_cost: null, qty, covered: qty, uncovered: 0,
+      layers: b.lines, issues: eligible ? b.issues : [],
+    }
+  }
+  const eligible = !NOT_PURCHASED.has(product.procurement_type || '')
 
   const lots = productPurchases(product)
     .filter(p => isReceived(p) && num(p.quantite_commande) > 0)
@@ -242,9 +257,11 @@ export function computeFifo(productId) {
 
   return {
     product_id: product.id,
+    kind: 'fifo',
     eligible,
     cost: cost == null ? null : Math.round(cost * 10000) / 10000,
     current_cost: product.unit_cost,
+    current_cout_unitaire: product.cout_unitaire,
     opening_cost: opening,
     qty,
     covered: qty - uncovered,
@@ -261,8 +278,8 @@ export function computeFifo(productId) {
  * Airtable — l'appelant le fait (réseau, asynchrone).
  * @returns {null | { product_id, changed, from, to, issues }}
  */
-export function applyFifo(productId) {
-  const r = computeFifo(productId)
+export function applyFifo(productId, memo) {
+  const r = computeFifo(productId, memo)
   if (!r) return null
   const now = new Date().toISOString()
   db.prepare(`
@@ -272,12 +289,16 @@ export function applyFifo(productId) {
       layers=excluded.layers, issues=excluded.issues, issue_count=excluded.issue_count, computed_at=excluded.computed_at
   `).run(r.product_id, r.cost, r.qty, r.uncovered, JSON.stringify(r.layers), JSON.stringify(r.issues), r.issues.length, now)
 
-  const from = r.current_cost == null ? null : num(r.current_cost)
-  const changed = r.eligible && r.cost != null && (from == null || Math.abs(from - r.cost) > COST_EPSILON)
+  const differs = v => v == null || v === '' || Math.abs(num(v) - r.cost) > COST_EPSILON
+  // Ancien coût au journal : le coût de la fiche, sinon (fabriquée dont seul
+  // « Cout unitaire » bouge) ce dernier.
+  const prev = differs(r.current_cost) ? r.current_cost : r.current_cout_unitaire
+  const from = prev == null || prev === '' ? null : num(prev)
+  const changed = r.eligible && r.cost != null
+    && (differs(r.current_cost) || (r.kind === 'bom' && differs(r.current_cout_unitaire)))
   if (changed) {
-    // « Cout unitaire » et « Valeur inventaire » sont des formules Airtable
-    // qui découlent du FIFO pour une pièce achetée : les aligner tout de suite
-    // plutôt qu'attendre leur retour par le sync.
+    // « Cout unitaire » (plus importé d'Airtable) et « Valeur inventaire »
+    // découlent de ce coût : les aligner tout de suite.
     db.prepare(`
       UPDATE products SET unit_cost = ?, cout_unitaire = ?, valeur_inventaire = ?,
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -285,6 +306,11 @@ export function applyFifo(productId) {
     `).run(r.cost, r.cost, Math.round(r.qty * r.cost * 100) / 100, r.product_id)
     // À renvoyer vers Airtable (pushPendingFifoCosts).
     db.prepare('UPDATE product_fifo SET pushed_cost = NULL WHERE product_id = ?').run(r.product_id)
+  } else if (r.kind === 'fifo' && r.current_cost != null
+    && Math.abs(num(r.current_cout_unitaire) - num(r.current_cost)) > COST_EPSILON) {
+    // Pièce achetée : « Cout unitaire » suit le coût en place, comme le
+    // faisait la formule Airtable (= « Coût unitaire (FIFO) »).
+    db.prepare('UPDATE products SET cout_unitaire = ? WHERE id = ?').run(r.current_cost, r.product_id)
   }
   return { product_id: r.product_id, changed, from, to: r.cost, issues: r.issues }
 }
@@ -305,8 +331,9 @@ export function productIdsForPurchase(purchaseId) {
   return out
 }
 
+// Achetées et fabriquées ; seuls les logiciels n'ont pas de coût.
 export function allFifoProductIds() {
   return db.prepare(
-    `SELECT id FROM products WHERE deleted_at IS NULL AND COALESCE(procurement_type, '') NOT IN ('Fabriqué', 'Logiciel')`
+    `SELECT id FROM products WHERE deleted_at IS NULL AND COALESCE(procurement_type, '') <> 'Logiciel'`
   ).all().map(r => r.id)
 }

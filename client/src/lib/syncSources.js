@@ -89,7 +89,7 @@ export const SYNC_SOURCES = {
     {
       connector: 'Stripe',
       mode: 'webhook',
-      detail: 'Temps réel via webhook, plus un sync de rattrapage une fois par jour et le bouton « Sync Stripe » de la page.',
+      detail: 'Temps réel via webhook, plus un sync de rattrapage une fois par jour.',
     },
   ],
   stripe_payouts: [

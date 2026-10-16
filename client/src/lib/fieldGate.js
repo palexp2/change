@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import api from './api.js'
 import { TABLE_COLUMN_META } from './tableDefs.js'
+import { selectChoicesWithColors } from './selectChoices.js'
 
 // ── Le portier des champs supprimés ─────────────────────────────────────────
 //
@@ -72,19 +73,22 @@ function notify(table) {
 }
 
 // Forme minimale dont le portier a besoin : l'identifiant, le libellé
-// personnalisé et le drapeau de suppression.
+// personnalisé, le drapeau de suppression — et la config (`options`) qui porte
+// les couleurs des choix d'une Sélection native, pour que fiches et formulaires
+// colorent leurs menus comme les tableaux.
 function toRows(list) {
   return (list || []).map(r => ({
     field_id: r.field_id,
     label: r.label || null,
     hidden: !!r.hidden,
+    options: r.options == null ? null : (typeof r.options === 'string' ? r.options : JSON.stringify(r.options)),
   }))
 }
 
 function sameRows(a, b) {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) {
-    if (a[i].field_id !== b[i].field_id || a[i].label !== b[i].label || a[i].hidden !== b[i].hidden) return false
+    if (a[i].field_id !== b[i].field_id || a[i].label !== b[i].label || a[i].hidden !== b[i].hidden || a[i].options !== b[i].options) return false
   }
   return true
 }
@@ -182,6 +186,12 @@ function buildGate(table, rows, known) {
      * sont supprimés — et rend une liste vide tant que la réponse n'est pas là.
      */
     keep: (list) => (known ? (list || []).filter(f => !rowFor(f?.key ?? f?.field ?? f?.id)?.hidden) : []),
+    /**
+     * Choix d'une Sélection native, avec la couleur réglée sur le champ :
+     * `declared` (chaînes ou { value, label, color }) complété de la config du
+     * champ — cf. selectChoicesWithColors.
+     */
+    choicesFor: (key, declared) => selectChoicesWithColors(declared, rowFor(key)?.options),
   }
 }
 

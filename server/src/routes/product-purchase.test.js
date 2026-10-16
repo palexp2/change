@@ -17,7 +17,7 @@ db.exec(`ALTER TABLE purchases ADD COLUMN nom_de_la_piece TEXT;
 for (const column of ['at_id', 'cf_date_de_reception_complete', 'override_prix_unitaire_paye_cad', 'prix_unitaire_facture_cad', 'prix_unitaire_cad']) {
   try { db.exec(`ALTER TABLE purchases ADD COLUMN ${column} TEXT`) } catch {}
 }
-for (const column of ['deleted_at', 'manufacturier']) { try { db.exec(`ALTER TABLE products ADD COLUMN ${column} TEXT`) } catch {} }
+for (const column of ['deleted_at', 'manufacturier', 'cout_unitaire']) { try { db.exec(`ALTER TABLE products ADD COLUMN ${column} TEXT`) } catch {} }
 db.prepare("INSERT INTO connector_oauth (id,connector,account_key,access_token) VALUES ('at','airtable','test','test-token')").run()
 db.prepare("INSERT INTO airtable_module_config (module,base_id,table_id,field_map) VALUES ('achats','test-base','test-achats','{}')").run()
 for (const [column, field] of Object.entries({ nom_de_la_piece: 'Nom de la pièce', quantite_commande: 'Quantité commandé', date_de_commande: 'Date de commande', notes_2: 'Notes', fournisseur: 'Fournisseur' })) {

@@ -37,6 +37,7 @@ import { useFieldOverrides, parseNativeChoices } from '../lib/fieldOverrides.jsx
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
+import { RecordOps } from '../lib/recordOps.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 import { fmtMoney, fmtNumber } from '../utils/formatters.js'
@@ -386,6 +387,17 @@ export default function ProjectDetail({ recordId, onClose }) {
 
   const closeSoumission = () => { setPeekSoumission(null); loadSoumissions() }
 
+  // Clic droit sur une soumission → Supprimer (y compris les anciennes, qui ne
+  // s'ouvrent pas). Celles d'Airtable sont refusées par le serveur.
+  const soumissionOps = useMemo(() => new RecordOps({
+    labels: { delete: 'Supprimer la soumission', deleted: 'Soumission supprimée' },
+    remove: async row => {
+      await api.documents.soumissions.delete(row.id)
+      setSoumissions(list => list.filter(s => s.id !== row.id))
+    },
+    deleteConfirm: () => 'Supprimer cette soumission ?',
+  }), [])
+
   const loadFactures = () => {
     api.factures.list({ project_id: id, limit: 'all' })
       .then(r => setFactures(r.data || []))
@@ -414,8 +426,8 @@ export default function ProjectDetail({ recordId, onClose }) {
       purchase_price: row => <span className="font-medium text-slate-700">{fmtCurrency(row.purchase_price, row.currency)}</span>,
       subscription_price: row => <span className="font-medium text-slate-700">{fmtCurrency(row.subscription_price, row.currency)}</span>,
       currency: row => (
-        <span className="text-slate-500 text-xs" title={row.shipping_country ? `Adresse de livraison : ${row.shipping_country}` : 'Devise par défaut'}>
-          {row.currency || 'CAD'}
+        <span title={row.shipping_country ? `Adresse de livraison : ${row.shipping_country}` : 'Devise par défaut'}>
+          <Badge color="gray">{row.currency || 'CAD'}</Badge>
         </span>
       ),
       links: row => (
@@ -457,6 +469,13 @@ export default function ProjectDetail({ recordId, onClose }) {
       document_date: row => <span className="text-slate-500">{fmtDate(row.document_date)}</span>,
       due_date: row => <span className="text-slate-500">{fmtDate(row.due_date)}</span>,
       total_amount: row => <span className="font-medium text-slate-700">{fmtCad(row.total_amount)}</span>,
+      amount_ht: row => row.amount_ht != null
+        ? <span className="font-medium text-slate-700">{fmtCurrency(row.amount_ht, row.currency || 'CAD')}</span>
+        : <span className="text-slate-400">—</span>,
+      currency: row => <Badge color="gray">{row.currency || 'CAD'}</Badge>,
+      amount_ht_cad: row => row.amount_ht_cad != null
+        ? <span className="font-medium text-slate-700">{fmtCad(row.amount_ht_cad)}</span>
+        : <span className="text-slate-400">—</span>,
       balance_due: row => (
         <span className={row.balance_due > 0 ? 'font-semibold text-red-600' : 'text-green-600'}>
           {fmtCad(row.balance_due)}
@@ -479,7 +498,12 @@ export default function ProjectDetail({ recordId, onClose }) {
         : <span className="text-slate-300">—</span>,
       rate: row => <span className="text-slate-600">{fmtPct(row.rate)}</span>,
       amount: row => <span className="font-medium text-slate-900">{fmtMoney(row.amount)}</span>,
-      paid_invoices: row => <span className="text-slate-600">{fmtMoney(row.paid_invoices)}</span>,
+      // Airtable à 0 $ alors que Boréal a des factures payées : total de Boréal.
+      paid_invoices: row => (
+        <span className="text-slate-600" title={row.paid_from_boreal ? 'Boréal (Airtable : 0 $)' : undefined}>
+          {fmtMoney(row.paid_invoices)}
+        </span>
+      ),
       close_date: row => <span className="text-slate-500">{fmtDate(row.close_date)}</span>,
     }
     return TABLE_COLUMN_META.project_commissions.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -634,8 +658,8 @@ export default function ProjectDetail({ recordId, onClose }) {
             </DetailField>
             <DetailField id="close_date" label="Date de clôture" saving={!!fieldSaving.close_date}>
               <InlineDate
-                value={project.close_date}
                 iso
+                value={project.close_date}
                 saving={!!fieldSaving.close_date}
                 onSave={v => saveField('close_date', v)}
                 testId="project-field-close-date"
@@ -725,6 +749,7 @@ export default function ProjectDetail({ recordId, onClose }) {
             searchFields={['at_id', 'title', 'status', 'currency']}
             height={stackedTableHeight(soumissions.length)}
             onRowClick={row => { if (row.status !== 'legacy' && row.id) setPeekSoumission(row) }}
+            recordOps={soumissionOps}
           />
         </Section>
 

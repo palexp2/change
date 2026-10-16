@@ -8,13 +8,15 @@ const f = {
   token: document.getElementById('token'),
   auto: document.getElementById('auto'),
   allSites: document.getElementById('allSites'),
+  igOrisha: document.getElementById('igOrisha'),
 }
 
 chrome.permissions.contains({ origins: [ALL_SITES] })
   .then(granted => { f.allSites.checked = granted })
   .catch(() => {})
 
-chrome.storage.local.get(['erpUrl', 'token', 'auto']).then(({ erpUrl = '', token = '', auto = true }) => {
+chrome.storage.local.get(['erpUrl', 'token', 'auto', 'igOrisha']).then(({ erpUrl = '', token = '', auto = true, igOrisha = false }) => {
+  f.igOrisha.checked = igOrisha === true
   f.erpUrl.value = erpUrl
   f.token.value = token
   f.auto.checked = auto !== false
@@ -41,6 +43,7 @@ document.getElementById('save').addEventListener('click', async () => {
       erpUrl,
       token,
       auto: f.auto.checked,
+      igOrisha: f.igOrisha.checked,
     })
     f.erpUrl.value = erpUrl
     f.token.value = token

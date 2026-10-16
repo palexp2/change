@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { CheckCircle2, Circle, Clock, AlertCircle, X } from 'lucide-react'
+import { Check, AlertCircle, Mail, Phone, Users, ArrowDownLeft, ArrowUpRight } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useTable } from '../lib/dataStore.js'
@@ -12,37 +12,32 @@ import { DataTable } from '../components/DataTable.jsx'
 import TaskForm, { KeywordPicker } from '../components/TaskForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
-import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { TABLE_COLUMN_META, TASK_STATUS_CHOICES, TASK_PRIORITY_CHOICES } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 
-function statusColor(s) {
-  if (s === 'Terminé') return 'green'
-  if (s === 'En cours') return 'blue'
-  if (s === 'Annulé') return 'gray'
-  return 'slate'
-}
+const statusColor = s => TASK_STATUS_CHOICES.find(c => c.value === s)?.color || 'slate'
+const priorityColor = p => TASK_PRIORITY_CHOICES.find(c => c.value === p)?.color || 'gray'
 
-function priorityColor(p) {
-  if (p === 'Urgente') return 'red'
-  if (p === 'Haute') return 'orange'
-  if (p === 'Normal') return 'blue'
-  return 'gray'
-}
-
-function StatusIcon({ status }) {
-  if (status === 'Terminé') return <CheckCircle2 size={16} className="text-green-500" />
-  if (status === 'En cours') return <Clock size={16} className="text-blue-500" />
-  if (status === 'Annulé') return <X size={16} className="text-slate-400" />
-  return <Circle size={16} className="text-slate-400" />
+// Rond vide → rond vert coché : marque la tâche terminée en un clic.
+function DoneToggle({ row, onToggle }) {
+  const done = row.status === 'Terminé'
+  return (
+    <button
+      type="button"
+      title={done ? 'Rouvrir' : 'Terminer'}
+      onMouseDown={e => e.stopPropagation()}
+      onClick={e => { e.stopPropagation(); onToggle(row) }}
+      className={`flex items-center justify-center w-5 h-5 rounded-full border transition-colors ${done ? 'bg-green-500 border-green-500 text-white' : 'border-slate-300 hover:border-green-500 text-transparent hover:text-green-500'}`}
+    >
+      <Check size={12} strokeWidth={3} />
+    </button>
+  )
 }
 
 const RENDERS = {
   title: (row) => (
-    <div className="flex items-center gap-2">
-      <StatusIcon status={row.status} />
-      <span className={`text-sm font-medium ${row.status === 'Terminé' ? 'line-through text-slate-400' : 'text-slate-900'}`}>{row.title}</span>
-    </div>
+    <span className={`text-sm font-medium ${row.status === 'Terminé' ? 'line-through text-slate-400' : 'text-slate-900'}`}>{row.title}</span>
   ),
   status: (row) => <Badge color={statusColor(row.status)} size="sm">{row.status}</Badge>,
   priority: (row) => <Badge color={priorityColor(row.priority)} size="sm">{row.priority}</Badge>,
@@ -68,9 +63,22 @@ const RENDERS = {
     ? <Link to={`/employees/${row.assigned_employee_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm">{row.assigned_name}</Link>
     : (row.assigned_name || <span className="text-slate-400">—</span>),
   created_at: (row) => fmtDate(row.created_at),
+  last_exchange: (row) => {
+    const x = row.last_exchange
+    if (!x) return <span className="text-slate-400">—</span>
+    const Icon = EXCHANGE_ICONS[x.type] || Mail
+    const client = x.direction === 'in'
+    const Arrow = client ? ArrowDownLeft : ArrowUpRight
+    return (
+      <span title={client ? 'Le client' : 'Orisha'} className={`inline-flex items-center gap-1 text-sm ${client ? 'text-green-700 font-medium' : 'text-slate-500'}`}>
+        <Icon size={13} />{x.direction && <Arrow size={13} />}{fmtDate(x.at)}
+      </span>
+    )
+  },
 }
 
-const COLUMNS = TABLE_COLUMN_META.tasks.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+const EXCHANGE_ICONS = { email: Mail, call: Phone, meeting: Users }
+
 
 // Champs proposés par le formulaire « Nouvelle tâche » — liste calquée sur ce
 // que POST /api/tasks persiste (voir RecordForm.jsx pour la configuration).
@@ -88,8 +96,8 @@ function taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo
   return [
     { field: 'title', label: 'Titre', span: 2, locked: true, required: true },
     { field: 'description', label: 'Description', type: 'textarea', rows: 2, span: 2 },
-    { field: 'status', label: 'Statut', type: 'select', options: ['À faire', 'En cours', 'Terminé', 'Annulé'], defaultValue: 'À faire' },
-    { field: 'priority', label: 'Priorité', type: 'select', options: ['Basse', 'Normal', 'Haute', 'Urgente'], defaultValue: 'Normal' },
+    { field: 'status', label: 'Statut', type: 'select', defaultValue: 'À faire' },
+    { field: 'priority', label: 'Priorité', type: 'select', defaultValue: 'Normal' },
     { field: 'type', label: 'Type', type: 'select', options: ['Problème'] },
     { field: 'due_date', label: "Date d'échéance", type: 'date' },
     { field: 'company_id', label: 'Entreprise', input: linked('task_company_id', companies, c => c.name, c => `/companies/${c.id}`) },
@@ -115,6 +123,32 @@ export default function Tasks() {
   const users = useTable('users')
   const tickets = useTable('tickets')
 
+  // Dernier échange avec le client de chaque tâche ouverte (calculé serveur).
+  const [exchanges, setExchanges] = useState({})
+  const loadExchanges = () => api.tasks.lastExchanges().then(r => setExchanges(r.data || {})).catch(() => {})
+  useEffect(() => { loadExchanges() }, [])
+
+  // Statut posé par la coche, affiché tout de suite sans attendre le rechargement.
+  const [statusOverride, setStatusOverride] = useState({})
+
+  async function toggleDone(row) {
+    const status = row.status === 'Terminé' ? 'À faire' : 'Terminé'
+    setStatusOverride(o => ({ ...o, [row.id]: status }))
+    try {
+      await api.tasks.updateStatus(row.id, status)
+      await reload()
+    } finally {
+      setStatusOverride(o => { const n = { ...o }; delete n[row.id]; return n })
+    }
+  }
+
+  const toggleRef = useRef(toggleDone)
+  toggleRef.current = toggleDone
+  const columns = useMemo(() => TABLE_COLUMN_META.tasks.map(meta => ({
+    ...meta,
+    render: meta.id === 'done' ? (row) => <DoneToggle row={row} onToggle={r => toggleRef.current(r)} /> : RENDERS[meta.id],
+  })), [])
+
   const tasks = useMemo(() => {
     const cById = new Map(companies.map(c => [c.id, c.name]))
     const ctById = new Map(contacts.map(c => [c.id, `${c.first_name || ''} ${c.last_name || ''}`.trim()]))
@@ -123,16 +157,20 @@ export default function Tasks() {
     const list = tasksRaw.filter(t => !t.deleted_at)
     return list.map(r => ({
       ...r,
+      status: statusOverride[r.id] || r.status,
       company_name: cById.get(r.company_id) || r.company_name,
       contact_name: ctById.get(r.contact_id) || r.contact_name,
       assigned_name: uById.get(r.assigned_to) || r.assigned_name,
       assigned_employee_id: uEmpById.get(r.assigned_to) || null,
+      last_exchange: exchanges[r.id] || null,
+      last_exchange_at: exchanges[r.id]?.at || null,
     }))
-  }, [tasksRaw, companies, contacts, users])
+  }, [tasksRaw, companies, contacts, users, statusOverride, exchanges])
 
   async function handleCreate(form) {
     await api.tasks.create(form)
     await reload()
+    loadExchanges()
   }
 
   // Autosave (mode édition de TaskForm) : on persiste sans fermer la modale —
@@ -166,7 +204,7 @@ export default function Tasks() {
       <DataTable
         table="tasks"
         manageViews
-        columns={COLUMNS}
+        columns={columns}
         data={tasks}
         loading={loading}
         onRowClick={(row) => setEditing(row)}

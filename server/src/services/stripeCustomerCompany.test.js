@@ -6,7 +6,7 @@ import { linkStripeCustomerByEmail, companyIdForStripeCustomer, fillUnknownConta
 
 test('client Stripe du site web : rattaché par courriel, entreprise créée au besoin', () => {
   initTestDb()
-  for (const [t, c] of [['companies', 'stripe_customer_id'], ['companies', 'deleted_at'], ['contacts', 'deleted_at']]) {
+  for (const [t, c] of [['companies', 'stripe_customer_id'], ['companies', 'deleted_at'], ['contacts', 'deleted_at'], ['factures', 'customer_id']]) {
     try { db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} TEXT`) } catch {}
   }
   db.prepare("INSERT INTO companies (id, name, stripe_customer_id) VALUES ('co1', 'Ferme', NULL), ('co2', 'Serre', 'cus_old')").run()

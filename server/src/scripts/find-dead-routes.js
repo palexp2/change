@@ -38,6 +38,9 @@ const PENDING_ROUTES = new Set([
   // Évolution mensuelle de la trésorerie (BalanceSheet QB par mois) : aucun
   // graphique ne la consomme depuis le retrait de l'ancien widget du dashboard.
   'GET /api/dashboard/bank-accounts/history',
+  // Miroir du grand livre QBO : l'import manuel d'une plage n'a pas encore son
+  // bouton (le suivi, /import-runs, est lu par l'écran Comptabilité).
+  'POST /api/gl/import',
 ])
 
 // Routes appelées hors client (webhooks, callbacks, pixels, agent interne).

@@ -9,6 +9,8 @@ initTestDb()
 ;(await import('../db/migrations/124-subscription-partnership-marks.js')).up(db)
 // Colonnes perdues par le rebuild de document_items sur une DB vierge (présentes en prod).
 try { db.exec('ALTER TABLE document_items ADD COLUMN group_name TEXT') } catch {}
+// Champ personnalisé « Vendu » des projets (projectAutoClose) : absent de schema.js.
+try { db.exec('ALTER TABLE projects ADD COLUMN cf_vendu TEXT') } catch {}
 
 const item = (group_name, sku, role, qty = 1, extra = {}) => ({ group_name, sku, role, qty, name_fr: extra.name_fr || sku, ...extra })
 

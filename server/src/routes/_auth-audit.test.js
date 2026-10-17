@@ -227,7 +227,9 @@ function parseFile(content) {
 
     // Blanket middleware applied to all routes that follow on the same routeur.
     // e.g. `router.use(requireAuth)` ou `publicFilesRouter.use(requireAuth)`
-    const blanketMatch = line.match(new RegExp(`${ROUTER_NAME}\\.use\\(\\s*(${[...AUTH_TOKENS].join('|')})\\s*\\)`))
+    // Accepte aussi la forme empilée `router.use(requireAuth, requireAdmin)`.
+    const TOKENS = [...AUTH_TOKENS].join('|')
+    const blanketMatch = line.match(new RegExp(`${ROUTER_NAME}\\.use\\(\\s*(${TOKENS})(?:\\s*,\\s*(?:${TOKENS}))*\\s*\\)`))
     if (blanketMatch) {
       const [, varName, token] = blanketMatch
       blanketByVar[varName] = token

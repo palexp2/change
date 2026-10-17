@@ -49,7 +49,8 @@ const SNAPSHOT_REVIEWED = {
   // `soumissions` / `soumission` : noms de TABLES dans la carte entité → table
   // du pont temps réel (lib/recordLive.jsx), pas des colonnes lues sur une
   // entreprise ou un projet.
-  companies: ['company_name', 'created', 'instagram', 'lieu', 'mois', 'soumissions'],
+  // `vendeur` : mot français d'un commentaire de pages/Tasks.jsx, pas une colonne lue.
+  companies: ['company_name', 'created', 'instagram', 'lieu', 'mois', 'soumissions', 'vendeur'],
   // `contacts.company_name` : la liste des contacts la nomme (repli de libellé),
   // mais la table n'a PAS cette colonne — le nom est joint depuis `company_id`.
   // Rien à envoyer, donc rien à garder.
@@ -68,7 +69,7 @@ const SNAPSHOT_REVIEWED = {
   // il n'y a plus de cas à examiner.
   // items_count : rollup lu dans Orders et PrioriteAssemblage (frais via change_log_rollup).
   orders: ['address_id', 'assigned_name', 'items_count'],
-  projects: ['annule', 'autonumber', 'orders', 'soumission', 'version'],
+  projects: ['annule', 'autonumber', 'orders', 'soumission', 'vendeur', 'version'],
   shipments: ['commande', 'company_name', 'order_number', 'shipping_id_novoxpress', 'status'],
   // `heures` : seulement la route /heures-rsde (App.jsx).
   tickets: ['heures', 'mois', 'semaine'],

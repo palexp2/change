@@ -54,7 +54,7 @@ const { resolveRecordKeys, searchRecords } = await import('./recordLinks.js')
 test('un record ID Airtable est résolu sans indice de table', () => {
   const out = resolveRecordKeys(['recBBBBBBBBBBBBBB'])
   assert.deepEqual(out['recBBBBBBBBBBBBBB'], {
-    table: 'orders', id: 'o-1', label: '#634', sub: 'Ferme Test', url: '/orders/o-1',
+    table: 'orders', id: 'o-1', label: '#634', sub: 'Ferme Test', full: null, url: '/orders/o-1',
   })
 })
 
@@ -113,7 +113,7 @@ test('un libellé ne résout rien sans by_label', () => {
 test('un libellé résout la fiche quand byLabel est demandé', () => {
   const out = resolveRecordKeys(['Ferme Test'], { hint: 'companies', byLabel: true })
   assert.deepEqual(out['Ferme Test'], {
-    table: 'companies', id: 'c-1', label: 'Ferme Test', sub: 'Québec', url: '/companies/c-1',
+    table: 'companies', id: 'c-1', label: 'Ferme Test', sub: 'Québec', full: null, url: '/companies/c-1',
   })
 })
 
@@ -143,7 +143,7 @@ test('la recherche rend les deux identités et l\'URL de la fiche', () => {
   assert.equal(out.length, 1)
   assert.deepEqual(out[0], {
     id: 'c-1', airtable_id: 'recAAAAAAAAAAAAAA', label: 'Ferme Test',
-    sub: 'Québec', url: '/companies/c-1',
+    sub: 'Québec', full: null, url: '/companies/c-1',
   })
 })
 

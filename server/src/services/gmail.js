@@ -3,7 +3,7 @@ import { newRecordId } from '../utils/recordId.js'
 import { createHash } from 'crypto'
 import { writeFileSync } from 'fs'
 import db from '../db/database.js'
-import { getGmailClient, canCreateDrafts, invoiceTrashMailboxes, isInvoiceOnlyMailbox, mailboxList } from '../connectors/google.js'
+import { getGmailClient, invoiceTrashMailboxes, isInvoiceOnlyMailbox, mailboxList } from '../connectors/google.js'
 import { runExtractionAndUpdate } from './saleReceiptExtraction.js'
 import { emitEntity } from './realtimeEmitters.js'
 import { buildEmailBodyPdf, htmlToText, isBillingSender, looksLikeInvoiceEmail, looksLikeInvoiceMessage, stripTrackingUrls } from '../utils/emailBodyPdf.js'
@@ -576,46 +576,6 @@ export async function sendEmail(to, subject, htmlBody, options = {}) {
     account_email: account.account_email,
     message_id: resp.data.id,
     thread_id: resp.data.threadId,
-  }
-}
-
-/**
- * Crée un brouillon Gmail (rien n'est envoyé — l'utilisateur relit et envoie
- * depuis Gmail). Même sélection de compte que sendEmail.
- * Requiert le scope gmail.compose : `gmail.send` seul renvoie
- * ACCESS_TOKEN_SCOPE_INSUFFICIENT. Seuls les comptes de DRAFT_SCOPE_ACCOUNTS
- * (voir connectors/google.js) l'obtiennent, après reconnexion depuis la page
- * Connecteurs.
- *
- * @returns {Promise<{account_email: string, draft_id: string, message_id: string}>}
- */
-export async function createDraft(to, subject, htmlBody, options = {}) {
-  const { cc, attachments, userId, accountEmail } = options
-  const account = resolveSenderAccount({ accountEmail, userId })
-  if (!canCreateDrafts(account.account_email)) {
-    throw new Error(
-      `Le compte ${account.account_email} n'est pas autorisé à créer des brouillons ` +
-      '(scope gmail.compose non demandé — voir DRAFT_SCOPE_ACCOUNTS).'
-    )
-  }
-  const gmail = await getGmailClient(account.id)
-  const raw = buildRawMessage({ to, cc, subject, htmlBody, attachments })
-
-  try {
-    const resp = await gmail.users.drafts.create({ userId: 'me', requestBody: { message: { raw } } })
-    return {
-      account_email: account.account_email,
-      draft_id: resp.data.id,
-      message_id: resp.data.message?.id,
-    }
-  } catch (e) {
-    if (/insufficient|ACCESS_TOKEN_SCOPE/i.test(e.message || '')) {
-      throw new Error(
-        `Scope gmail.compose manquant pour ${account.account_email} — reconnectez ce compte ` +
-        'depuis la page Connecteurs (bouton « Reconnecter » de la ligne du compte).'
-      )
-    }
-    throw e
   }
 }
 

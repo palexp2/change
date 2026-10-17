@@ -5,7 +5,7 @@ import { pieceUnitCostSql } from './shippedCost.js'
 // Ce module est appelé depuis :
 //   - la sync Stripe polling (`services/stripe.js syncSubscriptions`)
 //   - les webhooks Stripe (`routes/stripe-webhooks.js customer.subscription.*`)
-//   - le script de backfill (`scripts/backfill-subscription-events.js`)
+//   - le backfill historique (script retiré, exécuté une fois)
 //
 // La colonne `stripe_event_id` garantit l'idempotence quand Stripe rejoue un
 // webhook : INSERT OR IGNORE sur l'index unique évite les doublons.

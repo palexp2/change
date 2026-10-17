@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Search, ChevronDown, ChevronRight, History, FlaskConical, Trash2, Zap, Code2, Settings2, Table2, Clock, Webhook, Hand, CheckSquare, MessageSquare, Mail, Pencil, FilePlus, Users, BookOpen, Sheet, CreditCard, Database, HardDrive, RefreshCw, Lock } from 'lucide-react'
+import { Plus, Search, ChevronDown, ChevronRight, History, FlaskConical, Trash2, Zap, Code2, Settings2, Table2, Clock, Webhook, Hand, CheckSquare, MessageSquare, Mail, Pencil, FilePlus, Users, BookOpen, Sheet, CreditCard, Database, HardDrive, RefreshCw, Lock, AlertCircle } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
+import { fmtDateTime } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { api } from '../lib/api.js'
@@ -129,9 +130,11 @@ export default function Automations() {
   }
   async function remove() {
     if (!(await confirm(`Supprimer « ${sel.name} » ?`))) return
-    await api.automations.delete(sel.id)
-    setParams({})
-    load()
+    try {
+      await api.automations.delete(sel.id)
+      setParams({})
+      load()
+    } catch (e) { addToast({ message: e.message || 'Échec de la suppression', type: 'error' }) }
   }
 
   const groups = useMemo(() => {
@@ -259,6 +262,11 @@ export default function Automations() {
                       onDragEnd={() => { setDragId(null); setOverG(null) }}
                       className={`w-[calc(100%-12px)] mx-1.5 flex items-start gap-2 px-3 py-2 rounded-lg text-left ${a.id === selId ? 'bg-brand-50' : 'hover:bg-slate-50'} ${dragId === a.id ? 'opacity-40' : ''}`}>
                       <span className="min-w-0 flex-1 block text-[13px] font-medium truncate">{a.name}</span>
+                      {a.last_status === 'error' && (
+                        <span className="mt-0.5 shrink-0 text-red-500" title={`Dernière exécution en échec · ${fmtDateTime(a.last_run_at)}`}>
+                          <AlertCircle size={14} />
+                        </span>
+                      )}
                       <span className={`mt-0.5 shrink-0 text-[10px] font-bold rounded px-1.5 ${a.active ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-400'}`}>{a.active ? 'ON' : 'OFF'}</span>
                     </button>
                   ))}

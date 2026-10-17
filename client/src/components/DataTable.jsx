@@ -19,7 +19,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { CustomFieldModal } from './CustomFieldModal.jsx'
 import { FieldAirtableMapping, prefetchFieldConfig } from './FieldAirtableMapping.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue, columnChoiceValues, parseSelectChoices, formatCurrency, currencySymbolOf, NO_COLOR, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
+import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue, EmailValue, columnChoiceValues, parseSelectChoices, formatCurrency, currencySymbolOf, NO_COLOR, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 import LinkCellEditor from './LinkCellEditor.jsx'
 import LinkChipsCell from './LinkChipsCell.jsx'
 import { linkedRecordTypeLabel } from '../lib/linkedRecordType.js'
@@ -139,8 +139,10 @@ function columnChoiceOf(col, value) {
 // Pastille d'une valeur de Sélection : couleur du choix, grise sans couleur ;
 // « Sans couleur » (NO_COLOR, posé par la modale de champ) = texte nu, c'est un
 // réglage explicite, pas une couleur manquante.
+// Page qui traduit la valeur (booléen → « Fixe ») : le choix se retrouve par
+// son libellé affiché.
 function SelectPill({ col, value, label }) {
-  const c = columnChoiceOf(col, value)
+  const c = columnChoiceOf(col, value) || (label != null ? columnChoiceOf(col, label) : null)
   return <ChoiceBadge color={c?.color || 'gray'} className="whitespace-nowrap">{label ?? c?.label ?? value}</ChoiceBadge>
 }
 
@@ -200,11 +202,12 @@ function DynamicCell({ value, col, decimals }) {
     return <span className="tabular-nums">{formatDurationSeconds(n, col.durationFormat)}</span>
   }
   if (type === 'rating') {
-    return <RatingStars value={value} />
+    return <RatingStars value={value} icon={col.ratingIcon} />
   }
   if (type === 'phone') {
     return <span className="font-mono text-sm">{fmtPhone(value)}</span>
   }
+  if (type === 'email') return <EmailValue value={value} />
   // Une valeur qui EST une image (URL ou chemin servi par l'app) s'affiche en
   // vignette, jamais en URL brute — même règle que `renderCustomFieldValue`
   // (customFieldDisplay.jsx), pour que ça vaille dans TOUS les tableaux quelle
@@ -376,7 +379,7 @@ function SelectCellEditor({ col, value, emptyLabel, onCommit, onCancel }) {
 // Éditeur inline (mode tableur) d'une cellule « Évaluation » : l'échelle
 // complète en étoiles, cliquables. Un clic commit la note (l'étoile courante la
 // retire) ; Échap annule ; les chiffres 0..5 posent la note au clavier.
-function RatingCellEditor({ value, onCommit, onCancel }) {
+function RatingCellEditor({ value, icon, onCommit, onCancel }) {
   const rootRef = useRef(null)
   useEffect(() => { rootRef.current?.focus() }, [])
   return (
@@ -395,7 +398,7 @@ function RatingCellEditor({ value, onCommit, onCancel }) {
       onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) onCancel() }}
       className="absolute z-30 left-0 top-1/2 -translate-y-1/2 rounded-lg border border-brand-500 bg-white shadow-lg px-2 py-1"
     >
-      <RatingInput value={value} onChange={onCommit} />
+      <RatingInput value={value} icon={icon} onChange={onCommit} />
     </div>
   )
 }
@@ -3203,6 +3206,7 @@ export function DataTable({
                             ) : col.type === 'rating' ? (
                               <RatingCellEditor
                                 value={item[col.field]}
+                                icon={col.ratingIcon}
                                 onCommit={(val) => {
                                   const cur = item[col.field] == null ? null : normalizeRating(item[col.field])
                                   if (val !== cur) applyCellChanges([{ row: item, col, value: val }])

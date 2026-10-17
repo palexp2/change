@@ -64,7 +64,7 @@ const SNAPSHOT_REVIEWED = {
   // deux lectures retirées (fiche + liste) ; le nom ne subsiste que pour les
   // TÂCHES et les BILLETS, qui ont leur propre colonne.
   // `documents`, `signature`, `types` retirés de cette liste le 2026-09-03 : les
-  // colonnes elles-mêmes sont détruites (drop-orders-airtable-only-cols.js),
+  // colonnes elles-mêmes sont détruites (scripts de drop ponctuels, retirés),
   // il n'y a plus de cas à examiner.
   // items_count : rollup lu dans Orders et PrioriteAssemblage (frais via change_log_rollup).
   orders: ['address_id', 'assigned_name', 'items_count'],

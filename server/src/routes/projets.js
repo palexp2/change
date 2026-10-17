@@ -122,41 +122,6 @@ function buildQbRefUrl(ref) {
 const router = Router()
 router.use(requireAuth)
 
-// ── Soumissions ──────────────────────────────────────────────────────────────
-
-router.get('/soumissions', (req, res) => {
-  const { project_id } = req.query
-  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
-  let where = 'WHERE 1=1'
-  const params = []
-  if (project_id) { where += ' AND s.project_id = ?'; params.push(project_id) }
-
-  const total = db.prepare(`SELECT COUNT(*) as c FROM soumissions s ${where}`).get(...params).c
-  const rows = db.prepare(`
-    SELECT s.*, p.name as project_name, co.pays_de_livraison as shipping_country
-    FROM soumissions s
-    LEFT JOIN projects p ON s.project_id = p.id
-    LEFT JOIN companies co ON co.id = p.company_id
-    ${where}
-    ORDER BY s.created_at DESC
-    LIMIT ? OFFSET ?
-  `).all(...params, limitVal, offset)
-
-  res.json({ data: rows, total, page: parseInt(page), limit: parseInt(limit) })
-})
-
-router.get('/soumissions/:id', (req, res) => {
-  const row = db.prepare(`
-    SELECT s.*, p.name as project_name, co.pays_de_livraison as shipping_country
-    FROM ${readRelation('soumissions')} s
-    LEFT JOIN projects p ON s.project_id = p.id
-    LEFT JOIN companies co ON co.id = p.company_id
-    WHERE s.id = ?
-  `).get(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json(row)
-})
-
 // ── Adresses ─────────────────────────────────────────────────────────────────
 
 // Minimal list for dropdowns — keeps the fields needed to render a label
@@ -406,29 +371,6 @@ router.delete('/bom/:id', async (req, res) => {
     logSync('bom', 'erp-delete', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
     res.status(502).json({ error: e.message })
   }
-})
-
-// ── Serial State Changes ─────────────────────────────────────────────────────
-
-router.get('/serial-changes', (req, res) => {
-  const { serial_id } = req.query
-  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
-  let where = 'WHERE 1=1'
-  const params = []
-  if (serial_id) { where += ' AND sc.serial_id = ?'; params.push(serial_id) }
-
-  const total = db.prepare(`SELECT COUNT(*) as c FROM serial_state_changes sc ${where}`).get(...params).c
-  const rows = db.prepare(`
-    SELECT sc.*, sn.serial_number, p.name_fr as product_name, p.sku
-    FROM serial_state_changes sc
-    LEFT JOIN serial_numbers sn ON sc.serial_id = sn.id
-    LEFT JOIN products p ON sn.product_id = p.id
-    ${where}
-    ORDER BY sc.changed_at DESC
-    LIMIT ? OFFSET ?
-  `).all(...params, limitVal, offset)
-
-  res.json({ data: rows, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
 // ── Assemblages ──────────────────────────────────────────────────────────────

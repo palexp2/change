@@ -87,7 +87,7 @@ const PUBLIC_ROUTES = new Map([
 
 // Middleware names that count as "this route is protected". If a route's
 // first-positional-arg-after-path matches one of these tokens, it's OK.
-const AUTH_TOKENS = new Set(['requireAuth', 'requireAdmin', 'requireHROrAdmin', 'requireHR'])
+const AUTH_TOKENS = new Set(['requireAuth', 'requireAdmin', 'requireHR'])
 
 // Mount paths, must stay in sync with index.js. Derived from routes/ filenames
 // where trivial (e.g. companies.js → /api/companies), overridden for the rest.
@@ -113,24 +113,21 @@ const MOUNTS = {
   'payment-cards.js':           '/api/payment-cards',
   'clientMap.js':               '/api/client-map',
   'changelog.js':               '/api/changelog',
-  'hub.js':                     '/api/hub',
   'activity.js':                '/api/activity',
   'activity-codes.js':          '/api/activity-codes',
   'ops-issues.js':              '/api/ops-issues',
   'attachments.js':             '/api/attachments',
-  'comments.js':                '/api/comments',
   'hooks.js':                   '/api/hooks',
   'instagram.js':               '/api/instagram',
   'carm.js':                    '/api/carm',
   'drive-inventory.js':         '/api/drive-inventory',
   'mapaq.js':                   '/api/mapaq',
   'marketing-budget.js':        '/api/marketing-budget',
-  'weather.js':                 '/api/weather',
   'notifications.js':           '/api/notifications',
+  'gl.js':                      '/api/gl',
+  'important-documents.js':     '/api/important-documents',
   'records.js':                 '/api/records',
   'record-links.js':            '/api/record-links',
-  'reports-taxes.js':           '/api/reports',
-  'sideEffects.js':             '/api/side-effects',
   'admin.js':                   '/api/admin',
   'agent.js':                   '/api/agent',
   'bootstrap.js':               '/api/bootstrap',
@@ -155,7 +152,6 @@ const MOUNTS = {
   'custom-fields.js':           '/api/custom-fields',
   'dashboard.js':               '/api/dashboard',
   'documents.js':               '/api/documents',
-  'email-relance.js':           '/api/email-relance',
   'employees.js':               '/api/employees',
   'field-visibility-rules.js':  '/api/field-visibility-rules',
   'form-configs.js':            '/api/form-configs',
@@ -196,7 +192,6 @@ const MOUNTS = {
   'customer-pay.js':            '/erp/pay',
   'customer-post-payment.js':   '/api/customer/post-payment',
   'email-tracking.js':          '/api/email-tracking',
-  'stripe-invoice-items.js':    '/api/stripe-invoice-items',
   'stripe-invoices.js':         '/api/stripe-invoices',
   'stripe-subscriptions.js':    '/api/stripe-subscriptions',
   'stripe-payouts.js':          '/api/stripe-payouts',

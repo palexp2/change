@@ -6,6 +6,7 @@ import { ChoiceSelect } from './ChoiceSelect.jsx'
 import { TASK_STATUS_CHOICES, TASK_PRIORITY_CHOICES } from '../lib/tableDefs.js'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { SaveStatus, useSaveStatus } from './SaveStatus.jsx'
+import { InlineDate } from './InlineFields.jsx'
 
 const TYPES = ['Problème']
 
@@ -158,13 +159,7 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
   // Champs texte : update live au change, autosave au blur (mode édition).
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
   const fBlur = (k) => (e) => { if (isEdit) autosave({ [k]: e.target.value }) }
-  // Date : update + autosave immédiat au change.
-  const fNow = (k) => (e) => {
-    const v = e.target.value
-    setForm(p => ({ ...p, [k]: v }))
-    if (isEdit) autosave({ [k]: v })
-  }
-  // Champs structurés (LinkedRecordField, KeywordPicker, Sélections) : reçoivent la valeur.
+  // Champs structurés (date, LinkedRecordField, KeywordPicker, Sélections) : reçoivent la valeur.
   const setKey = (k) => (v) => {
     setForm(p => ({ ...p, [k]: v }))
     if (isEdit) autosave({ [k]: v })
@@ -198,7 +193,7 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
       </div>
       <div>
         <label className="label">Date d'échéance</label>
-        <input type="date" value={form.due_date || ''} onChange={fNow('due_date')} className="input" />
+        <InlineDate iso value={form.due_date || ''} onSave={setKey('due_date')} className="input" />
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -245,7 +240,7 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
           onChange={setKey('assigned_to')}
         />
       </div>
-      <KeywordPicker value={form.keywords} onChange={(kw) => setForm(p => ({ ...p, keywords: kw }))} />
+      <KeywordPicker value={form.keywords} onChange={setKey('keywords')} />
       <div>
         <label className="label">Notes</label>
         <textarea value={form.notes || ''} onChange={f('notes')} onBlur={fBlur('notes')} className="input" rows={2} />

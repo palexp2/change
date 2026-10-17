@@ -11,8 +11,7 @@ import { getClaudeUsage } from './claudeUsage.js'
 export const AGENT_MODEL = 'opus'
 
 /** Modèles que l'agent sait utiliser (un plafond de COMPTE les bloque tous). */
-export const CLAUDE_MODELS = Object.freeze(['opus', 'sonnet', 'haiku'])
-export const KNOWN_MODELS = CLAUDE_MODELS
+export const KNOWN_MODELS = Object.freeze(['opus', 'sonnet', 'haiku'])
 
 // ─── Modèle préféré courant — choisi par l'utilisateur depuis le bandeau quotas ─
 // Persisté dans agent-settings.json (clé `preferredModel`) ; taskRunner le recharge

@@ -97,21 +97,9 @@ export function statementInvertsSign(accountName) {
 
 // ── Couleurs du fichier = statut déclaré à la main ───────────────────────────
 //
-// Légende reprise telle quelle des onglets (« Factures retracées »,
-// « Comptabilisées », « Rapprochées avec la banque », « Pas encore ctb ») :
-// c'est Michel qui colorie, et sa couleur fait autorité sur ce que l'ERP
-// arrive à déduire tout seul. Les deux autres couleurs de la légende
-// (CC0000 « Trx non révisée », FF9900 « Rendu à cette trx ») sont des repères
-// de lecture, pas des statuts — volontairement absentes.
-export const SHEET_COLORS = {
-  '92D050': 'vert',   // comptabilisée ET rapprochée avec la banque
-  'FFFF00': 'jaune',  // comptabilisée, pas encore rapprochée
-  '00B0F0': 'bleu',   // facture retracée, pas encore comptabilisée
-  'F7CAAC': 'rouge',  // pas encore comptabilisée
-  'E6B8AF': 'rouge',
-  'F4CCCC': 'rouge',
-}
-
+// Légende des onglets : c'est Michel qui colorie (vert = comptabilisée ET
+// rapprochée, jaune = comptabilisée, bleu = facture retracée, rouge = pas
+// encore comptabilisée). Les teintes exactes vivent dans trxSheetMirror.js.
 // Une couleur verte ou jaune est une affirmation : « c'est dans QuickBooks ».
 export const COLOR_MEANS_IN_QB = new Set(['vert', 'jaune'])
 

@@ -384,6 +384,8 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // Avis QuickBooks : rien à régler côté action (le jeton vit dans
   // Connecteurs), mais l'entrée doit exister pour que l'interrupteur réponde.
   sys_qb_webhook: { actionKeys: new Set() },
+  sys_gl_mirror_sync: { actionKeys: new Set() },
+  sys_gl_reconciliation: { actionKeys: new Set() },
   sys_work_suggestions: { actionKeys: new Set() },
   sys_autonomous_agents: { actionKeys: new Set() },
   sys_month_end_provisions: { actionKeys: new Set() },
@@ -1099,12 +1101,15 @@ router.get('/', (req, res) => {
   const automations = db.prepare(`
     SELECT a.*,
            COALESCE(r.runs_30d, 0) AS runs_30d,
-           COALESCE(r.errors_30d, 0) AS errors_30d
+           COALESCE(r.errors_30d, 0) AS errors_30d,
+           r.last_run_at, r.last_status
     FROM automations a
     LEFT JOIN (
+      -- last_status : colonne nue prise sur la ligne du MAX (règle SQLite).
       SELECT automation_id,
              COUNT(*) AS runs_30d,
-             SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors_30d
+             SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors_30d,
+             MAX(created_at) AS last_run_at, status AS last_status
       FROM automation_logs
       WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')
       GROUP BY automation_id
@@ -1691,10 +1696,6 @@ router.post('/:id/drain-deferred', async (req, res) => {
   }
 })
 
-// POST /api/automations/:id/test
-//  - field_rule : dry-run sans dispatch ni insertion de fires
-//  - webhook    : dry-run déclaratif (matches + réponse calculés, AUCUNE écriture)
-//                 avec les params fournis dans le body { params: {...} }
 // POST /api/automations/:id/run-now — automatisation en blocs : exécute ses
 // actions pour de vrai, sur l'enregistrement choisi (déclencheur enregistrement)
 // ou sans enregistrement (planifiée). Bouton « Tester » de la page.
@@ -1715,6 +1716,10 @@ router.post('/:id/run-now', async (req, res) => {
   }
 })
 
+// POST /api/automations/:id/test
+//  - field_rule : dry-run sans dispatch ni insertion de fires
+//  - webhook    : dry-run déclaratif (matches + réponse calculés, AUCUNE écriture)
+//                 avec les params fournis dans le body { params: {...} }
 router.post('/:id/test', async (req, res) => {
   const automation = db.prepare(
     'SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL'

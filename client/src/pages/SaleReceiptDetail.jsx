@@ -4,7 +4,7 @@ import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import {
   ChevronLeft, ChevronRight, ChevronDown,
   RefreshCw, AlertCircle, AlertTriangle, CheckCircle, Clock, BookOpen,
-  Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail, Sparkles, FileX, Paperclip,
+  Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail, Sparkles, Paperclip,
   ArrowLeftRight, ArrowRight,
 } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -61,6 +61,7 @@ import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { Field } from '../components/Field.jsx'
 import ThinkingOrb from '../components/ThinkingOrb'
 import { DocHighlightProvider, DocHighlightViewer, Hl } from '../components/DocHighlight.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 // Code de taxe QB déduit par défaut selon les montants TPS/TVQ extraits — sert de
 // présélection. Doit rester aligné avec la déduction serveur (pushSaleReceiptToQB).
@@ -905,8 +906,7 @@ function QBPublishForm({ receipt, onLeave, onUpdate, onOpenConversion, dateField
           </QbField>
         ) : (
           <QbField label="Échéance">
-            <input
-              type="date"
+            <DateInput
               value={dueDate}
               onChange={e => {
                 const v = e.target.value
@@ -1229,9 +1229,8 @@ function EditableDateField({ receipt, field, onUpdate, testId }) {
     <>
       <div className="flex items-center gap-1 mt-0.5">
         {editing ? (
-          <input
+          <DateInput
             ref={inputRef}
-            type="date"
             data-testid={testId}
             value={value}
             onChange={e => { setValue(e.target.value); commit(e.target.value) }}

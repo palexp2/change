@@ -12,6 +12,7 @@ import { fmtDate, localISODate } from '../lib/formatDate.js'
 
 import { fmtMoney as fmtCad } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 function todayISO() {
   return localISODate()
@@ -428,7 +429,7 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
       <div className="grid grid-cols-3 gap-4">
         <div>
           <label className="label">Date *</label>
-          <input type="date" className="input" value={txnDate} onChange={e => setTxnDate(e.target.value)} required />
+          <DateInput className="input" value={txnDate} onChange={e => setTxnDate(e.target.value)} required />
         </div>
         <div>
           <label className="label">N° de document</label>
@@ -460,11 +461,11 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
             <div className="grid grid-cols-3 gap-3 items-end">
               <div>
                 <label className="label">Du</label>
-                <input type="date" className="input" value={prepFrom} onChange={e => setPrepFrom(e.target.value)} />
+                <DateInput className="input" value={prepFrom} onChange={e => setPrepFrom(e.target.value)} />
               </div>
               <div>
                 <label className="label">Au</label>
-                <input type="date" className="input" value={prepTo} onChange={e => setPrepTo(e.target.value)} />
+                <DateInput className="input" value={prepTo} onChange={e => setPrepTo(e.target.value)} />
               </div>
               <button
                 type="button"

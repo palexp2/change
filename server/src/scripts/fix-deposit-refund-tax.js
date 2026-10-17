@@ -4,7 +4,7 @@
 // stripe.js::proRateRefundTax). Détection : voir le scan
 //   SELECT … WHERE type IN ('refund') AND |tax|/|amount| > 0.16
 //
-// Procédure (identique à fix-deposit-17431.js, généralisée par payout) :
+// Procédure (généralisée par payout) :
 //   1) resync les balance_transactions du payout → taxe refund proratisée
 //   2) DELETE le Deposit existant dans QB
 //   3) clear qb_deposit_id sur le payout

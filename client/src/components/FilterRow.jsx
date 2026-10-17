@@ -5,6 +5,7 @@ import { columnChoiceValues } from '../lib/customFieldDisplay.jsx'
 import { linkTargetOfType } from '../lib/fieldOverrides.jsx'
 import { LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
 import { RatingInput } from './RatingStars.jsx'
+import DateInput from './DateInput.jsx'
 
 export function FieldSelect({ columns, value, onChange, cls }) {
   const [open, setOpen] = useState(false)
@@ -473,9 +474,9 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
       )}
       {needsValue && fieldType === 'date' && isRange && (
         <div className="flex items-center gap-1.5 flex-1 min-w-0">
-          <input type="date" value={range[0] ?? ''} max={range[1] || undefined} onChange={e => setRange(0, e.target.value)} className={`input ${cls} flex-1 min-w-0`} />
+          <DateInput value={range[0] ?? ''} max={range[1] || undefined} onChange={e => setRange(0, e.target.value)} className={`input ${cls} flex-1 min-w-0`} />
           <span className="text-xs text-slate-400 flex-shrink-0">et</span>
-          <input type="date" value={range[1] ?? ''} min={range[0] || undefined} onChange={e => setRange(1, e.target.value)} className={`input ${cls} flex-1 min-w-0`} />
+          <DateInput value={range[1] ?? ''} min={range[0] || undefined} onChange={e => setRange(1, e.target.value)} className={`input ${cls} flex-1 min-w-0`} />
         </div>
       )}
       {needsValue && fieldType === 'number' && (
@@ -483,7 +484,7 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
       )}
       {/* Évaluation : le nombre d'étoiles se choisit en étoiles. */}
       {needsValue && fieldType === 'rating' && (
-        <RatingInput value={filter.value} onChange={v => onChange({ ...filter, value: v })} size={15} className="flex-1 min-w-0 py-1" />
+        <RatingInput value={filter.value} icon={filterableCols.find(c => c.field === filter.field)?.ratingIcon} onChange={v => onChange({ ...filter, value: v })} size={15} className="flex-1 min-w-0 py-1" />
       )}
       {needsValue && !isMulti && !linkPicksValue && fieldType !== 'single_select' && fieldType !== 'multi_select' && fieldType !== 'user' && fieldType !== 'number' && fieldType !== 'rating' && fieldType !== 'boolean' && (fieldType !== 'date' || isDateFreeText) && (
         <input value={typeof filter.value === 'string' ? filter.value : ''} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} />
@@ -509,7 +510,7 @@ function DateValueInput({ value, onChange, cls }) {
         {DATE_MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
       </select>
       {mode === '' && (
-        <input type="date" value={str} onChange={e => onChange(e.target.value)} className={`input ${cls} flex-1 min-w-0`} />
+        <DateInput value={str} onChange={e => onChange(e.target.value)} className={`input ${cls} flex-1 min-w-0`} />
       )}
       {DATE_MODES_WITH_DAYS.has(mode) && (
         <input type="number" min="0" value={days} onChange={e => onChange(`${mode}:${e.target.value}`)} className={`input ${cls} w-16 flex-shrink-0`} />

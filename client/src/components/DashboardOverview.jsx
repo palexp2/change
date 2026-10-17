@@ -160,62 +160,6 @@ function labelAt(i, n, every) {
   return (n - 1 - i) % every === 0
 }
 
-/* Colonnes — une seule série, une seule teinte.
-   `vw` = largeur du viewBox : les cartes larges (la bande héros) en prennent
-   une plus grande pour que le texte ne soit pas agrandi par la mise à
-   l'échelle uniforme du SVG. */
-export function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW, linkFor, chartId }) {
-  const [hover, setHover] = useState(null)
-  const navigate = useNavigate()
-  const t = TONES[tone] || TONES.brand
-  if (!points?.length) return <EmptyPlot />
-
-  const plotW = vw - PAD_L - PAD_R
-  const { top: max, half } = axisScale(Math.max(...points.map(p => p.value || 0), 0))
-  const n = points.length
-  const band = plotW / n
-  const barW = Math.max(2, Math.min(20, band - 4))
-  const yOf = v => PAD_T + PLOT_H - (max ? (Math.max(0, v) / max) * PLOT_H : 0)
-  const ticks = [0, half, max]
-
-  return (
-    <div className="relative">
-      <svg viewBox={`0 0 ${vw} ${CH}`} className="w-full" style={{ height: 'auto' }} role="img">
-        {ticks.map(v => (
-          <g key={v}>
-            <line x1={PAD_L} x2={vw - PAD_R} y1={yOf(v)} y2={yOf(v)} className="stroke-slate-200" strokeWidth={0.6} />
-            <text x={PAD_L - 4} y={yOf(v) + 2.6} textAnchor="end" fontSize="7" className="fill-slate-400 tabular-nums">
-              {format(v)}
-            </text>
-          </g>
-        ))}
-        {points.map((p, i) => {
-          const x = PAD_L + i * band + (band - barW) / 2
-          const y = yOf(p.value)
-          const h = PAD_T + PLOT_H - y
-          const href = linkFor?.(p) || null
-          return (
-            <g key={p.key}
-              {...barGroupProps({ href, point: p, navigate, chartId })}
-              onMouseEnter={() => setHover({ xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100, yPct: (y / CH) * 100, value: format(p.value), label: p.label, hint: href ? CLICK_HINT : null })}
-              onMouseLeave={() => setHover(null)}
-            >
-              <rect x={PAD_L + i * band} y={0} width={band} height={CH} fill="transparent" />
-              {h > 0.5 && <path d={barPath(x, y, barW, h)} className={`${t.fill} ${hover && hover.label === p.label ? 'opacity-100' : 'opacity-90'}`} />}
-              {labelAt(i, n, labelEvery) && (
-                <text x={PAD_L + (i + 0.5) * band} y={CH - 5} textAnchor="middle" fontSize="7" className="fill-slate-400">
-                  {p.short ?? p.label}
-                </text>
-              )}
-            </g>
-          )
-        })}
-      </svg>
-      <ChartTooltip hover={hover} />
-    </div>
-  )
-}
-
 /* Ligne — 2 px, lavis à 10 %, point terminal cerclé de la surface et étiqueté.
    Les points `forecast` (projection) forment la fin de la série : tracés en
    tirets, et c'est le dernier point réel qui porte l'étiquette.

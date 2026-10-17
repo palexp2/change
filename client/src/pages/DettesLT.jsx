@@ -13,19 +13,17 @@ import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
-
-const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
-const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
+import { inputCls, labelCls, makeTextField, NotesField, AutosaveFooter, useCreateAction } from '../components/AutosaveFormKit.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 const today = () => localISODate()
 
 function DebtModal({ debt, onClose, onSaved, onDeleted }) {
   const isNew = !debt?.id
   const [form, setForm] = useState(debt || { label: '', currency: 'CAD', active: 1 })
-  const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -36,31 +34,13 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
     onError: (k, prev) => set(k, prev),
   })
 
-  async function create() {
+  const { run: create, saving } = useCreateAction(async () => {
     if (!form.label?.trim()) { addToast({ message: 'Nom de la dette requis', type: 'error' }); return }
-    setSaving(true)
-    try {
-      onSaved(await api.ltDebts.create(form))
-      onClose()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
+    onSaved(await api.ltDebts.create(form))
+    onClose()
+  })
 
-  const field = (k, label, props = {}) => (
-    <div>
-      <label className={labelCls}>{label}</label>
-      <input
-        className={inputCls}
-        value={form[k] ?? ''}
-        onChange={e => set(k, e.target.value)}
-        onBlur={e => save(k, e.target.value.trim() === '' ? null : e.target.value.trim())}
-        {...props}
-      />
-    </div>
-  )
+  const field = makeTextField(form, set, save)
 
   return (
     <Modal isOpen onClose={onClose} title={isNew ? 'Nouvelle dette' : form.label} size="lg">
@@ -99,37 +79,10 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
             </select>
           </div>
         )}
-        <div className="col-span-2">
-          <label className={labelCls}>Notes</label>
-          <textarea className={inputCls} rows={2} value={form.notes ?? ''} onChange={e => set('notes', e.target.value)}
-            onBlur={e => save('notes', e.target.value.trim() === '' ? null : e.target.value)} />
-        </div>
+        <NotesField form={form} set={set} save={save} />
       </div>
-      <div className="flex items-center justify-between mt-4">
-        {isNew ? (
-          // Bouton requis : création d'un nouvel enregistrement (pas encore d'id → autosave impossible)
-          <div className="flex w-full justify-end gap-2">
-            <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Annuler</button>
-            <button onClick={create} disabled={saving}
-              className="px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
-              {saving ? 'Création…' : 'Créer'}
-            </button>
-          </div>
-        ) : (
-          <>
-            <button
-              onClick={async () => {
-                try { await api.ltDebts.delete(debt.id); onDeleted(debt.id); onClose() }
-                catch (e) { addToast({ message: e.message, type: 'error' }) }
-              }}
-              className="text-sm text-red-600 hover:underline"
-            >
-              Supprimer
-            </button>
-            <span className="text-xs text-slate-400">{autosaving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
-          </>
-        )}
-      </div>
+      <AutosaveFooter isNew={isNew} saving={saving} autosaving={autosaving} onClose={onClose} onCreate={create}
+        onDelete={async () => { await api.ltDebts.delete(debt.id); onDeleted(debt.id) }} />
     </Modal>
   )
 }
@@ -287,7 +240,7 @@ function GenerateModal({ debt, onClose, onGenerated }) {
         </div>
         <div>
           <label className={labelCls}>Premier versement</label>
-          <input className={inputCls} type="date" value={form.first_payment_date || ''} data-testid="gen-first_payment_date"
+          <DateInput className={inputCls} value={form.first_payment_date || ''} data-testid="gen-first_payment_date"
             onChange={e => set('first_payment_date', e.target.value)} />
         </div>
         {num('payment_amount', 'Montant du versement', { step: '0.01' })}

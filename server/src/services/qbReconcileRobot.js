@@ -5,10 +5,7 @@
 // écriture : la seule voie est l'écran « Rapprocher » de QuickBooks Online,
 // piloté avec la session ouverte de Charles (reçue par le pont de session).
 //
-// Deux passages :
-//  - `openReconcile` (tranche 1, LECTURE SEULE) : ouvre l'écran d'un compte, le
-//    capture et lit ce qu'il affiche. Aucun clic qui modifie QuickBooks.
-//  - `reconcileAccount` (tranche 2) : commence (ou reprend) le rapprochement à
+// `reconcileAccount` : commence (ou reprend) le rapprochement à
 //    la date du dernier solde imprimé du relevé, coche les écritures dont la
 //    ligne Boréal est verte, lit la « Différence » et ENREGISTRE POUR PLUS TARD.
 //
@@ -273,63 +270,6 @@ async function capture(page, account, log, suffix = '') {
   const name = `${stamp}-${slug(account.name)}${suffix}.png`
   await page.screenshot({ path: join(CAPTURE_DIR, name), fullPage: true }).catch(e => log(`capture impossible : ${e.message}`))
   return name
-}
-
-/**
- * Ouvre l'écran « Rapprocher » de QuickBooks pour un compte bancaire Boréal.
- * Lecture seule. Ne lance jamais de connexion.
- * @returns {Promise<object>} { ok, screen, needsSession?, hint?, capture?, readings?, … }
- */
-export async function openReconcile(bankAccountId) {
-  const t0 = Date.now()
-  const trace = []
-  const log = m => trace.push(`${((Date.now() - t0) / 1000).toFixed(1)}s ${m}`)
-  const finish = (result) => {
-    logSync(MODULE, 'manual', {
-      status: result.ok ? 'success' : 'error',
-      error: result.ok ? null : (result.error || result.hint || result.screen || 'échec'),
-      durationMs: Date.now() - t0,
-    })
-    return { ...result, trace }
-  }
-
-  const { account, qbId, error } = loadAccount(bankAccountId)
-  if (error) return finish({ ok: false, error })
-  const s = checkSession()
-  if (!s.session) return finish({ ok: false, ...s })
-
-  const busy = busyError(account.id)
-  if (busy) return finish({ ok: false, error: busy })
-  running.add(account.id)
-
-  let browser
-  try {
-    const opened = await launchContext({ storageState: s.session.state })
-    browser = opened.browser
-    const o = await openScreen(opened, account, qbId, log)
-    const captureName = await capture(o.page, account, log)
-    const ok = o.screen === 'reconcile'
-    // La session a servi : QuickBooks a pu rafraîchir ses témoins, on les garde.
-    if (ok) {
-      try { saveBridgeSession(SESSION_KEY, await opened.context.storageState()) } catch { /* l'ancienne reste */ }
-    }
-    return finish({
-      ok,
-      screen: o.screen,
-      needsSession: o.needsSession,
-      hint: o.hint,
-      account: { id: account.id, name: account.name, qb_account_id: qbId },
-      pageUrl: o.page.url().split('?')[0],
-      capture: captureName,
-      readings: ok ? { accountName: o.accountName, ...readScreen(o.text) } : null,
-      excerpt: o.text.slice(0, 1500),
-    })
-  } catch (e) {
-    return finish({ ok: false, error: e.message })
-  } finally {
-    running.delete(account.id)
-    if (browser) await browser.close().catch(() => {})
-  }
 }
 
 // ── Tranche 2 : cocher, lire la Différence, enregistrer pour plus tard ───────

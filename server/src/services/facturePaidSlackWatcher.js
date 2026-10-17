@@ -189,6 +189,4 @@ export function markUpgradeInvoice(sub, source) {
   } catch (e) { console.error('markUpgradeInvoice:', e.message) }
 }
 
-export const pollOnce = watcher.pollOnce
 export function startFacturePaidSlackWatcher() { watcher.start() }
-export function stopFacturePaidSlackWatcher() { watcher.stop() }

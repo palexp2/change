@@ -83,14 +83,6 @@ export function getCatalogProduct(id) {
 
 const INTERVALS = new Set(['month', 'year', 'week', 'day'])
 
-export async function createCatalogProduct(stripe, { name, description }) {
-  const n = String(name || '').trim()
-  if (!n) throw Object.assign(new Error('Nom requis'), { status: 400 })
-  const p = await stripe.products.create({ name: n.slice(0, 250), ...(description ? { description: String(description).slice(0, 1000) } : {}) })
-  saveProduct(p)
-  return getCatalogProduct(p.id)
-}
-
 export async function updateCatalogProduct(stripe, id, patch) {
   const body = {}
   if ('name' in patch) {

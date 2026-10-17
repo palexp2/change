@@ -121,66 +121,6 @@ export function buildChargeLines(g, ids) {
   return lines
 }
 
-function mergedMemo(groups) {
-  if (groups.length === 1) return memo(groups[0])
-  const parts = []
-  if (groups.some(g => g.duty > 0)) parts.push('droits de douane')
-  if (groups.some(g => g.gst > 0)) parts.push('TPS à l\'importation')
-  if (groups.some(g => g.interest > 0)) parts.push('intérêts')
-  if (groups.some(g => g.penalty > 0)) parts.push('pénalité')
-  const nature = parts.join(' et ') || 'douanes'
-  return `${nature.charAt(0).toUpperCase()}${nature.slice(1)} — ${groups.length} déclarations ASFC`
-}
-
-// Charge/note de crédit → écriture de journal (jamais une facture fournisseur,
-// voir l'en-tête du fichier). Débit des comptes de coûts + TPS en CTI (compte
-// d'attente), crédit du solde fournisseur ASFC (21000, avec Entity) ; sens
-// inverse pour une note de crédit. Marche pour un groupe seul ou fusionné.
-const journalLine = (amount, accountId, postingType, description, entity) => ({
-  Amount: round2(amount),
-  DetailType: 'JournalEntryLineDetail',
-  Description: description,
-  JournalEntryLineDetail: {
-    PostingType: postingType,
-    AccountRef: { value: accountId },
-    ...(entity ? { Entity: entity } : {}),
-  },
-})
-
-export function buildChargeJournalLines(groups, ids) {
-  const side = groups[0].type === 'credit' ? 'Credit' : 'Debit'
-  const lines = []
-  for (const g of groups) {
-    const suffix = g.number ? ` — ${g.number}` : ''
-    if (g.duty > 0) lines.push(journalLine(g.duty, ids.duty, side, `Droits de douane${suffix}`))
-    if (g.interest > 0) lines.push(journalLine(g.interest, ids.interest, side, `Intérêts${suffix}`))
-    if (g.penalty > 0) lines.push(journalLine(g.penalty, ids.penalty, side, `Pénalité${suffix}`))
-    if (g.gst > 0) lines.push(journalLine(g.gst, ids.gstSuspense, side, `TPS à l'importation${suffix}`))
-  }
-  return lines
-}
-
-export function buildChargeJournalPayload(groups, ids, cfg) {
-  const type = groups[0].type
-  const apSide = type === 'credit' ? 'Debit' : 'Credit'
-  const lines = buildChargeJournalLines(groups, ids)
-  const total = round2(groups.reduce((s, g) => s + g.total, 0))
-  const date = groups.reduce((mx, g) => (g.date > mx ? g.date : mx), groups[0].date)
-  lines.push(journalLine(total, ids.ap, apSide, mergedMemo(groups), { Type: 'Vendor', EntityRef: { value: ids.vendor } }))
-  // DocNumber TOUJOURS préfixé « ASFC » : contrairement à une facture (VendorRef
-  // en tête, cherchable par nom de fournisseur), une JE n'a pas de fournisseur au
-  // niveau transaction — seule une ligne le porte. La recherche QuickBooks
-  // n'indexe pas ça de façon fiable ; le DocNumber, si.
-  const docNumber = `ASFC ${groups.length === 1 && groups[0].number ? groups[0].number : date}`.slice(0, 21)
-  const body = {
-    TxnDate: date,
-    DocNumber: docNumber,
-    PrivateNote: mergedMemo(groups),
-    Line: lines,
-  }
-  return { entity: 'journalentry', body, account_source: `fournisseur ${cfg.vendor_name} (écriture de journal)` }
-}
-
 // Regroupe les groupes « prêts » (charges ET corrections, nettées) en une seule
 // facture ASFC ; les versements restent 1:1 avec la sortie bancaire réelle et
 // les groupes bloqués restent visibles séparément (à ventiler d'abord).
@@ -583,6 +523,9 @@ export async function previewCarmPostings() {
 // Pousse les groupes demandés (tous les groupes prêts par défaut). Un groupe en
 // échec n'arrête pas le lot ; ses lignes passent en « erreur » avec le message.
 // `trigger` respecte la contrainte de sync_log : 'manual' | 'scheduled' | 'webhook'.
+// Clé de l'entité dans une réponse QuickBooks, par type de transaction posée.
+const QB_ENTITY_KEY = { purchase: 'Purchase', journalentry: 'JournalEntry', bill: 'Bill', vendorcredit: 'VendorCredit', billpayment: 'BillPayment' }
+
 export async function postCarmGroups({ groupIds = null, userId = null, trigger = 'manual' } = {}) {
   const t0 = Date.now()
   const cfg = getCarmConfig()
@@ -657,46 +600,3 @@ export async function postCarmGroups({ groupIds = null, userId = null, trigger =
   return { posted, failed, skipped: results.filter(r => r.skipped).length, results, user_id: userId }
 }
 
-// Annule une écriture déjà comptabilisée : supprime la transaction QuickBooks
-// et remet les lignes qu'elle couvrait en 'a_comptabiliser' (elles repartiront
-// au prochain push, avec la logique de comptabilisation en vigueur au moment
-// du nouveau push). Sert à corriger une écriture posée avec une ancienne
-// version des règles de comptabilisation (ex. facture fournisseur → JE).
-const QB_ENTITY_KEY = { purchase: 'Purchase', journalentry: 'JournalEntry', bill: 'Bill', vendorcredit: 'VendorCredit', billpayment: 'BillPayment' }
-
-export async function unpostCarmGroup(qbTxnId) {
-  const rows = db.prepare(`
-    SELECT id, qb_txn_type, posting_group FROM carm_transactions WHERE qb_txn_id = ? AND deleted_at IS NULL
-  `).all(String(qbTxnId))
-  if (!rows.length) throw new Error('Aucune ligne comptabilisée avec cet identifiant QuickBooks')
-  // Lignes reliées à une saisie manuelle : on délie seulement, on ne supprime
-  // jamais dans QB ce que Boréal n'a pas créé.
-  if (String(rows[0].posting_group || '').startsWith('existant:')) {
-    const reset = db.prepare(`UPDATE carm_transactions SET posting_state = 'a_comptabiliser', qb_txn_id = NULL, qb_txn_type = NULL, posting_group = NULL WHERE id = ?`)
-    db.transaction(() => { for (const r of rows) reset.run(r.id) })()
-    return rows.length
-  }
-  const docs = String(rows[0].posting_group || '').split(',').map(x => x.split(':'))
-    .filter(([e, id]) => QB_ENTITY_KEY[e] && id)
-  if (!docs.some(([, id]) => id === String(qbTxnId))) docs.unshift([rows[0].qb_txn_type, String(qbTxnId)])
-  // Le paiement d'abord (il bloque la suppression de la facture qu'il règle).
-  docs.sort(([a], [b]) => (a === 'billpayment' ? -1 : b === 'billpayment' ? 1 : 0))
-  for (const [entity, id] of docs) {
-    const key = QB_ENTITY_KEY[entity]
-    if (!key) throw new Error(`Type de transaction QuickBooks inconnu : ${entity}`)
-    let current = null
-    try { current = await qbGet(`/${entity}/${id}`) } catch { current = null }
-    const syncToken = current?.[key]?.SyncToken
-    // Déjà supprimée dans QB (ex. refaite à la main) : rien à défaire.
-    if (syncToken == null) continue
-    await qbRequest('POST', `/${entity}?operation=delete`, { Id: String(id), SyncToken: syncToken })
-  }
-  const upd = db.prepare(`
-    UPDATE carm_transactions SET posting_state = 'a_comptabiliser', qb_txn_id = NULL, qb_txn_type = NULL,
-      posting_group = NULL, posting_error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-    WHERE id = ?
-  `)
-  const tx = db.transaction(() => { for (const r of rows) upd.run(r.id) })
-  tx()
-  return rows.length
-}

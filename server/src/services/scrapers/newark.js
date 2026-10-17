@@ -20,6 +20,8 @@
 // conditionnel : s'il se déclenche, la tournée s'arrête avec le geste à faire
 // (envoyer une session depuis le module de navigateur) plutôt que d'insister.
 
+import { pdfNet, parsePortalDate, printPagePdf } from './portalPage.js'
+
 const ORIGIN = 'https://canada.newark.com'
 const LOGIN_URL = `${ORIGIN}/auth/login`
 const ORDERS_URL = `${ORIGIN}/account/order-history`
@@ -32,50 +34,7 @@ const NEEDS_SESSION =
 
 const CAPTCHA_SELECTOR = 'iframe[src*="recaptcha"], .g-recaptcha, iframe[title*="challenge" i]'
 
-const ISO_DATE = /\b(\d{4})-(\d{2})-(\d{2})\b/
-const NUM_DATE = /\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/
-// « 04 Sep 2026 », « Sep 4, 2026 », « 4 sept. 2026 » — la langue du compte
-// (en-CA ou fr-CA) change la forme sans prévenir.
-const TEXT_DATE_DMY = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zéû]{3,9})\.?\s+(\d{4})\b/i
-const TEXT_DATE_MDY = /\b([a-zéû]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/i
-
-const MONTHS = {
-  jan: 1, feb: 2, fev: 2, mar: 3, apr: 4, avr: 4, may: 5, mai: 5, jun: 6, jui: 6,
-  jul: 7, aug: 8, aou: 8, sep: 9, oct: 10, nov: 11, dec: 12,
-}
-
-function monthNumber(word) {
-  const key = String(word || '').toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '').slice(0, 3)
-  if (key === 'jui') return /^juil/i.test(word) ? 7 : 6
-  return MONTHS[key] || null
-}
-
-const iso = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-
-export function parseNewarkDate(text) {
-  const s = String(text || '')
-  const direct = s.match(ISO_DATE)
-  if (direct) return direct[0]
-  const dmy = s.match(TEXT_DATE_DMY)
-  if (dmy) {
-    const month = monthNumber(dmy[2])
-    if (month) return iso(dmy[3], month, dmy[1])
-  }
-  const mdy = s.match(TEXT_DATE_MDY)
-  if (mdy) {
-    const month = monthNumber(mdy[1])
-    if (month) return iso(mdy[3], month, mdy[2])
-  }
-  const num = s.match(NUM_DATE)
-  if (num) {
-    const [, a, b, year] = num
-    const day = Number(a) > 12 ? a : b
-    const month = Number(a) > 12 ? b : a
-    return iso(year, month, day)
-  }
-  return null
-}
+export const parseNewarkDate = parsePortalDate
 
 export function parseNewarkAmount(text) {
   // Un bloc de commande porte sous-total, port, taxes et total : le total est
@@ -169,19 +128,7 @@ export default {
     // Portail jamais exploré authentifié : on journalise les PDF et les appels
     // de facturation croisés, c'est ce qui permettra de câbler un appel direct
     // au premier vrai passage plutôt que de deviner.
-    const captured = new Map()
-    page.on('response', async (res) => {
-      try {
-        const type = (res.headers()['content-type'] || '').toLowerCase()
-        const url = res.url()
-        if (type.includes('pdf') || /\.pdf(\?|$)/i.test(url)) {
-          if (!captured.has(url)) captured.set(url, Buffer.from(await res.body()))
-          log(`📄 PDF capturé : ${url.slice(0, 120)}`)
-        } else if (type.includes('json') && /order|invoice|factur|billing/i.test(url)) {
-          log(`↪︎ API vue : ${url.slice(0, 160)}`)
-        }
-      } catch { /* corps déjà consommé ou réponse annulée */ }
-    })
+    pdfNet(page, log, /order|invoice|factur|billing/i)
 
     await page.goto(ORDERS_URL, { waitUntil: 'domcontentloaded' })
     if (LOGIN_MARKER.test(page.url()) || await page.locator('input[name="password"]').count()) {
@@ -290,12 +237,7 @@ export default {
               if (pdfs.length) return pdfs[pdfs.length - 1]
             }
 
-            await tab.emulateMedia({ media: 'print' }).catch(() => {})
-            return await tab.pdf({
-              format: 'Letter',
-              printBackground: true,
-              margin: { top: '12mm', bottom: '12mm', left: '10mm', right: '10mm' },
-            })
+            return await printPagePdf(tab)
           } finally {
             await tab.close().catch(() => { /* onglet déjà fermé */ })
           }

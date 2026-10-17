@@ -3,8 +3,8 @@ import api from './api.js'
 import { fmtDateWithFormat } from './formatDate.js'
 import { fmtNumber } from '../utils/formatters.js'
 import {
-  formatCurrency, UrlValue, PhoneValue, isCheckboxTruthy, parseAttachments, LinkedRecordsValue,
-  PercentValue, percentDisplayOf, ChoiceBadge, dateFormatOf,
+  formatCurrency, UrlValue, EmailValue, PhoneValue, isCheckboxTruthy, parseAttachments, LinkedRecordsValue,
+  PercentValue, percentDisplayOf, ChoiceBadge, dateFormatOf, ratingIconOf,
 } from './customFieldDisplay.jsx'
 import { TABLE_LABELS, TABLE_RECORD_LABELS } from './tableDefs.js'
 import { RatingStars } from '../components/RatingStars.jsx'
@@ -35,6 +35,7 @@ export const OVERRIDE_TYPES = [
   // reste accepté en lecture pour les personnalisations écrites avant la fusion.
   { value: 'checkbox', label: 'Case à cocher' },
   { value: 'url',      label: 'URL' },
+  { value: 'email',    label: 'Courriel' },
   { value: 'phone',    label: 'Téléphone' },
 ]
 
@@ -182,6 +183,7 @@ const OVERRIDE_TO_COLUMN_TYPE = {
   checkbox: 'boolean',
   boolean: 'boolean',
   url: 'text',
+  email: 'email',
   phone: 'text',
 }
 
@@ -231,9 +233,10 @@ export function renderOverriddenValue(ov, value, { dateOnlyAsMidnight = false } 
       />
     )
   }
-  if (ov.type === 'rating') return <RatingStars value={value} />
+  if (ov.type === 'rating') return <RatingStars value={value} icon={ratingIconOf(ov)} />
   if (ov.type === 'date') return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(ov), { dateOnlyAsMidnight })}</span>
   if (ov.type === 'url') return <UrlValue value={value} />
+  if (ov.type === 'email') return <EmailValue value={value} />
   if (ov.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodePref(ov)} />
   return <span className="text-slate-700">{String(value)}</span>
 }
@@ -332,6 +335,8 @@ export function applyFieldOverrides(columns, overrides) {
       next.renderTypeLabel = typeLabel(ov.type)
       return next
     }
+    // Évaluation : symbole choisi (étoile, cœur…), lu par la cellule et son éditeur.
+    if ((ov.type || origType) === 'rating') next.ratingIcon = ratingIconOf(ov)
     if (ov.type && ov.type !== origType) {
       next.type = OVERRIDE_TO_COLUMN_TYPE[ov.type] || 'text'
       // Type choisi par l'utilisateur, conservé pour l'affichage (icône de type
@@ -358,6 +363,10 @@ export function applyFieldOverrides(columns, overrides) {
         next.options = choices.map(c => c.value)
         next.render = row => renderNativeSelectValue(choices, row[col.field], origRender, row, origType === 'multi_select')
       }
+    } else if (origType === 'rating' && ratingIconOf(ov) !== 'star') {
+      // Évaluation native dont seul le symbole change : rendu générique au
+      // symbole, à la place du rendu de la page (qui ne connaît que l'étoile).
+      next.render = row => renderOverriddenValue(ov, row[col.field])
     } else if (origType === 'currency' && Number.isInteger(ov.decimals)) {
       // Devise native dont seul le nombre de décimales change : DataTable le
       // lit sur col.decimals (rendu monétaire standard).

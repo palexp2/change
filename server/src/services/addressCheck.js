@@ -601,10 +601,4 @@ export function startAddressCheckWatcher() {
   watcher.start()
 }
 
-export function stopAddressCheckWatcher() { watcher.stop() }
-
-// Test seams — curseur explicite.
-export function _setLastSeenId(n) { watcher.setLastSeenId(n) }
-export function _getLastSeenId() { return watcher.getLastSeenId() }
-
 export default { validateAddress, checkAddress, runAddressCheck, getAddressCheckSummary }

@@ -20,8 +20,6 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000
 
 const cache = new Map()
 
-export function _clearFootprintCache() { cache.clear() }
-
 function buildQuery(lat, lng, radius) {
   const near = `(around:${radius},${lat},${lng})`
   return `[out:json][timeout:30];(

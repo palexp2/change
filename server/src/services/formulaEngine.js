@@ -1,14 +1,11 @@
-import { runInNewContext } from 'node:vm'
 import { parseDurationToSeconds, formatDurationSeconds } from './duration.js'
 import { TZ, localDay } from '../utils/datetime.js'
 
 // ───────────────────────────────────────────────────────────────────────────
 // Bibliothèque de fonctions de formule — parité Airtable.
 //
-// Deux consommateurs partagent EXACTEMENT les mêmes implémentations :
-//
-//  1. Le moteur de champs calculés (kind='formula') : ces fonctions sont
-//     enregistrées comme UDF SQLite via registerFormulaFunctions(db) au
+// Consommateur unique : le moteur de champs calculés (kind='formula') —
+//     ces fonctions sont enregistrées comme UDF SQLite via registerFormulaFunctions(db) au
 //     démarrage, de sorte qu'une expression comme
 //        SWITCH(status, 'Gagné', total, 0)   ou   DATEADD(document_date, 30, 'days')
 //     écrite dans custom_fields.formula_expr s'évalue réellement dans la VUE
@@ -16,10 +13,6 @@ import { TZ, localDay } from '../utils/datetime.js'
 //     abs/round/upper/lower/trim/replace/min/max/floor/ceil/pow/sqrt/exp/mod… ;
 //     on n'enregistre donc QUE ce qui manque (et jamais un nom d'agrégat —
 //     SUM/COUNT/MIN/MAX/AVG restent les agrégats natifs utilisés par les rollups).
-//
-//  2. evaluateFormula() : un évaluateur JS sandboxé (dialecte {champ}) gardé
-//     comme moteur de référence / fallback. Il NE doit pas avaler les erreurs
-//     silencieusement — il les loggue (voir plus bas).
 //
 // Chaque entrée déclare son `name`, sa `category`, sa `sig` (signature lisible),
 // un `hint`, son `impl`, et des drapeaux : `sqlite:false` pour ne PAS exposer la
@@ -152,7 +145,7 @@ function datetimeFormat(d, fmt, { weekTokens = false } = {}) {
 // ── Catalogue ──────────────────────────────────────────────────────────────
 // `impl` reçoit déjà des valeurs JS (null pour SQL NULL). Retourner null = cellule
 // vide ; les exceptions sont neutralisées en null par le wrapper (cf.
-// registerFormulaFunctions / SANDBOX_BASE) pour ne jamais casser une VUE entière.
+// registerFormulaFunctions) pour ne jamais casser une VUE entière.
 
 const F = [
   // — Texte —
@@ -324,47 +317,5 @@ export function registerFormulaFunctions(db) {
       try { return coerceReturn(f.impl(...args)) } catch { return null }
     }
     db.function(f.name, { deterministic: f.deterministic !== false, varargs: true }, safe)
-  }
-}
-
-// SANDBOX_BASE : table de fonctions pour l'évaluateur JS sandboxé (dialecte
-// {champ}). Inclut TOUTES les fonctions (y compris les opérateurs/agrégats non
-// exposés en SQLite), plus quelques alias usuels.
-export const SANDBOX_BASE = Object.fromEntries(F.map(f => [f.name, f.impl]))
-SANDBOX_BASE.CONCAT = SANDBOX_BASE.CONCATENATE
-
-/**
- * Évalue une expression formule (dialecte {champ}) pour un enregistrement.
- * Moteur de référence JS sandboxé — NE PAS confondre avec le moteur SQLite des
- * champs calculés (qui passe par les UDF + la VUE <table>_v).
- *
- * @param {string} formula - ex: "{prix} * {qty}" ou "IF({status} == 'Envoyé', {total}, 0)"
- * @param {object} recordData - données de l'enregistrement
- * @param {object[]} _fields - définitions de champs (réservé)
- * @param {object} [opts] - { onError: (err) => void } pour observer les erreurs
- * @returns {any} valeur calculée, ou null en cas d'erreur
- */
-export function evaluateFormula(formula, recordData, _fields, opts = {}) {
-  if (!formula) return null
-
-  let expr
-  try {
-    expr = formula.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key) => {
-      const val = recordData[key]
-      if (val === null || val === undefined) return 'null'
-      if (typeof val === 'boolean') return String(val)
-      if (typeof val === 'number') return String(val)
-      const escaped = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-      return `"${escaped}"`
-    })
-    const sandbox = { ...SANDBOX_BASE }
-    const result = runInNewContext(expr, sandbox, { timeout: 500 })
-    return result ?? null
-  } catch (err) {
-    // On NE doit pas avaler l'erreur en silence : on la remonte à l'appelant
-    // (callback) et on la loggue, tout en dégradant la cellule en null.
-    if (typeof opts.onError === 'function') opts.onError(err)
-    else console.warn(`[formulaEngine] échec d'évaluation: ${err.message} — expr: ${expr ?? formula}`)
-    return null
   }
 }

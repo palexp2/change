@@ -7,9 +7,10 @@ import { DataTable } from '../components/DataTable.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { AddressCheckBadge, AddressCheckPanel, AddressConfirmPanel } from '../components/AddressCheckIssues.jsx'
-import { US_STATES, CA_PROVINCES, ADDRESS_RANKS } from '../components/AdresseModal.jsx'
+import { US_STATES, CA_PROVINCES, ADDRESS_RANKS, ADDRESS_TYPES, ADDRESS_COUNTRIES } from '../components/AdresseModal.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
@@ -17,8 +18,6 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { shipmentTitle, shipmentSubtitle } from '../lib/shipmentLabel.js'
-
-const ADDRESS_TYPES = ['Ferme', 'Livraison', 'Facturation']
 
 // Envois expédiés à cette adresse. Clé de vue `adresse_envois` : mêmes lignes
 // que /envois, mais colonnes visibles et vues propres à la fiche adresse.
@@ -209,39 +208,36 @@ export default function AdresseDetail({ recordId: id, onClose }) {
         </DetailField>
         <DetailField id="country" label="Pays" saving={fieldSaving.country}>
           {/* Changer de pays invalide la province choisie (listes distinctes). */}
-          <select
+          <ChoiceSelect
             value={adresse.country || ''}
-            onChange={e => saveField({ country: e.target.value, province: '' }, ['country', 'province'])}
-            className="select text-sm w-full"
+            choices={ADDRESS_COUNTRIES}
+            table="adresses" field="country"
+            onChange={v => saveField({ country: v, province: '' }, ['country', 'province'])}
+            emptyOption={null}
             disabled={!!fieldSaving.country}
-            data-testid="adresse-field-country"
-          >
-            <option value="CA">Canada (CA)</option>
-            <option value="US">États-Unis (US)</option>
-          </select>
+            testId="adresse-field-country"
+          />
         </DetailField>
         <DetailField id="address_type" label="Type" saving={fieldSaving.address_type}>
-          <select
+          <ChoiceSelect
             value={adresse.address_type || ''}
-            onChange={e => saveField({ address_type: e.target.value })}
-            className="select text-sm w-full"
+            choices={ADDRESS_TYPES}
+            table="adresses" field="address_type"
+            onChange={v => saveField({ address_type: v })}
+            emptyOption={null}
             disabled={!!fieldSaving.address_type}
-            data-testid="adresse-field-address_type"
-          >
-            {ADDRESS_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+            testId="adresse-field-address_type"
+          />
         </DetailField>
         <DetailField id="address_rank" label="Rang" saving={fieldSaving.address_rank}>
-          <select
+          <ChoiceSelect
             value={adresse.address_rank || ''}
-            onChange={e => saveField({ address_rank: e.target.value })}
-            className="select text-sm w-full"
+            choices={ADDRESS_RANKS}
+            table="adresses" field="address_rank"
+            onChange={v => saveField({ address_rank: v })}
             disabled={!!fieldSaving.address_rank}
-            data-testid="adresse-field-address_rank"
-          >
-            <option value="">—</option>
-            {ADDRESS_RANKS.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+            testId="adresse-field-address_rank"
+          />
         </DetailField>
         <DetailField id="contact_id" label="Contact associé" span2 saving={fieldSaving.contact_id}>
           <LinkedRecordField

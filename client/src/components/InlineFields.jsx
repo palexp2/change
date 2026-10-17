@@ -4,6 +4,7 @@ import { isCheckboxTruthy } from '../lib/customFieldDisplay.jsx'
 import { toDateTimeLocalInput, fromDateTimeLocalInput } from '../lib/formatDate.js'
 import { useFieldFormat } from '../lib/fieldFormat.js'
 import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
+import { isValidIsoDate } from './DateInput.jsx'
 
 // Éditeurs « inline » pour les champs d'une fiche détail : la valeur s'édite sur
 // place et part toute seule au blur (règle de design CLAUDE.md — autosave
@@ -188,36 +189,36 @@ export function InlineDuration({ value, saving, onSave, format = 'h:mm', classNa
   )
 }
 
-// Date : commit au changement (le sélecteur natif n'a pas de « blur » utile).
-// `withTime` : date + heure, commit au blur (chaque segment tapé déclencherait
-// sinon un enregistrement).
-// `iso` : saisie texte AAAA-MM-JJ, affichée telle quelle quelle que soit la
-// langue du navigateur (le sélecteur natif suit la locale) ; commit au blur.
-// Un clic ouvre quand même le calendrier de l'app (DatePickerHost).
-export function InlineDate({ value, saving, onSave, withTime = false, iso = false, className = 'input text-sm w-full', testId }) {
+// Date en texte AAAA-MM-JJ, affichée telle quelle quelle que soit la langue du
+// navigateur (le sélecteur natif suit la locale) ; commit au blur. Un clic ouvre
+// le calendrier de l'app (DatePickerHost). `withTime` : date + heure.
+export function InlineDate({ value, saving, onSave, withTime = false, className = 'input text-sm w-full', testId }) {
   if (withTime) return <InlineDateTime value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
-  if (iso) return <InlineIsoDate value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
-  const current = value == null ? '' : String(value).slice(0, 10)
+  return <InlineIsoDate value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
+}
+
+// Saisie texte validée au blur (Entrée = blur) — socle des dates et date-heure.
+function CommitTextInput({ local, setLocal, commit, className, saving, testId, ...rest }) {
   return (
     <input
-      type="date"
-      value={current}
-      onChange={e => { if (e.target.value !== current) onSave(e.target.value) }}
-      className={className}
+      type="text"
+      inputMode="numeric"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => commit(e.target.value)}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      className={`${className} tabular-nums`}
       disabled={saving}
       data-testid={testId}
+      {...rest}
     />
   )
 }
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
-function isValidIsoDate(s) {
-  if (!ISO_DATE.test(s)) return false
-  const d = new Date(`${s}T00:00:00Z`)
-  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s
-}
-
-function InlineIsoDate({ value, saving, onSave, className, testId }) {
+// Date en texte AAAA-MM-JJ (le type="date" natif suit la langue du navigateur).
+// Calendrier via data-date-picker ; saisie invalide → revient. Aussi utilisé
+// hors fiche (bon de commande, achat) avec `className="input"`.
+export function InlineIsoDate({ value, saving, onSave, className = 'input text-sm w-full', testId, ...rest }) {
   const current = value == null ? '' : String(value).slice(0, 10)
   const [local, setLocal] = useState(current)
   useEffect(() => { setLocal(current) }, [current])
@@ -227,20 +228,7 @@ function InlineIsoDate({ value, saving, onSave, className, testId }) {
     if (str !== '' && !isValidIsoDate(str)) { setLocal(current); return }
     onSave(str)
   }
-  return (
-    <input
-      type="text"
-      inputMode="numeric"
-      data-date-picker
-      value={local}
-      onChange={e => setLocal(e.target.value)}
-      onBlur={e => commit(e.target.value)}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      className={`${className} tabular-nums`}
-      disabled={saving}
-      data-testid={testId}
-    />
-  )
+  return <CommitTextInput data-date-picker local={local} setLocal={setLocal} commit={commit} className={className} saving={saving} testId={testId} {...rest} />
 }
 
 // Date + heure en texte « AAAA-MM-JJ HH:MM » : le datetime-local natif suit la
@@ -258,19 +246,7 @@ function InlineDateTime({ value, saving, onSave, className, testId }) {
     if (!m || !isValidIsoDate(m[1]) || Number(m[2]) > 23 || Number(m[3]) > 59) { setLocal(current); return }
     onSave(fromDateTimeLocalInput(`${m[1]}T${m[2].padStart(2, '0')}:${m[3]}`))
   }
-  return (
-    <input
-      type="text"
-      inputMode="numeric"
-      value={local}
-      onChange={e => setLocal(e.target.value)}
-      onBlur={e => commit(e.target.value)}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      className={`${className} tabular-nums`}
-      disabled={saving}
-      data-testid={testId}
-    />
-  )
+  return <CommitTextInput local={local} setLocal={setLocal} commit={commit} className={className} saving={saving} testId={testId} />
 }
 
 // Case à cocher : stockée en 1/0 (même forme que le sync et l'éditeur de tableau).

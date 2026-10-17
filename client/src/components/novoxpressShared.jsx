@@ -15,6 +15,51 @@ export const BOX_PRESETS = {
   custom:    { label: 'Personnalisée…',             length: '',   width: '',   depth: ''   },
 }
 
+// Choix du type de colis (radios). `dense` = variante compacte du panneau de retour.
+export function BoxPresetRadios({ preset, setPreset, dense = false }) {
+  return (
+    <div className="space-y-2">
+      {Object.entries(BOX_PRESETS).map(([key, box]) => (
+        <label key={key} className={`flex items-center gap-3 ${dense ? 'p-2.5 text-sm' : 'p-3'} rounded-xl border cursor-pointer transition-colors ${preset === key ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:border-slate-300'}`}>
+          <input type="radio" name="preset" value={key} checked={preset === key} onChange={() => setPreset(key)} className="accent-brand-600" />
+          {dense ? box.label : <span className="text-sm text-slate-700">{box.label}</span>}
+        </label>
+      ))}
+    </div>
+  )
+}
+
+// Dimensions personnalisées L × l × H (pouces).
+export function CustomDimsInputs({ custom, setCustom, min = '1', step, ariaPrefix }) {
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {[['length', 'longueur'], ['width', 'largeur'], ['depth', 'hauteur']].map(([k, lbl]) => (
+        <input key={k} aria-label={ariaPrefix ? `${ariaPrefix} — ${lbl} (po)` : undefined} type="number" min={min} step={step}
+          className="input text-center" value={custom[k]} onChange={e => setCustom(c => ({ ...c, [k]: e.target.value }))} />
+      ))}
+    </div>
+  )
+}
+
+// Un tarif proposé (service, transporteur, délai, prix) — bouton de sélection.
+export function RateChoiceButton({ rate, selected = false, onPick }) {
+  return (
+    <button
+      onClick={onPick}
+      className={`w-full text-left p-3 rounded-xl border transition-colors ${selected ? 'border-brand-400 bg-brand-50' : 'border-slate-200 hover:border-brand-400 hover:bg-brand-50'}`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="font-medium text-slate-900 text-sm">{getRateName(rate)}</p>
+          {getRateCarrier(rate) && <p className="text-xs text-slate-500">{getRateCarrier(rate)}</p>}
+          {getRateDelivery(rate) && <p className="text-xs text-slate-400 mt-0.5">{getRateDelivery(rate)}</p>}
+        </div>
+        <span className="font-semibold text-brand-700 whitespace-nowrap">{fmtPrice(rate)}</span>
+      </div>
+    </button>
+  )
+}
+
 export function fmtPrice(rate) {
   const val = rate.total?.value ?? rate.total_charge ?? rate.total ?? null
   if (val == null) return '—'

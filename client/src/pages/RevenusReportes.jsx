@@ -13,6 +13,7 @@ import { ListPage } from '../components/ListPage.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { fmtMoney } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 const money = v => (v == null ? '—' : fmtMoney(v, 'CAD'))
 const NUM = 'tabular-nums text-right w-[110px] shrink-0'
@@ -95,8 +96,7 @@ function Entry({ group, onDone }) {
               <tr key={i}>
                 <td className="pr-5 py-0.5 text-slate-400">
                   {i === 0 && (
-                    <input
-                      type="date" value={date} onChange={e => setDate(e.target.value)} data-testid="entry-date"
+                    <DateInput value={date} onChange={e => setDate(e.target.value)} data-testid="entry-date"
                       className="bg-transparent text-slate-500 border-0 p-0 text-sm"
                     />
                   )}

@@ -33,3 +33,25 @@ export function summarizeDependents(dependents) {
     .map(([cat, items]) => `• ${DEPENDENT_CATEGORY_LABELS[cat]} : ${items.map(d => d.name).join(', ')}`)
   return `\n\n⚠️ ${dependents.length} dépendance${dependents.length > 1 ? 's' : ''} affectée${dependents.length > 1 ? 's' : ''} :\n${lines.join('\n')}\nLes champs calculés cesseront de se calculer (#ERROR) ; les automations et vues concernées devront être ajustées.`
 }
+
+// Suppression d'un champ personnalisé depuis une page liste : rapport d'usage
+// (champs calculés, automations, vues, règles de visibilité) avant de casser
+// en silence (#ERROR), puis suppression + rechargement.
+export async function deleteCustomFieldWithReport({ api, field, confirm, addToast, reloadCustomFields, reload }) {
+  let dependents = []
+  try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch {}
+  const depMsg = summarizeDependents(dependents)
+  if (!(await confirm({
+    title: 'Supprimer le champ',
+    message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
+    confirmLabel: dependents.length ? 'Supprimer quand même' : 'Supprimer',
+  }))) return
+  try {
+    await api.customFields.delete(field.id)
+    addToast({ message: 'Champ supprimé', type: 'success' })
+    await reloadCustomFields()
+    reload()
+  } catch (e) {
+    addToast({ message: e.message, type: 'error' })
+  }
+}

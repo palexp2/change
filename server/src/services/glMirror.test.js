@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'fs'
-import { parseJournalReport, entryIssues, txnTypeOf, monthsBetween, monthBounds } from './glMirror.js'
+import { parseJournalReport, entryIssues, txnTypeOf, monthsBetween, monthBounds, entityFromPath, glChangesFromCdc, monthsForMutation, fiscalYearStart } from './glMirror.js'
 
 // Extrait anonymisé du JournalReport réel (septembre 2026).
 const REPORT = JSON.parse(readFileSync(new URL('./__fixtures__/journalReport.sample.json', import.meta.url)))
@@ -52,4 +52,38 @@ test('types : libellé français → entité QBO, inconnu conservé', () => {
 test('mois : bornes et énumération', () => {
   assert.deepEqual(monthBounds('2024-02'), { start: '2024-02-01', end: '2024-02-29' })
   assert.deepEqual(monthsBetween('2025-11-15', '2026-02'), ['2025-11', '2025-12', '2026-01', '2026-02'])
+})
+
+test('chemin d\'une écriture Boréal → entité du grand livre', () => {
+  assert.equal(entityFromPath('/journalentry'), 'JournalEntry')
+  assert.equal(entityFromPath('/purchase?operation=delete'), 'Purchase')
+  assert.equal(entityFromPath('/account'), 'Account')
+  assert.equal(entityFromPath('/customer'), null)
+  assert.equal(entityFromPath('/upload'), null)
+})
+
+test('mois salis par une écriture Boréal : mois courant + date du corps et de la réponse', () => {
+  assert.deepEqual(monthsForMutation({ body: { TxnDate: '2026-08-31' } }, 'JournalEntry', '2026-10'), ['2026-10', '2026-08'])
+  assert.deepEqual(monthsForMutation({ response: { Deposit: { TxnDate: '2026-10-02' } } }, 'Deposit', '2026-10'), ['2026-10'])
+  assert.deepEqual(monthsForMutation({ body: { TxnDate: 'n/a' } }, 'Bill', '2026-10'), ['2026-10'])
+})
+
+test('réponse CDC → changements du grand livre (supprimés compris, entités hors GL ignorées)', () => {
+  const data = { CDCResponse: [{ QueryResponse: [
+    { Invoice: [{ Id: '12', TxnDate: '2026-09-30', MetaData: { LastUpdatedTime: 't1' } }], startPosition: 1 },
+    { Purchase: [{ Id: '7', status: 'Deleted', MetaData: { LastUpdatedTime: 't2' } }] },
+    { Customer: [{ Id: '3' }] },
+    { Account: [{ Id: '61' }] },
+  ] }] }
+  assert.deepEqual(glChangesFromCdc(data), [
+    { name: 'Invoice', id: '12', deleted: false, txnDate: '2026-09-30', lastUpdated: 't1' },
+    { name: 'Purchase', id: '7', deleted: true, txnDate: null, lastUpdated: 't2' },
+    { name: 'Account', id: '61', deleted: false, txnDate: null, lastUpdated: null },
+  ])
+})
+
+test('exercice : commence en avril', () => {
+  assert.equal(fiscalYearStart('2026-10-16'), '2026-04-01')
+  assert.equal(fiscalYearStart('2026-03-31'), '2025-04-01')
+  assert.equal(fiscalYearStart('2026-04-01'), '2026-04-01')
 })

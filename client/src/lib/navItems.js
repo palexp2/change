@@ -5,7 +5,7 @@ import {
   Barcode, MessageSquare, CheckSquare, Hammer,
   Landmark, Users, Banknote, Contact,
   Clock, Mail, PhoneCall, FlaskConical,
-  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send, Megaphone, MailPlus, ClipboardList, CalendarClock, Tags, FileSignature, Workflow, FileArchive } from 'lucide-react'
+  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, Megaphone, MailPlus, ClipboardList, CalendarClock, Tags, FileSignature, Workflow, FileArchive } from 'lucide-react'
 import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 
 // Structure canonique du menu de gauche, partagée entre la sidebar (Layout)

@@ -4,6 +4,7 @@ import { ExternalLink, ArrowRight, CheckCircle2, Hourglass, AlertCircle } from '
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import { Badge } from './Badge.jsx'
+import { FieldChoiceBadge } from './ChoiceSelect.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 const STATUS_COLORS = {
@@ -147,7 +148,7 @@ export function FactureQuickViewModal({ factureId, isOpen, onClose }) {
                 <span className="text-xs text-slate-500"> · {fmtMoney(facture.paid_amount, facture.currency)}</span>
               ) : null}
             </Field>
-            <Field label="Devise">{(facture.currency || 'CAD').toUpperCase()}</Field>
+            <Field label="Devise"><FieldChoiceBadge table="factures" field="currency" value={(facture.currency || 'CAD').toUpperCase()} /></Field>
             <Field label="Montant avant taxes">
               {fmtMoney(facture.amount_before_tax_cad, facture.currency)}
             </Field>

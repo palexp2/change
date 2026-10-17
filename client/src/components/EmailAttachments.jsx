@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { FileText, Download, Paperclip } from 'lucide-react'
 import { api } from '../lib/api'
+import { saveBlob } from '../lib/saveBlob.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { formatBytes } from '../utils/formatters.js'
 import Spinner from './Spinner.jsx'
@@ -105,14 +106,7 @@ export default function EmailAttachments({ contactId, interactionId, embedded = 
       const { blob, filename } = contactId
         ? await api.contacts.downloadEmailAttachment(contactId, att.id)
         : await api.interactions.downloadAttachment(interactionId, att.id)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename || att.file_name
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlob(blob, filename || att.file_name)
     } catch (e) {
       addToast({ message: `Téléchargement échoué : ${e.message}`, type: 'error' })
     }

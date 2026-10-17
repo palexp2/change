@@ -13,6 +13,7 @@
 // Le passage automatique ne fait QUE vider la file déjà lancée : il ne décide
 // jamais d'envoyer quoi que ce soit de lui-même.
 import db from '../db/database.js'
+import { loadAutomationConfig } from './automationConfig.js'
 import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { SEGMENTS, SEGMENT_LABELS, instructionsForSegment } from './instagramSegments.js'
@@ -45,19 +46,8 @@ export const DRAFT_SEND_DEFAULT_CONFIG = {
   daily_cap: '40',
 }
 
-function loadConfig(automationId, defaults) {
-  const row = db.prepare('SELECT action_config FROM automations WHERE id=?').get(automationId)
-  let cfg = {}
-  try { cfg = JSON.parse(row?.action_config || '{}') } catch {}
-  const merged = { ...defaults }
-  for (const k of Object.keys(defaults)) {
-    if (cfg[k] != null && String(cfg[k]).trim() !== '') merged[k] = String(cfg[k]).trim()
-  }
-  return merged
-}
-
-export function getWriteConfig() { return loadConfig(DRAFT_WRITE_AUTOMATION_ID, DRAFT_WRITE_DEFAULT_CONFIG) }
-export function getSendConfig() { return loadConfig(DRAFT_SEND_AUTOMATION_ID, DRAFT_SEND_DEFAULT_CONFIG) }
+export function getWriteConfig() { return loadAutomationConfig(DRAFT_WRITE_AUTOMATION_ID, DRAFT_WRITE_DEFAULT_CONFIG) }
+export function getSendConfig() { return loadAutomationConfig(DRAFT_SEND_AUTOMATION_ID, DRAFT_SEND_DEFAULT_CONFIG) }
 
 const WINDOW_MS = 24 * 60 * 60 * 1000
 const OPEN_STATES = ['draft', 'queued', 'review', 'held']
@@ -605,45 +595,6 @@ export function listDrafts() {
 }
 
 
-
-/**
- * Re-trie les messages déjà écrits sans les réécrire : quand la règle de mise
- * de côté change, la pile doit suivre au lieu de rester figée sur l'ancien
- * verdict.
- */
-export function reclassifyDrafts() {
-  const rows = db.prepare(`
-    SELECT d.id, d.prospect_id, d.manychat_user_id, d.status, d.review_reason,
-           p.contacted, p.replied, p.first_comment_text
-    FROM instagram_drafts d
-    JOIN instagram_prospects p ON p.id = d.prospect_id
-    WHERE d.status IN ('draft','queued','review','held')
-  `).all()
-  const cfg = getWriteConfig()
-  let changed = 0
-  for (const r of rows) {
-    const messages = r.manychat_user_id
-      ? db.prepare('SELECT direction, text, kind, sent_at FROM manychat_messages WHERE user_id=? ORDER BY sent_at').all(String(r.manychat_user_id))
-      : []
-    const incoming = [...messages].reverse().find(m => m.direction === 'in')
-    const outgoingCount = countRealFollowUps(messages, incoming)
-    const reason = reviewReasonFor({
-      prospect: r,
-      incomingText: userWords(incoming) || r.first_comment_text || '',
-      outgoingCount,
-      replied: !!r.replied,
-      liveConversation: isLiveConversation(messages),
-      activeRules: cfg.review_rules,
-    })
-    const status = reason ? 'review' : (r.status === 'review' ? 'draft' : r.status)
-    if (reason !== r.review_reason || status !== r.status) {
-      db.prepare("UPDATE instagram_drafts SET review_reason=?, status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
-        .run(reason, status, r.id)
-      changed++
-    }
-  }
-  return { changed, total: rows.length }
-}
 
 /**
  * La liste unique de Philippe : les gens qui attendent quelque chose de lui.

@@ -129,7 +129,4 @@ const watcher = createChangeLogWatcher({
   },
 })
 
-export const pollOnce = watcher.pollOnce
-
 export function startShippedCostWatcher() { watcher.start() }
-export function stopShippedCostWatcher() { watcher.stop() }

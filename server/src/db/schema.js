@@ -660,15 +660,6 @@ export function initSchema() {
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
 
-    -- Overrides éditables pour le générateur d'email de relance.
-    -- scope = 'global' pour les règles générales partagées entre tous les
-    -- emails, sinon qc_id pour les instructions spécifiques à un qualif call.
-    CREATE TABLE IF NOT EXISTS email_relance_overrides (
-      scope TEXT PRIMARY KEY,
-      instructions TEXT,
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-
     -- Qualification calls (importées d'Airtable « Communication interne » → « Qualification calls »)
     -- Formulaire structuré rempli pendant les appels de qualification commerciale.
     CREATE TABLE IF NOT EXISTS qualification_calls (
@@ -1161,66 +1152,6 @@ export function initSchema() {
     // Nom donné par l'utilisateur : le seed des automatisations système ne l'écrase plus.
     'ALTER TABLE automations ADD COLUMN name_custom INTEGER DEFAULT 0',
 
-    // Phase 6 — Airtable-like interactions
-    `CREATE TABLE IF NOT EXISTS base_interactions (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL CHECK(type IN ('call','email','sms','note','meeting')),
-      direction TEXT CHECK(direction IN ('inbound','outbound')),
-      subject TEXT,
-      body TEXT,
-      body_html TEXT,
-      status TEXT DEFAULT 'completed',
-      duration_seconds INTEGER,
-      phone_number TEXT,
-      from_address TEXT,
-      to_addresses TEXT DEFAULT '[]',
-      cc_addresses TEXT DEFAULT '[]',
-      bcc_addresses TEXT DEFAULT '[]',
-      thread_id TEXT,
-      message_id TEXT,
-      source TEXT DEFAULT 'manual',
-      external_id TEXT,
-      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
-      scheduled_at TEXT,
-      completed_at TEXT,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    )`,
-    'CREATE UNIQUE INDEX IF NOT EXISTS idx_base_interactions_dedup ON base_interactions(source, external_id) WHERE external_id IS NOT NULL',
-    `CREATE TABLE IF NOT EXISTS base_interaction_links (
-      id TEXT PRIMARY KEY,
-      interaction_id TEXT NOT NULL REFERENCES base_interactions(id) ON DELETE CASCADE,
-      table_id TEXT,
-      record_id TEXT,
-      UNIQUE(interaction_id, record_id)
-    )`,
-    'CREATE INDEX IF NOT EXISTS idx_base_interaction_links_record ON base_interaction_links(record_id)',
-    'CREATE INDEX IF NOT EXISTS idx_base_interaction_links_itr ON base_interaction_links(interaction_id)',
-    `CREATE TABLE IF NOT EXISTS base_interaction_attachments (
-      id TEXT PRIMARY KEY,
-      interaction_id TEXT NOT NULL REFERENCES base_interactions(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      url TEXT NOT NULL,
-      mime_type TEXT,
-      size INTEGER,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    )`,
-    `CREATE TABLE IF NOT EXISTS base_connector_configs (
-      id TEXT PRIMARY KEY,
-      connector TEXT NOT NULL,
-      enabled INTEGER DEFAULT 1,
-      config TEXT DEFAULT '{}',
-      credentials TEXT,
-      sync_interval_minutes INTEGER DEFAULT 15,
-      last_sync_at TEXT,
-      last_sync_status TEXT,
-      last_sync_error TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    )`,
-    // Agent tasks feedback column
-    'ALTER TABLE agent_tasks ADD COLUMN feedback INTEGER',
     // Bon de livraison PDF
     'ALTER TABLE orders ADD COLUMN bon_livraison_path TEXT',
     // Déduplication FTP ingest
@@ -1729,19 +1660,6 @@ export function initSchema() {
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
 
-    -- Commentaires + @mentions par enregistrement (fil de discussion lié à une fiche)
-    CREATE TABLE IF NOT EXISTS record_comments (
-      id TEXT PRIMARY KEY,
-      record_type TEXT NOT NULL,
-      record_id TEXT NOT NULL,
-      author_id TEXT REFERENCES users(id),
-      body TEXT NOT NULL,
-      mentions TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      deleted_at TEXT
-    );
-
     -- Subscription change history
     CREATE TABLE IF NOT EXISTS subscription_events (
       id TEXT PRIMARY KEY,
@@ -1750,19 +1668,6 @@ export function initSchema() {
       event_type TEXT NOT NULL,
       details TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-
-    -- Agent autonomous tasks queue
-    CREATE TABLE IF NOT EXISTS agent_tasks (
-      id TEXT PRIMARY KEY,
-      description TEXT,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','in_progress','done','blocked','rejected')),
-      priority INTEGER NOT NULL DEFAULT 0,
-      user_comment TEXT,
-      agent_result TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      completed_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS task_keywords (
@@ -1887,18 +1792,6 @@ db.exec(`
   db.exec('CREATE INDEX IF NOT EXISTS idx_page_acceptances_file ON page_acceptances(public_file_id)')
   // Texte lisible de la version acceptée (preuve consultable dans l'ERP).
   try { db.exec('ALTER TABLE page_acceptances ADD COLUMN text TEXT') } catch {}
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS page_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      public_file_id TEXT NOT NULL,
-      event TEXT NOT NULL,
-      actor TEXT,
-      ip TEXT,
-      user_agent TEXT,
-      at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    )
-  `)
-  db.exec('CREATE INDEX IF NOT EXISTS idx_page_events_file ON page_events(public_file_id)')
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_public_files_created ON public_files(created_at DESC)') } catch {}
 
   try { db.exec("ALTER TABLE tasks ADD COLUMN hubspot_task_id TEXT") } catch {}
@@ -1955,7 +1848,6 @@ db.exec(`
   // Indexes
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_automation_logs_auto ON automation_logs(automation_id, created_at)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read, created_at)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_record_comments_record ON record_comments(record_type, record_id, created_at)') } catch {}
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
@@ -3248,16 +3140,6 @@ db.exec(`
       paie_item_id TEXT PRIMARY KEY,
       written_hours REAL,
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    )
-  `)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS rd_sheet_sync_state (
-      user_id TEXT NOT NULL,
-      date TEXT NOT NULL,
-      sheet_sig TEXT,
-      boreal_sig TEXT,
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      PRIMARY KEY (user_id, date)
     )
   `)
 
@@ -6259,27 +6141,6 @@ db.exec(`
       WHERE e.first_opened_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM email_opens o WHERE o.email_id = e.id);
   `)
 
-  // Coût des API d'IA (Paramètres → Coûts IA) : un appel = une ligne, jetons
-  // seulement. Le coût se calcule à la lecture avec ai_model_prices — changer un
-  // prix recalcule l'historique. Whisper se déduit de transcription_jobs.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ai_usage_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      provider TEXT NOT NULL,
-      model TEXT NOT NULL,
-      feature TEXT,
-      input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_ai_usage_events_at ON ai_usage_events(at);
-    CREATE TABLE IF NOT EXISTS ai_model_prices (
-      model TEXT PRIMARY KEY,
-      input_per_m REAL,
-      output_per_m REAL,
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-  `)
 
   console.log('Database schema initialized');
 }
@@ -6576,7 +6437,7 @@ try { db.exec(`ALTER TABLE connector_oauth ADD COLUMN granted_scopes TEXT`) } ca
 // /contrat/:token) — routes/contracts.js et contracts-public.js. Le jeton est
 // le secret du lien de signature. À la signature on fige le texte signé
 // (signed_hash = SHA-256 de titre + texte) avec nom, image de la signature,
-// IP et navigateur. contract_events = journal (créé, vu, signé, paiement…).
+// IP et navigateur.
 db.exec(`
   CREATE TABLE IF NOT EXISTS contracts (
     id TEXT PRIMARY KEY,
@@ -6598,18 +6459,6 @@ db.exec(`
     updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   )
 `)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS contract_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    event TEXT NOT NULL,
-    actor TEXT,
-    ip TEXT,
-    user_agent TEXT,
-    at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  )
-`)
-try { db.exec(`CREATE INDEX IF NOT EXISTS idx_contract_events_contract ON contract_events(contract_id)`) } catch {}
 // Langue des libellés de la page de signature (fr | en).
 try { db.exec(`ALTER TABLE contracts ADD COLUMN language TEXT NOT NULL DEFAULT 'fr'`) } catch {}
 // Courriel du signataire figé à la signature (paramètre ?email= du lien, sinon
@@ -6694,25 +6543,6 @@ try { db.exec(`
 // voulu. Chaque acceptation garde sa preuve, dont le texte accepté tel quel
 // (le modèle reste modifiable). Les colonnes signer_*/signed_* ci-dessus ne
 // servent plus qu'aux contrats signés avant ce modèle.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS contract_acceptances (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contract_id TEXT NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    email TEXT,
-    contact_id TEXT,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    hash TEXT NOT NULL,
-    ip TEXT,
-    user_agent TEXT,
-    at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  )
-`)
-// Courriel du lien signé (?email=…&sig=…) : seul un courriel vérifié ouvre le
-// prix client existant et l'ajout à l'abonnement de son entreprise.
-try { db.exec('ALTER TABLE contract_acceptances ADD COLUMN email_verified INTEGER DEFAULT 0') } catch {}
-try { db.exec(`CREATE INDEX IF NOT EXISTS idx_contract_acceptances_contract ON contract_acceptances(contract_id)`) } catch {}
 
 // Modèles de courriel (Clients → Modèles de courriel) — routes/email-templates.js.
 db.exec(`
@@ -6828,5 +6658,42 @@ db.exec(`
     lines INTEGER,
     status TEXT NOT NULL DEFAULT 'running',
     error TEXT
+  )
+`)
+// Tranche 2 : origine d'un passage (manuel | sale | nuit) et mois à ré-importer
+// parce qu'une écriture QBO y a bougé (services/glMirror.js, sys_gl_mirror_sync).
+try { db.exec(`ALTER TABLE gl_import_runs ADD COLUMN trigger TEXT`) } catch {}
+try { db.exec(`ALTER TABLE gl_accounts ADD COLUMN description TEXT`) } catch {}
+try { db.exec(`ALTER TABLE gl_accounts ADD COLUMN sub_account INTEGER NOT NULL DEFAULT 0`) } catch {}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gl_dirty_months (
+    month TEXT PRIMARY KEY,
+    reason TEXT,
+    marked_at TEXT NOT NULL
+  )
+`)
+// Tranche 3 : balance de vérification de Boréal comparée à celle de QBO, un
+// passage par fin de mois (services/glReconcile.js, sys_gl_reconciliation).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gl_reconciliation_checks (
+    month TEXT NOT NULL,
+    account_qb_id TEXT NOT NULL,
+    account_label TEXT,
+    boreal_balance REAL NOT NULL DEFAULT 0,
+    qbo_balance REAL NOT NULL DEFAULT 0,
+    diff REAL NOT NULL DEFAULT 0,
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (month, account_qb_id)
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS gl_reconciliation_months (
+    month TEXT PRIMARY KEY,
+    as_of TEXT NOT NULL,
+    accounts INTEGER NOT NULL DEFAULT 0,
+    mismatches INTEGER NOT NULL DEFAULT 0,
+    total_diff REAL NOT NULL DEFAULT 0,
+    error TEXT,
+    checked_at TEXT NOT NULL
   )
 `)

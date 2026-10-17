@@ -147,7 +147,6 @@ export function setContractSignature(subscriptionId, signature, items = []) {
 // Normalise un libellé d'item pour comparer entre une description de facture
 // (ex. "1 × Roll-Up Ventilation (motors not included) (at $105.00 / month)")
 // et un nom de produit Stripe ("Roll-Up Ventilation (motors not included)").
-// Aligne avec extractName() de scripts/link-items-vendus.js.
 function normalizeItemName(raw) {
   if (!raw) return ''
   let s = String(raw).trim().replace(/\s+/g, ' ')
@@ -221,7 +220,7 @@ export function diffSnapshots(before, after, direction) {
 
 // Résout le product_id ERP pour un snapshot d'items. Les snapshots stockent
 // le stripe_product_id ; on cherche le product_id ERP correspondant via la
-// table stripe_invoice_items qui a déjà fait le lien (cf. link-items-vendus).
+// table stripe_invoice_items qui a déjà fait le lien.
 // Mutation in-place : ajoute `product_id` (ERP) et complète `name` depuis
 // products.name_fr quand on a un product_id.
 export function enrichItemsWithErpProductId(items) {

@@ -9,11 +9,13 @@ import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import TaskForm, { KeywordPicker } from '../components/TaskForm.jsx'
+import TaskForm, { KeywordPicker, parseKeywords } from '../components/TaskForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { TABLE_COLUMN_META, TASK_STATUS_CHOICES, TASK_PRIORITY_CHOICES } from '../lib/tableDefs.js'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
+import { useToast } from '../contexts/ToastContext.jsx'
 
 
 const statusColor = s => TASK_STATUS_CHOICES.find(c => c.value === s)?.color || 'slate'
@@ -79,6 +81,56 @@ const RENDERS = {
 
 const EXCHANGE_ICONS = { email: Mail, call: Phone, meeting: Users }
 
+// Relance proposée quand une tâche passe à « Terminé » : échéance dans N jours,
+// repoussée au lundi si elle tombe la fin de semaine.
+const FOLLOW_UPS = [[2, '+2 j'], [7, '+1 sem'], [14, '+2 sem']]
+function followUpDate(days) {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  const wd = d.getDay()
+  if (wd === 6) d.setDate(d.getDate() + 2)
+  if (wd === 0) d.setDate(d.getDate() + 1)
+  return localISODate(d)
+}
+
+// Fil des derniers échanges avec le client de la tâche : avant de relancer, le
+// vendeur voit où il en est sans ouvrir la fiche entreprise.
+const EXCHANGES_LIMIT = 5
+function TaskExchanges({ companyId, contactId }) {
+  const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const scope = companyId ? { company_id: companyId } : contactId ? { contact_id: contactId } : null
+  const key = companyId || contactId || ''
+  useEffect(() => {
+    if (!key) return
+    const ctrl = new AbortController()
+    setLoading(true)
+    setItems([])
+    api.interactions.list({ ...scope, limit: EXCHANGES_LIMIT, offset: 0, include: 'heavy' }, ctrl.signal)
+      .then(d => { setItems(d.interactions || []); setTotal(d.total || 0) })
+      .catch(() => {})
+      .finally(() => { if (!ctrl.signal.aborted) setLoading(false) })
+    return () => ctrl.abort()
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `scope` dérive de `key`
+  }, [key])
+  if (!scope) return null
+  async function loadMore() {
+    setLoadingMore(true)
+    try {
+      const d = await api.interactions.list({ ...scope, limit: EXCHANGES_LIMIT * 2, offset: items.length, include: 'heavy' })
+      setItems(prev => [...prev, ...(d.interactions || [])])
+    } finally { setLoadingMore(false) }
+  }
+  return (
+    <div className="pt-3 border-t border-slate-200 mt-3">
+      <h3 className="text-sm font-semibold text-slate-700 mb-2">Derniers échanges</h3>
+      <InteractionTimeline interactions={items} loading={loading} total={total} onLoadMore={loadMore} loadingMore={loadingMore} />
+    </div>
+  )
+}
+
 
 // Champs proposés par le formulaire « Nouvelle tâche » — liste calquée sur ce
 // que POST /api/tasks persiste (voir RecordForm.jsx pour la configuration).
@@ -114,6 +166,7 @@ function taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo
 
 export default function Tasks() {
   const { user } = useAuth()
+  const { addToast } = useToast()
   const [editing, setEditing] = useState(null)
   const undoableDelete = useUndoableDelete()
 
@@ -136,9 +189,47 @@ export default function Tasks() {
     setStatusOverride(o => ({ ...o, [row.id]: status }))
     try {
       await api.tasks.updateStatus(row.id, status)
+      if (status === 'Terminé') offerFollowUp(row)
       await reload()
     } finally {
       setStatusOverride(o => { const n = { ...o }; delete n[row.id]; return n })
+    }
+  }
+
+  // Une seule proposition par tâche, même si l'autosave du panneau repasse.
+  const offeredRef = useRef(new Set())
+  function offerFollowUp(task) {
+    if (offeredRef.current.has(task.id)) return
+    offeredRef.current.add(task.id)
+    addToast({
+      message: 'Relancer ?',
+      duration: 10000,
+      actions: FOLLOW_UPS.map(([days, label]) => ({ label, onClick: () => createFollowUp(task, days) })),
+    })
+  }
+
+  async function createFollowUp(task, days) {
+    const due_date = followUpDate(days)
+    try {
+      const created = await api.tasks.create({
+        title: task.title,
+        priority: task.priority || 'Normal',
+        due_date,
+        company_id: task.company_id || null,
+        contact_id: task.contact_id || null,
+        assigned_to: task.assigned_to || user?.id || null,
+        keywords: parseKeywords(task.keywords),
+      })
+      await reload()
+      loadExchanges()
+      addToast({
+        type: 'undo',
+        message: `Relance le ${fmtDate(due_date)}`,
+        duration: 6000,
+        action: { label: 'Annuler', onClick: () => api.tasks.delete(created.id).then(reload) },
+      })
+    } catch (e) {
+      addToast({ type: 'error', message: e.message || 'Relance non créée' })
     }
   }
 
@@ -177,6 +268,7 @@ export default function Tasks() {
   // la fermeture se fait via « Fermer » (onClose).
   async function handleEdit(form) {
     await api.tasks.update(editing.id, form)
+    if (form.status === 'Terminé' && editing.status !== 'Terminé') offerFollowUp({ ...editing, ...form })
     await reload()
   }
 
@@ -241,6 +333,7 @@ export default function Tasks() {
               Supprimer cette tâche
             </button>
           </div>
+          <TaskExchanges key={editing.id} companyId={editing.company_id} contactId={editing.contact_id} />
           </div>
         </RecordPeekDrawer>
       )}

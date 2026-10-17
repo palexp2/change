@@ -18,7 +18,6 @@ import { summarizeAccount, compareWithQb } from '../services/bankReconcileSummar
 import { reconcileSheet } from '../services/bankReconcileSheet.js'
 import { verifyAccount } from '../services/bankQbVerify.js'
 import { shiftDate } from '../utils/datetime.js'
-import { planRepair, applyRepair } from '../services/bankImportRepair.js'
 import { mergeSheetDuplicates, countSheetDuplicates } from '../services/plaidSync.js'
 import { resolveVendorFromBankLabel, invalidateBankLabelCache } from '../services/scrapers/vendorFromBankLabel.js'
 import { proposalsForTxn, proposalSummary, decode as decodeProposal } from '../services/bankProposals/store.js'
@@ -45,7 +44,7 @@ import {
   listPeople as listInvoiceRequestPeople,
 } from '../services/missingInvoiceRequests.js'
 import {
-  openReconcile, reconcileAccount, isRobotRunning, RECONCILE_AUTOMATION_ID, CAPTURE_DIR as QB_RECONCILE_CAPTURES,
+  reconcileAccount, isRobotRunning, RECONCILE_AUTOMATION_ID, CAPTURE_DIR as QB_RECONCILE_CAPTURES,
 } from '../services/qbReconcileRobot.js'
 import { isSystemAutomationActive, logSystemRun } from '../services/systemAutomations.js'
 import { monthCloseStatus } from '../services/bankMonthClose.js'
@@ -442,18 +441,6 @@ router.post('/accounts/:id/qb-audit', async (req, res) => {
   }
 })
 
-// Robot « Rapprocher » QuickBooks, tranche 1 : ouvre l'écran du compte avec la
-// session du pont de session, capture et lit — ne modifie rien dans QuickBooks.
-router.post('/accounts/:id/qb-reconcile/probe', requireAdmin, async (req, res) => {
-  const account = getAccount(req.params.id)
-  if (!account) return res.status(404).json({ error: 'Not found' })
-  const out = await openReconcile(account.id)
-  res.json({
-    ...out,
-    captureUrl: out.capture ? `/erp/api/bank/qb-reconcile/captures/${encodeURIComponent(out.capture)}` : null,
-  })
-})
-
 // Robot « Rapprocher », tranche 2 : coche les lignes vertes dans QuickBooks, lit
 // la Différence, enregistre pour plus tard — ne termine JAMAIS (c'est Charles).
 // Le passage prend une à deux minutes : POST le lance en arrière-plan, la page
@@ -598,31 +585,6 @@ router.get('/qb-reconcile/captures/:name', requireAdmin, (req, res) => {
   const file = joinPath(QB_RECONCILE_CAPTURES, basename(req.params.name))
   if (!fileExists(file)) return res.status(404).json({ error: 'Not found' })
   res.sendFile(file)
-})
-
-// Réparation ponctuelle des montants de l'import historique (voir
-// services/bankImportRepair.js). `apply` absent = simulation : on renvoie le
-// plan sans rien écrire.
-router.post('/accounts/:id/repair-import', requireAdmin, async (req, res) => {
-  const account = getAccount(req.params.id)
-  if (!account) return res.status(404).json({ error: 'Not found' })
-  const iso = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : undefined)
-  try {
-    const plan = await planRepair(account.id, { from: iso(req.body?.from), to: iso(req.body?.to) })
-    if (!req.body?.apply) return res.json({ ...plan, applied: false })
-    const applied = applyRepair(plan)
-    // Les lignes réparées par le libellé n'ont pas encore leur écriture QB :
-    // la recherche approfondie sait maintenant les retrouver, le montant étant
-    // enfin celui du grand livre.
-    let qb = null
-    let qbError = null
-    if (account.qb_account_id) {
-      try { qb = await verifyAccount(account.id, { deep: true, trigger: 'reparation' }) } catch (e) { qbError = e.message }
-    }
-    res.json({ ...plan, applied: true, ...applied, qb, qbError, summary: summarizeAccount(account.id) })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
 })
 
 // « Mettre à jour » — LE seul bouton de la page depuis le 2026-09-15. Il y en

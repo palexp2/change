@@ -18,13 +18,6 @@ export function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex')
 }
 
-// Même contenu déjà en base (facture téléchargée deux fois, ou déjà reçue par
-// courriel) : on ne crée pas de doublon. Volontairement sans filtre
-// `deleted_at IS NULL` — un reçu supprimé à la main ne doit pas revenir.
-export function contentAlreadyImported(hash) {
-  return !!db.prepare('SELECT id FROM sale_receipts WHERE content_sha256=?').get(hash)
-}
-
 /**
  * Écrit le fichier, crée le reçu et lance l'extraction IA en tâche de fond.
  * @param {Buffer} buffer contenu du fichier

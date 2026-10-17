@@ -160,9 +160,3 @@ export function startDynamicThresholdWatcher() {
   fullTimer = setInterval(tick, FULL_PASS_MS)
   fullTimer.unref?.()
 }
-
-export function stopDynamicThresholdWatcher() {
-  watcher.stop()
-  if (fullTimer) clearInterval(fullTimer)
-  fullTimer = null
-}

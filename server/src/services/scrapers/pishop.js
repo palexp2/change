@@ -17,6 +17,8 @@
 // BigCommerce se modifie librement) mais par les liens `order_id=` et le texte
 // de leur bloc — même démarche que le collecteur DigiKey.
 
+import { parsePortalDate, printPagePdf } from './portalPage.js'
+
 const ORIGIN = 'https://www.pishop.ca'
 const LOGIN_URL = `${ORIGIN}/login.php`
 const ORDERS_URL = `${ORIGIN}/account.php?action=order_status`
@@ -25,52 +27,7 @@ const ORDER_URL = id => `${ORIGIN}/account.php?action=order_status&order_id=${id
 const LOGIN_MARKER = /\/login\.php/i
 
 const MONEY = /(?:\$\s*([\d.,\s]+))|(?:([\d.,\s]+)\s*\$)/
-const ISO_DATE = /\b(\d{4})-(\d{2})-(\d{2})\b/
-// « 4th Sep 2026 », « Sep 4, 2026 », « 4 sept. 2026 » — BigCommerce écrit la
-// date selon la langue de la boutique, qui peut changer sans prévenir.
-const TEXT_DATE = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-zéû]{3,9})\.?\s+(\d{4})\b/i
-const TEXT_DATE_MDY = /\b([a-zéû]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/i
-const NUM_DATE = /\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/
-
-const MONTHS = {
-  jan: 1, feb: 2, fev: 2, mar: 3, apr: 4, avr: 4, may: 5, mai: 5, jun: 6, jui: 6,
-  jul: 7, aug: 8, aou: 8, sep: 9, oct: 10, nov: 11, dec: 12,
-}
-
-function monthNumber(word) {
-  const key = String(word || '').toLowerCase()
-    .normalize('NFD').replace(/[̀-ͯ]/g, '').slice(0, 3)
-  // « juillet » et « juin » partagent « jui » : le mois exact se lit sur la 4e lettre.
-  if (key === 'jui') return /^juil/i.test(word) ? 7 : 6
-  return MONTHS[key] || null
-}
-
-const iso = (y, m, d) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
-
-export function parsePishopDate(text) {
-  const s = String(text || '')
-  const direct = s.match(ISO_DATE)
-  if (direct) return direct[0]
-  const dmy = s.match(TEXT_DATE)
-  if (dmy) {
-    const month = monthNumber(dmy[2])
-    if (month) return iso(dmy[3], month, dmy[1])
-  }
-  const mdy = s.match(TEXT_DATE_MDY)
-  if (mdy) {
-    const month = monthNumber(mdy[1])
-    if (month) return iso(mdy[3], month, mdy[2])
-  }
-  const num = s.match(NUM_DATE)
-  if (num) {
-    // Boutique canadienne : jj/mm/aaaa quand le premier nombre ne peut pas être un mois.
-    const [, a, b, year] = num
-    const day = Number(a) > 12 ? a : b
-    const month = Number(a) > 12 ? b : a
-    return iso(year, month, day)
-  }
-  return null
-}
+export const parsePishopDate = parsePortalDate
 
 export function parsePishopAmount(text) {
   // Un bloc de commande porte plusieurs montants (sous-total, port, total) :
@@ -191,12 +148,7 @@ export default {
               await tab.goto(ORDER_URL(id), { waitUntil: 'networkidle' })
               if (LOGIN_MARKER.test(tab.url())) throw new Error('session expirée à l’ouverture de la facture')
             }
-            await tab.emulateMedia({ media: 'print' }).catch(() => {})
-            return await tab.pdf({
-              format: 'Letter',
-              printBackground: true,
-              margin: { top: '12mm', bottom: '12mm', left: '10mm', right: '10mm' },
-            })
+            return await printPagePdf(tab)
           } finally {
             await tab.close().catch(() => { /* onglet déjà fermé */ })
           }

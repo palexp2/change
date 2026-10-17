@@ -5,6 +5,7 @@ import { localISODate } from '../lib/formatDate.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 import ThinkingOrb from './ThinkingOrb'
+import DateInput from './DateInput.jsx'
 
 export const PICKUP_LOCATIONS = [
   { value: 'OutsideDoor', label: 'Porte extérieure' },
@@ -123,7 +124,7 @@ export default function NovoxpressPickupModal({ envoi, defaultWeight, onClose, o
       <div className="grid grid-cols-2 gap-4">
         <div className="col-span-2">
           <label className="label">Date de ramassage</label>
-          <input type="date" className="input" value={pickupDate} onChange={e => setPickupDate(e.target.value)} min={localISODate()} />
+          <DateInput className="input" value={pickupDate} onChange={e => setPickupDate(e.target.value)} min={localISODate()} />
         </div>
         <div>
           <label className="label">Prêt à partir de</label>

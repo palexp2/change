@@ -7,7 +7,7 @@ import api from '../lib/api.js'
 import EmailComposerModal from './EmailComposerModal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
-import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails, addressOptionLabel, UpsRateComparison } from './novoxpressShared.jsx'
+import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, DebugDetails, addressOptionLabel, UpsRateComparison, BoxPresetRadios, CustomDimsInputs, RateChoiceButton } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 import Spinner from './Spinner.jsx'
 import AttachmentPreview from './AttachmentPreview.jsx'
@@ -284,21 +284,8 @@ export default function RetourActionsSection({ retour, onDone }) {
         ) : step === 'package' ? (
           <div className="space-y-3">
             <label className="label">Type de colis</label>
-            <div className="space-y-2">
-              {Object.entries(BOX_PRESETS).map(([key, box]) => (
-                <label key={key} className={`flex items-center gap-3 p-2.5 rounded-xl border cursor-pointer text-sm transition-colors ${preset === key ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                  <input type="radio" name="preset" value={key} checked={preset === key} onChange={() => setPreset(key)} className="accent-brand-600" />
-                  {box.label}
-                </label>
-              ))}
-            </div>
-            {preset === 'custom' && (
-              <div className="grid grid-cols-3 gap-2">
-                <input type="number" min="1" className="input text-center" value={custom.length} onChange={e => setCustom(c => ({ ...c, length: e.target.value }))} />
-                <input type="number" min="1" className="input text-center" value={custom.width} onChange={e => setCustom(c => ({ ...c, width: e.target.value }))} />
-                <input type="number" min="1" className="input text-center" value={custom.depth} onChange={e => setCustom(c => ({ ...c, depth: e.target.value }))} />
-              </div>
-            )}
+            <BoxPresetRadios preset={preset} setPreset={setPreset} dense />
+            {preset === 'custom' && <CustomDimsInputs custom={custom} setCustom={setCustom} />}
             {!isEnvelope && (
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -350,20 +337,8 @@ export default function RetourActionsSection({ retour, onDone }) {
                 )}
                 <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                   {rates.map((rate, i) => (
-                    <button
-                      key={rate.service_id || i}
-                      onClick={() => { setSelectedRate(rate); setStep('confirm') }}
-                      className={`w-full text-left p-3 rounded-xl border transition-colors ${selectedRate === rate ? 'border-brand-400 bg-brand-50' : 'border-slate-200 hover:border-brand-400 hover:bg-brand-50'}`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="font-medium text-slate-900 text-sm">{getRateName(rate)}</p>
-                          {getRateCarrier(rate) && <p className="text-xs text-slate-500">{getRateCarrier(rate)}</p>}
-                          {getRateDelivery(rate) && <p className="text-xs text-slate-400 mt-0.5">{getRateDelivery(rate)}</p>}
-                        </div>
-                        <span className="font-semibold text-brand-700 whitespace-nowrap">{fmtPrice(rate)}</span>
-                      </div>
-                    </button>
+                    <RateChoiceButton key={rate.service_id || i} rate={rate} selected={selectedRate === rate}
+                      onPick={() => { setSelectedRate(rate); setStep('confirm') }} />
                   ))}
                 </div>
                 <UpsRateComparison fetchRates={() => api.ups.returnRates(retour.id, { address_id: addressId, packages: buildPackages() })} />

@@ -8,7 +8,6 @@
 // 2026-10-10 : « toutes les actions proposées, je veux les faire de notre
 // section transactions »).
 //
-//   scanFeed    lit l'onglet « En attente » d'un compte (rien n'est cliqué)
 //   matchFeed   apparie chaque ligne en attente à l'écriture DÉJÀ liée dans
 //               Boréal : « Trouver d'autres correspondances » → la seule ligne
 //               à cette date, ce montant (et ce type / tiers au besoin) →
@@ -206,30 +205,6 @@ function boreal(bankAccountId, row) {
   const d = (n) => new Date(Date.parse(row.date) + n * 864e5).toISOString().slice(0, 10)
   const near = at(d(-DATE_DRIFT_DAYS), d(DATE_DRIFT_DAYS))
   return near.length === 1 ? near : []
-}
-
-/**
- * Lignes « En attente » du flux QuickBooks d'un compte, chacune avec la
- * transaction Boréal qui lui correspond (et son écriture liée).
- */
-export async function scanFeed(bankAccountId) {
-  const t0 = Date.now()
-  let ctx
-  try {
-    ctx = await openFeed(bankAccountId)
-    if (ctx.error) return { ok: false, error: ctx.error, capture: await shot(ctx.page, 'scan') }
-    const rows = await ctx.page.evaluate(readPendingRows)
-    const out = rows.map((r) => {
-      const [t] = boreal(bankAccountId, r)
-      return { ...r, txn_id: t?.id || null, qb_txn_type: t?.qb_txn_type || null, qb_txn_id: t?.qb_txn_id || null }
-    })
-    logSync(MODULE, 'manual', { status: 'success', durationMs: Date.now() - t0 })
-    return { ok: true, rows: out, capture: await shot(ctx.page, 'scan') }
-  } catch (e) {
-    return { ok: false, error: e.message, capture: await shot(ctx?.page, 'scan-erreur') }
-  } finally {
-    await close(ctx)
-  }
 }
 
 // Une écriture déjà rapprochée (colonne « Comp. » = R) n'est plus proposée par

@@ -26,12 +26,9 @@
 import db from '../db/database.js'
 import { qbGet } from '../connectors/quickbooks.js'
 import { TXN_TYPE_ENTITY } from './bankQbLink.js'
-import { shiftDate, daysBetween } from '../utils/datetime.js'
+import { daysBetween } from '../utils/datetime.js'
 import { round2 } from '../utils/money.js'
 import { touchBankTxns } from './realtimeEmitters.js'
-// Réexport de compatibilité : l'ancien export local `dayDiff` (valeur absolue)
-// correspond au `daysBetween` canonique.
-export { shiftDate, daysBetween as dayDiff }
 
 export const MATCH_LABELS = {
   exact: 'montant et date exacts',

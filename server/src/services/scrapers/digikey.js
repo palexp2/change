@@ -16,6 +16,8 @@
 // depuis la page de compte, exactement la démarche qui a servi à calibrer Wix
 // et Bell sur leur première tournée réelle.
 
+import { pdfNet, invoiceLinkRows, fetchPdfByUrl } from './portalPage.js'
+
 const LOGIN_URL = 'https://www.digikey.ca/MyDK/Login?site=CA&lang=en'
 const ACCOUNT_URL = 'https://www.digikey.ca/en/mypage'
 // Auth DigiKey : formulaire propre à digikey.ca, pas de sous-domaine dédié connu.
@@ -133,19 +135,7 @@ export default {
   async list(ctx) {
     const { page, context, log } = ctx
 
-    const captured = new Map()
-    page.on('response', async (res) => {
-      try {
-        const type = (res.headers()['content-type'] || '').toLowerCase()
-        const url = res.url()
-        if (type.includes('pdf') || /\.pdf(\?|$)/i.test(url)) {
-          if (!captured.has(url)) captured.set(url, Buffer.from(await res.body()))
-          log(`📄 PDF capturé : ${url.slice(0, 120)}`)
-        } else if (type.includes('json') && /order|invoice|factur|billing/i.test(url)) {
-          log(`↪︎ API vue : ${url.slice(0, 160)}`)
-        }
-      } catch { /* corps déjà consommé ou réponse annulée */ }
-    })
+    const captured = pdfNet(page, log, /order|invoice|factur|billing/i)
 
     await page.goto(ACCOUNT_URL, { waitUntil: 'domcontentloaded' })
     if (await cloudflareBlocked(page)) {
@@ -183,19 +173,7 @@ export default {
     }
     await ctx.snapshot('digikey-commandes')
 
-    const rows = await page.$$eval(
-      'a:has-text("Invoice"), a:has-text("Facture"), a[href*="invoice" i], a[href$=".pdf"], a[download]',
-      (els) => els.map((el) => {
-        let node = el
-        let row = ''
-        for (let i = 0; i < 10 && node; i++) {
-          const text = node.innerText || ''
-          if (/\d/.test(text) && text.length > 12) { row = text; break }
-          node = node.parentElement
-        }
-        return { href: el.getAttribute('href') || '', text: (el.innerText || '').trim(), row }
-      }),
-    ).catch(() => [])
+    const rows = await invoiceLinkRows(page, 'a:has-text("Invoice"), a:has-text("Facture"), a[href*="invoice" i], a[href$=".pdf"], a[download]')
     log(`${rows.length} lien(s) de facture détecté(s)`)
     if (rows.length === 0) {
       await ctx.snapshot('digikey-aucun-lien')
@@ -220,15 +198,7 @@ export default {
         currency: 'CAD',
         filename: `DigiKey-${date || externalId}.pdf`,
         url,
-        fetch: async () => {
-          const res = await context.request.get(url, { timeout: 60_000 })
-          const buffer = res.ok() ? await res.body() : null
-          if (buffer && buffer.slice(0, 5).toString() === '%PDF-') return buffer
-          await page.goto(url, { waitUntil: 'networkidle' }).catch(() => {})
-          const late = [...captured.values()].pop()
-          if (late) return late
-          throw new Error(`réponse non-PDF (HTTP ${res.status()})`)
-        },
+        fetch: () => fetchPdfByUrl({ context, page, url, captured }),
       })
     }
     return out

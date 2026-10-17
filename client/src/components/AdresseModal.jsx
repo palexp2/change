@@ -3,6 +3,7 @@ import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import Spinner from './Spinner.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
+import { ChoiceSelect } from './ChoiceSelect.jsx'
 import LinkedRecordField from './LinkedRecordField.jsx'
 import { AddressCheckPanel, AddressConfirmPanel, parseCheckIssues } from './AddressCheckIssues.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
@@ -37,6 +38,8 @@ export const EMPTY_ADRESSE_FORM = {
 // Rang d'une adresse dans son type : une seule principale par type et par
 // entreprise (le serveur rétrograde les autres).
 export const ADDRESS_RANKS = ['Principale', 'Secondaire']
+export const ADDRESS_TYPES = ['Ferme', 'Livraison', 'Facturation']
+export const ADDRESS_COUNTRIES = [{ value: 'CA', label: 'Canada (CA)' }, { value: 'US', label: 'États-Unis (US)' }]
 
 export function adresseToForm(a) {
   return {
@@ -427,32 +430,37 @@ export function AdresseModalContent({
       </div>
       <div>
         <label className="label">Pays</label>
-        <select value={adresseForm.country} onChange={e => saveCountry(e.target.value)} className="select">
-          <option value="CA">Canada (CA)</option>
-          <option value="US">États-Unis (US)</option>
-        </select>
+        <ChoiceSelect
+          value={adresseForm.country}
+          choices={ADDRESS_COUNTRIES}
+          table="adresses" field="country"
+          onChange={saveCountry}
+          emptyOption={null}
+          className="input w-full"
+        />
       </div>
       <div>
         <label className="label">Type</label>
-        <select
+        <ChoiceSelect
           value={adresseForm.address_type}
-          onChange={e => isEdit ? saveField('address_type', e.target.value) : setAdresseForm(f => ({ ...f, address_type: e.target.value }))}
-          className="select"
-        >
-          {['Ferme', 'Livraison', 'Facturation'].map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
+          choices={ADDRESS_TYPES}
+          table="adresses" field="address_type"
+          onChange={v => isEdit ? saveField('address_type', v) : setAdresseForm(f => ({ ...f, address_type: v }))}
+          emptyOption={null}
+          className="input w-full"
+        />
       </div>
       <div>
         <label className="label">Rang</label>
-        <select
+        <ChoiceSelect
           value={adresseForm.address_rank || ''}
-          onChange={e => isEdit ? saveField('address_rank', e.target.value) : setAdresseForm(f => ({ ...f, address_rank: e.target.value }))}
-          className="select"
-          data-testid="adresse-rank-select"
-        >
-          <option value="">{isEdit ? '—' : 'Auto'}</option>
-          {ADDRESS_RANKS.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
+          choices={ADDRESS_RANKS}
+          table="adresses" field="address_rank"
+          onChange={v => isEdit ? saveField('address_rank', v) : setAdresseForm(f => ({ ...f, address_rank: v }))}
+          emptyOption={isEdit ? '—' : 'Auto'}
+          className="input w-full"
+          testId="adresse-rank-select"
+        />
       </div>
       <div className="col-span-2">
         <label className="label">Contact associé</label>

@@ -44,7 +44,6 @@ import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
 import dashboardRouter from './routes/dashboard.js'
-import hubRouter from './routes/hub.js'
 import adminRouter from './routes/admin.js'
 import telemetryRouter from './routes/telemetry.js'
 import undoRouter from './routes/undo.js'
@@ -95,9 +94,7 @@ import clientMapRouter from './routes/clientMap.js'
 import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
 import qualificationCallsRouter from './routes/qualification-calls.js'
-import emailRelanceRouter from './routes/email-relance.js'
 import placesRouter from './routes/places.js'
-import weatherRouter from './routes/weather.js'
 import paiesRouter from './routes/paies.js'
 import timesheetsRouter from './routes/timesheets.js'
 import activityCodesRouter from './routes/activity-codes.js'
@@ -127,7 +124,6 @@ import discoveryFormSchemaRouter from './routes/discovery-form-schema.js'
 import emailTrackingRouter from './routes/email-tracking.js'
 import stripeQueueRouter from './routes/stripe-queue.js'
 import stripePayoutsRouter from './routes/stripe-payouts.js'
-import stripeInvoiceItemsRouter from './routes/stripe-invoice-items.js'
 import novoxpressRouter from './routes/novoxpress.js'
 import digikeyRouter from './routes/digikey.js'
 import upsRouter from './routes/ups.js'
@@ -145,10 +141,7 @@ import { startMeetingReminders } from './services/meetings.js'
 import { publicFilesRouter, publicFileServeRouter } from './routes/public-files.js'
 import recordsRouter from './routes/records.js'
 import activityRouter from './routes/activity.js'
-import sideEffectsRouter from './routes/sideEffects.js'
 import notificationsRouter from './routes/notifications.js'
-import commentsRouter from './routes/comments.js'
-import reportsTaxesRouter from './routes/reports-taxes.js'
 import { sendInstallationFollowups } from './services/installationFollowup.js'
 import { getAutomationFrom } from './services/postmarkConfig.js'
 import { createRealtimeServer } from './services/realtime.js'
@@ -467,8 +460,6 @@ app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
 app.use('/api/dashboard', dashboardRouter)
-app.use('/api/hub', hubRouter)
-app.use('/api/reports', reportsTaxesRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/telemetry', telemetryRouter)
 app.use('/api/undo', undoRouter)
@@ -535,7 +526,6 @@ app.use('/api/stripe-queue', stripeQueueRouter)
 app.use('/api/stripe-invoices', stripeInvoicesRouter)
 app.use('/api/stripe-subscriptions', stripeSubscriptionsRouter)
 app.use('/api/stripe-payouts', stripePayoutsRouter)
-app.use('/api/stripe-invoice-items', stripeInvoiceItemsRouter)
 app.use('/api/email-tracking', emailTrackingRouter)
 app.use('/api/customer/post-payment', customerPostPaymentRouter)
 app.use('/api/discovery-forms', discoveryFormsRouter)
@@ -546,9 +536,7 @@ app.use('/erp/pay', customerPayRouter)
 app.use('/api/employees', employeesRouter)
 app.use('/api/vacations', vacationsRouter)
 app.use('/api/qualification-calls', qualificationCallsRouter)
-app.use('/api/email-relance', emailRelanceRouter)
 app.use('/api/places', placesRouter)
-app.use('/api/weather', weatherRouter)
 app.use('/api/paies', paiesRouter)
 app.use('/api/timesheets', timesheetsRouter)
 app.use('/api/activity-codes', activityCodesRouter)
@@ -557,9 +545,7 @@ app.use('/api/important-documents', importantDocumentsRouter)
 // API de mutation générique (phase 1) — pilotée par db/recordRegistry.js
 app.use('/api/records', recordsRouter)
 app.use('/api/activity', activityRouter)
-app.use('/api/side-effects', sideEffectsRouter)
 app.use('/api/notifications', notificationsRouter)
-app.use('/api/comments', commentsRouter)
 app.use('/api/receipt-files', express.static(uploadsPath('receipts')))
 app.use('/api/novoxpress/labels', express.static(uploadsPath('labels')))
 // Étiquette absente du disque : sans ce 404, la requête retombait sur le
@@ -1296,6 +1282,33 @@ const server = app.listen(PORT, () => {
   }
   setTimeout(runQbChangePoll, 90_000)
   setInterval(runQbChangePoll, 30 * 1000)
+
+  // Grand livre miroir : une écriture faite par Boréal salit son mois, le
+  // sondage ci-dessus salit ceux des autres ; les mois sales sont ré-importés
+  // toutes les 60 s, et les 13 derniers mois chaque nuit. Coupe-circuit :
+  // sys_gl_mirror_sync.
+  Promise.all([import('./connectors/quickbooks.js'), import('./services/glMirror.js')])
+    .then(([{ onQbMutation }, { noteQbMutation }]) => onQbMutation(noteQbMutation))
+    .catch(e => console.error('grand livre (listener):', e.message))
+  const runGlDirty = () => {
+    import('./services/glMirror.js')
+      .then(({ syncGlDirtyMonths }) => syncGlDirtyMonths())
+      .catch(e => console.error('grand livre (mois sales):', e.message))
+  }
+  setTimeout(runGlDirty, 120_000)
+  setInterval(runGlDirty, 60 * 1000)
+  cron.schedule('15 3 * * *', () => {
+    import('./services/glMirror.js')
+      .then(({ runGlNightly }) => runGlNightly())
+      .catch(e => console.error('grand livre (nuit):', e.message))
+  }, { timezone: 'America/Toronto' })
+  // Preuve d'égalité : balance Boréal ↔ QBO de chaque fin de mois, après le
+  // ré-import de nuit. Coupe-circuit : sys_gl_reconciliation.
+  cron.schedule('30 4 * * *', () => {
+    import('./services/glReconcile.js')
+      .then(({ runGlReconciliation }) => runGlReconciliation())
+      .catch(e => console.error('grand livre (comparaison):', e.message))
+  }, { timezone: 'America/Toronto' })
 
   const runQbVerify = () => {
     import('./services/bankQbVerify.js')

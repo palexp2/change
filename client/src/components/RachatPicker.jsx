@@ -14,6 +14,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { Check } from 'lucide-react'
 import api from '../lib/api.js'
 import { Badge } from './Badge.jsx'
 import { RACHAT_LABELS, RACHAT_COLORS } from '../lib/subscriptionEvents.js'
@@ -109,9 +110,10 @@ export function RachatPicker({ event }) {
               type="button"
               data-testid={`rachat-option-${event.id}-${opt.v ?? 'null'}`}
               onClick={() => setStatus(opt.v)}
-              className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 ${status === opt.v ? 'font-semibold text-brand-700' : 'text-slate-700'}`}
+              className={`flex w-full items-center gap-2 text-left px-3 py-1.5 text-xs hover:bg-slate-50 ${status === opt.v ? 'bg-brand-50' : ''}`}
             >
-              {opt.label}
+              <span className="flex-1"><Badge color={opt.v ? RACHAT_COLORS[opt.v] : 'gray'}>{opt.label}</Badge></span>
+              {status === opt.v && <Check size={12} className="text-brand-600" />}
             </button>
           ))}
         </div>

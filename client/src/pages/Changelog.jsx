@@ -144,12 +144,8 @@ export function ChangelogContent() {
     const renders = {
       date: (row) => <span className="text-slate-500">{fmtDate(row.date)}</span>,
       title: (row) => <span className="font-medium text-slate-800">{row.title}</span>,
-      category: (row) =>
-        row.category ? (
-          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-600">
-            {row.category}
-          </span>
-        ) : null,
+      // Texte nu : DataTable le rend en pastille (colonne Sélection).
+      category: (row) => row.category || null,
       // Une seule pastille : la nature dominante, celle sur laquelle porte le
       // filtre. Le détail par changement s'affiche en dépliant la ligne.
       type: (row) => <TypeBadge type={row.dominantType} />,

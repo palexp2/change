@@ -90,6 +90,19 @@ router.delete('/config', (req, res) => {
   res.json({ ok: true })
 })
 
+// Erreur d'un appel Novoxpress : 400 si la validation locale a bloqué avant
+// l'API, 502 si c'est l'amont ; le payload envoyé et la réponse brute partent
+// avec, plus le diagnostic auto s'il a tourné.
+function sendNovoError(res, e, isLocalValidation, diagnostic = null) {
+  res.status(isLocalValidation ? 400 : 502).json({
+    error: e.message,
+    sent: e.sentPayload || null,
+    responseBody: e.responseBody || null,
+    novoxpressStatus: e.status || null,
+    diagnostic,
+  })
+}
+
 // POST /api/novoxpress/rates/:shipmentId — get rate estimates
 router.post('/rates/:shipmentId', async (req, res) => {
   if (!isNovoxpressConfigured()) return res.status(400).json({ error: 'Novoxpress non configuré' })
@@ -121,13 +134,7 @@ router.post('/rates/:shipmentId', async (req, res) => {
         }, 'auto')
       } catch (de) { console.error('Novoxpress diagnostic error:', de.message) }
     }
-    res.status(isLocalValidation ? 400 : 502).json({
-      error: e.message,
-      sent: e.sentPayload || null,
-      responseBody: e.responseBody || null,
-      novoxpressStatus: e.status || null,
-      diagnostic,
-    })
+    sendNovoError(res, e, isLocalValidation, diagnostic)
   }
 })
 
@@ -215,13 +222,7 @@ router.post('/label/:shipmentId', async (req, res) => {
         }, 'auto')
       } catch (de) { console.error('Novoxpress diagnostic error:', de.message) }
     }
-    res.status(isLocalValidation ? 400 : 502).json({
-      error: e.message,
-      sent: e.sentPayload || null,
-      responseBody: e.responseBody || null,
-      novoxpressStatus: e.status || null,
-      diagnostic,
-    })
+    sendNovoError(res, e, isLocalValidation, diagnostic)
   }
 })
 

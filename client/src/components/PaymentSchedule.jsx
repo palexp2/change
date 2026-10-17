@@ -43,6 +43,7 @@ import { payDateForDue } from '../lib/bankDays.js'
 import { spec } from '../lib/paymentMethods.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtMoney } from '../utils/formatters.js'
+import DateInput from './DateInput.jsx'
 
 // Pas de garde null historique : un montant absent s'affiche « 0,00 $ ».
 const fmtCad = (n, currency = 'CAD') => fmtMoney(n, currency, { nullIsZero: true })
@@ -270,7 +271,7 @@ function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onPaid, o
           l'échéance, modifiable si on paie plus tôt ou plus tard. */}
       {!paid && (
         <span className="shrink-0 flex items-center gap-1">
-          <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
+          <DateInput value={payDate} onChange={e => setPayDate(e.target.value)}
             className={`${inputXs} w-32 tabular-nums`}
             data-testid={`schedule-pay-date-${item.id}`}
             title={payDate === suggestedPay.date
@@ -391,7 +392,7 @@ function DeferredItem({ item, onChanged }) {
       <input defaultValue={item.defer_reason || ''}
         className={`${inputXs} flex-1 min-w-48`} data-testid={`schedule-reason-${item.id}`}
         onBlur={e => { if ((e.target.value || '') !== (item.defer_reason || '')) save({ reason: e.target.value }) }} />
-      <input type="date" defaultValue={item.defer_until || ''} className={`${inputXs} w-36`}
+      <DateInput defaultValue={item.defer_until || ''} className={`${inputXs} w-36`}
         title="Revient dans la cédule à cette date" data-testid={`schedule-until-${item.id}`}
         onBlur={e => { if ((e.target.value || '') !== (item.defer_until || '')) save({ defer_until: e.target.value || null }) }} />
       <span className="shrink-0 w-28 text-right text-sm tabular-nums text-slate-600">{fmtCad(item.amount, item.currency)}</span>
@@ -562,7 +563,7 @@ function CardDueRow({ due, onChanged, onPaid }) {
           </button>
         </span>
       ) : (
-      <input type="date" value={date} className={`${inputXs} w-36 shrink-0`}
+      <DateInput value={date} className={`${inputXs} w-36 shrink-0`}
         data-testid={`card-due-date-${due.id}`} title="Date du paiement"
         onChange={e => setDate(e.target.value)}
         onBlur={e => { if (e.target.value !== (due.payment_date || '')) save({ payment_date: e.target.value }) }} />

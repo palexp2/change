@@ -10,6 +10,7 @@ import { fmtDateWithFormat, normalizeDateFormat } from './formatDate.js'
 import { fmtNumber } from '../utils/formatters.js'
 import { formatDurationSeconds, normalizeDurationFormat } from './duration.js'
 import { formatPercent, percentFill, normalizePercentDisplay } from './percent.js'
+import { normalizeRatingIcon } from './rating.js'
 import { formatDecimals } from './decimalPrefs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { RatingStars } from '../components/RatingStars.jsx'
@@ -326,6 +327,13 @@ export function percentDisplayOf(field) {
   let opts = field?.options
   if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
   return normalizePercentDisplay(opts?.display)
+}
+
+// Symbole d'un champ Évaluation, lu dans `options` : { icon }. Défaut 'star'.
+export function ratingIconOf(field) {
+  let opts = field?.options
+  if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
+  return normalizeRatingIcon(opts?.icon)
 }
 
 // `decimals` : décimales du champ (défaut 0 — « 45 % », pas « 45,00 % »).
@@ -1096,6 +1104,8 @@ export function customFieldToColumn(f) {
     // Pourcentage : mode d'affichage (nombre ou barre) — le type de colonne
     // reste 'number' (tri, filtre et somme d'un nombre), seul le rendu change.
     ...((f.type === 'percent' || f.result_type === 'percent') ? { percentDisplay: percentDisplayOf(f) } : {}),
+    // Évaluation : symbole (étoile, cœur…) pour DynamicCell et son éditeur.
+    ...((f.type === 'rating' || f.result_type === 'rating') ? { ratingIcon: ratingIconOf(f) } : {}),
     // Nombre : décimales du champ → la barre de totaux (somme, moyenne…) suit le
     // même réglage que les cellules.
     ...(Number.isInteger(f.decimals) ? { decimals: f.decimals } : {}),
@@ -1288,7 +1298,7 @@ export function renderCustomFieldValue(field, value, row, { detail = false, link
   // dont le format d'affichage est « Évaluation » (moyenne d'un rollup, rendue
   // avec une étoile partielle).
   if (field.type === 'rating' || field.result_type === 'rating') {
-    return <RatingStars value={value} />
+    return <RatingStars value={value} icon={ratingIconOf(field)} />
   }
   if (field.type === 'single_select') {
     const choices = parseSelectChoices(field)

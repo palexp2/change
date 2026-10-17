@@ -12,7 +12,7 @@ import { FieldTypeIcon } from '../lib/fieldTypeIcons.jsx'
 import { formatDurationSeconds, normalizeDurationFormat, parseDurationToSeconds } from '../lib/duration.js'
 import {
   currencySymbolOf, phoneCountryCodeOf, dateFormatOf, isAirtableLinkField, linkDisplayTargetOf,
-  percentDisplayOf, NO_COLOR, columnChoiceValues,
+  percentDisplayOf, ratingIconOf, NO_COLOR, columnChoiceValues,
 } from '../lib/customFieldDisplay.jsx'
 import {
   VALUE_LESS_LINK_OPS, MULTI_VALUE_LINK_OPS, linkFilterOpsForType,
@@ -20,7 +20,8 @@ import {
 } from '../lib/linkFilterOps.js'
 import { useRecordLinks } from '../lib/useRecordLinks.js'
 import { normalizePercentDisplay } from '../lib/percent.js'
-import { RATING_MAX } from '../lib/rating.js'
+import { RATING_MAX, RATING_ICONS, normalizeRatingIcon } from '../lib/rating.js'
+import { RatingStars } from './RatingStars.jsx'
 import {
   DATE_DISPLAY_FORMATS, normalizeDateFormat, dateFormatHasTime, toDateTimeLocalInput, fromDateTimeLocalInput,
 } from '../lib/formatDate.js'
@@ -377,7 +378,7 @@ const FIELD_TYPE_OPTIONS = [
   { id: 'currency',           label: 'Devise',          kind: 'data', type: 'currency', hint: 'Nombre au format monétaire' },
   { id: 'percent',            label: 'Pourcentage',     kind: 'data', type: 'percent', hint: '« 45 % » ou barre de progression' },
   { id: 'duration',           label: 'Durée',           kind: 'data', type: 'duration', hint: '« 1:30 », stockée en secondes' },
-  { id: 'rating',             label: 'Évaluation',      kind: 'data', type: 'rating', hint: 'Note de 0 à 5 étoiles' },
+  { id: 'rating',             label: 'Évaluation',      kind: 'data', type: 'rating', hint: 'Note de 0 à 5 : étoiles, cœurs…' },
   { id: 'date',               label: 'Date',            kind: 'data', type: 'date', hint: 'Date, heure en option' },
   { id: 'url',                label: 'URL',             kind: 'data', type: 'url', hint: 'Lien cliquable' },
   { id: 'email',              label: 'Courriel',        kind: 'data', type: 'email', hint: 'Adresse cliquable' },
@@ -423,7 +424,7 @@ const FIELD_TYPE_SYNONYMS = {
   currency: 'currency montant argent prix dollar',
   percent: 'percent pourcentage pourcent % progression barre progress bar taux ratio avancement',
   duration: 'duration temps heure minute',
-  rating: 'rating evaluation note etoiles star satisfaction score appreciation',
+  rating: 'rating evaluation note etoiles star coeur heart pouce drapeau satisfaction score appreciation',
   date: 'date jour calendrier',
   url: 'url lien link web',
   email: 'email courriel mail adresse',
@@ -827,6 +828,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
   // Mode d'affichage quand le champ est rendu en pourcentage : 'percent' ou
   // 'bar'. Rangé dans `options` (comme les choix d'une Sélection native).
   const [nativePercentDisplay, setNativePercentDisplay] = useState('percent')
+  const [nativeRatingIcon, setNativeRatingIcon] = useState('star')
   // Format d'affichage d'une date (avec ou sans heure), rangé dans `options`.
   const [nativeDateFormat, setNativeDateFormat] = useState('iso_date')
   const lastSavedDateFormat = useRef('iso_date')
@@ -886,6 +888,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     // Sélection : les choix configurés, sinon la liste d'origine de tableDefs.js
     // (chaque valeur avec elle-même comme libellé et sa couleur d'origine).
     setNativePercentDisplay(percentDisplayOf(override))
+    setNativeRatingIcon(ratingIconOf(override))
     const df = dateFormatOf(override)
     setNativeDateFormat(df)
     lastSavedDateFormat.current = df
@@ -1020,6 +1023,23 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     }
   }
 
+  async function persistRatingIcon(v) {
+    setNativeRatingIcon(v)
+    setError(null)
+    setSaving(true)
+    try {
+      await api.fieldOverrides.save(table, column.id, { options: { icon: v } })
+      setHasOverride(true)
+      onSaved?.()
+      setSavedFlash(true)
+      setTimeout(() => setSavedFlash(false), 1500)
+    } catch (e) {
+      setError(e.message || 'Erreur')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function persistDateFormat(v) {
     setNativeDateFormat(v)
     if (v === lastSavedDateFormat.current) return
@@ -1114,6 +1134,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
       setDecimals(originalDecimals)
       setCountryCode('hide')
       setNativePercentDisplay('percent')
+      setNativeRatingIcon('star')
       setNativeDateFormat('iso_date')
       lastSavedDateFormat.current = 'iso_date'
       setChoices(baselineChoices(column))
@@ -1219,6 +1240,10 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
           <PercentDisplaySelect value={nativePercentDisplay} onChange={persistPercentDisplay} />
         )}
 
+        {type === 'rating' && (
+          <RatingIconSelect value={nativeRatingIcon} onChange={persistRatingIcon} />
+        )}
+
         {type === 'date' && (
           <DateFormatSelect value={nativeDateFormat} onChange={persistDateFormat} name="field-override-date-format" />
         )}
@@ -1302,6 +1327,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   // progression). S'applique au type de donnée comme au format d'affichage d'un
   // champ calculé (result_type='percent').
   const [percentDisplay, setPercentDisplay] = useState('percent')
+  // Symbole d'une Évaluation (champ de donnée ou calculé en result_type='rating').
+  const [ratingIcon, setRatingIcon] = useState('star')
   const [defaultValue, setDefaultValue] = useState('') // pour kind='data' text/number/currency/url/duration
   // pour kind='data' type single_select/multi_select
   const [choices, setChoices] = useState([])
@@ -1435,6 +1462,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       // vaut aussi pour un champ calculé rendu en pourcentage.
       setPercentDisplay(editing.type === 'percent' || editing.result_type === 'percent'
         ? percentDisplayOf(editing) : 'percent')
+      setRatingIcon(ratingIconOf(editing))
       {
         const os = parseOptionsState(editing.options)
         // Sélection sans liste enregistrée (champ cœur repris d'Airtable, ex.
@@ -1497,6 +1525,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setDateFormat('iso_date')
       setPhoneCountryCode('hide')
       setPercentDisplay('percent')
+      setRatingIcon('star')
       setDefaultValue('')
       setChoices([])
       setDefaultId(null)
@@ -1837,6 +1866,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         if (nextType === 'duration') setDurationFormat(durFmt)
         if (nextType === 'currency') setCurrencySymbol(currencySymbolOf(result))
         if (nextType === 'percent') setPercentDisplay(percentDisplayOf(result))
+        if (nextType === 'rating') setRatingIcon(ratingIconOf(result))
         if (nextType === 'date') setDateFormat(dateFormatOf(result))
         if (nextType === 'phone') setPhoneCountryCode(phoneCountryCodeOf(result))
         const dv = result.default_value ?? ''
@@ -1996,6 +2026,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       }
       if (type === 'currency') payload.options = { currency: currencySymbol }
       if (type === 'percent') payload.options = { display: percentDisplay }
+      if (type === 'rating') payload.options = { icon: ratingIcon }
       if (type === 'duration') payload.options = { format: durationFormat }
       if (type === 'date') payload.options = { format: dateFormat }
       if (type === 'phone') payload.options = { country_code: phoneCountryCode }
@@ -2092,6 +2123,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       ...(DECIMAL_RESULT_TYPES.includes(rt) && decimals != null ? { decimals } : {}),
       ...(rt === 'currency' ? { options: { currency: currencySymbol } } : {}),
       ...(rt === 'percent' ? { options: { display: percentDisplay } } : {}),
+      ...(rt === 'rating' ? { options: { icon: ratingIcon } } : {}),
       ...(rt === 'date' ? { options: { format: dateFormat } } : {}),
     }
   }
@@ -2135,6 +2167,14 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
     if (!editing || converting) return
     if (normalizePercentDisplay(percentDisplay) === v) return
     autosave({ options: { display: v } })
+  }
+
+  // Symbole d'une Évaluation : même logique que l'affichage d'un pourcentage.
+  function changeRatingIcon(v) {
+    setRatingIcon(v)
+    if (!editing || converting) return
+    if (ratingIcon === v) return
+    autosave({ options: { icon: v } })
   }
 
   // Autosave d'un rollup en édition : ne PATCH que si la config est complète et
@@ -2283,6 +2323,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
             ...((type === 'number' || type === 'currency' || type === 'percent') ? { decimals } : {}),
             ...(type === 'currency' ? { options: { currency: currencySymbol } } : {}),
             ...(type === 'percent' ? { options: { display: percentDisplay } } : {}),
+            ...(type === 'rating' ? { options: { icon: ratingIcon } } : {}),
             ...(type === 'duration' ? { options: { format: durationFormat } } : {}),
             ...(type === 'date' ? { options: { format: dateFormat } } : {}),
             ...(type === 'phone' ? { options: { country_code: phoneCountryCode } } : {}),
@@ -2506,6 +2547,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
             {type === 'percent' && (
               <PercentDisplaySelect value={percentDisplay} onChange={changePercentDisplay} />
             )}
+            {type === 'rating' && <RatingIconSelect value={ratingIcon} onChange={changeRatingIcon} />}
             {(type === 'number' || type === 'currency' || type === 'percent') && (
               <PrecisionSelect
                 value={decimals}
@@ -2945,6 +2987,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
             dans le même ordre qu'un champ de donnée (et qu'Airtable). */}
         {['formula', 'rollup'].includes(kind) && resultType === 'percent' && (
           <PercentDisplaySelect value={percentDisplay} onChange={changePercentDisplay} />
+        )}
+        {['formula', 'rollup'].includes(kind) && resultType === 'rating' && (
+          <RatingIconSelect value={ratingIcon} onChange={changeRatingIcon} />
         )}
         {['formula', 'rollup'].includes(kind) && resultType === 'currency'
           && !(kind === 'rollup' && isArrayAgg(rollupAgg)) && renderCurrencySymbol()}
@@ -3622,6 +3667,28 @@ function DateFormatSelect({ value, onChange, name }) {
             />
             <span className="font-medium">{o.label}</span>
             <span className="text-[11px] text-slate-400 tabular-nums">{o.hint}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Symbole d'une Évaluation, comme Airtable : étoile, cœur, pouce, drapeau, point.
+function RatingIconSelect({ value, onChange }) {
+  const current = normalizeRatingIcon(value)
+  return (
+    <div>
+      <label className="label">Symbole</label>
+      <div className="flex gap-2">
+        {RATING_ICONS.map(v => (
+          <label
+            key={v}
+            data-testid={`cf-rating-icon-${v}`}
+            className={`flex items-center px-3 py-2 rounded-lg border cursor-pointer transition-colors ${current === v ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}
+          >
+            <input type="radio" name="cf-rating-icon" value={v} checked={current === v} onChange={() => onChange(v)} className="sr-only" />
+            <RatingStars value={1} icon={v} size={16} />
           </label>
         ))}
       </div>

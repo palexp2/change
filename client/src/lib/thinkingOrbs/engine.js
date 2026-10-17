@@ -875,26 +875,4 @@ function resolvePreset(state, size) {
   cache.set(key, resolved);
   return resolved;
 }
-export {
-  MODE_FRAMES as M,
-  STATE_TO_MODE as S,
-  scaleRadii as a,
-  MODE_DRAWS as b,
-  angleDelta as c,
-  countDots as d,
-  finalizeFrame as e,
-  fibDir as f,
-  frac as g,
-  hashD as h,
-  radiusScale as i,
-  paint as j,
-  paintLines as k,
-  lerp as l,
-  makeProj as m,
-  paintFrame as p,
-  resolvePreset as r,
-  scaleCounts as s,
-  vnoise as v
-};
-// ── Ajout Boréal : noms publics (équivalent de dist/engine.es.js du paquet).
 export { MODE_FRAMES, MODE_DRAWS, STATE_TO_MODE, finalizeFrame, makeProj, paint, paintFrame, paintLines, radiusScale, resolvePreset }

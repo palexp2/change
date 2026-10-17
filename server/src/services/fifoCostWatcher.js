@@ -209,10 +209,3 @@ export function startFifoCostWatcher() {
   }, PUSH_MS)
   pushTimer.unref?.()
 }
-
-export function stopFifoCostWatcher() {
-  watcher.stop()
-  if (fullTimer) clearInterval(fullTimer)
-  if (pushTimer) clearInterval(pushTimer)
-  fullTimer = pushTimer = null
-}

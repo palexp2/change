@@ -19,6 +19,7 @@
 // fragile pour être modifié programmatiquement) vit dans l'ERP :
 // marketing_budget_lines (budget saisi) × marketing_expenses pertinentes (réel).
 import db from '../db/database.js'
+import { loadAutomationConfig } from './automationConfig.js'
 import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { sendSlackConfigured, slackBotToken } from './slack.js'
@@ -53,19 +54,8 @@ export const MARKETING_SLACK_DEFAULT_CONFIG = {
   recipient: 'Émilie',
 }
 
-function loadConfig(automationId, defaults) {
-  const row = db.prepare('SELECT action_config FROM automations WHERE id=?').get(automationId)
-  let cfg = {}
-  try { cfg = JSON.parse(row?.action_config || '{}') } catch {}
-  const merged = { ...defaults }
-  for (const k of Object.keys(defaults)) {
-    if (cfg[k] != null && String(cfg[k]).trim() !== '') merged[k] = String(cfg[k]).trim()
-  }
-  return merged
-}
-
-export const getMarketingSyncConfig = () => loadConfig(MARKETING_SYNC_AUTOMATION_ID, MARKETING_SYNC_DEFAULT_CONFIG)
-export const getMarketingSlackConfig = () => loadConfig(MARKETING_SLACK_AUTOMATION_ID, MARKETING_SLACK_DEFAULT_CONFIG)
+export const getMarketingSyncConfig = () => loadAutomationConfig(MARKETING_SYNC_AUTOMATION_ID, MARKETING_SYNC_DEFAULT_CONFIG)
+export const getMarketingSlackConfig = () => loadAutomationConfig(MARKETING_SLACK_AUTOMATION_ID, MARKETING_SLACK_DEFAULT_CONFIG)
 
 // ── Normalisation fournisseur (même esprit que vendor_profiles) ─────────────
 export const vendorKey = s => String(s || '')

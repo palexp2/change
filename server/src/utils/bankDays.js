@@ -10,7 +10,4 @@
 //
 // Si le serveur devait un jour être déployé sans le dossier `client/`, c'est
 // ICI (et nulle part ailleurs) qu'il faudrait vendorer le fichier.
-export {
-  todayIso, shiftDays, weekdayOf, isWeekend, easterSunday, bankHolidays,
-  holidayName, isBankDay, bankDayOnOrBefore, payDateForDue,
-} from '../../../client/src/lib/bankDays.js'
+export { payDateForDue } from '../../../client/src/lib/bankDays.js'

@@ -182,24 +182,28 @@ const sameAmount = (a, b) => a != null && b != null && Math.abs(a - b) < 0.005
 // payer » du Sommaire. Fire-and-forget : log via logSystemRun, ne lève jamais.
 // { vendor, total, currency, dueDate (YYYY-MM-DD|null), source } — source est
 // une étiquette libre pour les logs (ex. « sale_receipt abc123 »).
+// Garde commune des deux écritures : fournisseur présent, compte Google
+// connecté, grille de l'onglet lue en valeurs formatées.
+async function openCtbGrid(vendor) {
+  if (!vendor || !String(vendor).trim()) throw new Error('Fournisseur manquant')
+  const cfg = getCtbConfig()
+  const accountId = getGoogleAccountId(cfg.google_account_email)
+  if (!accountId) throw new Error('Aucun compte Google connecté (page Connecteurs)')
+  const sheets = await getSheetsClient(accountId)
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: cfg.spreadsheet_id,
+    range: `${cfg.sheet_name}!A1:Z300`,
+    valueRenderOption: 'FORMATTED_VALUE',
+  })
+  return { cfg, sheets, grid: res.data.values || [] }
+}
+
 export async function appendFactureAPayer({ vendor, total, currency = 'CAD', dueDate = null, source = '' }) {
   const t0 = Date.now()
   const trigger = { vendor, total, currency, dueDate, source }
   try {
     if (!isSystemAutomationActive(CTB_AUTOMATION_ID)) return { skipped: 'inactive' }
-    if (!vendor || !String(vendor).trim()) throw new Error('Fournisseur manquant')
-    const cfg = getCtbConfig()
-
-    const accountId = getGoogleAccountId(cfg.google_account_email)
-    if (!accountId) throw new Error('Aucun compte Google connecté (page Connecteurs)')
-    const sheets = await getSheetsClient(accountId)
-
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: cfg.spreadsheet_id,
-      range: `${cfg.sheet_name}!A1:Z300`,
-      valueRenderOption: 'FORMATTED_VALUE',
-    })
-    const grid = res.data.values || []
+    const { cfg, sheets, grid } = await openCtbGrid(vendor)
     const block = locateProgrammationBlock(grid, cfg.section_header)
     if (!block) throw new Error(`Section « ${cfg.section_header} » introuvable dans l'onglet ${cfg.sheet_name}`)
 
@@ -277,19 +281,7 @@ export async function appendFacturePayee({ vendor, total, currency = 'CAD', paid
   const trigger = { vendor, total, currency, paidDate, dueDate, source, action: 'facture_payee' }
   try {
     if (!isSystemAutomationActive(CTB_AUTOMATION_ID)) return { skipped: 'inactive' }
-    if (!vendor || !String(vendor).trim()) throw new Error('Fournisseur manquant')
-    const cfg = getCtbConfig()
-
-    const accountId = getGoogleAccountId(cfg.google_account_email)
-    if (!accountId) throw new Error('Aucun compte Google connecté (page Connecteurs)')
-    const sheets = await getSheetsClient(accountId)
-
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: cfg.spreadsheet_id,
-      range: `${cfg.sheet_name}!A1:Z300`,
-      valueRenderOption: 'FORMATTED_VALUE',
-    })
-    const grid = res.data.values || []
+    const { cfg, sheets, grid } = await openCtbGrid(vendor)
     const actions = []
 
     // 1) Ajout dans « Factures payées cette semaine » (3 colonnes).

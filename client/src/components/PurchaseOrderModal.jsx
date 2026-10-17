@@ -9,32 +9,11 @@ import { textToHtml } from '../lib/emailHtml.js'
 import ErrorBanner from './ErrorBanner.jsx'
 import TableThumb, { TABLE_THUMB_CLASS } from './TableThumb.jsx'
 import ThinkingOrb from './ThinkingOrb'
+import { InlineIsoDate } from './InlineFields.jsx'
+import { saveBlob } from '../lib/saveBlob.js'
 import { fmtAddress } from '../utils/formatters.js'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
-
-// Date en texte AAAA-MM-JJ (le type="date" natif suit la langue du navigateur).
-// Calendrier via data-date-picker ; saisie invalide → revient.
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
-function IsoDateInput({ value, onCommit }) {
-  const current = value ? String(value).slice(0, 10) : ''
-  const [local, setLocal] = useState(current)
-  useEffect(() => { setLocal(current) }, [current])
-  const commit = raw => {
-    const s = String(raw ?? '').trim()
-    if (s === current) return
-    const valid = ISO_DATE.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s
-    if (s !== '' && !valid) { setLocal(current); return }
-    onCommit(s)
-  }
-  return (
-    <input type="text" inputMode="numeric" data-date-picker value={local} aria-label="Date"
-      onChange={e => setLocal(e.target.value)}
-      onBlur={e => commit(e.target.value)}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      className={`${inp} tabular-nums`} />
-  )
-}
 
 // Bloc compact : lien vers la fiche adresse d'Orisha (nouvel onglet, pour ne
 // pas perdre le PO en cours) + choix parmi ses autres adresses. Le texte du
@@ -186,14 +165,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
     setError('')
     try {
       const blob = await api.products.poPdfBlob(productId, po)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${po.po_number}.pdf`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
+      saveBlob(blob, `${po.po_number}.pdf`)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -283,7 +255,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Date</label>
-              <IsoDateInput value={po.date} onCommit={v => setField('date', v)} />
+              <InlineIsoDate value={po.date} onSave={v => setField('date', v)} className={inp} aria-label="Date" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Devise</label>

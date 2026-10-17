@@ -183,6 +183,18 @@ export const MANUAL_RUNNERS = {
     return { ...res, ...changePollStatus() }
   },
 
+  // Grand livre miroir : « Exécuter » ré-importe tout de suite les mois sales.
+  sys_gl_mirror_sync: async () => {
+    const { syncGlDirtyMonths } = await import('./glMirror.js')
+    return await syncGlDirtyMonths({ trigger: 'manuel', force: true })
+  },
+
+  // Comparaison Boréal ↔ QBO : « Exécuter » relance tous les mois tout de suite.
+  sys_gl_reconciliation: async () => {
+    const { runGlReconciliation } = await import('./glReconcile.js')
+    return await runGlReconciliation({ trigger: 'manuel', force: true })
+  },
+
   sys_qb_webhook: async () => {
     const { qbWebhookStatus } = await import('../routes/quickbooks-webhook.js')
     const st = qbWebhookStatus()
@@ -1120,6 +1132,42 @@ export const SYSTEM_AUTOMATIONS = [
       kind: 'schedule',
       source: "setInterval 30 s (index.js) → services/qbChangePoll.js",
       summary: 'Interrogation toutes les 30 secondes',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_gl_mirror_sync',
+    name: 'Grand livre : rester à jour avec QuickBooks',
+    description:
+      "Le grand livre de Boréal est une copie, en lecture seule, de toutes les écritures de QuickBooks. " +
+      "Dès qu'une écriture est créée, modifiée ou supprimée — par Boréal ou à la main dans QuickBooks — son mois est marqué " +
+      "« à refaire » et recopié en moins de 2 minutes (vérification toutes les 60 s). Une écriture changée de mois refait aussi l'ancien. " +
+      "Le plan comptable suit les comptes de QuickBooks. Chaque nuit (3 h 15), les 13 derniers mois et le plan comptable sont recopiés en entier. " +
+      "Rien n'est jamais écrit dans QuickBooks. Les changements faits à la main sont vus par l'interrogation aux 30 s (sys_qb_change_poll) : " +
+      "si elle est coupée, seul le passage de nuit les rattrape.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'onQbMutation + services/qbChangePoll.js → gl_dirty_months ; setInterval 60 s + cron 3 h 15 (index.js) → services/glMirror.js',
+      summary: 'Toutes les 60 s (mois modifiés) + chaque nuit',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_gl_reconciliation',
+    name: 'Grand livre : comparer à QuickBooks',
+    description:
+      "Chaque jour, pour chaque fin de mois de l'exercice en cours et du précédent, la balance de vérification " +
+      "calculée par Boréal est comparée compte par compte à celle de QuickBooks. Résultat sur la page Grand livre : " +
+      "« identique » ou le nombre de comptes qui diffèrent. Les écarts sont seulement signalés, jamais corrigés. " +
+      "Rien n'est écrit dans QuickBooks.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 4 h 30 (index.js) → services/glReconcile.js',
+      summary: 'Chaque jour à 4 h 30',
     },
     action_config: {},
     configurable: true,

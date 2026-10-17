@@ -16,6 +16,8 @@
 // journalisant les PDF et les appels de facturation croisés pour calibrer au
 // premier vrai passage — même démarche que bell.js et digikey.js.
 
+import { pdfNet, invoiceLinkRows, fetchPdfByUrl } from './portalPage.js'
+
 const ORIGIN = 'https://business.bell.ca'
 const HOME_URL = `${ORIGIN}/Self-Serve/`
 const BILLING_URLS = [`${ORIGIN}/Self-Serve/Billing`, `${ORIGIN}/Self-Serve/`]
@@ -125,19 +127,7 @@ export default {
   async list(ctx) {
     const { page, context, log } = ctx
 
-    const captured = new Map()
-    page.on('response', async (res) => {
-      try {
-        const type = (res.headers()['content-type'] || '').toLowerCase()
-        const url = res.url()
-        if (type.includes('pdf') || /\.pdf(\?|$)/i.test(url)) {
-          if (!captured.has(url)) captured.set(url, Buffer.from(await res.body()))
-          log(`📄 PDF capturé : ${url.slice(0, 120)}`)
-        } else if (type.includes('json') && /bill|invoice|factur|statement/i.test(url)) {
-          log(`↪︎ API vue : ${url.slice(0, 160)}`)
-        }
-      } catch { /* corps déjà consommé ou réponse annulée */ }
-    })
+    const captured = pdfNet(page, log, /bill|invoice|factur|statement/i)
 
     await page.goto(BILLING_URLS[0], { waitUntil: 'domcontentloaded' })
     if (LOGIN_MARKER.test(page.url()) || await page.locator('input[name="PASSWORD"]').count()) {
@@ -169,19 +159,7 @@ export default {
     }
     await ctx.snapshot('bell-affaires-factures')
 
-    const rows = await page.$$eval(
-      'a[href*="bill" i], a[href*="invoice" i], a[href*="factur" i], a[href$=".pdf"], a[download]',
-      els => els.map((el) => {
-        let node = el
-        let row = ''
-        for (let i = 0; i < 10 && node; i++) {
-          const text = node.innerText || ''
-          if (/\d/.test(text) && text.length > 12) { row = text; break }
-          node = node.parentElement
-        }
-        return { href: el.getAttribute('href') || '', text: (el.innerText || '').trim(), row }
-      }),
-    ).catch(() => [])
+    const rows = await invoiceLinkRows(page, 'a[href*="bill" i], a[href*="invoice" i], a[href*="factur" i], a[href$=".pdf"], a[download]')
     log(`${rows.length} lien(s) de facture détecté(s)`)
     if (rows.length === 0) {
       await ctx.snapshot('bell-affaires-aucun-lien')
@@ -206,16 +184,7 @@ export default {
         currency: 'CAD',
         filename: `Bell-Affaires-${date || externalId}.pdf`,
         url,
-        fetch: async () => {
-          const res = await context.request.get(url, { timeout: 60_000 })
-          const buffer = res.ok() ? await res.body() : null
-          if (buffer && buffer.slice(0, 5).toString() === '%PDF-') return buffer
-          // Lien qui ouvre une visionneuse : on récupère le PDF passé au filet.
-          await page.goto(url, { waitUntil: 'networkidle' }).catch(() => {})
-          const late = [...captured.values()].pop()
-          if (late) return late
-          throw new Error(`réponse non-PDF (HTTP ${res.status()})`)
-        },
+        fetch: () => fetchPdfByUrl({ context, page, url, captured }),
       })
     }
     return out

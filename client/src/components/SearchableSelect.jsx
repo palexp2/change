@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronDown, Search, Check } from 'lucide-react'
+import { useMenuDismiss } from '../lib/useAnchoredPopup.js'
 
 // Id stable du menu en portail. Un seul menu est ouvert à la fois, donc un id
 // fixe suffit — et il reste rétro-compatible avec les tests E2E historiques qui
@@ -152,25 +153,10 @@ export function SearchableSelect({
 
   useEffect(() => {
     if (!open) return
-    computePos()
     setActiveIdx(0)
     setTimeout(() => inputRef.current?.focus(), 0)
-    function onDown(e) {
-      if (!btnRef.current?.contains(e.target) && !document.getElementById(PORTAL_ID)?.contains(e.target)) {
-        setOpen(false)
-        setSearch('')
-      }
-    }
-    function onReflow() { computePos() }
-    document.addEventListener('mousedown', onDown)
-    window.addEventListener('scroll', onReflow, true)
-    window.addEventListener('resize', onReflow)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('scroll', onReflow, true)
-      window.removeEventListener('resize', onReflow)
-    }
-  }, [open, computePos])
+  }, [open])
+  useMenuDismiss({ open, btnRef, portalId: PORTAL_ID, computePos, onClose: () => { setOpen(false); setSearch('') } })
 
   function commit(v) {
     onChange(v)

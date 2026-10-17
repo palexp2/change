@@ -10,7 +10,6 @@
 //
 // Utilisé par :
 //   - Webhook Airtable (changements en temps réel) — voir airtableWebhooks.js
-//   - Script one-shot de backfill — voir scripts/backfill-factures-airtable-links.js
 
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'

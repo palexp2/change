@@ -1,6 +1,3 @@
-import { AlertCircle, CheckCircle, Clock } from 'lucide-react'
-import ThinkingOrb from './ThinkingOrb'
-
 export function Badge({ children, color = 'gray', size = 'sm', className = '' }) {
   const colors = {
     gray: 'bg-slate-100 text-slate-700',
@@ -114,10 +111,3 @@ export const INTERACTION_TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 
 
 export const AUTOMATION_ACTION_LABELS = { slack: 'Slack', email: 'Email', task: 'Tâche', script: 'Script' }
 
-// Badge de statut de traitement d'un reçu de vente (liste + fiche détail).
-export function ReceiptStatusBadge({ status }) {
-  if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
-  if (status === 'processing') return <span className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full"><ThinkingOrb state="working" size={11} ink /> En cours</span>
-  if (status === 'error')      return <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full"><AlertCircle size={10} /> Erreur</span>
-  return <span className="inline-flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"><Clock size={10} /> En attente</span>
-}

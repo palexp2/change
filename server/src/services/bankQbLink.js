@@ -186,8 +186,17 @@ export async function fetchQbLedgerCleared(qbAccountIds, startDate, endDate) {
     }
     lists.push(list)
   }
+  return mergeLedgers(lists)
+}
+
+// Un compte ERP peut couvrir plusieurs comptes QB (« 234,168 »), et le rapport
+// GeneralLedger ne respecte pas toujours son filtre `account` : la même écriture
+// revient alors une fois par appel. On fusionne en gardant, pour chaque écriture
+// (id + date + montant), la multiplicité maximale vue sur un seul appel — ce qui
+// préserve les vraies écritures à plusieurs lignes sans les compter en double.
+export function mergeLedgers(lists) {
   if (lists.length <= 1) return lists[0] || []
-  const keyOf = e => `${e.qbId || ''}|${e.date}|${e.amount}`
+  const keyOf = (e) => `${e.qbId || ''}|${e.date}|${e.amount}`
   const kept = new Map()
   for (const list of lists) {
     const local = new Map()

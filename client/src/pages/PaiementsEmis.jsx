@@ -42,6 +42,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
 import { formatRelativeTime, fmtMoney, fmtNumber } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 const fmtCad = (n, currency = 'CAD') => fmtMoney(n, currency, { nullIsZero: true })
 // Montant éditable de la liste : lisible (séparateurs de milliers, 2 décimales)
@@ -282,7 +283,7 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
         <div className="px-3 pb-3 pt-1 border-t border-white/70 bg-white/50" data-testid={`payment-details-${p.id}`}>
           <div className="grid gap-x-3 gap-y-2 grid-cols-2 md:grid-cols-4">
             <Field label={sp.dateLabel || 'Date du paiement'}>
-              <input type="date" defaultValue={String(p.payment_date).slice(0, 10)} className={inputXs}
+              <DateInput defaultValue={String(p.payment_date).slice(0, 10)} className={inputXs}
                 onBlur={e => save('payment_date', e.target.value)} />
             </Field>
             {/* Date de la facture : dès qu'une facture est liée, sa vraie date
@@ -294,7 +295,7 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
                     title="Date de la facture liée — synchronisée depuis QuickBooks, non modifiable ici">
                     {fmtIso(p.invoice_date)}
                   </span>
-                : <input type="date" defaultValue={p.invoice_date ? String(p.invoice_date).slice(0, 10) : ''}
+                : <DateInput defaultValue={p.invoice_date ? String(p.invoice_date).slice(0, 10) : ''}
                     className={inputXs}
                     title="Remplie automatiquement depuis QuickBooks quand un n° de facture concorde"
                     onBlur={e => save('invoice_date', e.target.value || null)} />}
@@ -1100,7 +1101,7 @@ function NewPaymentForm({ onCreated, onClose, hints, templates, accounts, bills,
                 className={`${inputCls} w-full text-right tabular-nums`} data-testid="payment-new-amount" />
             </Field>
             <Field label={sp.dateLabel} className="w-44">
-              <input type="date" value={form.payment_date} onChange={e => set('payment_date', e.target.value)}
+              <DateInput value={form.payment_date} onChange={e => set('payment_date', e.target.value)}
                 className={`${inputCls} w-full`} data-testid="payment-new-date" />
             </Field>
             <Field label={sp.refLabel} className="w-52">

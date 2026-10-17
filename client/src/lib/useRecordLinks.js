@@ -100,10 +100,3 @@ export function useRecordLinks(keys, table = null, byLabel = false) {
   return list.map(k => cache.get(cacheKey(k, table, byLabel)))
 }
 
-// Vide le cache — utilisé par les tests ; l'app n'en a pas besoin (un libellé
-// d'enregistrement change trop rarement pour justifier une invalidation).
-export function _resetRecordLinkCache() {
-  cache.clear()
-  queue = new Map()
-  if (timer) { clearTimeout(timer); timer = null }
-}

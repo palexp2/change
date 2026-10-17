@@ -225,7 +225,4 @@ const watcher = createChangeLogWatcher({
   },
 })
 
-export const pollOnce = watcher.pollOnce
-
 export function startReturnItemReceivedWatcher() { watcher.start() }
-export function stopReturnItemReceivedWatcher() { watcher.stop() }

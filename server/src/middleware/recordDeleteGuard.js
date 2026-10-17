@@ -47,5 +47,3 @@ export function recordDeleteGuard(req, res, next) {
   }
   next()
 }
-
-export default recordDeleteGuard

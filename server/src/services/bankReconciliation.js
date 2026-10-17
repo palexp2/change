@@ -1020,12 +1020,3 @@ export function moveBankLinkOffArchived(receiptId) {
   try { touchBankTxns([txn.id]) } catch { /* temps réel facultatif */ }
   return { txnId: txn.id, movedTo: to }
 }
-
-// Rattrapage : débits restés sur une pièce archivée avant cette règle.
-export function moveBankLinksOffArchived() {
-  const ids = db.prepare(`
-    SELECT r.id FROM bank_transactions t JOIN sale_receipts r ON r.id = t.matched_id
-    WHERE t.matched_type='receipt' AND t.deleted_at IS NULL AND r.archived_at IS NOT NULL AND r.quickbooks_id IS NULL
-  `).all().map((x) => x.id)
-  return ids.map((id) => moveBankLinkOffArchived(id)).filter(Boolean)
-}

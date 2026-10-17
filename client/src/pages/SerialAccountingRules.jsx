@@ -6,6 +6,8 @@ import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { Badge } from '../components/Badge.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { fmtDate } from '../lib/formatDate.js'
@@ -148,15 +150,16 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
       <div className={`grid grid-cols-2 gap-3 ${form.skip_accounting ? 'opacity-50 pointer-events-none' : ''}`}>
         <div>
           <label className="label">Source de la valeur</label>
-          <select
-            className="input"
+          <ChoiceSelect
             value={form.valuation_source}
-            onChange={e => setField('valuation_source', e.target.value)}
-          >
-            {Object.entries(VALUATION_LABELS).map(([k, v]) => (
-              <option key={k} value={k}>{v}</option>
-            ))}
-          </select>
+            choices={Object.entries(VALUATION_LABELS).map(([value, label]) => ({ value, label }))}
+            table="serial_accounting_rules"
+            field="valuation"
+            colorsOnly
+            onChange={v => setField('valuation_source', v)}
+            className="input"
+            emptyOption={null}
+          />
         </div>
         {form.valuation_source === 'fixed_amount' && (
           <div>
@@ -367,10 +370,11 @@ export default function SerialAccountingRules() {
       new_status:      r => <span className="text-slate-900 font-medium">{statusLabel(r.new_status)}</span>,
       debit:  r => r.skip_accounting ? <span className="text-slate-400 italic">— skip —</span> : <span className="text-slate-700 text-xs">{r.debit_account_name || r.debit_account_id}</span>,
       credit: r => r.skip_accounting ? <span className="text-slate-400 italic">— skip —</span> : <span className="text-slate-700 text-xs">{r.credit_account_name || r.credit_account_id}</span>,
+      // Textes nus : DataTable les rend en pastilles (colonnes Sélection).
       valuation: r => r.skip_accounting
-        ? <span className="text-xs text-slate-400">Aucune écriture</span>
-        : <span className="text-xs text-slate-600">{VALUATION_LABELS[r.valuation_source]}{r.valuation_source === 'fixed_amount' && r.fixed_amount != null && ` (${r.fixed_amount} $)`}</span>,
-      active: r => r.active ? <span className="text-xs text-green-700">Oui</span> : <span className="text-xs text-slate-400">Non</span>,
+        ? 'Aucune écriture'
+        : `${VALUATION_LABELS[r.valuation_source] || r.valuation_source || ''}${r.valuation_source === 'fixed_amount' && r.fixed_amount != null ? ` (${r.fixed_amount} $)` : ''}`,
+      active: r => <Badge color={r.active ? 'green' : 'gray'}>{r.active ? 'Oui' : 'Non'}</Badge>,
       action: r => (
         <div className="text-right">
           <button onClick={() => setModal({ rule: r })} className="text-xs text-brand-600 hover:text-brand-800 mr-3">Modifier</button>

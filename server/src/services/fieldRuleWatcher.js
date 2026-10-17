@@ -70,7 +70,6 @@ const watcher = createChangeLogWatcher({
 export const pollOnce = watcher.pollOnce
 
 export function startFieldRuleWatcher() { watcher.start() }
-export function stopFieldRuleWatcher() { watcher.stop() }
 
 // Test seam — set the cursor explicitly.
 export function _setLastSeenId(n) { watcher.setLastSeenId(n) }

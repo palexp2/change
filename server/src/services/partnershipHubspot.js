@@ -12,8 +12,8 @@
 // « Exécuter maintenant » le retente.
 
 import db from '../db/database.js'
-import { hsFetch, lookupContactsByEmail, isHubSpotConfigured } from '../connectors/hubspot.js'
-import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
+import { hsFetch, lookupContactsByEmail } from '../connectors/hubspot.js'
+import { logSystemRun } from './systemAutomations.js'
 import { siblingStripeProducts } from './stripeCatalog.js'
 import { localDateTime } from '../utils/datetime.js'
 
@@ -132,25 +132,6 @@ async function pushPair(pair, cfg) {
   }
 }
 
-/**
- * Ajout programmé (page avec premier paiement différé) : le produit n'entre
- * dans l'abonnement qu'à la date, mais l'inscription compte dès maintenant →
- * le contact est poussé tout de suite, et la passe régulière le saute ensuite.
- */
-export async function pushScheduledPartnership(stripeSubId, contactId, stripeProductId) {
-  if (!contactId || !isSystemAutomationActive(PARTNERSHIP_HUBSPOT_ID) || !isHubSpotConfigured()) return null
-  const cfg = getPartnershipHubspotConfig()
-  if (!itemsContainProduct([{ stripe_product_id: stripeProductId }], cfg, siblingStripeProducts)) return null
-  const sub = db.prepare('SELECT id, stripe_id FROM subscriptions WHERE stripe_id=?').get(stripeSubId)
-  const ct = sub && db.prepare(`SELECT id, email, hubspot_record_id,
-      TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) AS contact_name
-    FROM contacts WHERE id = ? AND deleted_at IS NULL`).get(contactId)
-  if (!ct) return null
-  if (db.prepare('SELECT 1 FROM subscription_partnership_marks WHERE subscription_id=? AND contact_id=? AND outcome=?').get(sub.id, ct.id, 'sent')) return null
-  return pushPair({ subscription_id: sub.id, stripe_id: sub.stripe_id, contact_id: ct.id, email: ct.email,
-    hubspot_record_id: ct.hubspot_record_id, contact_name: ct.contact_name }, cfg)
-}
-
 /** Une passe. dryRun = liste sans pousser ; retryErrors = retente les échecs. */
 export async function runPartnershipHubspot({ dryRun = false, retryErrors = false } = {}) {
   const cfg = getPartnershipHubspotConfig()
@@ -167,16 +148,4 @@ export async function runPartnershipHubspot({ dryRun = false, retryErrors = fals
     else errors++
   }
   return { summary: `${sent} contact(s) mis à jour · ${errors} erreur(s)` }
-}
-
-let timer = null
-let running = false
-export function startPartnershipHubspotWatcher(intervalMs = 30_000) {
-  if (timer) return
-  timer = setInterval(async () => {
-    if (running || !isSystemAutomationActive(PARTNERSHIP_HUBSPOT_ID) || !isHubSpotConfigured()) return
-    running = true
-    try { await runPartnershipHubspot() } catch (e) { console.error('[partnershipHubspot]', e.message) } finally { running = false }
-  }, intervalMs)
-  timer.unref?.()
 }

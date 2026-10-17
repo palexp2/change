@@ -12,6 +12,7 @@ import { useAutosave } from '../lib/useAutosave.js'
 import { nextRecurringStatements } from '../lib/treasuryRecurringAmounts.js'
 import { MissingReceiptsSection } from './VendorSubscriptions.jsx'
 import Spinner from '../components/Spinner.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 const fmtCad = (n, digits = 0) => fmtMoney(n, 'CAD', { decimals: digits })
 
@@ -1333,7 +1334,7 @@ export function PaieComptabilisationCard({ paieId: pinnedPaieId = null }) {
         </div>
         <div>
           <label className="label">Date (débit bancaire)</label>
-          <input type="date" className={inputCls} value={txnDate}
+          <DateInput className={inputCls} value={txnDate}
             onChange={e => { setTxnDate(e.target.value); loadPreview({ txnDate: e.target.value }) }} />
           {bankDebit?.match && txnDate === bankDebit.match.txn_date ? (
             <p className="text-[11px] text-slate-400 mt-0.5" title="Jour du débit au compte BNC, lu à la banque">
@@ -1508,7 +1509,7 @@ export function AgaRepartitionCard({ debit = null }) {
         </div>
         <div>
           <label className="label">Date du prélèvement</label>
-          <input type="date" value={txnDate}
+          <DateInput value={txnDate}
             onChange={e => { setTxnDate(e.target.value); setPushed(null) }}
             className="px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
         </div>

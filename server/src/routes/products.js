@@ -19,7 +19,6 @@ import { parsePage } from '../utils/pagination.js'
 import { productPurchasePrefill, createProductPurchase, syncProductPurchase, readProductPurchase, createPurchasesFromPo } from '../services/productPurchase.js'
 import { trackEmailHtml } from '../services/emailTracking.js'
 import { purchaseUnitPrice, computeFifo, applyFifo } from '../services/fifoCost.js'
-import { runFifoFullPass } from '../services/fifoCostWatcher.js'
 import { getDynamicThresholdsCached, publicThreshold } from '../services/dynamicThreshold.js'
 
 const INSTALLATION_DOC_FIELDS = [
@@ -116,11 +115,6 @@ router.get('/fifo/alerts', (req, res) => {
     WHERE f.issue_count > 0 AND p.deleted_at IS NULL ORDER BY p.name_fr
   `).all()
   res.json({ data: rows.map(r => ({ ...r, issues: JSON.parse(r.issues || '[]') })) })
-})
-
-router.post('/fifo/recompute', async (req, res) => {
-  try { res.json(await runFifoFullPass({ source: 'manuel' })) }
-  catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // Seuil dynamique et quantité à commander de chaque pièce, calculés par

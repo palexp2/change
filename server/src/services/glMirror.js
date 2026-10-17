@@ -22,6 +22,7 @@
 
 import db from '../db/database.js'
 import { qbGet, getQbRealmIdSync } from '../connectors/quickbooks.js'
+import { isSystemAutomationActive, logSystemRun, touchSystemRun } from './systemAutomations.js'
 
 // Libellés (QBO en français) → entité de l'API. L'id d'une transaction n'est
 // unique que dans son entité : deux libellés d'une même entité (chèque /
@@ -175,26 +176,28 @@ export async function refreshGlAccounts() {
   const now = new Date().toISOString()
   const up = db.prepare(`
     INSERT INTO gl_accounts (qb_id, acct_num, name, fully_qualified_name, account_type,
-      account_sub_type, classification, currency, parent_qb_id, active, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      account_sub_type, classification, currency, parent_qb_id, active, updated_at, description, sub_account)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(qb_id) DO UPDATE SET acct_num = excluded.acct_num, name = excluded.name,
       fully_qualified_name = excluded.fully_qualified_name, account_type = excluded.account_type,
       account_sub_type = excluded.account_sub_type, classification = excluded.classification,
       currency = excluded.currency, parent_qb_id = excluded.parent_qb_id,
-      active = excluded.active, updated_at = excluded.updated_at
+      active = excluded.active, updated_at = excluded.updated_at,
+      description = excluded.description, sub_account = excluded.sub_account
   `)
   db.transaction(() => {
     for (const a of all) {
       up.run(String(a.Id), a.AcctNum || null, a.Name || null, a.FullyQualifiedName || null,
         a.AccountType || null, a.AccountSubType || null, a.Classification || null,
-        a.CurrencyRef?.value || null, a.ParentRef?.value || null, a.Active === false ? 0 : 1, now)
+        a.CurrencyRef?.value || null, a.ParentRef?.value || null, a.Active === false ? 0 : 1, now,
+        a.Description || null, a.SubAccount ? 1 : 0)
     }
   })()
   return all.length
 }
 
 /** Résolveur de compte : id du rapport s'il est connu, sinon nom complet. */
-function accountResolver() {
+export function accountResolver() {
   const rows = db.prepare(`SELECT qb_id, acct_num, name, fully_qualified_name FROM gl_accounts`).all()
   const ids = new Set(rows.map(r => r.qb_id))
   const byName = new Map()
@@ -235,11 +238,11 @@ export function monthsBetween(from, to) {
 }
 
 /** Remplace en bloc les écritures d'un mois par celles du JournalReport. */
-export async function importGlMonth(ym, { resolve } = {}) {
+export async function importGlMonth(ym, { resolve, trigger = 'manuel' } = {}) {
   const { start, end } = monthBounds(ym)
   const runId = db.prepare(`
-    INSERT INTO gl_import_runs (started_at, period_start, period_end, status) VALUES (?, ?, ?, 'running')
-  `).run(new Date().toISOString(), start, end).lastInsertRowid
+    INSERT INTO gl_import_runs (started_at, period_start, period_end, status, trigger) VALUES (?, ?, ?, 'running', ?)
+  `).run(new Date().toISOString(), start, end, trigger).lastInsertRowid
   const finish = (fields) => db.prepare(`
     UPDATE gl_import_runs SET finished_at = ?, entries = ?, lines = ?, status = ?, error = ? WHERE id = ?
   `).run(new Date().toISOString(), fields.entries ?? null, fields.lines ?? null, fields.status, fields.error ?? null, runId)
@@ -304,21 +307,24 @@ export async function importGlMonth(ym, { resolve } = {}) {
 // ── Import d'une période ───────────────────────────────────────────────────
 
 let running = null
+// Un compte a bougé dans QBO depuis la dernière recopie du plan comptable.
+let accountsDirty = false
 
 export function glImportRunning() { return running }
 
 /** Importe mois par mois ; un mois en échec n'arrête pas les suivants. */
-export async function importGlRange(from, to, { onMonth } = {}) {
+export async function importGlRange(from, to, { onMonth, trigger } = {}) {
   if (running) throw Object.assign(new Error('Un import du grand livre est déjà en cours'), { status: 409 })
   const months = monthsBetween(from, to)
   running = { from: months[0], to: months.at(-1), done: 0, total: months.length }
   try {
     await refreshGlAccounts()
+    accountsDirty = false
     const resolve = accountResolver()
     const results = []
     for (const ym of months) {
       let r
-      try { r = await importGlMonth(ym, { resolve }) }
+      try { r = await importGlMonth(ym, { resolve, trigger }) }
       catch (err) { r = { month: ym, error: err.message } }
       results.push(r)
       running.done++
@@ -362,4 +368,275 @@ export function glSummary() {
     FROM gl_lines
   `).get()
   return { ...s, accounts: db.prepare(`SELECT COUNT(*) AS n FROM gl_accounts`).get().n }
+}
+
+// ── Rester à jour tout seul (tranche 2/4) ──────────────────────────────────
+//
+// Une écriture créée, modifiée ou supprimée dans QBO rend son mois « sale »
+// (gl_dirty_months) ; le planificateur de index.js ré-importe les mois sales
+// toutes les 60 s, un à la fois. Trois sources de signaux :
+//   - onQbMutation : écriture faite par Boréal (mois courant + date du corps) ;
+//   - le sondage CDC (services/qbChangePoll.js) : toute écriture, Boréal ou main ;
+//   - les avis d'Intuit (routes/quickbooks-webhook.js), s'ils arrivent un jour.
+// Une écriture dont la date a changé de mois salit aussi son ancien mois (celui
+// déjà stocké dans gl_entries). Filet : ré-import nocturne des 13 derniers mois.
+// Coupe-circuit et historique : automation système sys_gl_mirror_sync.
+
+export const GL_AUTOMATION_ID = 'sys_gl_mirror_sync'
+
+// Entités dont un changement touche le grand livre (noms de l'API = types de
+// gl_entries). « Account » ne salit aucun mois : il fait recopier le plan.
+export const GL_TXN_ENTITIES = [
+  'Invoice', 'Payment', 'SalesReceipt', 'CreditMemo', 'Bill', 'BillPayment', 'VendorCredit',
+  'JournalEntry', 'Deposit', 'Purchase', 'Transfer', 'RefundReceipt',
+]
+export const GL_CDC_ENTITIES = [...GL_TXN_ENTITIES, 'Account']
+
+const ENTITY_BY_PATH = Object.fromEntries(GL_CDC_ENTITIES.map(e => [e.toLowerCase(), e]))
+const YM = /^\d{4}-\d{2}$/
+const monthOf = (d) => {
+  const m = String(d || '').slice(0, 7)
+  return YM.test(m) && m >= '1990-01' ? m : null
+}
+const currentMonth = () => new Date().toISOString().slice(0, 7)
+
+/** '/journalentry?operation=delete' → 'JournalEntry' (null si hors grand livre). */
+export function entityFromPath(path) {
+  const seg = String(path || '').split('?')[0].split('/').filter(Boolean)[0]
+  return ENTITY_BY_PATH[String(seg || '').toLowerCase()] || null
+}
+
+/** Réponse CDC → [{ name, id, deleted, txnDate, lastUpdated }]. Pure. */
+export function glChangesFromCdc(data) {
+  const out = []
+  for (const group of data?.CDCResponse?.[0]?.QueryResponse || []) {
+    for (const [name, list] of Object.entries(group)) {
+      if (!Array.isArray(list) || !GL_CDC_ENTITIES.includes(name)) continue
+      for (const o of list) {
+        if (!o?.Id) continue
+        out.push({
+          name, id: String(o.Id),
+          deleted: o.status === 'Deleted',
+          txnDate: o.TxnDate || null,
+          lastUpdated: o.MetaData?.LastUpdatedTime || null,
+        })
+      }
+    }
+  }
+  return out
+}
+
+/** Mois touchés par une écriture faite par Boréal. Pure. */
+export function monthsForMutation({ body, response } = {}, entity, today = currentMonth()) {
+  const months = new Set([today])
+  for (const d of [body?.TxnDate, response?.[entity]?.TxnDate]) {
+    const m = monthOf(d)
+    if (m) months.add(m)
+  }
+  return [...months]
+}
+
+function storedMonth(entity, id) {
+  if (!entity || !id) return null
+  const r = db.prepare(`SELECT txn_date FROM gl_entries WHERE id = ?`).get(`${entity}:${id}`)
+  return monthOf(r?.txn_date)
+}
+
+/** Marque des mois à ré-importer ; re-marquer un mois en cours d'import le garde sale. */
+export function markGlDirty(months, reason) {
+  const up = db.prepare(`
+    INSERT INTO gl_dirty_months (month, reason, marked_at) VALUES (?, ?, ?)
+    ON CONFLICT(month) DO UPDATE SET reason = excluded.reason, marked_at = excluded.marked_at
+  `)
+  const now = new Date().toISOString()
+  let n = 0
+  for (const m of new Set((months || []).map(monthOf).filter(Boolean))) { up.run(m, reason ? String(reason).slice(0, 200) : null, now); n++ }
+  return n
+}
+
+/** Listener onQbMutation (synchrone) : écriture faite par Boréal dans QBO. */
+export function noteQbMutation(m = {}) {
+  const entity = entityFromPath(m.path)
+  if (!entity) return
+  if (entity === 'Account') { accountsDirty = true; return }
+  const id = m.body?.Id ?? m.response?.[entity]?.Id
+  const months = monthsForMutation(m, entity)
+  const old = storedMonth(entity, id)
+  if (old) months.push(old)
+  markGlDirty(months, `Boréal : ${entity}${id ? ` ${id}` : ''}`)
+}
+
+// Le sondage CDC recouvre volontairement ses fenêtres (2 min) : le même
+// changement revient 4 ou 5 fois. On ne le compte qu'une fois.
+const seenChanges = new Map() // clé → ts
+const SEEN_TTL_MS = 15 * 60_000
+function firstSeen(c) {
+  const now = Date.now()
+  for (const [k, t] of seenChanges) if (now - t > SEEN_TTL_MS) seenChanges.delete(k)
+  const key = `${c.name}:${c.id}:${c.lastUpdated || ''}:${c.deleted ? 'd' : ''}`
+  if (seenChanges.has(key)) return false
+  seenChanges.set(key, now)
+  return true
+}
+
+/** Changements lus par le CDC → mois sales. Retourne le nombre de mois marqués. */
+export function noteQbChanges(changes) {
+  let n = 0
+  for (const c of changes || []) {
+    if (!firstSeen(c)) continue
+    if (c.name === 'Account') { accountsDirty = true; continue }
+    const months = [monthOf(c.txnDate), storedMonth(c.name, c.id)].filter(Boolean)
+    // Supprimée et jamais importée : rien à retirer.
+    if (months.length) n += markGlDirty(months, `QBO : ${c.name} ${c.id}${c.deleted ? ' supprimée' : ''}`)
+  }
+  return n
+}
+
+export function noteQbCdc(data) {
+  return noteQbChanges(glChangesFromCdc(data))
+}
+
+/** Avis d'Intuit : sans TxnDate, on relit l'écriture (lecture seule). */
+export async function noteQbWebhookEntities(entities) {
+  const changes = []
+  for (const e of entities || []) {
+    if (!GL_CDC_ENTITIES.includes(e?.name) || !e?.id) continue
+    const deleted = ['Delete', 'Void', 'Merge'].includes(e.operation)
+    let txnDate = null
+    if (!deleted && e.name !== 'Account') {
+      try { txnDate = (await qbGet(`/${e.name.toLowerCase()}/${e.id}`))?.[e.name]?.TxnDate || null } catch {}
+    }
+    changes.push({ name: e.name, id: String(e.id), deleted, txnDate, lastUpdated: e.lastUpdated || null })
+  }
+  return noteQbChanges(changes)
+}
+
+export function glDirtyMonths() {
+  return db.prepare(`SELECT month, reason, marked_at FROM gl_dirty_months ORDER BY month`).all()
+}
+
+let syncing = false
+
+/**
+ * Passage du planificateur (60 s) : ré-importe chaque mois sale, un à la fois.
+ * Un mois re-marqué pendant son import reste sale pour le passage suivant.
+ */
+export async function syncGlDirtyMonths({ trigger = 'sale', force = false } = {}) {
+  if (!force && !isSystemAutomationActive(GL_AUTOMATION_ID)) return { skipped: 'inactive' }
+  if (syncing || running) return { skipped: 'en cours' }
+  const dirty = glDirtyMonths()
+  if (!dirty.length && !accountsDirty) {
+    if (trigger === 'sale') touchSystemRun(GL_AUTOMATION_ID)
+    return { months: [], summary: 'Grand livre à jour' }
+  }
+  syncing = true
+  const t0 = Date.now()
+  const results = []
+  try {
+    if (accountsDirty) { accountsDirty = false; await refreshGlAccounts() }
+    const resolve = accountResolver()
+    const clear = db.prepare(`DELETE FROM gl_dirty_months WHERE month = ? AND marked_at = ?`)
+    for (const d of dirty) {
+      try {
+        const r = await importGlMonth(d.month, { resolve, trigger })
+        clear.run(d.month, d.marked_at)
+        results.push({ ...r, reason: d.reason })
+      } catch (err) {
+        results.push({ month: d.month, error: err.message, reason: d.reason })
+      }
+    }
+  } catch (err) {
+    accountsDirty = true
+    results.push({ error: err.message })
+  } finally {
+    syncing = false
+  }
+  const failed = results.filter(r => r.error)
+  const summary = results.length
+    ? results.map(r => r.error ? `${r.month || 'plan'} : ${r.error}` : `${r.month} : ${r.entries} écritures${r.issues?.length ? ` (${r.issues.length} écart)` : ''} — ${r.reason || ''}`).join('\n')
+    : 'Plan comptable recopié'
+  logSystemRun(GL_AUTOMATION_ID, {
+    status: failed.length ? 'error' : 'success',
+    result: summary,
+    error: failed.length ? failed.map(f => f.error).join('\n') : null,
+    duration_ms: Date.now() - t0,
+    triggerData: { trigger, months: dirty.map(d => d.month) },
+  })
+  return { months: results, summary }
+}
+
+/** Filet nocturne : 13 derniers mois ré-importés + plan comptable recopié. */
+export async function runGlNightly({ trigger = 'nuit', force = false } = {}) {
+  if (!force && !isSystemAutomationActive(GL_AUTOMATION_ID)) return { skipped: 'inactive' }
+  if (running || syncing) return { skipped: 'en cours' }
+  const t0 = Date.now()
+  const startedAt = new Date().toISOString()
+  const now = new Date()
+  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 12, 1)).toISOString().slice(0, 7)
+  try {
+    const results = await importGlRange(from, now.toISOString().slice(0, 7), { trigger })
+    // Les mois sales marqués avant le passage sont couverts par lui.
+    db.prepare(`DELETE FROM gl_dirty_months WHERE marked_at < ? AND month >= ?`).run(startedAt, from)
+    const failed = results.filter(r => r.error)
+    const warned = results.filter(r => r.issues?.length)
+    const summary = `${results.length} mois ré-importés (${from} →)` +
+      (warned.length ? ` · écarts : ${warned.map(r => r.month).join(', ')}` : '') +
+      (failed.length ? ` · échecs : ${failed.map(r => r.month).join(', ')}` : '')
+    logSystemRun(GL_AUTOMATION_ID, {
+      status: failed.length ? 'error' : 'success', result: summary,
+      error: failed.length ? failed.map(f => `${f.month} : ${f.error}`).join('\n') : null,
+      duration_ms: Date.now() - t0, triggerData: { trigger, from },
+    })
+    return { results, summary }
+  } catch (err) {
+    logSystemRun(GL_AUTOMATION_ID, { status: 'error', error: err.message, duration_ms: Date.now() - t0, triggerData: { trigger, from } })
+    throw err
+  }
+}
+
+// ── Plan comptable local ───────────────────────────────────────────────────
+
+// QBO : FiscalYearStartMonth = avril (CompanyInfo, vérifié le 2026-10-16).
+const FISCAL_START_MONTH = 4
+export function fiscalYearStart(today = new Date().toISOString().slice(0, 10)) {
+  const [y, m] = today.split('-').map(Number)
+  return `${m >= FISCAL_START_MONTH ? y : y - 1}-${pad(FISCAL_START_MONTH)}-01`
+}
+
+// Signe de QBO (CurrentBalance de l'API, vérifié compte par compte le
+// 2026-10-16) : débit − crédit pour tous, passifs et capitaux donc négatifs.
+const PNL = new Set(['Revenue', 'Expense'])
+
+/**
+ * Comptes du grand livre + solde en CAD calculé depuis gl_lines, sous-comptes
+ * compris (comme CurrentBalanceWithSubAccounts de QBO). Bilan : depuis le
+ * début ; résultats : depuis le début de l'exercice.
+ */
+export function glAccountsWithBalances({ all = false, today } = {}) {
+  const fy = fiscalYearStart(today)
+  const accounts = db.prepare(`SELECT * FROM gl_accounts ${all ? '' : 'WHERE active = 1'}`).all()
+  const sums = new Map(db.prepare(`
+    SELECT l.account_qb_id AS id,
+      SUM(l.debit - l.credit) AS life,
+      SUM(CASE WHEN e.txn_date >= ? THEN l.debit - l.credit ELSE 0 END) AS fy
+    FROM gl_lines l JOIN gl_entries e ON e.id = l.entry_id
+    GROUP BY l.account_qb_id
+  `).all(fy).map(r => [r.id, r]))
+  const all_ = db.prepare(`SELECT qb_id, parent_qb_id FROM gl_accounts`).all()
+  const children = new Map()
+  for (const a of all_) if (a.parent_qb_id) {
+    if (!children.has(a.parent_qb_id)) children.set(a.parent_qb_id, [])
+    children.get(a.parent_qb_id).push(a.qb_id)
+  }
+  const own = (id, pnl) => Number((pnl ? sums.get(id)?.fy : sums.get(id)?.life) || 0)
+  const total = (id, pnl, seen = new Set()) => {
+    if (seen.has(id)) return 0
+    seen.add(id)
+    return own(id, pnl) + (children.get(id) || []).reduce((s, c) => s + total(c, pnl, seen), 0)
+  }
+  return accounts.map(a => {
+    const pnl = PNL.has(a.classification)
+    const dc = total(a.qb_id, pnl)
+    return { ...a, balance: cents(dc) || 0 }
+  })
 }

@@ -11,7 +11,7 @@
  *
  * Ce que fait ce contrôle : il liste les tables de la base, cherche un
  * `CREATE TABLE` correspondant dans les sources (schema.js n'est pas le seul
- * créateur — db/changeLog.js et services/relanceEmail.js créent aussi leurs
+ * créateur — db/changeLog.js crée aussi ses
  * tables), et journalise les deux sens de l'écart. Il ne corrige RIEN et ne
  * bloque RIEN : une table non déclarée peut être parfaitement légitime le temps
  * d'un chantier. Le but est qu'elle soit vue.

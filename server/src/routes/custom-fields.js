@@ -5,8 +5,8 @@ import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, normalizeLookupLimit, validateRollup, normalizeRollupFilter, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, inferLookupResultType, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
-import { parseDurationToSeconds, normalizeDurationFormat } from '../services/duration.js'
-import { normalizePercentDisplay } from '../services/percent.js'
+import { parseDurationToSeconds, normalizeDurationFormat } from '../../../shared/duration.mjs'
+import { normalizePercentDisplay } from '../../../shared/percent.mjs'
 import { runRuleActionForRecord } from '../services/fieldRuleEngine.js'
 import { findLabelConflict, labelConflictError } from '../utils/fieldLabels.js'
 import { isColumnWritable, isErpComputedColumn } from '../services/customFieldWritability.js'
@@ -15,7 +15,7 @@ import { erpTableForAirtableTableId } from '../services/airtableTableMap.js'
 import { writebackModuleForTable, PUSH_ONLY_CF_KINDS } from '../services/airtableWriteback.js'
 import { purgedNativeFields, clearFieldTombstone } from '../services/fieldPurge.js'
 import { planTypeConversion, applyTypeConversion, convertSingleValue, sqlAffinityFor } from '../services/fieldTypeConvert.js'
-import { normalizeRating } from '../services/rating.js'
+import { normalizeRating, normalizeRatingIcon } from '../../../shared/rating.mjs'
 import { LINKABLE_TABLES } from '../services/recordLinks.js'
 import { normalizeLinkFilter, parseLinkFilter } from '../services/linkFilter.js'
 import { getBaseTablesCached } from '../connectors/airtable.js'
@@ -228,10 +228,6 @@ export function applyCustomFieldDefaults(erpTable, recordId, { skip = [] } = {})
   }
 }
 
-// Alias rétro-compatible : l'ancien nom ne couvrait que les single_select, le
-// nouveau couvre aussi les défauts text/number/currency/url.
-export const applySingleSelectDefaults = applyCustomFieldDefaults
-
 // Styles autorisés pour un champ Bouton (couleurs alignées sur le rendu client).
 const BUTTON_STYLES = new Set(['brand', 'green', 'red', 'slate'])
 
@@ -267,6 +263,12 @@ function normalizeDurationOptions(raw) {
 // dans les deux cas (le nombre de pourcents). Retourne { json }.
 function normalizePercentOptions(raw) {
   return { json: JSON.stringify({ display: normalizePercentDisplay(raw?.display) }) }
+}
+
+// Config d'un champ 'rating' : { icon: 'star' | 'heart' | 'thumbs_up' | 'flag'
+// | 'circle' } — le symbole de la note, comme Airtable. Retourne { json }.
+function normalizeRatingOptions(raw) {
+  return { json: JSON.stringify({ icon: normalizeRatingIcon(raw?.icon) }) }
 }
 
 // Normalise/valide la config d'un champ 'currency'. La config tient dans la
@@ -555,7 +557,7 @@ const NATIVE_TABLE_RE = /^[a-z0-9_]{1,64}$/
 const NATIVE_FIELD_RE = /^[a-zA-Z0-9_]{1,80}$/
 // Types d'affichage supportés par applyFieldOverrides côté client. 'boolean'
 // reste accepté en entrée (ancien vocabulaire) mais est stocké 'checkbox'.
-const NATIVE_TYPES = new Set(['text', 'number', 'currency', 'percent', 'rating', 'date', 'checkbox', 'url', 'phone'])
+const NATIVE_TYPES = new Set(['text', 'number', 'currency', 'percent', 'rating', 'date', 'checkbox', 'url', 'email', 'phone'])
 // …plus la famille « lien vers une autre table » : `link:<table ERP>`. La cible
 // est portée par le type lui-même — un champ natif n'a pas d'autre endroit où
 // la ranger, et ça garde le réglage réversible d'un simple changement de type.
@@ -623,6 +625,8 @@ function normalizeNativeOptions(raw) {
   if (obj.display !== undefined) out.display = normalizePercentDisplay(obj.display)
   // Date : format d'affichage (avec ou sans heure), même vocabulaire que les champs perso.
   if (obj.format !== undefined) out.format = DATE_FORMATS.has(obj.format) ? obj.format : 'iso_date'
+  // Évaluation : symbole de la note.
+  if (obj.icon !== undefined) out.icon = normalizeRatingIcon(obj.icon)
   return Object.keys(out).length ? out : null
 }
 
@@ -635,6 +639,7 @@ function mergeNativeOptions(existingJson, nextObj) {
   const rest = (base && typeof base === 'object') ? { ...base } : {}
   delete rest.choices
   delete rest.display
+  delete rest.icon
   if (!nextObj) return Object.keys(rest).length ? JSON.stringify(rest) : null
   return JSON.stringify({ ...rest, ...nextObj })
 }
@@ -1008,6 +1013,7 @@ function resultTypeOptions(rt, body) {
     if (rt === 'currency') return { options: normalizeCurrencyOptions(body?.options).json }
     if (rt === 'percent') return { options: normalizePercentOptions(body?.options).json }
     if (rt === 'date') return { options: normalizeDateOptions(body?.options).json }
+    if (rt === 'rating') return { options: normalizeRatingOptions(body?.options).json }
   } catch (e) { throw fieldError(400, e.message) }
   return {}
 }
@@ -1051,6 +1057,7 @@ const FIELD_KINDS = {
       else if (type === 'percent') options = normalizePercentOptions(body?.options).json
       else if (type === 'phone') options = normalizePhoneOptions(body?.options).json
       else if (type === 'date') options = normalizeDateOptions(body?.options).json
+      else if (type === 'rating') options = normalizeRatingOptions(body?.options).json
       // Champ créé directement en « Lien » : la colonne est du texte (elle porte
       // un identifiant), la table visée vit dans les options.
       const linkTarget = normalizeLinkDisplayTarget(body?.link_display_target)
@@ -1598,7 +1605,7 @@ router.get('/link/:fieldId/options', (req, res) => {
 // fields/ et s'écrivent par la route dédiée (routes/custom-field-files.js).
 // 'percent' : REAL portant le nombre de pourcents (45 = 45 %), affiché en
 // « 45 % » ou en barre de progression selon `options.display`.
-// 'rating' : note en étoiles, INTEGER de 0 à 5 (échelle fixe, cf. services/rating.js).
+// 'rating' : note, INTEGER de 0 à 5 (échelle fixe, symbole au choix, cf. shared/rating.mjs).
 // 'barcode' : code-barres / QR, TEXT tel que lu par la douchette (Barcode d'Airtable).
 const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'percent', 'url', 'email', 'phone', 'barcode', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'rating', 'attachment', 'user'])
 
@@ -1616,6 +1623,7 @@ function optionsJsonFor(type, raw) {
   if (type === 'percent') return normalizePercentOptions(raw).json
   if (type === 'phone') return normalizePhoneOptions(raw).json
   if (type === 'date') return normalizeDateOptions(raw).json
+  if (type === 'rating') return normalizeRatingOptions(raw).json
   return null
 }
 // Options par défaut d'un type quand le changement n'en fournit pas. Une
@@ -1899,8 +1907,11 @@ router.put('/:id', (req, res) => {
     // Date (ou formula/lookup/rollup en result_type='date') : la seule option
     // éditable est le format d'affichage (ISO/local, avec ou sans heure).
     updates.push('options=?'); values.push(normalizeDateOptions(req.body.options).json)
+  } else if ('options' in (req.body || {}) && (existing.type === 'rating' || existing.result_type === 'rating')) {
+    // Évaluation : la seule option éditable est le symbole.
+    updates.push('options=?'); values.push(normalizeRatingOptions(req.body.options).json)
   } else if ('options' in (req.body || {})) {
-    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection, Durée, Devise, Pourcentage, Téléphone, Date ou Bouton' })
+    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection, Durée, Devise, Pourcentage, Téléphone, Date, Évaluation ou Bouton' })
     let prevIds = new Set()
     let prevById = new Map()
     try {

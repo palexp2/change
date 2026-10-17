@@ -293,12 +293,6 @@ function buildRawUpdate(tableName, body) {
 // vit désormais sous GET /api/projets/factures/reconciliation-audit — lecture
 // seule, accessible à tout utilisateur connecté, plus seulement admin.
 
-router.get('/factures/:id/raw-schema', (req, res) => {
-  const exists = db.prepare('SELECT id FROM factures WHERE id=?').get(req.params.id)
-  if (!exists) return res.status(404).json({ error: 'Facture introuvable' })
-  res.json({ columns: getTableSchema('factures') })
-})
-
 // PATCH /api/admin/factures/:id/raw — édition bypass de n'importe quelle colonne.
 // Aucun garde-fou : toucher paid_*, revenue_recognized_*, deferred_revenue_*
 // peut désynchroniser Stripe/QB.
@@ -627,12 +621,6 @@ async function getPm2Processes() {
 // DELETE /api/admin/slow-loads/:id — purge d'un enregistrement de chargement lent
 router.delete('/slow-loads/:id', (req, res) => {
   const r = db.prepare(`DELETE FROM slow_page_loads WHERE id = ?`).run(req.params.id)
-  res.json({ deleted: r.changes })
-})
-
-// DELETE /api/admin/slow-loads — purge complète
-router.delete('/slow-loads', (req, res) => {
-  const r = db.prepare(`DELETE FROM slow_page_loads`).run()
   res.json({ deleted: r.changes })
 })
 

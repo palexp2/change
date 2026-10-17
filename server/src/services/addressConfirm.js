@@ -326,9 +326,6 @@ export function scheduleAddressConfirm(addressId) {
   }
 }
 
-/** Attend la file — tests uniquement. */
-export async function _drainAddressConfirmQueue() { await drain() }
-
 // ── Passe manuelle (bouton « Exécuter » de l'automation) ─────────────────────
 
 /**

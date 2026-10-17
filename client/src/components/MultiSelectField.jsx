@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Search, Check, X } from 'lucide-react'
 import { Badge } from './Badge.jsx'
+import { useMenuDismiss } from '../lib/useAnchoredPopup.js'
 import { parseMultiSelectItems, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 
 // Champ de sélection multiple (façon Airtable) pour une fiche détail : les
@@ -75,25 +76,10 @@ export function MultiSelectField({
 
   useEffect(() => {
     if (!open) return
-    computePos()
     setActiveIdx(0)
     setTimeout(() => inputRef.current?.focus(), 0)
-    function onDown(e) {
-      if (!btnRef.current?.contains(e.target) && !document.getElementById(`${testId || 'multiselect'}-portal`)?.contains(e.target)) {
-        setOpen(false)
-        setSearch('')
-      }
-    }
-    function onReflow() { computePos() }
-    document.addEventListener('mousedown', onDown)
-    window.addEventListener('scroll', onReflow, true)
-    window.addEventListener('resize', onReflow)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('scroll', onReflow, true)
-      window.removeEventListener('resize', onReflow)
-    }
-  }, [open, computePos, testId])
+  }, [open])
+  useMenuDismiss({ open, btnRef, portalId: `${testId || 'multiselect'}-portal`, computePos, onClose: () => { setOpen(false); setSearch('') } })
 
   function toggle(label) {
     const next = selected.includes(label)

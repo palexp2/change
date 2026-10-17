@@ -101,6 +101,8 @@ export const PROCESSES = [
       'sys_bank_trx_sheet', 'sys_trx_sheet_mirror', 'sys_treasury_sheet_mirror',
     ] },
     { to: '/fin-de-mois', label: 'Fin de mois', auto: ['sys_month_end_provisions', 'sys_audit_controles'] },
+    { to: '/plan-comptable', label: 'Plan comptable', auto: ['sys_gl_mirror_sync'] },
+    { to: '/grand-livre', label: 'Grand livre ↔ QBO', auto: ['sys_gl_reconciliation'] },
   ] },
   { key: 'equipe', label: 'Équipe', icon: Users, accent: 'rh', steps: [
     { to: '/employees', label: 'Employés', auto: ['sys_conge_slack'] },

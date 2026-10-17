@@ -617,7 +617,7 @@ router.post('/:id/send-system-builder-email', async (req, res) => {
 })
 
 // Suppression (unitaire ou en lot depuis la liste). Les records importés d'Airtable
-// ne sont plus protégés : l'import (scripts/import-qualification-calls.js) est un
+// ne sont plus protégés : l'import (script d'import Airtable, retiré) est un
 // script manuel ponctuel, aucune sync ne les recrée — Boréal fait autorité.
 router.delete('/:id', (req, res) => {
   const row = db.prepare('SELECT id FROM qualification_calls WHERE id = ?').get(req.params.id)

@@ -23,6 +23,7 @@ const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-l
 
 import { fmtMoney } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 const COLUMN_LABELS = {
   date: 'Date', due_date: 'Échéance', type: 'Type', number: 'Numéro',
@@ -328,7 +329,7 @@ function StatBar({ state, statementBalance, config, onSaved }) {
           </label>
           <label className="block">
             <span className="text-slate-400">à partir du</span>
-            <input type="date" value={config?.opening_date || ''}
+            <DateInput value={config?.opening_date || ''}
               onChange={e => save({ opening_date: e.target.value })}
               className="block w-full px-1.5 py-0.5 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
           </label>

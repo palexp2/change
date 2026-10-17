@@ -19,7 +19,7 @@ export const SYSTEM_GROUPS = {
     'sys_month_end_provisions', 'sys_marketing_expense_sync', 'sys_marketing_weekly_slack', 'sys_marketing_budget_sheet',
     'sys_pieces_disbursements', 'sys_fiscal_anomalies_sheet', 'sys_invoice_collection',
     'sys_digikey_orders', 'sys_bill_payment_qb', 'sys_audit_controles',
-    'sys_missing_invoice_request', 'sys_fifo_cost', 'sys_timesheet_paie_sync',
+    'sys_missing_invoice_request', 'sys_fifo_cost', 'sys_timesheet_paie_sync', 'sys_gl_mirror_sync', 'sys_gl_reconciliation',
   ],
   "Système": [
     'sys_airtable_webhook_router', 'sys_gmail_sync', 'sys_airtable_fallback_sync',

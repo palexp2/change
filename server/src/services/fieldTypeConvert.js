@@ -24,8 +24,8 @@ import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { regenerateView } from './customFieldsView.js'
 import { parseDurationToSeconds, formatDurationSeconds, normalizeDurationFormat } from './duration.js'
-import { formatPercent } from './percent.js'
-import { RATING_MAX, clampRating } from './rating.js'
+import { formatPercent } from '../../../shared/percent.mjs'
+import { RATING_MAX, clampRating } from '../../../shared/rating.mjs'
 
 const SAFE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 

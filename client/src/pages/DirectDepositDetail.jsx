@@ -7,9 +7,10 @@ import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { METHOD_LABELS, MANUAL_METHODS, PaymentConfirmModal } from '../components/FacturePaymentsSection.jsx'
-import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
+import { ChoiceSelect, FieldChoiceBadge } from '../components/ChoiceSelect.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
+import DateInput from '../components/DateInput.jsx'
 
 function InfoField({ label, value }) {
   return (
@@ -241,13 +242,13 @@ export default function DirectDepositDetail({ recordId: id }) {
                 : companyName}
             />
             <InfoField label="Type de facture" value={(isCandidate ? c.kind : p.kind) === 'subscription' ? 'Abonnement' : 'Commande'} />
-            <InfoField label="Devise" value={cur} />
+            <InfoField label="Devise" value={cur ? <FieldChoiceBadge table="payments" field="currency" value={cur} /> : null} />
             {isCandidate ? (
               <InfoField label="Marquée payée le" value={fmtDate(c.paid_at)} />
             ) : (
               <>
                 <InfoField label="Reçu le" value={fmtDate(p.received_at)} />
-                <InfoField label="Méthode" value={METHOD_LABELS[p.method] || p.method} />
+                <InfoField label="Méthode" value={p.method ? <FieldChoiceBadge table="payments" field="method" value={p.method} label={METHOD_LABELS[p.method] || p.method} /> : null} />
                 {p.exchange_rate && cur !== 'CAD' && <InfoField label={`Taux ${cur}→CAD`} value={p.exchange_rate} />}
                 {p.qb_credit_account_name && <InfoField label="Compte crédité (Cr)" value={p.qb_credit_account_name} />}
                 {p.notes && <InfoField label="Notes" value={p.notes} />}
@@ -331,7 +332,7 @@ export default function DirectDepositDetail({ recordId: id }) {
                 </div>
                 <div>
                   <label className="label">Date de réception</label>
-                  <input type="date" value={receivedAt} onChange={e => invalidating(setReceivedAt)(e.target.value)} className="input input-sm" />
+                  <DateInput value={receivedAt} onChange={e => invalidating(setReceivedAt)(e.target.value)} className="input input-sm" />
                 </div>
                 <div>
                   <label className="label">Montant</label>

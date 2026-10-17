@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Tag, X, Search } from 'lucide-react'
 import api from '../lib/api.js'
+import { useAnchoredPopup } from '../lib/useAnchoredPopup.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { useListData } from '../lib/useListData.js'
 import { DataTable } from '../components/DataTable.jsx'
@@ -247,7 +248,6 @@ function UserChipsPicker({ codeId, users, assigned, onChange }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
-  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 })
   const btnRef = useRef(null)
   const popupRef = useRef(null)
   const highlightRef = useRef(null)
@@ -257,27 +257,7 @@ function UserChipsPicker({ codeId, users, assigned, onChange }) {
   const q = query.trim().toLowerCase()
   const filtered = (q ? available.filter(u => (u.name || '').toLowerCase().includes(q)) : available).slice(0, 100)
 
-  useEffect(() => {
-    if (!open) return
-    const rect = btnRef.current?.getBoundingClientRect()
-    if (rect) {
-      const popupH = 280
-      const spaceBelow = window.innerHeight - rect.bottom
-      const openUp = spaceBelow < popupH && rect.top > popupH
-      setPos({
-        top: openUp ? rect.top - popupH - 4 : rect.bottom + 4,
-        left: rect.left,
-        width: Math.max(rect.width, 240),
-      })
-    }
-    const onDown = (e) => {
-      if (!btnRef.current?.contains(e.target) && !popupRef.current?.contains(e.target)) {
-        setOpen(false); setQuery('')
-      }
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [open])
+  const pos = useAnchoredPopup({ open, btnRef, popupRef, onClose: () => { setOpen(false); setQuery('') } })
 
   useEffect(() => {
     setHighlightIdx(i => Math.min(i, Math.max(0, filtered.length - 1)))

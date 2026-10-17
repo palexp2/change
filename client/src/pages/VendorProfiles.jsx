@@ -7,12 +7,15 @@ import { useListData } from '../lib/useListData.js'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { fmtMoney } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
+import { inputCls, labelCls, makeTextField, NotesField, AutosaveFooter } from '../components/AutosaveFormKit.jsx'
 
 // Fiche fournisseur — source de vérité unique de l'ERP (le Google Doc
 // « Fournisseurs_Particularités » n'est plus synchronisé, tout s'édite ici) :
@@ -25,14 +28,10 @@ import { useAutosave } from '../lib/useAutosave.js'
 const NO_TAX = '__none__'
 const QB_TYPE_LABELS = { purchase: 'Dépense payée', bill: 'Facture à payer', cc_credit: 'Crédit carte de crédit' }
 
-const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
-const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
-
 // Fiche d'un profil — autosave champ par champ (PATCH au blur / au changement),
 // pas de bouton Enregistrer.
 function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
   const [form, setForm] = useState(profile)
-  const { addToast } = useToast()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   const { save, saving } = useAutosave(profile, patch => api.vendorProfiles.update(profile.id, patch), {
@@ -52,14 +51,7 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
     </div>
   )
 
-  const text = (k, label) => (
-    <div>
-      <label className={labelCls}>{label}</label>
-      <input className={inputCls} value={form[k] ?? ''}
-        onChange={e => set(k, e.target.value)}
-        onBlur={e => save(k, e.target.value.trim() === '' ? null : e.target.value.trim())} />
-    </div>
-  )
+  const text = makeTextField(form, set, save)
 
   const taxOptions = [{ value: NO_TAX, label: '— Aucune taxe —' }, ...qb.taxCodes.map(c => ({ value: c.Id, label: c.Name }))]
 
@@ -96,7 +88,17 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
         {pick('qb_vendor_id_cad', 'Vendor QuickBooks — CAD', qb.vendorOptionsCad)}
         {pick('qb_vendor_id_usd', 'Vendor QuickBooks — USD', qb.vendorOptionsUsd,
           { hint: 'Un fournisseur QuickBooks ne porte qu\'une devise : un fournisseur bi-devise a deux vendors.' })}
-        {pick('default_qb_type', 'Type d\'entité par défaut', Object.entries(QB_TYPE_LABELS).map(([value, label]) => ({ value, label })))}
+        <div>
+          <label className={labelCls}>Type d'entité par défaut</label>
+          <ChoiceSelect
+            value={form.default_qb_type ?? ''}
+            choices={Object.entries(QB_TYPE_LABELS).map(([value, label]) => ({ value, label }))}
+            table="vendor_profiles"
+            field="default_qb_type"
+            colorsOnly
+            onChange={v => { set('default_qb_type', v || null); save('default_qb_type', v || null) }}
+          />
+        </div>
         {pick('default_expense_account_id', 'Compte de dépense par défaut', qb.expenseOptions)}
         {pick('default_payment_account_id_cad', 'Compte de paiement — CAD', qb.paymentOptionsCad)}
         {pick('default_payment_account_id_usd', 'Compte de paiement — USD', qb.paymentOptionsUsd)}
@@ -147,29 +149,10 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
           />
         </div>
 
-        <div className="col-span-2">
-          <label className={labelCls}>Notes</label>
-          <textarea className={inputCls} rows={2} value={form.notes ?? ''}
-            onChange={e => set('notes', e.target.value)}
-            onBlur={e => save('notes', e.target.value.trim() === '' ? null : e.target.value)}
-          />
-        </div>
+        <NotesField form={form} set={set} save={save} />
       </div>
-      <div className="flex items-center justify-between mt-4">
-        <button
-          onClick={async () => {
-            try {
-              await api.vendorProfiles.delete(profile.id)
-              onDeleted(profile.id)
-              onClose()
-            } catch (e) { addToast({ message: e.message, type: 'error' }) }
-          }}
-          className="text-sm text-red-600 hover:underline"
-        >
-          Supprimer
-        </button>
-        <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
-      </div>
+      <AutosaveFooter autosaving={saving} onClose={onClose}
+        onDelete={async () => { await api.vendorProfiles.delete(profile.id); onDeleted(profile.id) }} />
       </div>
     </RecordPeekDrawer>
   )
@@ -503,6 +486,7 @@ export default function VendorProfiles() {
       particularites: row => <span className="text-slate-500 text-xs">{row.particularites || '—'}</span>,
       active_subscriptions: row => <span className="tabular-nums text-slate-600">{row.active_subscriptions || 0}</span>,
       receipt_count: row => <span className="tabular-nums text-slate-600">{row.receipt_count || 0}</span>,
+      lifetime_spent: row => <span className="tabular-nums text-slate-700">{fmtMoney(row.lifetime_spent, 'CAD', { decimals: 0 })}</span>,
       last_receipt_date: row => <span className="text-slate-600">{row.last_receipt_date ? fmtDate(row.last_receipt_date) : '—'}</span>,
       notes: row => <span className="text-slate-500 text-xs">{row.notes || '—'}</span>,
     }

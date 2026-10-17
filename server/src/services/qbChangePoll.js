@@ -83,11 +83,18 @@ export async function pollQbChanges({ trigger = 'planifie' } = {}) {
   const t0 = Date.now()
   try {
     const { SUBSCRIBED_ENTITIES, ingestEntities } = await import('../routes/quickbooks-webhook.js')
+    const { GL_CDC_ENTITIES, noteQbCdc } = await import('./glMirror.js')
     const since = changedSinceFor(t0)
+    // Le même appel sert aussi le grand livre miroir, qui suit plus d'entités
+    // (factures clients, notes de crédit, plan comptable…). Le rapprochement,
+    // lui, ne reçoit que ses entités, comme avant.
+    const cdcEntities = [...new Set([...SUBSCRIBED_ENTITIES, ...GL_CDC_ENTITIES])]
     const data = await qbGet(
-      `/cdc?entities=${SUBSCRIBED_ENTITIES.join(',')}&changedSince=${encodeURIComponent(since)}`
+      `/cdc?entities=${cdcEntities.join(',')}&changedSince=${encodeURIComponent(since)}`
     )
     const entities = entitiesFromCdc(data, String(getQbRealmIdSync() || ''))
+      .filter((e) => SUBSCRIBED_ENTITIES.includes(e.name))
+    try { noteQbCdc(data) } catch (e) { console.error('grand livre (CDC):', e.message) }
     const handled = await ingestEntities(entities)
     // Le curseur n'avance qu'après un passage réussi : une panne réseau ne crée
     // pas de trou dans la surveillance.

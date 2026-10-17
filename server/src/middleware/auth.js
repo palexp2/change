@@ -46,6 +46,3 @@ export function requireHR(req, res, next) {
 export function isHR(user) {
   return !!user && hasRole(user, 'rh');
 }
-
-// Compatibility names; authorization is now the explicit RH grant only.
-export const requireHROrAdmin = requireHR

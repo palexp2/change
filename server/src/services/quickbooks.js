@@ -3440,10 +3440,6 @@ export async function postPaymentDeposit(paymentId, options = {}) {
   return { qb_deposit_id: depositId, amount, currency, credit_account: creditLabel, attachment }
 }
 
-// Alias rétrocompatible — l'ancien nom est encore importé par routes/admin.js.
-// Sera retiré quand tous les call sites auront migré.
-export const postInvoicePaidJE = postPaymentDeposit
-
 // HT réel d'une facture encaissée via Stripe : montant de la charge moins les
 // taxes de la facture. Ventilation classifyTaxRate (invoice_tax_gst/qst) en
 // premier, sinon somme des tax_details (même filet défensif que
@@ -4308,9 +4304,6 @@ export async function reconcileFacturesForOrder(orderId) {
   }
   return results
 }
-
-// Alias rétrocompat — préfère reconcileFacturesForOrder dans le nouveau code.
-export const recognizeRevenueForOrder = reconcileFacturesForOrder
 
 // ── Comptabilisation automatique des Stripe payouts ─────────────────────────
 

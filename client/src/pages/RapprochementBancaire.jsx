@@ -45,9 +45,9 @@ const STATUS_META = {
 // L'état d'une ligne à la banque. « Complété » est le cas ordinaire : il reste
 // muet pour que les deux autres se voient.
 const BANK_STATE_META = {
-  complete:   { label: 'Complété',   cls: 'text-slate-400' },
-  en_attente: { label: 'En attente', cls: 'text-amber-700' },
-  autorise:   { label: 'Autorisé',   cls: 'text-blue-700' },
+  complete:   { label: 'Complété',   color: 'gray' },
+  en_attente: { label: 'En attente', color: 'yellow' },
+  autorise:   { label: 'Autorisé',   color: 'blue' },
 }
 
 // Les écritures QuickBooks sans ligne au relevé : une couleur à part, sinon
@@ -4675,7 +4675,7 @@ export default function RapprochementBancaire() {
           : null),
       bank_state: (r) => {
         const m = BANK_STATE_META[r.bank_state]
-        return m ? <span className={`block truncate ${m.cls}`}>{m.label}</span> : null
+        return m ? <Badge color={m.color} className="whitespace-nowrap">{m.label}</Badge> : null
       },
       match_confidence: (r) => (r.match_confidence != null ? `${Math.round(r.match_confidence * 100)} %` : '—'),
     }

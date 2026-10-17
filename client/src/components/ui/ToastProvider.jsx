@@ -7,9 +7,10 @@ const ToastContext = createContext(null)
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
-  const addToast = useCallback(({ message, type = 'info', action, duration = 4000 }) => {
+  // `actions` (optionnel) : plusieurs boutons au lieu du seul `action`.
+  const addToast = useCallback(({ message, type = 'info', action, actions, duration = 4000 }) => {
     const id = Date.now() + Math.random()
-    setToasts(prev => [...prev, { id, message, type, action, duration }])
+    setToasts(prev => [...prev, { id, message, type, action, actions, duration }])
     // Un toast « Annuler » est aussi annulable au Ctrl+Z (lib/globalUndo.js).
     if (type === 'undo' && action?.onClick) rememberUndo(id, action.onClick)
     if (duration > 0) {
@@ -59,6 +60,12 @@ function ToastContainer({ toasts, onDismiss }) {
               {toast.action.label}
             </button>
           )}
+          {toast.actions?.map(a => (
+            <button key={a.label} onClick={() => { a.onClick(); onDismiss(toast.id) }}
+              className="text-xs font-medium px-1.5 py-0.5 rounded bg-white/15 hover:bg-white/25 shrink-0">
+              {a.label}
+            </button>
+          ))}
           <button onClick={() => onDismiss(toast.id)}
             className="text-white/60 hover:text-white shrink-0">
             <X size={14} />

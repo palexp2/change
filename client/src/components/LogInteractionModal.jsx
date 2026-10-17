@@ -5,6 +5,7 @@ import { Modal } from './Modal.jsx'
 import { ChoiceSelect } from './ChoiceSelect.jsx'
 import LinkedRecordField from './LinkedRecordField.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import DateInput from './DateInput.jsx'
 
 // ─── Log manuel d'une interaction ────────────────────────────────────────────
 // Ce qui n'est pas passé par l'ERP (appel sur le cellulaire, discussion à un
@@ -115,8 +116,7 @@ export default function LogInteractionModal({ contactId, companyId, contacts, on
         <div>
           <label className="label">Quand</label>
           <div className="flex gap-2">
-            <input
-              type="date"
+            <DateInput
               value={form.day}
               onChange={e => setForm(f => ({ ...f, day: e.target.value }))}
               className="input flex-1"

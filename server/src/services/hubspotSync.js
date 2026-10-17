@@ -91,7 +91,10 @@ function erpTaskToHsProperties(task, cache) {
     hs_task_priority: PRIORITY_ERP_TO_HS[task.priority] || 'MEDIUM',
   }
   if (task.due_date) {
-    const ts = Date.parse(task.due_date)
+    // Jour seul (sélecteur de l'ERP) : minuit UTC tomberait la veille au Québec
+    // dans HubSpot ; midi UTC, comme les tâches créées dans HubSpot.
+    const d = String(task.due_date)
+    const ts = Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(d) ? `${d}T12:00:00.000Z` : d)
     if (!isNaN(ts)) props.hs_timestamp = String(ts)
   } else {
     props.hs_timestamp = String(Date.now())

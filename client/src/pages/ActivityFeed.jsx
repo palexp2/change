@@ -54,7 +54,8 @@ const RENDERS = {
     const b = ACTION_BADGES[row.action] || { label: row.action, cls: 'text-slate-600 bg-slate-100' }
     return <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${b.cls}`}>{b.label}</span>
   },
-  entity_type: row => <span className="text-slate-600">{ENTITY_LABELS[row.entity_type] || row.entity_type}</span>,
+  // Texte nu : DataTable le rend en pastille (colonne Sélection).
+  entity_type: row => ENTITY_LABELS[row.entity_type] || row.entity_type,
   detail: row => {
     const text = row.detail || row.entity_id || '—'
     const routeFn = row.entity_id && row.action !== 'deleted' ? ENTITY_ROUTES[row.entity_type] : null

@@ -110,6 +110,29 @@ function matchPages(query) {
 
 const MAX_COMMAND_MATCHES = 20
 
+// Ligne de résultat (récent ou enregistrement) : icône, libellé, sous-titre, type.
+function ResultRow({ item, Icon, active, testId, onPick, onHover }) {
+  return (
+    <li>
+      <button
+        data-testid={testId}
+        className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${active ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
+        onClick={onPick}
+        onMouseEnter={onHover}
+      >
+        <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+          <Icon size={14} className="text-slate-500" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-slate-900 truncate">{item.label}</div>
+          {item.sub && <div className="text-xs text-slate-400 truncate">{item.sub}</div>}
+        </div>
+        <span className="text-xs text-slate-400 flex-shrink-0">{TYPE_LABEL[item.type] || ''}</span>
+      </button>
+    </li>
+  )
+}
+
 export function GlobalSearch({ open, onClose }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -268,29 +291,10 @@ export function GlobalSearch({ open, onClose }) {
                 </button>
               </li>
             )}
-            {recentItems.map((r, i) => {
-              const Icon = TYPE_ICON[r.type] || Clock
-              const idx = i
-              return (
-                <li key={`recent-${r.url}`}>
-                  <button
-                    data-testid={`global-search-recent-${r.url}`}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${idx === selected ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
-                    onClick={() => go(r)}
-                    onMouseEnter={() => setSelected(idx)}
-                  >
-                    <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
-                      <Icon size={14} className="text-slate-500" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-slate-900 truncate">{r.label}</div>
-                      {r.sub && <div className="text-xs text-slate-400 truncate">{r.sub}</div>}
-                    </div>
-                    <span className="text-xs text-slate-400 flex-shrink-0">{TYPE_LABEL[r.type] || ''}</span>
-                  </button>
-                </li>
-              )
-            })}
+            {recentItems.map((r, i) => (
+              <ResultRow key={`recent-${r.url}`} item={r} Icon={TYPE_ICON[r.type] || Clock} active={i === selected}
+                testId={`global-search-recent-${r.url}`} onPick={() => go(r)} onHover={() => setSelected(i)} />
+            ))}
 
             {pageItems.length > 0 && (
               <li className="px-4 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider select-none">Aller à</li>
@@ -325,25 +329,10 @@ export function GlobalSearch({ open, onClose }) {
               <li className="px-4 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider select-none">{resultsLabel}</li>
             )}
             {recordItems.map((r, i) => {
-              const Icon = TYPE_ICON[r.type] || Search
               const idx = recentItems.length + pageItems.length + i
               return (
-                <li key={`${r.type}-${r.id}`}>
-                  <button
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${idx === selected ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
-                    onClick={() => go(r)}
-                    onMouseEnter={() => setSelected(idx)}
-                  >
-                    <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
-                      <Icon size={14} className="text-slate-500" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-slate-900 truncate">{r.label}</div>
-                      {r.sub && <div className="text-xs text-slate-400 truncate">{r.sub}</div>}
-                    </div>
-                    <span className="text-xs text-slate-400 flex-shrink-0">{TYPE_LABEL[r.type]}</span>
-                  </button>
-                </li>
+                <ResultRow key={`${r.type}-${r.id}`} item={r} Icon={TYPE_ICON[r.type] || Search} active={idx === selected}
+                  onPick={() => go(r)} onHover={() => setSelected(idx)} />
               )
             })}
           </ul>

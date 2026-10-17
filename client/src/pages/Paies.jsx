@@ -18,6 +18,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import Spinner from '../components/Spinner.jsx'
 import PaieVerification from '../components/PaieVerification.jsx'
+import DateInput, { DateTimeInput } from '../components/DateInput.jsx'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -185,7 +186,7 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label">Fin de période *</label>
-            <input type="date" value={form.period_end || ''} onChange={f('period_end')} onBlur={blurSave('period_end')} className="input" required />
+            <DateInput value={form.period_end || ''} onChange={f('period_end')} onBlur={blurSave('period_end')} className="input" required />
           </div>
           <div>
             <label className="label">Numéro</label>
@@ -210,7 +211,7 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
           </div>
           <div>
             <label className="label">Date limite correction FdT</label>
-            <input type="datetime-local" value={isDeadlineDT(form.timesheets_deadline) ? form.timesheets_deadline.slice(0, 16) : ''}
+            <DateTimeInput value={isDeadlineDT(form.timesheets_deadline) ? form.timesheets_deadline.slice(0, 16) : ''}
               onChange={f('timesheets_deadline')} onBlur={blurSave('timesheets_deadline')} className="input" />
             {form.timesheets_deadline && !isDeadlineDT(form.timesheets_deadline) && (
               <div className="text-xs text-slate-400 mt-1">{form.timesheets_deadline}</div>

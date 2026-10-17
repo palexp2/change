@@ -124,5 +124,3 @@ export function parsePayKey(key) {
   const m = /^(\d{4}-\d{2}-\d{2})-([12])$/.exec(String(key || ''))
   return m ? { end: m[1], step: PAY_STEPS[Number(m[2]) - 1] } : null
 }
-
-export function _resetPayCycleCache() { cache = null }

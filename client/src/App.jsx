@@ -69,6 +69,8 @@ import ComptaDashboard from './pages/ComptaDashboard.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
 import PlanComptable from './pages/PlanComptable.jsx'
+import GrandLivre from './pages/GrandLivre.jsx'
+import EtatsFinanciers from './pages/EtatsFinanciers.jsx'
 import StockMovements from './pages/StockMovements.jsx'
 import Fournitures from './pages/Fournitures.jsx'
 import Processus from './pages/Processus.jsx'
@@ -307,6 +309,8 @@ function AppRoutes() {
       <Route path="/stripe-payouts" element={<ProtectedRoute><StripePayouts /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/plan-comptable" element={<ProtectedRoute><PlanComptable /></ProtectedRoute>} />
+      <Route path="/grand-livre" element={<ProtectedRoute adminOnly><GrandLivre /></ProtectedRoute>} />
+      <Route path="/etats-financiers" element={<ProtectedRoute adminOnly><EtatsFinanciers /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/fournitures" element={<ProtectedRoute><Fournitures /></ProtectedRoute>} />
       <Route path="/processus" element={<ProtectedRoute><Processus /></ProtectedRoute>} />

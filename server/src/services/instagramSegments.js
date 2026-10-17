@@ -332,8 +332,6 @@ function ruleSegment(p, said) {
 }
 
 async function askModel(model, batch) {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) throw new Error('OPENAI_API_KEY non configuré')
   const system =
     "Tu tries des contacts Instagram d'Orisha, qui vend du contrôle du climat en serre. " +
     'Pour CHAQUE personne, donne : ' +
@@ -361,24 +359,7 @@ async function askModel(model, batch) {
     if (flowerByName(b.p, b.profile)) bits.push('indice: nom de ferme de fleurs')
     return bits.join(' | ')
   }).join('\n')
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      response_format: { type: 'json_object' },
-      temperature: 0,
-      messages: [{ role: 'system', content: system }, { role: 'user', content: lines }],
-    }),
-  })
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}))
-    throw new Error(err.error?.message || `OpenAI HTTP ${resp.status}`)
-  }
-  const data = await resp.json()
-  let parsed = {}
-  try { parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}') } catch { parsed = {} }
-  return Array.isArray(parsed.results) ? parsed.results : []
+  return askJson(model, system, lines)
 }
 
 /** Écarte définitivement un compte : la fiche part, le nom d'usager reste bloqué. */
@@ -394,19 +375,6 @@ export function blockAsBot(prospectId, username, reason, score) {
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
     WHERE id = ?
   `).run(reason || null, score || null, prospectId)
-}
-
-/** Repêcher un compte écarté par erreur : la fiche revient, le blocage tombe. */
-export function unblock(username) {
-  const u = String(username || '').toLowerCase()
-  db.prepare('DELETE FROM instagram_blocked WHERE ig_username = ?').run(u)
-  return db.prepare(`
-    UPDATE instagram_prospects
-    SET deleted_at = NULL, segment = NULL, segment_source = NULL, segment_at = NULL,
-        bot_score = NULL, bot_reason = NULL,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-    WHERE lower(ig_username) = ? AND segment = 'robot'
-  `).run(u).changes
 }
 
 /** Réponse à une story et rien d'autre : hors de la liste, sans être perdue. */

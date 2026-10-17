@@ -33,8 +33,6 @@ export function DocHighlightProvider({ children }) {
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
 
-export function useDocHighlight() { return useContext(Ctx) }
-
 // Enveloppe d'un champ. `spec` : { text } | { amount } | { date } ou un tableau.
 export function Hl({ k, spec, className = '', children }) {
   const ctx = useContext(Ctx)

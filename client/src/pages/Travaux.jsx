@@ -35,6 +35,8 @@ import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { Badge } from '../components/Badge.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { ClaudeUsageStrip, modelLabel } from '../components/ClaudeUsage.jsx'
 import { PageLink, requestPage } from '../components/PageLink.jsx'
@@ -467,10 +469,13 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
       {editable && (
         <div className="flex items-center gap-3 flex-wrap">
           <PresetSelect p={p} onPatch={onPatch} />
-          <select className={inputCls} value={p.mode} onChange={e => onPatch(p.id, { mode: e.target.value })}>
-            <option value="implement">Implémenter</option>
-            <option value="question">Question (lecture seule, en parallèle)</option>
-          </select>
+          <ChoiceSelect
+            value={p.mode}
+            choices={[{ value: 'implement', label: 'Implémenter' }, { value: 'question', label: 'Question (lecture seule, en parallèle)', color: 'blue' }]}
+            onChange={v => onPatch(p.id, { mode: v })}
+            className={inputCls}
+            emptyOption={null}
+          />
         </div>
       )}
     </div>
@@ -840,9 +845,7 @@ export function QueueTab({ toast, space }) {
           {!!p.messages?.length && <span className="shrink-0 inline-flex items-center gap-0.5 text-xs text-slate-400"><MessageSquare size={11} /> {p.messages.length}</span>}
         </span>
       ),
-      type: p => (
-        <span className={`px-1.5 py-0.5 text-xs font-medium rounded ${p.type === 'Question' ? 'bg-sky-50 text-sky-700' : 'bg-slate-100 text-slate-600'}`}>{p.type}</span>
-      ),
+      type: p => <Badge color={p.type === 'Question' ? 'blue' : 'gray'} className="whitespace-nowrap">{p.type}</Badge>,
       created_by_name: p => (
         <span className="inline-flex items-center gap-1.5 min-w-0">
           <CreatorChip name={p.created_by_name} />

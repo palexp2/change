@@ -64,6 +64,11 @@ export const TABLE_LABELS = {
   stripe_payouts: 'Versements Stripe',
   qb_accounts:    'Plan comptable',
   qb_account_ledger: 'Historique du compte',
+  gl_recon_months: 'Grand livre ↔ QuickBooks',
+  gl_recon_accounts: 'Balance comparée',
+  gl_recon_lines: 'Lignes du mois',
+  gl_statement: 'État financier',
+  gl_statement_lines: 'Lignes du compte',
   marketing_forms: 'Formulaires',
   meeting_types: 'Pages de rendez-vous',
   meeting_bookings: 'Rendez-vous',
@@ -336,7 +341,7 @@ export const TABLE_COLUMN_META = {
     // « Produit » des assemblages), plutôt que d'adopter la FK — ce qui
     // afficherait des ids bruts et casserait le picker d'entreprise.
     { id: 'company_name', label: 'Entreprise',  field: 'company_name', mappingColumn: 'company_id' },
-    { id: 'email',        label: 'Courriel',    field: 'email' },
+    { id: 'email',        label: 'Courriel',    field: 'email', type: 'email' },
     { id: 'phone',        label: 'Téléphone',   field: 'phone',  type: 'phone' },
     { id: 'mobile',       label: 'Cellulaire',  field: 'mobile', type: 'phone', defaultVisible: false },
     { id: 'language',     label: 'Langue',      field: 'language',  type: 'single_select', options: ['French', 'English'] },
@@ -514,7 +519,7 @@ export const TABLE_COLUMN_META = {
     // Calculé par GET /products/:id/purchases : quantité de l'achat encore en
     // stock selon le FIFO (vide = lot épuisé).
     { id: 'fifo_qty',                     label: 'En stock',    field: 'fifo_qty', type: 'number' },
-    { id: 'supplier',                    label: 'Fournisseur', field: 'supplier_company_name' },
+    { id: 'supplier',                    label: 'Fournisseur', field: 'supplier_company_name', linksTo: 'companies' },
     { id: 'cf_date_de_reception_complete', label: 'Reçu',       field: 'cf_date_de_reception_complete', type: 'date' },
     // Champ « Créé par » de /champs/purchases (auteur de la création dans
     // l'ERP ; vide pour les achats créés dans Airtable).
@@ -580,7 +585,7 @@ export const TABLE_COLUMN_META = {
   // « Produit à envoyer » aussi (migration 046) : la FK `product_send_id` qu'elle
   // affichait n'existe plus.
   return_items: [
-    { id: 'serial_number',  label: 'N° de série',   field: 'serial_number', mappingColumn: 'serial_id' },
+    { id: 'serial_number',  label: 'N° de série',   field: 'serial_number', mappingColumn: 'serial_id', linksTo: 'serial_numbers' },
     // Adresse LoRa : lue sur le n° de série (serial_numbers.address), lecture seule.
     { id: 'lora_address',   label: 'Adresse LoRa',  field: 'lora_address' },
     { id: 'product_name',   label: 'Produit reçu',  field: 'product_name' },
@@ -588,11 +593,11 @@ export const TABLE_COLUMN_META = {
     { id: 'return_reason',  label: 'Raison',        field: 'return_reason' },
     { id: 'action',         label: 'Action',        field: 'action' },
     { id: 'received_at',    label: 'Reçu le',       field: 'received_at', type: 'date' },
-    { id: 'product_to_receive', label: 'Produit à recevoir', field: 'product_to_receive', mappingColumn: 'product_id' },
+    { id: 'product_to_receive', label: 'Produit à recevoir', field: 'product_to_receive', mappingColumn: 'product_id', linksTo: 'products' },
     { id: 'return_reason_notes', label: 'Précisions',            field: 'return_reason_notes',  defaultVisible: false },
     { id: 'problem_category',    label: 'Catégorie de problème', field: 'problem_category',     defaultVisible: false },
-    { id: 'received_by',         label: 'Reçu par',              field: 'received_by',          defaultVisible: false },
-    { id: 'analyzed_by',         label: 'Analysé par',           field: 'analyzed_by',          defaultVisible: false },
+    { id: 'received_by',         label: 'Reçu par',              field: 'received_by',          defaultVisible: false, linksTo: 'employees' },
+    { id: 'analyzed_by',         label: 'Analysé par',           field: 'analyzed_by',          defaultVisible: false, linksTo: 'employees' },
     { id: 'analysis_notes',      label: "Notes d'analyse",       field: 'analysis_notes',       defaultVisible: false },
     { id: 'created_at',          label: 'Créé le',               field: 'created_at', type: 'date', defaultVisible: false },
   ],
@@ -604,7 +609,7 @@ export const TABLE_COLUMN_META = {
     { id: 'contact_name',          label: 'Contact',           field: 'contact_name' },
     // Lignes de la facture concaténées (« ×n » si quantité > 1).
     { id: 'products_list',         label: 'Produits',          field: 'products_list' },
-    { id: 'customer_email',        label: 'Courriel client',   field: 'customer_email',        defaultVisible: false },
+    { id: 'customer_email',        label: 'Courriel client',   field: 'customer_email', type: 'email',        defaultVisible: false },
     { id: 'project_name',          label: 'Projet',            field: 'project_name',          mappingColumn: 'project_id', defaultVisible: false  },
     { id: 'order_number',          label: 'Commande',          field: 'order_number',          mappingColumn: 'order_id', defaultVisible: false  },
     { id: 'status',                label: 'Statut',            field: 'status',                type: 'single_select', options: ['Payée', 'Partielle', 'En retard', 'Envoyée', 'Brouillon', 'Annulée'] },
@@ -817,6 +822,7 @@ export const TABLE_COLUMN_META = {
     { id: 'particularites',       label: 'Particularités',     field: 'particularites', defaultVisible: false },
     { id: 'active_subscriptions', label: 'Abonnements',        field: 'active_subscriptions', type: 'number', defaultVisible: false },
     { id: 'receipt_count',        label: 'Nb reçus',           field: 'receipt_count', type: 'number', defaultVisible: false },
+    { id: 'lifetime_spent',       label: 'Dépensé à vie',      field: 'lifetime_spent', type: 'number' },
     { id: 'last_receipt_date',    label: 'Dernier document',   field: 'last_receipt_date', type: 'date' },
     { id: 'notes',                label: 'Notes',              field: 'notes', defaultVisible: false },
   ],
@@ -995,7 +1001,7 @@ export const TABLE_COLUMN_META = {
   // serial_state_changes se fusionnent automatiquement (CUSTOM_FIELD_TABLES).
   serial_state_changes: [
     { id: 'changed_at',      label: 'Date',           field: 'changed_at',      type: 'date' },
-    { id: 'serial',          label: 'Serial',         field: 'serial' },
+    { id: 'serial',          label: 'Serial',         field: 'serial', linksTo: 'serial_numbers' },
     { id: 'product_name',    label: 'Produit',        field: 'product_name'  },
     { id: 'company_name',    label: 'Client',         field: 'company_name'  },
     { id: 'previous_status', label: 'État précédent', field: 'previous_status' },
@@ -1004,7 +1010,7 @@ export const TABLE_COLUMN_META = {
 
   serial_missing_valuations: [
     { id: 'date',       label: 'Date',       field: 'changed_at', type: 'date' },
-    { id: 'serial',     label: 'Serial',     field: 'serial' },
+    { id: 'serial',     label: 'Serial',     field: 'serial', linksTo: 'serial_numbers' },
     { id: 'product',    label: 'Produit',    field: 'product' },
     { id: 'company',    label: 'Client',     field: 'company_name' },
     { id: 'transition', label: 'Transition', field: 'transition' },
@@ -1013,7 +1019,7 @@ export const TABLE_COLUMN_META = {
 
   users: [
     { id: 'name',   label: 'Utilisateur', field: 'name' },
-    { id: 'email',  label: 'Courriel',    field: 'email' },
+    { id: 'email',  label: 'Courriel',    field: 'email', type: 'email' },
     { id: 'role',   label: 'Accès',       field: 'roles',  type: 'multi_select', options: ['user', 'admin', 'rh'] },
     { id: 'active', label: 'Statut',      field: 'active', type: 'boolean' },
     // Owner HubSpot : colonne masquée tant que le connecteur HubSpot n'est pas
@@ -1092,7 +1098,7 @@ export const TABLE_COLUMN_META = {
   // entreprise unique.
   company_contacts: [
     { id: 'name',     label: 'Nom',        field: 'last_name' },
-    { id: 'email',    label: 'Courriel',   field: 'email' },
+    { id: 'email',    label: 'Courriel',   field: 'email', type: 'email' },
     { id: 'phone',    label: 'Téléphone',  field: 'phone', type: 'phone' },
     { id: 'language', label: 'Langue',     field: 'language', type: 'single_select', options: ['French', 'English'] },
   ],
@@ -1303,8 +1309,8 @@ export const TABLE_COLUMN_META = {
 
   meeting_bookings: [
     { id: 'start_at',         label: 'Quand',      field: 'start_at', type: 'date', width: 170 },
-    { id: 'invitee_name',     label: 'Visiteur',   field: 'invitee_name', width: 200 },
-    { id: 'invitee_email',    label: 'Courriel',   field: 'invitee_email', width: 220, defaultVisible: false },
+    { id: 'invitee_name',     label: 'Visiteur',   field: 'invitee_name', width: 200, linksTo: 'contacts' },
+    { id: 'invitee_email',    label: 'Courriel',   field: 'invitee_email', type: 'email', width: 220, defaultVisible: false },
     { id: 'invitee_company',  label: 'Entreprise', field: 'invitee_company', width: 160 },
     { id: 'type_name',        label: 'Page',       field: 'type_name', width: 180, linksTo: 'rendez-vous' },
     { id: 'duration_minutes', label: 'Durée',      field: 'duration_minutes', type: 'number', width: 80 },
@@ -1318,14 +1324,14 @@ export const TABLE_COLUMN_META = {
   marketing_form_submissions: [
     { id: 'submitted_at', label: 'Date',       field: 'submitted_at', type: 'date' },
     { id: 'name',         label: 'Nom',        field: 'last_name', width: 180 },
-    { id: 'email',        label: 'Courriel',   field: 'email', width: 260 },
+    { id: 'email',        label: 'Courriel',   field: 'email', type: 'email', width: 260 },
     { id: 'company',      label: 'Entreprise', field: 'company', width: 180 },
     { id: 'page_url',     label: 'Page',       field: 'page_url', defaultVisible: false },
   ],
 
   marketing_form_script_runs: [
     { id: 'ran_at',      label: 'Date',     field: 'ran_at', type: 'date' },
-    { id: 'email',       label: 'Courriel', field: 'email', width: 260 },
+    { id: 'email',       label: 'Courriel', field: 'email', type: 'email', width: 260 },
     { id: 'status_code', label: 'Code',     field: 'status_code', type: 'number', width: 90 },
     { id: 'error',       label: 'Erreur',   field: 'error', width: 280 },
     { id: 'output',      label: 'Journal',  field: 'output', width: 320, defaultVisible: false },
@@ -1344,6 +1350,46 @@ export const TABLE_COLUMN_META = {
     { id: 'description',      label: 'Description',    field: 'description', defaultVisible: false },
   ],
 
+  // Grand livre Boréal ↔ QBO (/grand-livre) : fins de mois, comptes, lignes.
+  gl_recon_months: [
+    { id: 'month',      label: 'Mois',     field: 'month', width: 130 },
+    { id: 'status',     label: 'État',     field: 'status', width: 190 },
+    { id: 'total_diff', label: 'Écart',    field: 'total_diff', type: 'number', width: 140 },
+    { id: 'accounts',   label: 'Comptes',  field: 'accounts', type: 'number', width: 100, defaultVisible: false },
+    { id: 'checked_at', label: 'Vérifié',  field: 'checked_at', type: 'date', width: 150 },
+  ],
+  gl_recon_accounts: [
+    { id: 'account_label',  label: 'Compte',  field: 'account_label', width: 300 },
+    { id: 'boreal_balance', label: 'Boréal',  field: 'boreal_balance', type: 'number', width: 140 },
+    { id: 'qbo_balance',    label: 'QBO',     field: 'qbo_balance', type: 'number', width: 140 },
+    { id: 'diff',           label: 'Écart',   field: 'diff', type: 'number', width: 120 },
+  ],
+  gl_recon_lines: [
+    { id: 'txn_date',   label: 'Date',    field: 'txn_date', type: 'date', width: 110 },
+    { id: 'txn_label',  label: 'Type',    field: 'txn_label', width: 150 },
+    { id: 'doc_number', label: 'Nº',      field: 'doc_number', width: 80, defaultVisible: false },
+    { id: 'name',       label: 'Nom',     field: 'name', width: 180 },
+    { id: 'memo',       label: 'Mémo',    field: 'memo', width: 220 },
+    { id: 'debit',      label: 'Débit',   field: 'debit', type: 'number', width: 120 },
+    { id: 'credit',     label: 'Crédit',  field: 'credit', type: 'number', width: 120 },
+  ],
+  // États financiers Boréal ↔ QBO (/etats-financiers) : lignes hiérarchiques, ordre fixe.
+  gl_statement: [
+    { id: 'label',  label: 'Compte', field: 'label', width: 380, sortable: false },
+    { id: 'boreal', label: 'Boréal', field: 'boreal', type: 'number', width: 150, sortable: false },
+    { id: 'qbo',    label: 'QBO',    field: 'qbo', type: 'number', width: 150, sortable: false },
+    { id: 'diff',   label: 'Écart',  field: 'diff', type: 'number', width: 130, sortable: false },
+  ],
+  gl_statement_lines: [
+    { id: 'txn_date',      label: 'Date',    field: 'txn_date', type: 'date', width: 125 },
+    { id: 'account_label', label: 'Compte',  field: 'account_label', width: 200, defaultVisible: false },
+    { id: 'txn_label',     label: 'Type',    field: 'txn_label', width: 150 },
+    { id: 'doc_number',    label: 'Nº',      field: 'doc_number', width: 80, defaultVisible: false },
+    { id: 'name',          label: 'Nom',     field: 'name', width: 180 },
+    { id: 'memo',          label: 'Mémo',    field: 'memo', width: 220 },
+    { id: 'debit',         label: 'Débit',   field: 'debit', type: 'number', width: 120 },
+    { id: 'credit',        label: 'Crédit',  field: 'credit', type: 'number', width: 120 },
+  ],
   qb_account_ledger: [
     { id: 'date',        label: 'Date',          field: 'date', type: 'date', width: 120 },
     { id: 'type',        label: 'Type',          field: 'type', width: 150 },

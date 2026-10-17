@@ -15,7 +15,7 @@ import {
   getSettings, setSettings, readBacklog, addBacklogItem, deleteBacklogItem,
   updateBacklogItem, generateInstantProposal, approveBacklogItem,
   requestReply, PROMPT_TEMPLATE_DEFAULTS, DEFAULT_GENERAL_PROMPT,
-  getSessionLimitResetAt, getAgentModelState, stopRunningTask,
+  getSessionLimitResetAt, getAgentModelState,
 } from '../services/taskRunner.js'
 
 function safeEqualSecret(provided, expected) {
@@ -315,15 +315,6 @@ router.get('/runner/status', (req, res) => {
 // GET buffered stream chunks for a task
 router.get('/tasks/:id/stream-log', (req, res) => {
   res.json({ chunks: getStreamBuffer(req.params.id) })
-})
-
-// POST /api/agent/tasks/:id/stop — arrête une exécution en cours (tue le process,
-// le statut final ('stopped') est posé par monitorExecution() dès que le process
-// meurt, quelques secondes plus tard — voir taskRunner.js).
-router.post('/tasks/:id/stop', (req, res) => {
-  const out = stopRunningTask(req.params.id)
-  if (!out.ok) return res.status(409).json({ error: out.error })
-  res.json({ ok: true })
 })
 
 // DELETE a task

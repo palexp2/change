@@ -1,6 +1,6 @@
 import { createContext, useContext, useSyncExternalStore } from 'react'
 import { subscribe } from './realtime.js'
-import { patchRecord, insertRecord, getRecord, isTableHydrated } from './dataStore.js'
+import { patchRecord, insertRecord, getRecord } from './dataStore.js'
 import { getUser } from './auth.jsx'
 
 // ── Ce qui vient de changer, et par qui ─────────────────────────────────────
@@ -293,6 +293,3 @@ export function RecordScope({ id, children }) {
 export function useRecordScope() {
   return useContext(RecordScopeContext)
 }
-
-// Exposé pour les tests / la console.
-export const __recordLive = { byRecord, isTableHydrated, PULSE_MS }

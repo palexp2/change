@@ -3,7 +3,6 @@ import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import { execSync } from 'child_process'
 import FormData from 'form-data'
-import nodeFetch from 'node-fetch'
 import db from '../db/database.js'
 import { logSync } from './syncLog.js'
 
@@ -125,10 +124,10 @@ async function runTranscription(callId, filePath, trigger = 'manual') {
     form.append('file', fileBuffer, { filename: path.basename(sendPath), contentType: `audio/${ext}` })
     form.append('model', 'whisper-1')
 
-    const resp = await nodeFetch('https://api.openai.com/v1/audio/transcriptions', {
+    const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, ...form.getHeaders() },
-      body: form,
+      body: form.getBuffer(),
     })
     if (!resp.ok) throw new Error(`Whisper error: ${await resp.text()}`)
     const { text } = await resp.json()

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url'
 import { broadcastAll } from './realtime.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import {
-  AGENT_MODEL, CLAUDE_MODELS, normalizeModel, resolveModel, chainAvailableAt,
+  AGENT_MODEL, KNOWN_MODELS, normalizeModel, resolveModel, chainAvailableAt,
   noteModelLimit, nextLimitExpiryAt, purgeExpiredLimits, fetchLimitScope,
   agentModelState, preferredAgentModel, setPreferredAgentModel,
 } from './agentModel.js'
@@ -1114,7 +1114,7 @@ async function handleLimitHit(taskId, limit, sessionId) {
     switched = hasAvailableAccount({ exceptId: ranAccount })
     if (switched) console.warn(`🤖 Agent: compte Claude « ${ranAccount} » à sec jusqu'à ${limit.label} — bascule sur l'autre compte`)
   }
-  if (!switched) noteLimit(scope === 'account' ? CLAUDE_MODELS : [ranModel], limit)
+  if (!switched) noteLimit(scope === 'account' ? KNOWN_MODELS : [ranModel], limit)
 
   const isQueue = task.kind === 'queue'
   const deferred = updateTask(taskId, {

@@ -565,12 +565,6 @@ export function readMirrors({ statuses = ['mirrored', 'paused'] } = {}) {
   return ordered
 }
 
-export function readFieldMap(mirrorId) {
-  return db.prepare(
-    'SELECT * FROM airtable_field_map WHERE mirror_id=? ORDER BY field_name'
-  ).all(mirrorId)
-}
-
 /** Compteurs du contrat — ceux qui doivent tomber à zéro. */
 export function registryCounters() {
   const mirrors = db.prepare(

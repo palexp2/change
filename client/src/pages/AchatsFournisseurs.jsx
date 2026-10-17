@@ -18,8 +18,10 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { fmtCad, formatBytes } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import { InlineIsoDate } from '../components/InlineFields.jsx'
 import AttachmentPreview, { attachmentKind } from '../components/AttachmentPreview.jsx'
 import ThinkingOrb from '../components/ThinkingOrb'
+import DateInput from '../components/DateInput.jsx'
 
 const NO_TAX = '__none__'
 
@@ -91,29 +93,6 @@ function emptyForm(type) {
 }
 
 // Exporté : la fiche Entreprise ouvre le même panneau depuis son onglet « Achats fourn. ».
-// Champ date en texte AAAA-MM-JJ (le type="date" natif suit la langue du
-// navigateur). Calendrier via data-date-picker ; saisie invalide → revient.
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
-function IsoDateInput({ value, onCommit, required }) {
-  const current = value ? String(value).slice(0, 10) : ''
-  const [local, setLocal] = useState(current)
-  useEffect(() => { setLocal(current) }, [current])
-  const commit = raw => {
-    const s = String(raw ?? '').trim()
-    if (s === current) return
-    const valid = ISO_DATE.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s
-    if (s !== '' && !valid) { setLocal(current); return }
-    onCommit(s)
-  }
-  return (
-    <input type="text" inputMode="numeric" data-date-picker value={local}
-      onChange={e => setLocal(e.target.value)}
-      onBlur={e => commit(e.target.value)}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      className="input tabular-nums" required={required} />
-  )
-}
-
 export function AchatModal({ achat, initialType, onClose, onSaved, isoDates = false }) {
   const isEdit = !!achat?.id
   const [form, setForm] = useState(achat
@@ -238,15 +217,15 @@ export function AchatModal({ achat, initialType, onClose, onSaved, isoDates = fa
         <div>
           <label className="label">Date *</label>
           {isoDates
-            ? <IsoDateInput value={form.date_achat} onCommit={commitDate('date_achat')} required />
-            : <input type="date" value={form.date_achat} onChange={isEdit ? fSelect('date_achat') : f('date_achat')} className="input" required />}
+            ? <InlineIsoDate value={form.date_achat} onSave={commitDate('date_achat')} className="input" required />
+            : <DateInput value={form.date_achat} onChange={isEdit ? fSelect('date_achat') : f('date_achat')} className="input" required />}
         </div>
         {isBill ? (
           <div>
             <label className="label">Date d'échéance</label>
             {isoDates
-              ? <IsoDateInput value={form.due_date} onCommit={commitDate('due_date')} />
-              : <input type="date" value={form.due_date || ''} onChange={isEdit ? fSelect('due_date') : f('due_date')} className="input" />}
+              ? <InlineIsoDate value={form.due_date} onSave={commitDate('due_date')} className="input" />
+              : <DateInput value={form.due_date || ''} onChange={isEdit ? fSelect('due_date') : f('due_date')} className="input" />}
           </div>
         ) : (
           <div>
@@ -278,18 +257,24 @@ export function AchatModal({ achat, initialType, onClose, onSaved, isoDates = fa
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Catégorie</label>
-          <select value={form.category || ''} onChange={isEdit ? fSelect('category') : f('category')} className="input">
-            <option value="">— Choisir —</option>
-            {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-          </select>
+          <ChoiceSelect
+            value={form.category || ''}
+            choices={CATEGORIES}
+            table="achats_fournisseurs" field="category"
+            onChange={v => (isEdit ? fSelect('category') : f('category'))({ target: { value: v } })}
+            className="input w-full"
+          />
         </div>
         {!isBill && (
           <div>
             <label className="label">Mode de paiement</label>
-            <select value={form.payment_method || ''} onChange={isEdit ? fSelect('payment_method') : f('payment_method')} className="input">
-              <option value="">— Choisir —</option>
-              {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
-            </select>
+            <ChoiceSelect
+              value={form.payment_method || ''}
+              choices={PAYMENT_METHODS}
+              table="achats_fournisseurs" field="payment_method"
+              onChange={v => (isEdit ? fSelect('payment_method') : f('payment_method'))({ target: { value: v } })}
+              className="input w-full"
+            />
           </div>
         )}
       </div>

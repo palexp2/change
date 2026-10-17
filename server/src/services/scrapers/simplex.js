@@ -24,6 +24,8 @@
 // trouver l'API interne de Wix.
 
 const PORTAL_URL = 'https://portal.simplexwireless.com/Home'
+import { pdfNet, invoiceLinkRows, amountGridRows, fetchPdfByUrl, downloadRowPdf } from './portalPage.js'
+
 const ORIGIN = 'https://portal.simplexwireless.com'
 // Écran de connexion : hébergé par Azure AD B2C, pas par le portail.
 const LOGIN_HOST = /b2clogin\.com|login\.microsoftonline\.com/i
@@ -241,23 +243,7 @@ export default {
   async list(ctx) {
     const { page, context, log } = ctx
 
-    // Filet de diagnostic : tout PDF qui redescend est gardé (c'est souvent la
-    // seule façon d'attraper un téléchargement déclenché en JavaScript), et les
-    // endpoints JSON de facturation sont journalisés pour pouvoir les appeler
-    // directement à la prochaine itération.
-    const captured = new Map()
-    page.on('response', async res => {
-      try {
-        const type = (res.headers()['content-type'] || '').toLowerCase()
-        const url = res.url()
-        if (type.includes('pdf') || /\.pdf(\?|$)/i.test(url)) {
-          if (!captured.has(url)) captured.set(url, Buffer.from(await res.body()))
-          log(`📄 PDF capturé : ${url.slice(0, 120)}`)
-        } else if (type.includes('json') && /invoice|billing|factur|statement|payment/i.test(url)) {
-          log(`↪︎ API vue : ${url.slice(0, 160)}`)
-        }
-      } catch { /* corps déjà consommé ou réponse annulée */ }
-    })
+    const captured = pdfNet(page, log, /invoice|billing|factur|statement|payment/i)
 
     await page.goto(PORTAL_URL, { waitUntil: 'domcontentloaded' })
     await page.waitForLoadState('networkidle').catch(() => {})
@@ -276,25 +262,12 @@ export default {
     // Deux gabarits possibles : des liens (href direct vers le PDF) et des
     // lignes de tableau dont le téléchargement est un bouton. On relève les
     // deux, la mise en forme du portail décidera lequel porte les factures.
-    const links = await page.$$eval('a[href]', els => els
-      .filter(a => /invoice|factur|\.pdf(\?|$)|download/i.test(`${a.getAttribute('href')} ${a.innerText}`))
-      .map(a => {
-        let node = a
-        let row = ''
-        for (let i = 0; i < 10 && node; i++) {
-          const text = node.innerText || ''
-          if (/\d/.test(text) && text.length > 12) { row = text; break }
-          node = node.parentElement
-        }
-        return { href: a.getAttribute('href') || '', text: (a.innerText || '').trim(), row }
-      })).catch(() => [])
+    const links = await invoiceLinkRows(page, 'a[href]', /invoice|factur|\.pdf(\?|$)|download/)
 
     // Lignes de grille : seulement celles qui portent un montant — sinon
     // l'en-tête et les lignes de résumé remonteraient aussi. Celles qui
     // contiennent déjà un lien sont couvertes par le relevé précédent.
-    const gridRows = await page.$$eval('table tr, [role="row"]', els => els
-      .filter(tr => /\$/.test(tr.innerText || '') && !tr.querySelector('a[href]'))
-      .map(tr => ({ href: '', text: '', row: tr.innerText || '' }))).catch(() => [])
+    const gridRows = await amountGridRows(page)
 
     const raw = [...links, ...gridRows].map((r, index) => ({ ...r, index }))
     const docs = parseSimplexRows(raw)
@@ -319,33 +292,11 @@ export default {
       fetch: async () => {
         if (d.href) {
           const url = d.href.startsWith('http') ? d.href : `${ORIGIN}${d.href}`
-          const res = await context.request.get(url, { timeout: 60_000 })
-          const buffer = res.ok() ? await res.body() : null
-          if (buffer && buffer.slice(0, 5).toString() === '%PDF-') return buffer
-          // Le lien ouvre une visionneuse plutôt que le fichier : on navigue et
-          // on récupère ce que le filet réseau a attrapé.
-          await page.goto(url, { waitUntil: 'networkidle' }).catch(() => {})
-          const late = [...captured.values()].pop()
-          if (late) return late
-          throw new Error(`réponse non-PDF (HTTP ${res.status()})`)
+          return fetchPdfByUrl({ context, page, url, captured })
         }
 
-        const marker = rowTextOf(d.index).split('\n').find(l => l.trim().length > 3) || ''
-        const row = page.locator('table tr, [role="row"]').filter({ hasText: marker.trim() }).first()
-        if (!(await row.count())) throw new Error('ligne de facture introuvable au moment du téléchargement')
-        const control = row.locator('button, a, [role="button"], svg, i').first()
-        const [download] = await Promise.all([
-          page.waitForEvent('download', { timeout: 30_000 }).catch(() => null),
-          control.click({ timeout: 15_000 }).catch(() => {}),
-        ])
-        if (download) {
-          const { readFile } = await import('fs/promises')
-          return await readFile(await download.path())
-        }
-        await page.waitForTimeout(3000)
-        const late = [...captured.values()].pop()
-        if (late) return late
-        throw new Error('le clic sur la ligne n\'a produit aucun PDF')
+        const marker = (rowTextOf(d.index).split('\n').find(l => l.trim().length > 3) || '').trim()
+        return downloadRowPdf({ page, marker, captured, controlSelector: 'button, a, [role="button"], svg, i' })
       },
     }))
   },

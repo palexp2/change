@@ -12,7 +12,7 @@ import {
 
 import {
   listPayments, getPayment, createPayment, setCleared, autoClearFromBank,
-  validatePayment, PAYMENT_FIELDS, PAYMENT_METHODS,
+  validatePayment, PAYMENT_FIELDS,
   vendorPaymentHints, learnPaymentNote, paymentTemplates, openBills, searchPayments,
   enrichInvoiceDatesFromQb,
 } from '../services/treasuryPayments.js'
@@ -365,8 +365,6 @@ router.get('/payments/sheet-status', async (req, res) => {
   res.json(pmtSuiviStatus())
 })
 
-router.get('/payment-methods', (req, res) => res.json(PAYMENT_METHODS))
-
 // ── Sync du fichier « Maintien du solde disponible BNC » (Google Sheet) ──────
 // Le fichier fait foi : la sync importe le solde réel, ajoute les paiements
 // planifiés inconnus de l'ERP et aligne les récurrentes. ?dry_run=1 (ou body
@@ -375,18 +373,6 @@ router.get('/payment-methods', (req, res) => res.json(PAYMENT_METHODS))
 router.get('/solde-sheet/status', async (req, res) => {
   const { soldeSheetStatus } = await import('../services/treasurySoldeSheet.js')
   res.json(soldeSheetStatus())
-})
-
-router.get('/solde-sheet/mirror', async (req, res) => {
-  const { treasuryMirrorStatus } = await import('../services/treasurySheetMirror.js')
-  res.json(treasuryMirrorStatus())
-})
-
-router.post('/solde-sheet/mirror', async (req, res) => {
-  try {
-    const { syncTreasuryMirror } = await import('../services/treasurySheetMirror.js')
-    res.json(await syncTreasuryMirror({ dryRun: req.body?.dry_run === true, trigger: 'manual' }))
-  } catch (e) { res.status(502).json({ error: e.message }) }
 })
 
 router.post('/solde-sheet/sync', async (req, res) => {

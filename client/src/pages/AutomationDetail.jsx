@@ -1704,6 +1704,7 @@ function TriggerConfig({ triggerType, triggerConfig, onTypeChange, onConfigChang
         <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
         <ChoiceSelect value={triggerType} onChange={v => { onTypeChange(v); onConfigChange({}) }}
           choices={[{ value: 'schedule', label: 'Planifié (cron)' }, { value: 'manual', label: 'Déclenchement manuel' }]}
+          table="automations" field="trigger_type" colorsOnly
           className="input w-full" emptyOption={null} />
       </div>
 

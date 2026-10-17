@@ -16,8 +16,6 @@ const TIMEOUT_MS = 12000
 const NEGATIVE_TTL_MS = 30 * 60 * 1000
 const negative = new Map()
 
-export function _clearGeocodeCache() { negative.clear() }
-
 /** Assemble une adresse postale exploitable à partir des colonnes d'une company. */
 export function buildAddressQuery(company) {
   if (!company) return ''

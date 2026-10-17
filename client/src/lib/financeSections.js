@@ -1,7 +1,7 @@
 import {
   Landmark, BookUser, Wallet, CalendarCheck, CalendarClock,
   Banknote, ArrowLeftRight, CreditCard, Ship, Megaphone, HardDrive, FlaskConical, Wand2,
-  FileText, RefreshCw, ReceiptText, BookOpen, ListTree,
+  FileText, RefreshCw, ReceiptText, BookOpen, ListTree, Scale, FileBarChart,
 } from 'lucide-react'
 
 // Espace finance — les pages du suivi comptable quotidien, réunies derrière une
@@ -40,6 +40,8 @@ export const FINANCE_SECTIONS = [
   { to: '/sale-receipts',    label: 'Extraction de données',    icon: ReceiptText,    group: 'Fournisseurs & engagements' },
 
   { to: '/plan-comptable',   label: 'Plan comptable',           icon: ListTree,       group: 'Écritures' },
+  { to: '/grand-livre',      label: 'Grand livre ↔ QBO',        icon: Scale,          group: 'Écritures' },
+  { to: '/etats-financiers', label: 'États financiers',         icon: FileBarChart,   group: 'Écritures' },
   { to: '/journal-entries',  label: 'Écritures de journal',     icon: BookOpen,       group: 'Écritures' },
   { to: '/fin-de-mois',      label: 'Écritures de fin de mois', icon: CalendarCheck,  group: 'Écritures' },
   { to: '/revenus-reportes', label: "Revenus perçus d'avance",   icon: CalendarClock,  group: 'Écritures' },
@@ -86,7 +88,8 @@ const HUB_DEFS = [
     ['/journal-entries', 'Journal'], ['/fin-de-mois', 'Fin de mois'],
     ['/revenus-reportes', "Revenus perçus d'avance"] ] },
   { label: 'Plan comptable',    icon: ListTree,       group: 'Livres', pages: [
-    ['/plan-comptable', 'Plan comptable'] ] },
+    ['/plan-comptable', 'Plan comptable'], ['/grand-livre', 'Grand livre ↔ QBO'],
+    ['/etats-financiers', 'États financiers'] ] },
   { label: 'Inventaire',        icon: HardDrive,      group: 'Livres', pages: [
     ['/stock-movement', "Mouvements d'inventaire"], ['/comptabilite/regles-serials', 'Numéros de série'],
     ['/inventaire-drive', 'Inventaire Drive'] ] },

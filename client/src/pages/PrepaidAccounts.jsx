@@ -12,12 +12,11 @@ import DouanesCarmPanel from './DouanesCarm.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
-
-const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
-const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
+import { inputCls, labelCls, makeTextField, NotesField, AutosaveFooter, useCreateAction } from '../components/AutosaveFormKit.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 // Convention comptable : montant négatif entre parenthèses (comme la cédule papier).
 function fmtAmort(n, currency = 'CAD') {
@@ -39,7 +38,6 @@ const monthLabel = m => `${MONTH_LABELS[m.slice(5, 7)]} ${m.slice(0, 4)}`
 function AccountModal({ account, onClose, onSaved, onDeleted }) {
   const isNew = !account?.id
   const [form, setForm] = useState(account || { vendor: '', currency: 'USD', active: 1 })
-  const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -50,31 +48,13 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
     onError: (k, prev) => set(k, prev),
   })
 
-  async function create() {
+  const { run: create, saving } = useCreateAction(async () => {
     if (!form.vendor?.trim()) { addToast({ message: 'Nom du fournisseur requis', type: 'error' }); return }
-    setSaving(true)
-    try {
-      onSaved(await api.prepaid.accounts.create(form))
-      onClose()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
+    onSaved(await api.prepaid.accounts.create(form))
+    onClose()
+  })
 
-  const field = (k, label, props = {}) => (
-    <div>
-      <label className={labelCls}>{label}</label>
-      <input
-        className={inputCls}
-        value={form[k] ?? ''}
-        onChange={e => set(k, e.target.value)}
-        onBlur={e => save(k, e.target.value.trim() === '' ? null : e.target.value.trim())}
-        {...props}
-      />
-    </div>
-  )
+  const field = makeTextField(form, set, save)
 
   return (
     <Modal isOpen onClose={onClose} title={isNew ? 'Nouveau compte prépayé' : form.vendor} size="lg">
@@ -105,37 +85,10 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
             </select>
           </div>
         )}
-        <div className="col-span-2">
-          <label className={labelCls}>Notes</label>
-          <textarea className={inputCls} rows={2} value={form.notes ?? ''} onChange={e => set('notes', e.target.value)}
-            onBlur={e => save('notes', e.target.value.trim() === '' ? null : e.target.value)} />
-        </div>
+        <NotesField form={form} set={set} save={save} />
       </div>
-      <div className="flex items-center justify-between mt-4">
-        {isNew ? (
-          // Bouton requis : création d'un nouvel enregistrement (pas encore d'id → autosave impossible)
-          <div className="flex w-full justify-end gap-2">
-            <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Annuler</button>
-            <button onClick={create} disabled={saving} data-testid="prepaid-create"
-              className="px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
-              {saving ? 'Création…' : 'Créer'}
-            </button>
-          </div>
-        ) : (
-          <>
-            <button
-              onClick={async () => {
-                try { await api.prepaid.accounts.delete(account.id); onDeleted(account.id); onClose() }
-                catch (e) { addToast({ message: e.message, type: 'error' }) }
-              }}
-              className="text-sm text-red-600 hover:underline"
-            >
-              Supprimer
-            </button>
-            <span className="text-xs text-slate-400">{autosaving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
-          </>
-        )}
-      </div>
+      <AutosaveFooter isNew={isNew} saving={saving} autosaving={autosaving} onClose={onClose} onCreate={create} createTestId="prepaid-create"
+        onDelete={async () => { await api.prepaid.accounts.delete(account.id); onDeleted(account.id) }} />
     </Modal>
   )
 }
@@ -164,7 +117,7 @@ function NewEntryModal({ account, onClose, onCreated }) {
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelCls}>Date</label>
-          <input className={inputCls} type="date" value={form.entry_date} onChange={e => set('entry_date', e.target.value)} />
+          <DateInput className={inputCls} value={form.entry_date} onChange={e => set('entry_date', e.target.value)} />
         </div>
         <div>
           <label className={labelCls}>Type</label>
@@ -551,7 +504,6 @@ function ExpenseModal({ expense, onClose, onChanged }) {
   const isNew = !expense?.id
   const [form, setForm] = useState(expense || {
     label: '', amount: '', currency: 'CAD', method: 'prorata_jours', fpa_acctnum: '13000', active: 1 })
-  const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
   const { options: acctOptions, accountName } = useQbAccounts()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
@@ -561,28 +513,15 @@ function ExpenseModal({ expense, onClose, onChanged }) {
     onSaved: () => onChanged(),
     onError: (k, prev) => set(k, prev) })
 
-  async function create() {
+  const { run: create, saving } = useCreateAction(async () => {
     if (!form.label?.trim()) { addToast({ message: 'Libellé requis', type: 'error' }); return }
     if (!Number(form.amount)) { addToast({ message: 'Montant requis', type: 'error' }); return }
-    setSaving(true)
-    try {
-      await api.prepaid.expenses.create({ ...form, amount: Number(form.amount) })
-      onChanged()
-      onClose()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
+    await api.prepaid.expenses.create({ ...form, amount: Number(form.amount) })
+    onChanged()
+    onClose()
+  })
 
-  const field = (k, label, props = {}) => (
-    <div>
-      <label className={labelCls}>{label}</label>
-      <input className={inputCls} value={form[k] ?? ''} onChange={e => set(k, e.target.value)}
-        onBlur={e => save(k, e.target.value.trim() === '' ? null : e.target.value.trim())} {...props} />
-    </div>
-  )
+  const field = makeTextField(form, set, save)
 
   // Sélecteur de compte QB (numéro + nom, recherchable). Persiste immédiatement :
   // le SearchableSelect n'émet pas de blur.
@@ -637,11 +576,7 @@ function ExpenseModal({ expense, onClose, onChanged }) {
             compte au nom du fournisseur. */}
         {acctField('expense_acctnum', 'Compte de dépense QuickBooks (Dr)')}
         {acctField('fpa_acctnum', 'Compte FPA QuickBooks (Cr)')}
-        <div className="col-span-2">
-          <label className={labelCls}>Description</label>
-          <textarea className={inputCls} rows={2} value={form.description ?? ''} onChange={e => set('description', e.target.value)}
-            onBlur={e => save('description', e.target.value.trim() === '' ? null : e.target.value)} />
-        </div>
+        <NotesField form={form} set={set} save={save} k="description" label="Description" />
         {!isNew && (
           <div>
             <label className={labelCls}>Statut</label>
@@ -653,31 +588,8 @@ function ExpenseModal({ expense, onClose, onChanged }) {
           </div>
         )}
       </div>
-      <div className="flex items-center justify-between mt-4">
-        {isNew ? (
-          // Bouton requis : création d'un nouvel enregistrement (pas encore d'id → autosave impossible)
-          <div className="flex w-full justify-end gap-2">
-            <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Annuler</button>
-            <button onClick={create} disabled={saving} data-testid="fpa-create"
-              className="px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
-              {saving ? 'Création…' : 'Créer'}
-            </button>
-          </div>
-        ) : (
-          <>
-            <button
-              onClick={async () => {
-                try { await api.prepaid.expenses.delete(expense.id); onChanged(); onClose() }
-                catch (e) { addToast({ message: e.message, type: 'error' }) }
-              }}
-              className="text-sm text-red-600 hover:underline"
-            >
-              Supprimer
-            </button>
-            <span className="text-xs text-slate-400">{autosaving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
-          </>
-        )}
-      </div>
+      <AutosaveFooter isNew={isNew} saving={saving} autosaving={autosaving} onClose={onClose} onCreate={create} createTestId="fpa-create"
+        onDelete={async () => { await api.prepaid.expenses.delete(expense.id); onChanged() }} />
     </Modal>
   )
 }

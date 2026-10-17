@@ -161,59 +161,6 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
   res.status(201).json({ id: callId, interaction_id: interactionId, contact_matched: !!resolvedContactId })
 })
 
-// POST /api/calls/upload — upload recording + create interaction+call
-router.post('/upload', requireAuth, upload.single('recording'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' })
-
-  const { contact_id, company_id, direction, caller_number, callee_number, duration_seconds, timestamp } = req.body
-  // Auto-match contact by phone if not provided
-  let resolvedContactId = contact_id || null
-  let resolvedCompanyId = company_id || null
-  if (!resolvedContactId) {
-    const match = findContactByPhone(callee_number, caller_number)
-    if (match) {
-      resolvedContactId = match.id
-      resolvedCompanyId = resolvedCompanyId || match.company_id
-    }
-  }
-
-  const interactionId = newRecordId()
-  const callId = newRecordId()
-  const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
-
-  // Atomique : interaction + call insérés ensemble, sinon rollback (pas d'interaction orpheline)
-  db.transaction(() => {
-    db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
-      .run(interactionId, resolvedContactId, resolvedCompanyId, req.user.id, 'call', direction || 'in', ts)
-
-    db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds) VALUES (?,?,?,?,?,?)')
-      .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null)
-  })()
-
-  const filePath = join(uploadsDir, req.file.filename)
-  enqueueTranscription(callId, filePath, 'upload').catch(console.error)
-
-  emitEntity('call', 'created', callId, buildCallRow(callId), req.user?.id)
-  res.status(201).json({ id: callId, interaction_id: interactionId })
-})
-
-// POST /api/calls/rematch — retroactively link unmatched calls to contacts by phone
-router.post('/rematch', requireAuth, (req, res) => {
-  const matched = rematchCalls()
-  res.json({ matched })
-})
-
-// GET /api/calls/:id/transcript
-router.get('/:id/transcript', requireAuth, (req, res) => {
-  const row = db.prepare(`
-    SELECT ca.* FROM calls ca
-    JOIN interactions i ON ca.interaction_id = i.id
-    WHERE ca.id=?
-  `).get(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json({ transcript: row.transcript_formatted || row.transcript, status: row.transcription_status })
-})
-
 // GET /api/calls/:id/recording — stream audio from local disk or Google Drive
 router.get('/:id/recording', requireAuth, async (req, res) => {
   const row = db.prepare(`
@@ -265,21 +212,6 @@ router.get('/:id/recording', requireAuth, async (req, res) => {
     console.error('Recording stream error:', e.message)
     res.status(500).json({ error: 'Failed to stream recording' })
   }
-})
-
-// POST /api/calls/:id/retranscribe
-router.post('/:id/retranscribe', requireAuth, async (req, res) => {
-  const row = db.prepare(`
-    SELECT ca.* FROM calls ca
-    JOIN interactions i ON ca.interaction_id = i.id
-    WHERE ca.id=?
-  `).get(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  if (!row.recording_path) return res.status(400).json({ error: 'No recording' })
-
-  const filePath = join(uploadsDir, row.recording_path)
-  enqueueTranscription(row.id, filePath, 'retranscribe').catch(console.error)
-  res.json({ ok: true })
 })
 
 export default router

@@ -75,7 +75,7 @@ function googleAccountId(email) {
 
 // ── Couleurs ─────────────────────────────────────────────────────────────────
 
-// Exactement les teintes du fichier (SHEET_COLORS de bankTrxSheet.js), en
+// Exactement les teintes du fichier (légende des onglets), en
 // valeurs Google : rien à réapprendre pour qui lisait déjà le classeur.
 export const STATUS_FILL = {
   rapproche: { red: 0x92 / 255, green: 0xD0 / 255, blue: 0x50 / 255 },     // vert

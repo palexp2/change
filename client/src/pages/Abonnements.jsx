@@ -7,6 +7,7 @@ import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -37,20 +38,20 @@ const STATUS_COLORS = {
   'Expiré': 'orange',
 }
 
-const RACHAT_COLORS = {
-  'rachat complet':  'bg-green-100 text-green-700',
-  'rachat partiel':  'bg-yellow-100 text-yellow-700',
-  'fusion':          'bg-purple-100 text-purple-700',
-  'non':             'bg-slate-100 text-slate-600',
-}
+// Choix du rachat, couleur par défaut (celle réglée sur le champ l'emporte).
+const RACHAT_CHOICES = [
+  { value: 'rachat complet', label: 'Rachat complet', color: 'green' },
+  { value: 'rachat partiel', label: 'Rachat partiel', color: 'yellow' },
+  { value: 'fusion',         label: 'Fusion',         color: 'purple' },
+  { value: 'non',            label: 'Non',            color: 'gray' },
+]
 
 function RachatCell({ row, onChange }) {
   const { addToast } = useToast()
   const [saving, setSaving] = useState(false)
 
-  async function handleChange(e) {
-    e.stopPropagation()
-    const val = e.target.value || null
+  async function handleChange(v) {
+    const val = v || null
     setSaving(true)
     try {
       await api.abonnements.patch(row.id, { rachat: val })
@@ -63,25 +64,17 @@ function RachatCell({ row, onChange }) {
   }
 
   return (
-    <div className="relative inline-block" onClick={e => e.stopPropagation()}
+    <div className="inline-block max-w-full" onClick={e => e.stopPropagation()}
       title={row.rachat_auto && row.rachat_reason ? `Auto · ${row.rachat_reason}` : undefined}>
-      <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full pointer-events-none select-none ${
-        row.rachat ? RACHAT_COLORS[row.rachat] : 'text-slate-300'
-      } ${saving ? 'opacity-50' : ''}`}>
-        {row.rachat || '+ ajouter'}
-      </span>
-      <select
+      <ChoiceSelect
         value={row.rachat || ''}
+        choices={RACHAT_CHOICES}
+        table="abonnements" field="rachat" colorsOnly
         onChange={handleChange}
         disabled={saving}
-        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-      >
-        <option value="">— aucun</option>
-        <option value="rachat complet">Rachat complet</option>
-        <option value="rachat partiel">Rachat partiel</option>
-        <option value="fusion">Fusion</option>
-        <option value="non">Non</option>
-      </select>
+        className="text-xs bg-transparent"
+        size="xs"
+      />
     </div>
   )
 }

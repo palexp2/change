@@ -14,26 +14,11 @@
  *  <ThinkingOrb />                          // 20 px, breathing
  *  <ThinkingOrb state="searching" size={64} />
  *  <ThinkingOrb size={16} ink />            // dans un bouton bg-brand-600 text-white
- *  <ThinkingOrb state={orbForPhase(phase)} size={40} />
  */
 import { useEffect, useRef } from 'react'
 import { MODE_FRAMES, paintFrame, resolvePreset } from '../lib/thinkingOrbs/engine'
 
 export const ORB_STATES = ['working', 'searching', 'solving', 'listening', 'connecting', 'weaving', 'composing', 'breathing', 'shaping']
-
-/** Libellé de phase libre → état d'orbe. */
-export function orbForPhase(phase) {
-  const s = String(phase || '')
-  if (/librar|look|search|find|catalog|cherch|trouv|scan/i.test(s)) return 'searching'
-  if (/read|page|filing|file|lecture|lit |lis |import|sync/i.test(s)) return 'working'
-  if (/fold|recap|branch|weav|fusion|relie|rapproch/i.test(s)) return 'weaving'
-  if (/plan|brief|draft|brouillon|rédig|redig/i.test(s)) return 'shaping'
-  if (/connect|branch|liaison|lien/i.test(s)) return 'connecting'
-  if (/écri|ecri|compos|répon|repon|stream|génér|gener/i.test(s)) return 'composing'
-  if (/solv|résou|resou|calcul|vérif|verif|test/i.test(s)) return 'solving'
-  if (/écout|ecout|listen|dict/i.test(s)) return 'listening'
-  return 'breathing'
-}
 
 // ── Boucle partagée ────────────────────────────────────────────────────────
 const orbs = new Set()

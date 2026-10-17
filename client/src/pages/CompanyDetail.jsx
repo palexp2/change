@@ -41,6 +41,7 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useAuth } from '../lib/auth.jsx'
 import DueShortcuts, { dueFromShortcut } from '../components/DueShortcuts.jsx'
+import { InlineDate } from '../components/InlineFields.jsx'
 import { stripeFactureUrl } from '../lib/stripeLinks.js'
 import { intervalAmount, intervalLabel } from '../lib/subscriptionPricing.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
@@ -256,10 +257,10 @@ function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, se
       </div>
       <div>
         <label className="label">Échéance</label>
-        <input
-          type="date"
+        <InlineDate
+          iso
           value={taskForm.due_date || ''}
-          onChange={e => isEdit ? saveField('due_date', e.target.value) : setTaskForm(f => ({ ...f, due_date: e.target.value }))}
+          onSave={v => isEdit ? saveField('due_date', v) : setTaskForm(f => ({ ...f, due_date: v }))}
           className="input"
         />
         <DueShortcuts

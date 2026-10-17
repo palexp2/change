@@ -176,5 +176,3 @@ export function formFieldCatalog(erpTable) {
   }
   return out.sort((a, b) => a.label.localeCompare(b.label, 'fr'))
 }
-
-export default formFieldCatalog

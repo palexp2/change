@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 import { ChevronLeft, ChevronRight, Plus, Search, X } from 'lucide-react'
 import api from '../lib/api.js'
+import { useAnchoredPopup } from '../lib/useAnchoredPopup.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -55,7 +56,6 @@ function RefPicker({ value, items, labelOf, onChange, disabled, autoFocus, onCre
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
-  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 })
   const [creating, setCreating] = useState(false)
   const btnRef = useRef(null)
   const popupRef = useRef(null)
@@ -65,46 +65,7 @@ function RefPicker({ value, items, labelOf, onChange, disabled, autoFocus, onCre
     if (autoFocus) btnRef.current?.focus()
   }, [autoFocus])
 
-  useEffect(() => {
-    if (!open) return
-    const rect = btnRef.current?.getBoundingClientRect()
-    if (rect) {
-      const popupH = 280
-      const spaceBelow = window.innerHeight - rect.bottom
-      const openUp = spaceBelow < popupH && rect.top > popupH
-      setPos({
-        top: openUp ? rect.top - popupH - 4 : rect.bottom + 4,
-        left: rect.left,
-        width: Math.max(rect.width, 240),
-      })
-    }
-    const onDown = (e) => {
-      if (!btnRef.current?.contains(e.target) && !popupRef.current?.contains(e.target)) {
-        setOpen(false)
-        setQuery('')
-      }
-    }
-    const onReposition = () => {
-      const r = btnRef.current?.getBoundingClientRect()
-      if (!r) return
-      const popupH = 280
-      const spaceBelow = window.innerHeight - r.bottom
-      const openUp = spaceBelow < popupH && r.top > popupH
-      setPos({
-        top: openUp ? r.top - popupH - 4 : r.bottom + 4,
-        left: r.left,
-        width: Math.max(r.width, 240),
-      })
-    }
-    document.addEventListener('mousedown', onDown)
-    window.addEventListener('scroll', onReposition, true)
-    window.addEventListener('resize', onReposition)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('scroll', onReposition, true)
-      window.removeEventListener('resize', onReposition)
-    }
-  }, [open])
+  const pos = useAnchoredPopup({ open, btnRef, popupRef, track: true, onClose: () => { setOpen(false); setQuery('') } })
 
   const q = query.trim().toLowerCase()
   const filtered = (q ? items.filter(it => labelOf(it).toLowerCase().includes(q)) : items).slice(0, 100)

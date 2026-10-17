@@ -1,12 +1,9 @@
 import db from '../db/database.js'
-import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
 import { emitCompany } from './realtimeEmitters.js'
 import { getStripeKey } from './stripe.js'
-import { APP_URL } from '../config/appUrl.js'
 import { escapeHtml, escapeAttr } from '../utils/sanitizeHtml.js'
 import { stripeCustomerFields } from './stripeCustomerCompany.js'
-import { trackEmailHtml } from './emailTracking.js'
 
 export function getStripeClient() {
   const sk = getStripeKey()
@@ -265,87 +262,4 @@ ${pdfUrl ? `<p><a href="${escapeAttr(pdfUrl)}">Télécharger le PDF</a></p>` : '
 <p>Merci pour votre confiance,<br/>${escapeHtml(fromName || 'Orisha')}</p>
 ${trackingPixelUrl ? `<img src="${escapeAttr(trackingPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;" />` : ''}
 </body></html>`
-}
-
-function formatMoney(n, currency = 'CAD') {
-  try {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: String(currency || 'CAD').toUpperCase() }).format(n)
-  } catch { return `${Number(n).toFixed(2)} ${String(currency || 'CAD').toUpperCase()}` }
-}
-
-// Finalize a draft invoice in Stripe and send the email via Gmail. Idempotent
-// in the sense that it can be called on an already-finalized invoice (will skip
-// finalize + still send email if not already sent).
-//
-// Resolves recipient from companies.email or first contact email.
-// Inserts an interaction + emails row with a tracking pixel URL.
-//
-// Returns { invoice, emailedTo, emailedFrom, emailMessageId, emailErr }.
-export async function finalizeAndSendInvoice({ stripe, stripeInvoiceId, companyId, userId }) {
-  const { sendEmail } = await import('./gmail.js')
-
-  if (!isGmailSendAvailable(userId)) {
-    throw new Error('gmail_not_connected')
-  }
-
-  // Resolve recipient
-  let recipientEmail = null
-  let recipientFirstName = null
-  let recipientContactId = null
-  const co = db.prepare('SELECT email FROM companies WHERE id=?').get(companyId)
-  if (co?.email) recipientEmail = co.email
-  const ct = db.prepare(`
-    SELECT id, email, first_name FROM contacts
-    WHERE company_id=? AND email IS NOT NULL AND email!=''
-    ORDER BY created_at LIMIT 1
-  `).get(companyId)
-  if (!recipientEmail && ct?.email) recipientEmail = ct.email
-  if (ct?.first_name) recipientFirstName = ct.first_name
-  if (ct?.id) recipientContactId = ct.id
-  if (!recipientEmail) throw new Error('no_recipient_email')
-
-  // Fetch + finalize if still draft
-  let invoice = await stripe.invoices.retrieve(stripeInvoiceId)
-  if (invoice.status === 'draft') {
-    invoice = await stripe.invoices.finalizeInvoice(stripeInvoiceId, { auto_advance: false })
-  }
-
-  // Build email
-  const interactionId = newRecordId()
-  const emailRowId = newRecordId()
-  const ts = new Date().toISOString()
-  const total = (invoice.total || 0) / 100
-  const totalLabel = formatMoney(total, invoice.currency)
-  const dueDateLabel = invoice.due_date ? new Date(invoice.due_date * 1000).toLocaleDateString('fr-CA') : null
-  const subject = `Facture ${invoice.number || ''} — ${totalLabel}`
-  const baseUrl = APP_URL
-  const trackingPixelUrl = `${baseUrl}/erp/api/email-tracking/${emailRowId}.gif`
-  const userRow = db.prepare('SELECT name FROM users WHERE id=?').get(userId)
-  const html = buildInvoiceEmailHtml({
-    contactFirstName: recipientFirstName,
-    invoiceNumber: invoice.number || invoice.id,
-    hostedUrl: invoice.hosted_invoice_url,
-    pdfUrl: invoice.invoice_pdf,
-    totalLabel,
-    dueDateLabel,
-    trackingPixelUrl,
-    fromName: userRow?.name || 'Orisha',
-  })
-
-  const sent = await sendEmail(recipientEmail, subject, trackEmailHtml(html, emailRowId), { userId })
-
-  // Log interaction + email row
-  db.prepare(`INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
-    VALUES (?,?,?,?,'email','out',?)`)
-    .run(interactionId, recipientContactId, companyId, userId, ts)
-  db.prepare(`INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, gmail_message_id, gmail_thread_id, automated, open_count)
-    VALUES (?,?,?,?,?,?,?,?,0,0)`)
-    .run(emailRowId, interactionId, subject, html, sent.account_email, recipientEmail, sent.message_id, sent.thread_id || null)
-
-  return {
-    invoice,
-    emailedTo: recipientEmail,
-    emailedFrom: sent.account_email,
-    emailMessageId: sent.message_id,
-  }
 }

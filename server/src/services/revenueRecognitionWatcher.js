@@ -363,12 +363,3 @@ export function startRevenueRecognitionWatcher() {
   // La file (persistée en DB) couvre les échecs antérieurs au redémarrage.
   watcher.start()
 }
-
-export function stopRevenueRecognitionWatcher() { watcher.stop() }
-
-// ── Test seams ──────────────────────────────────────────────────────────────
-export function _setLastSeenId(n) { watcher.setLastSeenId(n) }
-export function _getLastSeenId() { return watcher.getLastSeenId() }
-export function _enqueueFailure(factureId, orderId, errorMsg) { return enqueueFailure(factureId, orderId, errorMsg) }
-export function _dequeue(factureId) { return dequeue(factureId) }
-export function _backoffMs(attempts) { return backoffMs(attempts) }

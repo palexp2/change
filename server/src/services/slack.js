@@ -396,14 +396,3 @@ async function postAsUser(userId, text) {
   await userApi(token, 'chat.postMessage', { channel: dm.channel.id, text, unfurl_links: false })
   return dm.channel.id
 }
-
-/** Diagnostic de la connexion bot (page Connecteurs / test manuel). */
-export async function slackBotIdentity() {
-  if (!slackBotToken()) return { connected: false, error: 'SLACK_BOT_TOKEN absent' }
-  try {
-    const json = await slackApi('auth.test')
-    return { connected: true, team: json.team, bot: json.user, team_id: json.team_id }
-  } catch (err) {
-    return { connected: false, error: err.message }
-  }
-}

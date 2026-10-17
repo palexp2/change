@@ -17,7 +17,7 @@ import { useCustomFields } from '../lib/useCustomFields.js'
 import CustomFieldModal from '../components/CustomFieldModal.jsx'
 import { FieldAirtableMapping } from '../components/FieldAirtableMapping.jsx'
 import { customFieldToColumn } from '../lib/customFieldDisplay.jsx'
-import { summarizeDependents } from '../lib/customFieldDeps.js'
+import { deleteCustomFieldWithReport } from '../lib/customFieldDeps.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 
@@ -47,27 +47,8 @@ export default function Pipeline() {
     return m
   }, [customFields])
 
-  async function handleDeleteCustomField(field) {
-    // Rapport d'usage : liste les dépendances (champs calculés, automations,
-    // vues, règles de visibilité) que la suppression va affecter, avant de les
-    // casser en silence (#ERROR).
-    let dependents = []
-    try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch {}
-    const depMsg = summarizeDependents(dependents)
-    if (!(await confirm({
-      title: 'Supprimer le champ',
-      message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
-      confirmLabel: dependents.length ? 'Supprimer quand même' : 'Supprimer',
-    }))) return
-    try {
-      await api.customFields.delete(field.id)
-      addToast({ message: 'Champ supprimé', type: 'success' })
-      await reloadCustomFields()
-      load() // recharge les projets pour refléter la perte de la colonne
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    }
-  }
+  const handleDeleteCustomField = field =>
+    deleteCustomFieldWithReport({ api, field, confirm, addToast, reloadCustomFields, reload: load })
 
   // Chargement en deux temps : (1) lite=1 → peinture rapide avec les colonnes
   // visibles par défaut, sans sous-requêtes orders/vendeur_label ; (2) refetch

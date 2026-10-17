@@ -397,65 +397,44 @@ export async function runDiagnostic(op, { details, serviceId, pickupDetails, shi
   }
 
   // ── T3+ — substitution d'un groupe à la fois sur le payload réel
+  // Remplace un groupe à la fois par sa valeur témoin dans `source` ; le
+  // premier essai qui passe désigne le champ fautif. `attempt(mutated)` lance
+  // l'essai avec le payload muté à la place de `source`.
+  const isolate = async (groups, source, attempt, what) => {
+    for (const group of groups) {
+      const mutated = clone(source)
+      group.apply(mutated)
+      const r = await attempt(mutated, `T${attempts.length + 1} · ${group.label} remplacé par la valeur témoin`)
+      if (!r.ok) continue
+      const faultyValue = group.extract(source)
+      return finish({
+        verdict: 'field_isolated',
+        faultyField: group.key,
+        faultyLabel: group.label,
+        faultyValue,
+        message: `Champ fautif isolé : ${group.label}. La valeur réelle ${JSON.stringify(faultyValue)} ${what === 'le ramassage'
+          ? 'fait échouer le ramassage ; remplacée par une valeur témoin, tout passe. Copiez'
+          : "fait échouer Novoxpress ; remplacée par une valeur témoin, tout passe. C'est un problème de formatage de notre côté — copiez"} le prompt ci-dessous et donnez-le à Claude pour le fix permanent.`,
+        claudePrompt: buildClaudePrompt({ op, shipmentId, group, faultyValue, errorDetail: t1.error || prodError || '' }),
+      })
+    }
+    return null
+  }
+
+  let isolated = null
   if (op === 'pickup') {
     // Pour le pickup, le shipment dev support doit se créer : si T1 a échoué dès
     // la création du shipment (setupFailed), le fautif est dans details, pas
     // dans pickup_details → on bisecte details comme un label.
-    if (t1.setupFailed) {
-      for (const group of GROUPS) {
-        const mutated = clone(details)
-        group.apply(mutated)
-        const r = await runAttempt(`T${attempts.length + 1} · ${group.label} remplacé par la valeur témoin`, mutated, pickupDetails)
-        if (r.ok) {
-          const faultyValue = group.extract(details)
-          return finish({
-            verdict: 'field_isolated',
-            faultyField: group.key,
-            faultyLabel: group.label,
-            faultyValue,
-            message: `Champ fautif isolé : ${group.label}. La valeur réelle ${JSON.stringify(faultyValue)} fait échouer Novoxpress ; remplacée par une valeur témoin, tout passe. C'est un problème de formatage de notre côté — copiez le prompt ci-dessous et donnez-le à Claude pour le fix permanent.`,
-            claudePrompt: buildClaudePrompt({ op, shipmentId, group, faultyValue, errorDetail: t1.error || prodError || '' }),
-          })
-        }
-      }
-    } else {
-      for (const group of PICKUP_GROUPS) {
-        const mutatedPickup = clone(pickupDetails)
-        group.apply(mutatedPickup)
-        const r = await runAttempt(`T${attempts.length + 1} · ${group.label} remplacé par la valeur témoin`, details, mutatedPickup)
-        if (r.ok) {
-          const faultyValue = group.extract(pickupDetails)
-          return finish({
-            verdict: 'field_isolated',
-            faultyField: group.key,
-            faultyLabel: group.label,
-            faultyValue,
-            message: `Champ fautif isolé : ${group.label}. La valeur réelle ${JSON.stringify(faultyValue)} fait échouer le ramassage ; remplacée par une valeur témoin, tout passe. Copiez le prompt ci-dessous et donnez-le à Claude pour le fix permanent.`,
-            claudePrompt: buildClaudePrompt({ op, shipmentId, group, faultyValue, errorDetail: t1.error || prodError || '' }),
-          })
-        }
-      }
-    }
+    isolated = t1.setupFailed
+      ? await isolate(GROUPS, details, (m, label) => runAttempt(label, m, pickupDetails), 'Novoxpress')
+      : await isolate(PICKUP_GROUPS, pickupDetails, (m, label) => runAttempt(label, details, m), 'le ramassage')
   } else {
-    for (const group of GROUPS) {
-      // Pour l'op rate, le groupe emballage produit surtout des 400 clairs — on
-      // le teste quand même : coût marginal d'un appel dev.
-      const mutated = clone(details)
-      group.apply(mutated)
-      const r = await runAttempt(`T${attempts.length + 1} · ${group.label} remplacé par la valeur témoin`, mutated)
-      if (r.ok) {
-        const faultyValue = group.extract(details)
-        return finish({
-          verdict: 'field_isolated',
-          faultyField: group.key,
-          faultyLabel: group.label,
-          faultyValue,
-          message: `Champ fautif isolé : ${group.label}. La valeur réelle ${JSON.stringify(faultyValue)} fait échouer Novoxpress ; remplacée par une valeur témoin, tout passe. C'est un problème de formatage de notre côté — copiez le prompt ci-dessous et donnez-le à Claude pour le fix permanent.`,
-          claudePrompt: buildClaudePrompt({ op, shipmentId, group, faultyValue, errorDetail: t1.error || prodError || '' }),
-        })
-      }
-    }
+    // Pour l'op rate, le groupe emballage produit surtout des 400 clairs — on
+    // le teste quand même : coût marginal d'un appel dev.
+    isolated = await isolate(GROUPS, details, (m, label) => runAttempt(label, m), 'Novoxpress')
   }
+  if (isolated) return isolated
 
   return finish({
     verdict: 'not_isolated',

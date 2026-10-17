@@ -684,21 +684,6 @@ router.post('/:id/attach-to-existing-qb', async (req, res) => {
   }
 })
 
-// Dépense d'un service du mois passé → facture datée de la fin du mois, payée
-// au jour du débit (annule au besoin la correspondance du flux QuickBooks).
-router.post('/:id/republish-service-month', async (req, res) => {
-  try {
-    const { republishForServiceMonth } = await import('../services/receiptServiceMonthRepublish.js')
-    const r = await republishForServiceMonth(req.params.id)
-    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${r.quickbooks_id} (facture du ${r.bill_date}, refaite au mois du service)`)
-    const updated = fetchSaleReceiptRow(req.params.id)
-    if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
-    res.json({ ok: true, ...r })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
 // Délie le pointeur QB d'un reçu (sans toucher à QB) — utile après suppression
 // manuelle de la transaction dans QB pour permettre un re-push. La facture à
 // payer du mois du service et son paiement partent avec : sinon le re-push

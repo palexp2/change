@@ -213,10 +213,15 @@ export async function qbRequest(method, path, body) {
     log(`QB API ${method} ${path} ${resp.status}:`, text)
     throw err
   }
+  const text = await resp.text()
   if (method !== 'GET') {
+    // Corps envoyé et réponse lue : le grand livre miroir (services/glMirror.js)
+    // en tire la date de l'écriture pour savoir quel mois ré-importer.
+    let response = null
+    try { response = JSON.parse(text) } catch {}
     for (const fn of qbMutationListeners) {
       try {
-        fn({ method, path })
+        fn({ method, path, body, response })
       } catch (e) {
         // Un listener qui échoue (ex. invalidation de cache de rapport, mise à
         // jour d'état local après une JE/Deposit poussé) ne doit pas être avalé :
@@ -231,7 +236,7 @@ export async function qbRequest(method, path, body) {
       }
     }
   }
-  return resp.json()
+  return JSON.parse(text)
 }
 
 export const qbGet  = (path)       => qbRequest('GET',  path)
@@ -282,7 +287,6 @@ export async function qbAttachmentDownloadUrl(attachmentId) {
 // Invoice, etc.) via l'endpoint /upload. Retourne l'Attachable créé.
 export async function qbUploadAttachment({ entityType, entityId, fileBuffer, fileName, contentType }) {
   const { default: FormData } = await import('form-data')
-  const { default: nodeFetch } = await import('node-fetch')
   const { accessToken, realmId } = await getAccessToken()
   const url = `${QB_API_BASE}/${realmId}/upload?minorversion=65`
 
@@ -299,14 +303,14 @@ export async function qbUploadAttachment({ entityType, entityId, fileBuffer, fil
   })
   form.append('file_content_01', fileBuffer, { filename: fileName, contentType })
 
-  const resp = await nodeFetch(url, {
+  const resp = await fetch(url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: 'application/json',
       ...form.getHeaders(),
     },
-    body: form,
+    body: form.getBuffer(),
   })
   if (!resp.ok) {
     const text = await resp.text()

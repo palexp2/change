@@ -8,7 +8,7 @@ import { RatingInput } from './RatingStars.jsx'
 import { UserSelect } from './UserPicker.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
 import { useExtraCustomFields } from '../lib/useDetailFields.jsx'
-import { parseSelectChoices, isAirtableLinkField, LinkedRecordsValue, dateFormatOf, durationFormatOf, currencySymbolOf } from '../lib/customFieldDisplay.jsx'
+import { parseSelectChoices, isAirtableLinkField, LinkedRecordsValue, dateFormatOf, durationFormatOf, currencySymbolOf, ratingIconOf } from '../lib/customFieldDisplay.jsx'
 import { dateFormatHasTime } from '../lib/formatDate.js'
 
 // Les champs personnalisés d'une table, rendus comme des blocs de champ
@@ -120,10 +120,10 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId, link
       return <InlineDate value={value} saving={saving} onSave={commit} withTime={dateFormatHasTime(dateFormatOf(field.field))} iso testId={`cf-input-${field.key}`} />
     case 'checkbox':
       return <InlineCheckbox value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
-    // Évaluation : les 5 étoiles, cliquables (re-cliquer l'étoile courante
+    // Évaluation : les 5 symboles, cliquables (re-cliquer l'étoile courante
     // retire la note). Autosave comme les autres champs de fiche.
     case 'rating':
-      return <RatingInput value={value} disabled={saving} onChange={commit} testId={`cf-input-${field.key}`} />
+      return <RatingInput value={value} icon={ratingIconOf(field.field)} disabled={saving} onChange={commit} testId={`cf-input-${field.key}`} />
     case 'user':
       return <UserSelect value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     case 'single_select':

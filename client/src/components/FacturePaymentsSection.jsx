@@ -8,10 +8,11 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { invalidate } from '../lib/prefetch.js'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { Modal } from './Modal.jsx'
-import { ChoiceSelect } from './ChoiceSelect.jsx'
+import { ChoiceSelect, FieldChoiceBadge } from './ChoiceSelect.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 import Spinner from './Spinner.jsx'
+import DateInput from './DateInput.jsx'
 
 export const METHOD_LABELS = {
   stripe: 'Stripe',
@@ -281,8 +282,7 @@ export default function FacturePaymentsSection({
             </div>
             <div>
               <label className="label">Date</label>
-              <input
-                type="date"
+              <DateInput
                 value={receivedAt}
                 onChange={e => setReceivedAt(e.target.value)}
                 className="input input-sm"
@@ -901,7 +901,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
       <tr className="border-t border-slate-100">
         <td className="py-2 text-slate-700 whitespace-nowrap">{fmtDate(p.received_at)}</td>
         <td className="py-2 text-slate-600">
-          {METHOD_LABELS[p.method] || p.method}
+          {p.method && <FieldChoiceBadge table="payments" field="method" value={p.method} label={METHOD_LABELS[p.method] || p.method} className="whitespace-nowrap" />}
           {p.stripe_charge_id && (
             <a
               href={`https://dashboard.stripe.com/payments/${p.stripe_charge_id}`}

@@ -1,75 +1,13 @@
-// Parse duration text to minutes. Accepts "90", "1:30", "1h30", "1.5".
-// Returns integer minutes, or null if unparseable (empty is 0).
-export function parseDurationToMinutes(input) {
-  if (input == null || input === '') return 0
-  if (typeof input === 'number') return Math.max(0, Math.round(input))
-  const raw = String(input).trim().toLowerCase()
-  if (!raw) return 0
-  let m = /^(\d+):(\d{1,2})$/.exec(raw)
-  if (m) {
-    const min = parseInt(m[2], 10)
-    if (min >= 60) return null
-    return parseInt(m[1], 10) * 60 + min
-  }
-  m = /^(\d+)h(\d{0,2})$/.exec(raw)
-  if (m) {
-    const min = m[2] ? parseInt(m[2], 10) : 0
-    if (min >= 60) return null
-    return parseInt(m[1], 10) * 60 + min
-  }
-  m = /^(\d+)m$/.exec(raw)
-  if (m) return parseInt(m[1], 10)
-  if (/^\d+\.\d+$/.test(raw)) return Math.round(parseFloat(raw) * 60)
-  if (/^\d+$/.test(raw)) return parseInt(raw, 10)
-  return null
-}
+// Lecture des saisies (minutes / secondes) : shared/duration.mjs. Ici le
+// formatage à l'écran — heures toujours sur 2 chiffres.
+export { parseDurationToMinutes, parseDurationToSeconds, DURATION_FORMATS, normalizeDurationFormat } from '../../../shared/duration.mjs'
+import { normalizeDurationFormat } from '../../../shared/duration.mjs'
 
 // "01:30" (hh:mm) format from minutes.
 export function formatMinutes(minutes) {
   if (minutes == null || !Number.isFinite(minutes)) return '00:00'
   const total = Math.max(0, Math.round(minutes))
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
-}
-
-// ── Durées en secondes (type de champ personnalisé « Duration ») ─────────────
-// Miroir de server/src/services/duration.js. Les champs custom de type
-// 'duration' stockent des SECONDES pour permettre un affichage hh:mm:ss.
-export const DURATION_FORMATS = ['h:mm', 'h:mm:ss']
-export function normalizeDurationFormat(fmt) {
-  return DURATION_FORMATS.includes(fmt) ? fmt : 'h:mm'
-}
-
-// Parse une saisie de durée en SECONDES (voir le serveur pour les formats).
-export function parseDurationToSeconds(input) {
-  if (input == null || input === '') return 0
-  if (typeof input === 'number' && Number.isFinite(input)) return Math.max(0, Math.round(input))
-  const raw = String(input).trim().toLowerCase()
-  if (!raw) return 0
-  let m = /^(\d+):(\d{1,2}):(\d{1,2})$/.exec(raw)
-  if (m) {
-    const min = parseInt(m[2], 10), sec = parseInt(m[3], 10)
-    if (min >= 60 || sec >= 60) return null
-    return parseInt(m[1], 10) * 3600 + min * 60 + sec
-  }
-  m = /^(\d+):(\d{1,2})$/.exec(raw)
-  if (m) {
-    const min = parseInt(m[2], 10)
-    if (min >= 60) return null
-    return parseInt(m[1], 10) * 3600 + min * 60
-  }
-  m = /^(\d+)h(\d{0,2})$/.exec(raw)
-  if (m) {
-    const min = m[2] ? parseInt(m[2], 10) : 0
-    if (min >= 60) return null
-    return parseInt(m[1], 10) * 3600 + min * 60
-  }
-  m = /^(\d+)m$/.exec(raw)
-  if (m) return parseInt(m[1], 10) * 60
-  m = /^(\d+)s$/.exec(raw)
-  if (m) return parseInt(m[1], 10)
-  if (/^\d+\.\d+$/.test(raw)) return Math.round(parseFloat(raw) * 3600)
-  if (/^\d+$/.test(raw)) return parseInt(raw, 10) * 60
-  return null
 }
 
 // Formate un nombre de secondes selon le format ('h:mm' ou 'h:mm:ss'). Les
@@ -95,15 +33,3 @@ export function fmtDurationSeconds(s) {
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`
 }
 
-// ISO Monday-start week number (YYYY-Www) for grouping.
-export function weekKey(dateStr) {
-  // dateStr: 'YYYY-MM-DD'
-  const d = new Date(dateStr + 'T00:00:00')
-  // ISO week: Thursday in same week
-  const target = new Date(d)
-  const dayNr = (d.getDay() + 6) % 7
-  target.setDate(d.getDate() - dayNr + 3)
-  const firstThu = new Date(target.getFullYear(), 0, 4)
-  const week = 1 + Math.round(((target - firstThu) / 86400000 - 3 + ((firstThu.getDay() + 6) % 7)) / 7)
-  return `${target.getFullYear()}-W${String(week).padStart(2, '0')}`
-}

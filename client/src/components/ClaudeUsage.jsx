@@ -14,15 +14,13 @@
 //   • Semaine — total sur 7 jours, tous modèles, réinitialisé à date et heure fixes.
 //   • Il n'existe AUCUNE limite de 24 h.
 //
-// Une seule source (`GET /api/agent/usage`), deux affichages voisins :
+// Une seule source (`GET /api/agent/usage`) :
 //   • <ClaudeUsageStrip/> — une ligne discrète mais lisible (haut de Travaux) : ce
 //     qu'on MESURE, plus les seuils de marge sous lesquels la file s'arrête, un par
 //     plafond (le seul réglage admis dedans : il ne dit rien d'autre que « à partir
 //     d'où ces pourcentages nous arrêtent »).
-//   • <ClaudeModelControl/> — le choix du modèle de l'agent, à côté du bandeau et
-//     non dedans : c'est une commande, sa place est avec Pause et Réglages.
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
-import { Sparkles, Gauge, CalendarDays, AlertTriangle, Bot, ChevronDown, Check, UserRound, PauseCircle } from 'lucide-react'
+import { Sparkles, Gauge, CalendarDays, AlertTriangle, ChevronDown, Check, UserRound, PauseCircle } from 'lucide-react'
 import api from '../lib/api.js'
 import { fmtDateTime, fmtTime } from '../lib/formatDate.js'
 import { useToast } from './ui/ToastProvider.jsx'
@@ -100,91 +98,6 @@ export function formatResetFull(iso) {
 const MODEL_LABELS = { opus: 'Opus 5.5', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable' }  // fable : historique seulement
 export function modelLabel(m) { return MODEL_LABELS[m] || m || '—' }
 
-/**
- * « Opus 5.5 ▾ » — sur quoi l'agent tourne, cliquable pour changer de modèle.
- * Contrôle autonome, posé À CÔTÉ du bandeau de quotas (pas dedans) : choisir le
- * modèle est une commande, pas une mesure — sa place est avec Pause et Réglages.
- */
-export function ClaudeModelControl({ className = '' }) {
-  const { usage } = useClaudeUsage()
-  const state = usage?.agentModel
-  const toast = useToast()
-  const [open, setOpen] = useState(false)
-  // Choix optimiste : affiché tout de suite, effacé quand le poll suivant le confirme.
-  const [pending, setPending] = useState(null)
-  const ref = useRef(null)
-
-  useDismissOnOutside(open, setOpen, ref)
-
-  const serverPreferred = state?.preferred
-  useEffect(() => {
-    if (pending && serverPreferred === pending) setPending(null)
-  }, [pending, serverPreferred])
-
-  if (!state?.preferred) return null
-  const { active } = state
-  const preferred = pending || state.preferred
-  const models = Array.isArray(state.models) && state.models.length ? state.models : ['opus', 'sonnet', 'haiku']
-  const shown = pending || active || state.preferred
-  const hint = (active || pending
-    ? `L'agent travaille sur ${modelLabel(shown)}.`
-    : 'Modèle au plafond : la file attend la réinitialisation.')
-    + ' Cliquer pour changer de modèle.'
-
-  async function choose(m) {
-    setOpen(false)
-    if (m === preferred) return
-    setPending(m)
-    try {
-      await api.agent.saveSettings({ preferredModel: m })
-      fetchUsage()   // confirme le choix tout de suite, sans attendre le poll suivant
-    } catch {
-      setPending(null)
-      toast?.addToast?.({ message: 'Impossible de changer le modèle de l\'agent — réessayez.', type: 'error' })
-    }
-  }
-
-  return (
-    <div className={`relative shrink-0 ${className}`} data-testid="usage-strip-model" ref={ref}>
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border shrink-0 border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-        data-testid="usage-strip-model-name"
-        title={hint}
-      >
-        <Bot size={14} className="text-slate-400" />
-        {modelLabel(shown)}
-        <ChevronDown size={12} className="shrink-0 text-slate-400" />
-      </button>
-      {open && (
-        <div
-          className="absolute right-0 top-full mt-1.5 z-30 w-48 rounded-lg border border-slate-200 bg-white shadow-lg py-1"
-          data-testid="usage-strip-model-menu"
-        >
-          <p className="px-3 pt-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-            Modèle de l'agent
-          </p>
-          {models.map(m => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => choose(m)}
-              className={`w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs text-left hover:bg-slate-50 ${m === preferred ? 'text-brand-600 font-semibold' : 'text-slate-700'}`}
-              data-testid={`usage-strip-model-option-${m}`}
-            >
-              {modelLabel(m)}
-              {m === preferred && <Check size={12} className="shrink-0" />}
-            </button>
-          ))}
-          <p className="px-3 pt-1.5 pb-1 text-[10px] leading-snug text-slate-400 border-t border-slate-100 mt-1">
-            S'applique aux prochaines exécutions ; celle en cours garde son modèle.
-          </p>
-        </div>
-      )}
-    </div>
-  )
-}
 
 // ─── Seuils de pause du garde-fou de quota ────────────────────────────────────
 // La file s'arrête AVANT le mur : sous X % de marge restante, plus rien de nouveau ne

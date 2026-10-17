@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Upload, FileText, Download, Trash2, Paperclip, Pencil } from 'lucide-react'
 import { api } from '../lib/api'
+import { saveBlob } from '../lib/saveBlob.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 
@@ -180,14 +181,7 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
   async function handleDownload(att) {
     try {
       const { blob, filename } = await api.attachments.download(entityType, entityId, att.id)
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = filename || att.file_name
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlob(blob, filename || att.file_name)
     } catch (e) {
       addToast({ message: `Téléchargement échoué : ${e.message}`, type: 'error' })
     }

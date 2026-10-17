@@ -9,7 +9,7 @@
 //      écart, et l'appariement ligne à ligne relevé ↔ grand livre QB.
 import db from '../db/database.js'
 import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
-import { fetchQbLedgerRaw } from './bankQbLink.js'
+import { fetchQbLedgerRaw, mergeLedgers } from './bankQbLink.js'
 import { searchAccount } from './bankQbSearch.js'
 import { shiftDate } from '../utils/datetime.js'
 import { round2 } from '../utils/money.js'
@@ -206,28 +206,6 @@ export function summarizeAccount(accountId) {
 // Le grand livre déborde la fenêtre du relevé : une écriture peut porter une
 // date décalée de quelques jours par rapport au passage à la banque.
 const LEDGER_MARGIN_DAYS = 35
-
-// Un compte ERP peut couvrir plusieurs comptes QB (« 234,168 »), et le rapport
-// GeneralLedger ne respecte pas toujours son filtre `account` : la même écriture
-// revient alors une fois par appel. On fusionne en gardant, pour chaque écriture
-// (id + date + montant), la multiplicité maximale vue sur un seul appel — ce qui
-// préserve les vraies écritures à plusieurs lignes sans les compter en double.
-function mergeLedgers(lists) {
-  const keyOf = (e) => `${e.qbId || ''}|${e.date}|${e.amount}`
-  const kept = new Map()
-  for (const list of lists) {
-    const local = new Map()
-    for (const e of list) {
-      const k = keyOf(e)
-      if (!local.has(k)) local.set(k, [])
-      local.get(k).push(e)
-    }
-    for (const [k, entries] of local) {
-      if (!kept.has(k) || kept.get(k).length < entries.length) kept.set(k, entries)
-    }
-  }
-  return [...kept.values()].flat()
-}
 
 async function qbCurrentBalance(qbAccountIds) {
   const ids = qbAccountIds.map((i) => `'${i}'`).join(',')

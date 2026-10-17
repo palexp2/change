@@ -5,6 +5,7 @@ import { CountStepper } from './DiscoveryFormOptions.jsx'
 import { fmtMoney } from '../utils/formatters.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { discountOffs, purchasePct } from '../lib/soumissionDiscount.js'
+import DateInput from './DateInput.jsx'
 
 // Saisie d'une soumission, mise en page de la modale System builder (images
 // des produits en plus) : totaux, compteurs Chef de culture / Assistant,
@@ -386,7 +387,7 @@ export function useSoumissionBuilder({ initial, language, currency, readOnly = f
           <div key={d.key} className="flex items-center gap-2">
             <input aria-label="Nom du rabais" className="input flex-1 min-w-0" value={d.name}
               onChange={e => patchDiscount(d.key, { name: e.target.value })} onFocus={e => e.target.select()} />
-            <input type="date" aria-label="Jusqu'au" title="Jusqu'au" className="input w-36" value={d.until || ''}
+            <DateInput aria-label="Jusqu'au" title="Jusqu'au" className="input w-36" value={d.until || ''}
               onChange={e => patchDiscount(d.key, { until: e.target.value })} />
             {[['Abonnement', 'pct', 'monthly', '$/mois'], ['Achat', 'pct_purchase', 'amount', '$']].map(([col, pk, ak, unit]) => (
               <span key={col} className="w-[10.5rem] inline-flex items-center gap-1 text-sm text-slate-500">

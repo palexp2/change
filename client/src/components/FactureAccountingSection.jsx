@@ -10,6 +10,7 @@ import { Modal } from './Modal.jsx'
 import { useAuth } from '../lib/auth.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
+import { DateTimeInput } from './DateInput.jsx'
 
 // Doit refléter QB_FACTURE_DATE_CUTOFF côté serveur (server/src/services/quickbooks.js).
 // Toute écriture QB pour une facture dont document_date est antérieur est bloquée,
@@ -382,8 +383,7 @@ function EditEventDateModal({ state, onChange, onClose, onCommit }) {
         </p>
         <label className="block">
           <span className="text-xs font-medium text-slate-600 block mb-1">Nouvelle date / heure</span>
-          <input
-            type="datetime-local"
+          <DateTimeInput
             value={value}
             onChange={e => onChange({ value: e.target.value })}
             onBlur={() => onCommit(value)}

@@ -251,6 +251,20 @@ export const SYSTEM_FLOWS = {
       { type: 'update', title: 'Lignes du relevé', sub: 'Passent à « comptabilisé »', config: [] },
     ],
   },
+  sys_gl_mirror_sync: {
+    trigger: { type: 'schedule', title: 'Toutes les 60 secondes', sub: 'Et chaque nuit à 3 h 15', config: [] },
+    actions: [
+      { type: 'qb', title: 'Mois modifiés dans QuickBooks', sub: 'Lecture seule', config: [] },
+      { type: 'update', title: 'Grand livre recopié', sub: 'Mois par mois', config: [] },
+    ],
+  },
+  sys_gl_reconciliation: {
+    trigger: { type: 'schedule', title: 'Chaque jour à 4 h 30', sub: 'Exercice en cours + précédent', config: [] },
+    actions: [
+      { type: 'qb', title: 'Balance de vérification QuickBooks', sub: 'Lecture seule', config: [] },
+      { type: 'update', title: 'Écarts par compte', sub: 'Page Grand livre', config: [] },
+    ],
+  },
   sys_qb_webhook: {
     trigger: { type: 'webhook', title: 'Quand QuickBooks signale un changement', sub: "Avis instantané d'Intuit", config: [] },
     actions: [

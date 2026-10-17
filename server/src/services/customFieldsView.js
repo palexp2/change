@@ -113,8 +113,7 @@ export function labelColumnFor(table) {
 }
 
 // Mapping erp_table → entity_type d'activity_log, pour les champs auto-remplis
-// created_by / last_modified_by. Doit matcher HISTORY_ENTITY_MAP (routes/records.js)
-// et l'`entity` émis par emitEntity/emitOrder/emitCompany (realtimeEmitters.js) —
+// created_by / last_modified_by. Doit matcher l'`entity` émis par emitEntity/emitOrder/emitCompany (realtimeEmitters.js) —
 // sinon la sous-requête activity_log ne joindra jamais aucune ligne.
 export const ACTIVITY_ENTITY_MAP = {
   projects: 'project',
@@ -133,14 +132,6 @@ export const ACTIVITY_ENTITY_MAP = {
   vendor_subscriptions: 'vendor_subscription',
   ops_issues: 'ops_issue',
 }
-
-// Kinds de champs auto-remplis : lecture seule, calculés à la lecture via la VUE.
-//   - created_time       : reprend la colonne physique created_at de la table
-//   - last_modified_time : reprend la colonne physique updated_at de la table
-//   - created_by         : nom de l'utilisateur du 1er event 'created' d'activity_log
-//   - last_modified_by   : nom de l'utilisateur du dernier event d'activity_log
-//   - autonumber         : rang d'insertion de la ligne (rowid SQLite), croissant
-export const AUTO_KINDS = new Set(['created_time', 'last_modified_time', 'created_by', 'last_modified_by', 'autonumber'])
 
 // Fonctions d'agrégation autorisées pour les rollups.
 // ARRAY / ARRAYUNIQUE concatènent les valeurs liées (toutes / distinctes) en une

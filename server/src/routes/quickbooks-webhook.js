@@ -306,10 +306,15 @@ async function processNotification(body) {
     const realmId = String(n?.realmId || '')
     // Un autre dossier QuickBooks que le nôtre : accusé de réception, rien de plus.
     if (ourRealm && realmId && realmId !== ourRealm) continue
-    await ingestEntities((n?.dataChangeEvent?.entities || []).map((e) => ({
+    const list = (n?.dataChangeEvent?.entities || []).map((e) => ({
       realmId, name: e?.name, id: e?.id,
       operation: e?.operation, lastUpdated: e?.lastUpdated,
-    })))
+    }))
+    // Grand livre miroir : à côté, sans toucher au traitement du rapprochement.
+    import('../services/glMirror.js')
+      .then(({ noteQbWebhookEntities }) => noteQbWebhookEntities(list))
+      .catch((e) => console.error('grand livre (avis QB):', e.message))
+    await ingestEntities(list)
   }
 }
 

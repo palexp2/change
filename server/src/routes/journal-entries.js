@@ -48,10 +48,10 @@ function serializeEntry(entry) {
 // GET /api/journal-entries/defaults
 // Renvoie tous les défauts de comptes débit/crédit pour la prépopulation,
 // indexés par operation_key (ex: 'shipped.replacement', 'movement.Prélèvement pour R&D').
-router.get('/defaults', requireAuth, (_req, res) => {
-  const rows = db.prepare(`SELECT * FROM journal_entry_defaults`).all()
+// Défauts indexés par operation_key — la forme renvoyée par GET et PUT.
+function defaultsMap() {
   const map = {}
-  for (const r of rows) {
+  for (const r of db.prepare(`SELECT * FROM journal_entry_defaults`).all()) {
     map[r.operation_key] = {
       debit_account_id: r.debit_account_id || null,
       debit_account_name: r.debit_account_name || null,
@@ -60,7 +60,11 @@ router.get('/defaults', requireAuth, (_req, res) => {
       updated_at: r.updated_at,
     }
   }
-  res.json({ data: map })
+  return map
+}
+
+router.get('/defaults', requireAuth, (_req, res) => {
+  res.json({ data: defaultsMap() })
 })
 
 // PUT /api/journal-entries/defaults
@@ -92,18 +96,7 @@ router.put('/defaults', requireAuth, (req, res) => {
       }
     })
     tx(list)
-    const rows = db.prepare(`SELECT * FROM journal_entry_defaults`).all()
-    const map = {}
-    for (const r of rows) {
-      map[r.operation_key] = {
-        debit_account_id: r.debit_account_id || null,
-        debit_account_name: r.debit_account_name || null,
-        credit_account_id: r.credit_account_id || null,
-        credit_account_name: r.credit_account_name || null,
-        updated_at: r.updated_at,
-      }
-    }
-    res.json({ data: map })
+    res.json({ data: defaultsMap() })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

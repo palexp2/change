@@ -1,7 +1,8 @@
-// Plan comptable — les comptes actifs de QuickBooks, en lecture : numéro, nom,
-// type et solde courant. Clic sur un compte → son historique d'opérations. La source fait foi dans QuickBooks
-// (même appel que les sélecteurs de compte, lib/qbAccounts.js) ; le compteur
-// sous le titre est celui du grand livre miroir (services/glMirror.js).
+// Plan comptable — les comptes actifs du grand livre miroir (gl_accounts, recopié
+// de QuickBooks et tenu à jour par sys_gl_mirror_sync) : numéro, nom, type et
+// solde en CAD calculé par Boréal depuis ses propres lignes (bilan : depuis le
+// début ; résultats : exercice en cours). Plus d'appel à QuickBooks à
+// l'affichage. Clic sur un compte → son historique d'opérations.
 import { useEffect, useState } from 'react'
 import { ListTree } from 'lucide-react'
 import api from '../lib/api.js'
@@ -15,22 +16,22 @@ import { fmtDate } from '../lib/formatDate.js'
 import QbAccountLedger from './QbAccountLedger.jsx'
 
 const toRow = a => ({
-  id: a.Id,
-  acct_num: a.AcctNum || '',
-  name: a.FullyQualifiedName || a.Name,
-  account_type: a.AccountType || '',
-  account_sub_type: a.AccountSubType || '',
-  classification: a.Classification || '',
-  currency: a.CurrencyRef?.value || 'CAD',
-  balance: Number(a.CurrentBalanceWithSubAccounts ?? a.CurrentBalance ?? 0),
-  description: a.Description || '',
-  sub_account: !!a.SubAccount,
+  id: a.qb_id,
+  acct_num: a.acct_num || '',
+  name: a.fully_qualified_name || a.name || '',
+  account_type: a.account_type || '',
+  account_sub_type: a.account_sub_type || '',
+  classification: a.classification || '',
+  currency: a.currency || 'CAD',
+  balance: Number(a.balance || 0),
+  description: a.description || '',
+  sub_account: !!a.sub_account,
 })
 
 const RENDERS = {
   acct_num: row => <span className="font-mono text-xs text-slate-600 tabular-nums">{row.acct_num}</span>,
   name: row => <span className={row.sub_account ? 'text-slate-600' : 'text-slate-800 font-medium'}>{row.name}</span>,
-  balance: row => <span className="tabular-nums text-slate-800">{fmtMoney(row.balance, row.currency)}</span>,
+  balance: row => <span className="tabular-nums text-slate-800">{fmtMoney(row.balance, 'CAD')}</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.qb_accounts.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -46,11 +47,11 @@ export default function PlanComptable() {
     cacheKey: 'qb_accounts',
     fetch: async () => {
       try {
-        const list = await api.quickbooks.accounts({ all: 1 })
+        const list = await api.quickbooks.glAccounts()
         setError(null)
         return { data: (Array.isArray(list) ? list : []).map(toRow).sort(byNumber) }
       } catch (e) {
-        setError(e.message || 'QuickBooks injoignable')
+        setError(e.message || 'Plan comptable indisponible')
         throw e
       }
     },
@@ -76,7 +77,7 @@ export default function PlanComptable() {
         // Comptes QB hors du registre des fiches : panneau du tableau.
         peek={{
           title: row => [row.acct_num, row.name].filter(Boolean).join(' '),
-          subtitle: row => fmtMoney(row.balance, row.currency),
+          subtitle: row => fmtMoney(row.balance, 'CAD'),
           key: 'qb_accounts',
           width: 960,
           render: row => <QbAccountLedger account={row} />,

@@ -3,7 +3,7 @@ import { fmtMoney } from '../utils/formatters.js'
 import { ChevronRight, CheckCircle, Download, AlertTriangle, RefreshCw, Stethoscope } from 'lucide-react'
 import api from '../lib/api.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
-import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails, UpsRateComparison } from './novoxpressShared.jsx'
+import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, DebugDetails, UpsRateComparison, BoxPresetRadios, CustomDimsInputs, RateChoiceButton } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 import ThinkingOrb from './ThinkingOrb'
 
@@ -204,24 +204,13 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
     <div className="space-y-4">
       <div>
         <label className="label">{individualBoxes && !isEnvelope && qty > 1 ? 'Boîte 1 — format' : 'Type de colis'}</label>
-        <div className="space-y-2">
-          {Object.entries(BOX_PRESETS).map(([key, box]) => (
-            <label key={key} className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${preset === key ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:border-slate-300'}`}>
-              <input type="radio" name="preset" value={key} checked={preset === key} onChange={() => setPreset(key)} className="accent-brand-600" />
-              <span className="text-sm text-slate-700">{box.label}</span>
-            </label>
-          ))}
-        </div>
+        <BoxPresetRadios preset={preset} setPreset={setPreset} />
       </div>
 
       {preset === 'custom' && (
         <div>
           <label className="label">Dimensions (pouces) — L × l × H</label>
-          <div className="grid grid-cols-3 gap-2">
-            <input aria-label="Boîte 1 — longueur (po)" type="number" min="0.1" step="any" className="input text-center" value={custom.length} onChange={e => setCustom(c => ({ ...c, length: e.target.value }))} />
-            <input aria-label="Boîte 1 — largeur (po)" type="number" min="0.1" step="any" className="input text-center" value={custom.width} onChange={e => setCustom(c => ({ ...c, width: e.target.value }))} />
-            <input aria-label="Boîte 1 — hauteur (po)" type="number" min="0.1" step="any" className="input text-center" value={custom.depth} onChange={e => setCustom(c => ({ ...c, depth: e.target.value }))} />
-          </div>
+          <CustomDimsInputs custom={custom} setCustom={setCustom} min="0.1" step="any" ariaPrefix="Boîte 1" />
         </div>
       )}
 
@@ -337,20 +326,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
           <p className="text-sm text-slate-500">Sélectionnez le service souhaité :</p>
           <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
             {rates.map((rate, i) => (
-              <button
-                key={rate.service_id || i}
-                onClick={() => { setSelectedRate(rate); setStep('confirm') }}
-                className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-brand-400 hover:bg-brand-50 transition-colors"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-medium text-slate-900 text-sm">{getRateName(rate)}</p>
-                    {getRateCarrier(rate) && <p className="text-xs text-slate-500">{getRateCarrier(rate)}</p>}
-                    {getRateDelivery(rate) && <p className="text-xs text-slate-400 mt-0.5">{getRateDelivery(rate)}</p>}
-                  </div>
-                  <span className="font-semibold text-brand-700 whitespace-nowrap">{fmtPrice(rate)}</span>
-                </div>
-              </button>
+              <RateChoiceButton key={rate.service_id || i} rate={rate} onPick={() => { setSelectedRate(rate); setStep('confirm') }} />
             ))}
           </div>
           <UpsRateComparison outbound fetchRates={() => api.ups.shipmentRates(envoi.id, { packages: buildPackages() })} />

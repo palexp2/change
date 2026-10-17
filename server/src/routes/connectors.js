@@ -203,21 +203,6 @@ router.post('/airtable/webhook-ping', (req, res) => {
   }
 })
 
-// ── Sync log
-router.get('/sync-log', requireAuth, (req, res) => {
-  const { module, limit = 100 } = req.query
-  let sql = "SELECT * FROM sync_log WHERE created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')"
-  const params = []
-  if (module) { sql += ' AND module = ?'; params.push(module) }
-  sql += ' ORDER BY created_at DESC'
-  if (limit !== 'all') {
-    sql += ' LIMIT ?'
-    params.push(parseInt(limit))
-  }
-  const logs = db.prepare(sql).all(...params)
-  res.json(logs)
-})
-
 // ── List connected accounts
 router.get('/', requireAuth, (req, res) => {
   const accounts = db.prepare(`

@@ -5,7 +5,7 @@ import { Modal } from './Modal.jsx'
 import { ProductPicker } from './ProductPicker.jsx'
 import { SendPaymentLinkModal } from './SendPaymentLinkModal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { TAX_REGIMES, isCanada, suggestTaxRegime, taxesForRegime } from '../lib/taxes.js'
+import { TAX_REGIMES, isCanada, suggestTaxRegime, taxesForRegime } from '../../../shared/taxes.mjs'
 
 const inputCls = 'border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500'
 

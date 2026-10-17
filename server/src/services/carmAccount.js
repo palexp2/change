@@ -98,15 +98,6 @@ const TYPE_CATEGORY = {
 
 export const CARM_CATEGORIES = ['evaluation', 'correction', 'interet', 'penalite', 'paiement', 'autre']
 
-export const CATEGORY_LABELS = {
-  evaluation: 'Évaluation (B3)',
-  correction: 'Correction',
-  interet: 'Intérêts',
-  penalite: 'Pénalité',
-  paiement: 'Paiement',
-  autre: 'Autre',
-}
-
 // Nature déduite du code, avec repli sur le libellé puis sur le signe.
 export function carmCategory({ transaction_type, description, amount }) {
   const code = String(transaction_type || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')

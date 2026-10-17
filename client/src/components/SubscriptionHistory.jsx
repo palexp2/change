@@ -7,6 +7,7 @@ import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { CATEGORIES, CATEGORY_LABELS, CATEGORY_COLORS } from '../lib/subscriptionEvents.js'
 import { RachatPicker } from './RachatPicker.jsx'
 import { ChoiceSelect, FieldChoiceBadge } from './ChoiceSelect.jsx'
+import DateInput from './DateInput.jsx'
 
 const CATEGORY_CHOICES = CATEGORIES.map(c => ({ value: c, label: CATEGORY_LABELS[c], color: CATEGORY_COLORS[c] }))
 
@@ -175,8 +176,7 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged, hideRa
     <div key={rowKey} data-testid={rowKey === '__new__' ? 'event-row-new' : `event-row-${rowKey}-edit`} className="px-4 py-3 bg-amber-50/40 space-y-2">
       <div className="flex items-start gap-3">
         <div className="flex-shrink-0 w-32 space-y-1.5">
-          <input
-            type="date"
+          <DateInput
             value={editDate}
             onChange={e => setEditDate(e.target.value)}
             onBlur={onBlurSave}

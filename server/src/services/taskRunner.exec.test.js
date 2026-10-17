@@ -9,7 +9,7 @@
 //   - pas de .code + process mort (crash) → `blocked`
 //
 // L'agent est forcé OFF (capturé/restauré), la tâche est seedée dans le vrai store
-// puis nettoyée — pattern identique à e2e/tests/agent-autonomous.test.js.
+// puis nettoyée — pattern repris des anciens tests navigateur (retirés).
 
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'

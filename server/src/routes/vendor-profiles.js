@@ -2,7 +2,8 @@ import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { normalizeVendorKey, serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups, dismissDuplicateGroup, resolveProfileByName } from '../services/vendorProfiles.js'
+import { usdCadRateLookup } from '../services/fx.js'
+import { normalizeVendorKey, strippedVendorKey, serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups, dismissDuplicateGroup, resolveProfileByName } from '../services/vendorProfiles.js'
 import { backfillProfilesFromHistory, learnBankLabelsFromMatches } from '../services/vendorLearning.js'
 
 const router = Router()
@@ -10,7 +11,7 @@ router.use(requireAuth)
 
 // Enrichit un profil du nombre d'abonnements actifs, du nombre de reçus et de la
 // dernière comptabilisation connue (les particularités vivent sur le profil lui-même).
-function enrich(profile, { subsByProfile, receiptsByProfile }) {
+function enrich(profile, { subsByProfile, receiptsByProfile, spentByProfile }) {
   const r = receiptsByProfile.get(profile.id)
   return {
     ...profile,
@@ -18,6 +19,7 @@ function enrich(profile, { subsByProfile, receiptsByProfile }) {
     receipt_count: r?.count || 0,
     last_receipt_date: r?.date || null,
     last_receipt_total: r?.total ?? null,
+    lifetime_spent: spentByProfile.has(profile.id) ? Math.round(spentByProfile.get(profile.id) * 100) / 100 : null,
   }
 }
 
@@ -48,7 +50,55 @@ function buildContext() {
     if (!cur.date || r.date > cur.date) { cur.date = r.date; cur.total = r.total }
     receiptsByProfile.set(pid, cur)
   }
-  return { subsByProfile, receiptsByProfile }
+  return { subsByProfile, receiptsByProfile, spentByProfile: lifetimeSpendByProfile(profiles) }
+}
+
+// Total dépensé à vie, en CAD, taxes incluses : tout le grand livre QuickBooks
+// (miroir local, 2019→), pas seulement les documents passés par l'ERP. Montant =
+// ce qui sort du compte de paiement (banque, carte, fournisseurs à payer) sur les
+// dépenses, factures et crédits fournisseur ; USD converti au taux du jour.
+// Le GL ne porte que le NOM du tiers : d'abord le nom vu sur un document publié
+// depuis l'ERP (lien sûr), sinon le nom/alias de la fiche, sans « USD » final.
+function lifetimeSpendByProfile(profiles) {
+  const exact = new Map(), stripped = new Map()
+  for (const p of profiles) {
+    for (const n of [p.name, ...p.aliases]) {
+      const k = normalizeVendorKey(n); if (k && !exact.has(k)) exact.set(k, p.id)
+      const s = strippedVendorKey(n); if (s && !stripped.has(s)) stripped.set(s, p.id)
+    }
+  }
+  const learned = new Map()
+  for (const r of db.prepare(`
+    SELECT e.name, s.vendor_profile_id pid, COUNT(*) c FROM sale_receipts s
+    JOIN gl_entries e ON e.qb_txn_id = s.quickbooks_id
+    WHERE s.deleted_at IS NULL AND s.vendor_profile_id IS NOT NULL AND e.name IS NOT NULL
+    GROUP BY 1, 2 ORDER BY c DESC
+  `).all()) if (!learned.has(r.name)) learned.set(r.name, r.pid)
+  const pidByName = new Map()
+  const resolve = (name) => {
+    if (pidByName.has(name)) return pidByName.get(name)
+    const base = name.replace(/\s*-?\s*(USD|CAD)$/i, '')
+    const pid = learned.get(name) || exact.get(normalizeVendorKey(base)) || stripped.get(strippedVendorKey(base)) || null
+    pidByName.set(name, pid)
+    return pid
+  }
+  const rate = usdCadRateLookup()
+  const spent = new Map()
+  for (const r of db.prepare(`
+    SELECT e.name, e.txn_date, a.currency, SUM(l.credit - l.debit) amt
+    FROM gl_entries e
+    JOIN gl_lines l ON l.entry_id = e.id
+    JOIN gl_accounts a ON a.qb_id = l.account_qb_id
+    WHERE e.txn_type IN ('Purchase', 'Bill', 'VendorCredit') AND e.name IS NOT NULL
+      AND a.account_type IN ('Bank', 'Credit Card', 'Accounts Payable')
+    GROUP BY e.id, a.currency
+  `).all()) {
+    const pid = resolve(r.name)
+    if (!pid || !r.amt) continue
+    const cad = String(r.currency || 'CAD').toUpperCase() === 'USD' ? r.amt * (rate(r.txn_date) || 1) : r.amt
+    spent.set(pid, (spent.get(pid) || 0) + cad)
+  }
+  return spent
 }
 
 router.get('/', (req, res) => {

@@ -17,7 +17,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { customFieldToColumn } from '../lib/customFieldDisplay.jsx'
-import { summarizeDependents } from '../lib/customFieldDeps.js'
+import { deleteCustomFieldWithReport } from '../lib/customFieldDeps.js'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import FactureDetail from './FactureDetail.jsx'
@@ -249,27 +249,8 @@ export default function Factures() {
   }, [load, addToast])
   const { stripeBatch, airtableSync } = useReimportStatus(onReimportFinished)
 
-  async function handleDeleteCustomField(field) {
-    // Rapport d'usage : liste les dépendances (champs calculés, automations,
-    // vues, règles de visibilité) que la suppression va affecter, avant de les
-    // casser en silence (#ERROR).
-    let dependents = []
-    try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch {}
-    const depMsg = summarizeDependents(dependents)
-    if (!(await confirm({
-      title: 'Supprimer le champ',
-      message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
-      confirmLabel: dependents.length ? 'Supprimer quand même' : 'Supprimer',
-    }))) return
-    try {
-      await api.customFields.delete(field.id)
-      addToast({ message: 'Champ supprimé', type: 'success' })
-      await reloadCustomFields()
-      load()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    }
-  }
+  const handleDeleteCustomField = field =>
+    deleteCustomFieldWithReport({ api, field, confirm, addToast, reloadCustomFields, reload: load })
 
   const displayedFactures = useMemo(() => {
     if (!month && !typeFilter) return factures

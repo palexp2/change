@@ -16,6 +16,7 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { ChoiceSelect } from '../components/ChoiceSelect.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import DateInput from '../components/DateInput.jsx'
 
 const DEPARTMENTS = ['R&D', 'Opérations', 'Marketing']
 const GENDERS = ['Homme', 'Femme', 'Autre']
@@ -451,8 +452,7 @@ function VacationsSection({ employeeId, pct, onPctChange, refDate, refBalance, o
               <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
                 <label className="flex items-center gap-2 text-sm text-slate-600 whitespace-nowrap" title="Banque connue à cette date">
                   <span className="text-xs text-slate-400">Réf.</span>
-                  <input
-                    type="date"
+                  <DateInput
                     className={refInp}
                     value={refDate ?? ''}
                     onChange={e => onChange('vacation_ref_date', e.target.value || null)}

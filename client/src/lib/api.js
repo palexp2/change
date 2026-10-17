@@ -473,9 +473,6 @@ export const api = {
     paymentRawUpdate: (id, data) => patch(`/admin/payments/${id}/raw`, data),
   },
 
-  telemetry: {
-    pageLoad: (url, load_ms) => post('/telemetry/page-load', { url, load_ms }),
-  },
 
   // Field visibility rules — règles conditionnelles de masquage des champs
   // dans les pages détail. Configurées globalement (admin), évaluées côté
@@ -525,12 +522,6 @@ export const api = {
     delete: (id) => del(`/interactions/${id}`),
   },
 
-  // Calls
-  calls: {
-    transcript: (id) => get(`/calls/${id}/transcript`),
-    retranscribe: (id) => post(`/calls/${id}/retranscribe`),
-    rematch: () => post('/calls/rematch'),
-  },
 
   // Connectors
   connectors: {
@@ -660,6 +651,13 @@ export const api = {
   quickbooks: {
     accounts: (params = {}) => get('/connectors/quickbooks/accounts?' + new URLSearchParams(params)),
     glRuns: () => getFresh('/gl/import-runs?limit=1'),
+    glAccounts: () => getFresh('/gl/accounts'),
+    glRecon: () => getFresh('/gl/reconciliation'),
+    glReconRun: () => post('/gl/reconciliation/run'),
+    glReconMonth: (month) => getFresh(`/gl/reconciliation/${month}`),
+    glReconLines: (month, id) => getFresh(`/gl/reconciliation/${month}/accounts/${encodeURIComponent(id)}/lines`),
+    glStatements: (from, to) => getFresh('/gl/statements?' + new URLSearchParams(from ? { from, to } : {})),
+    glAccountLines: (id, from, to) => getFresh(`/gl/accounts/${encodeURIComponent(id)}/lines?` + new URLSearchParams({ from, to })),
     accountLedger: (id, since) => getFresh(`/connectors/quickbooks/accounts/${encodeURIComponent(id)}/ledger?since=${since}`),
     vendors: () => get('/connectors/quickbooks/vendors'),
     payees: (currency) => get('/connectors/quickbooks/payees?' + new URLSearchParams(currency ? { currency } : {})),
@@ -823,11 +821,6 @@ export const api = {
     },
   },
 
-  // Soumissions
-  soumissions: {
-    list: (params = {}) => get('/projets/soumissions?' + new URLSearchParams(params)),
-    get: (id) => get(`/projets/soumissions/${id}`),
-  },
 
   // Adresses
   // Autocomplétion d'adresse (proxy Google Places, clé côté serveur). Sans
@@ -861,10 +854,6 @@ export const api = {
     delete: (id) => del(`/projets/bom/${id}`),
   },
 
-  // Serial state changes
-  serialChanges: {
-    list: (params = {}) => get('/projets/serial-changes?' + new URLSearchParams(params)),
-  },
 
   // Assemblages
   assemblages: {
@@ -1062,19 +1051,6 @@ export const api = {
     delete: (id) => del(`/qualification-calls/${id}`),
   },
 
-  emailRelance: {
-    qualificationCalls: () => get('/email-relance/qualification-calls'),
-    settings: () => get('/email-relance/settings'),
-    saveGlobal: (instructions) => put('/email-relance/settings/global', { instructions }),
-    saveQc: (qcId, instructions) => put(`/email-relance/settings/qc/${qcId}`, { instructions }),
-    regenerate: (qualification_call_id, temperature, general_rules, specific_instructions) =>
-      post('/email-relance/regenerate', {
-        qualification_call_id, temperature, general_rules, specific_instructions,
-      }),
-    saveDraft: (qcId, subject, body) => put(`/email-relance/draft/${qcId}`, { subject, body }),
-    gmailAccount: () => get('/email-relance/gmail-account'),
-    send: (qcId, to) => post(`/email-relance/send/${qcId}`, to ? { to } : {}),
-  },
 
   timesheets: {
     list: (params = {}) => get('/timesheets?' + new URLSearchParams(params)),
@@ -1171,10 +1147,6 @@ export const api = {
     list: (params = {}) => get('/activity?' + new URLSearchParams(params)),
   },
 
-  // Journal des side effects — timeline unifiée (sync_log + automation_logs + activity_log).
-  sideEffects: {
-    list: (params = {}) => get('/side-effects?' + new URLSearchParams(params)),
-  },
 
   // Returns (RMA)
   returns: {
@@ -1833,25 +1805,6 @@ export const api = {
     restoreVersion: (id, versionId) => post(`/automations/${id}/versions/${versionId}/restore`, {}),
   },
 
-  interfaces: {
-    list: () => get('/interfaces'),
-    get: (id) => get(`/interfaces/${id}`),
-    create: (data) => post('/interfaces', data),
-    update: (id, data) => patch(`/interfaces/${id}`, data),
-    delete: (id) => del(`/interfaces/${id}`),
-    restore: (id) => post(`/interfaces/${id}/restore`),
-    pages: (id) => get(`/interfaces/${id}/pages`),
-    createPage: (id, data) => post(`/interfaces/${id}/pages`, data),
-    reorderPages: (id, data) => patch(`/interfaces/${id}/pages/reorder`, data),
-    updatePage: (pageId, data) => patch(`/interfaces/pages/${pageId}`, data),
-    deletePage: (pageId) => del(`/interfaces/pages/${pageId}`),
-    blocks: (pageId) => get(`/interfaces/pages/${pageId}/blocks`),
-    createBlock: (pageId, data) => post(`/interfaces/pages/${pageId}/blocks`, data),
-    updateBlock: (blockId, data) => patch(`/interfaces/blocks/${blockId}`, data),
-    deleteBlock: (blockId) => del(`/interfaces/blocks/${blockId}`),
-    saveLayout: (pageId, layout) => patch(`/interfaces/pages/${pageId}/blocks/layout`, layout),
-    blockData: (blockId, filterValues) => get(`/interfaces/blocks/${blockId}/data${filterValues && Object.keys(filterValues).length ? '?filter_values=' + encodeURIComponent(JSON.stringify(filterValues)) : ''}`),
-  },
 
   // Documents (soumissions créées localement)
   documents: {
@@ -2044,9 +1997,6 @@ export const api = {
     reopen: (id) => post(`/audit/findings/${id}/reopen`),
   },
 
-  syncLog: {
-    list: (params = {}) => get('/connectors/sync-log?' + new URLSearchParams(params)),
-  },
 
   // Fichiers publics — upload, list, edit, delete par n'importe quel user
   // authentifié. L'accès au fichier lui-même est public via /erp/p/<token>/<name>.
@@ -2149,20 +2099,7 @@ export const api = {
     create: (data) => post('/stripe-subscriptions', data),
   },
 
-  // Météo au site (GeoMet ECCC / National Weather Service) — lecture seule.
-  weather: {
-    get: (companyId, at, signal) => {
-      const qs = new URLSearchParams({ companyId })
-      if (at) qs.set('at', at)
-      return getAbortable(`/weather?${qs}`, signal)
-    },
-  },
 
-  stripeInvoiceItems: {
-    list: (params = {}) => get('/stripe-invoice-items?' + new URLSearchParams(params)),
-    get: (id) => get(`/stripe-invoice-items/${id}`),
-    update: (id, data) => patch(`/stripe-invoice-items/${id}`, data),
-  },
 
 }
 
